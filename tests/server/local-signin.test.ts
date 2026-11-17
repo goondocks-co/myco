@@ -1,3 +1,5 @@
+import { APP_PEM, APP_KEY, APP_RESPONSE } from '../setup/fixtures/github.js';
+import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, statSync, mkdirSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
@@ -61,25 +63,29 @@ describe('native sign-in registration', () => {
     const before = readLocalSecrets(f.paths);
     let pageOpened!: (page: string) => void;
     const page = new Promise<string>((resolve) => { pageOpened = resolve; });
-    const requests: string[] = [];
+    let opened = false;
     const pending = registerGitHubApp({ url: f.url, target: { kind: 'local', paths: f.paths },
-      openUrl: async (url) => { pageOpened(url); },
+      privateKeyPem: linked ? APP_PEM : undefined,
+      openUrl: async (url) => { opened = true; pageOpened(url); },
       fetchImpl: (async (input) => {
-        requests.push(String(input));
+        if (String(input) === 'https://api.github.com/app') return Response.json({ ...APP_RESPONSE, client_id: linked ? 'old' : 'Iv1.native' });
+        // https://docs.github.com/en/rest/apps/apps#create-a-github-app-from-a-manifest
         return Response.json({ client_id: 'Iv1.native', client_secret: 'native-secret', slug: 'native',
-          name: 'Native', html_url: 'https://github.com/apps/native' }, { status: 201 });
+          name: 'Native', html_url: 'https://github.com/apps/native', pem: APP_PEM }, { status: 201 });
       }) as typeof fetch });
-    const pageUrl = await page;
-    const html = await (await fetch(pageUrl)).text();
-    expect(() => new LocalVolume(f.paths).exclusive(() => {})).toThrow(/volume is in use/);
-    const state = /state=([A-Za-z0-9_%-]+)/.exec(html)![1];
-    await fetch(`${new URL(pageUrl).origin}/callback?code=native&state=${state}`);
+    if (!linked) {
+      const pageUrl = await page;
+      const html = await (await fetch(pageUrl)).text();
+      expect(() => new LocalVolume(f.paths).exclusive(() => {})).toThrow(/volume is in use/);
+      const state = /state=([A-Za-z0-9_%-]+)/.exec(html)![1];
+      await fetch(`${new URL(pageUrl).origin}/callback?code=native&state=${state}`);
+    }
     const result = await pending;
     expect(result.verified).toMatchObject({ ok: false, pendingStart: true,
       reason: linked ? "start it: myco server install --target local." : "While it's stopped: myco server setup-owner --target local. Then start it: myco server install --target local." });
     expect(result.verified).not.toMatchObject({ reason: expect.stringMatching(/^Next[:,]/) });
-    expect(requests).toEqual(['https://api.github.com/app-manifests/native/conversions']);
-    expect(readLocalSecrets(f.paths)).toEqual({ ...before, GITHUB_CLIENT_ID: 'Iv1.native', GITHUB_CLIENT_SECRET: 'native-secret' });
+    expect(opened).toBe(!linked);
+    expect(readLocalSecrets(f.paths)).toEqual({ ...before, ...(linked ? {} : { GITHUB_CLIENT_ID: 'Iv1.native', GITHUB_CLIENT_SECRET: 'native-secret' }), GITHUB_APP_PRIVATE_KEY: APP_KEY });
     expect(statSync(f.paths.secretsFile).mode & 0o777).toBe(0o600);
     expect(() => new LocalVolume(f.paths).exclusive(() => {})).not.toThrow();
   });
@@ -97,12 +103,15 @@ describe('native sign-in registration', () => {
     expect(() => new LocalVolume(f.paths).exclusive(() => {})).not.toThrow();
   });
 
-  it('reconfigures only the sign-in pair and refuses retained writers or malformed values', async () => {
+  it('preserves a rotated App key across sign-in writes and refuses retained writers or malformed values', async () => {
     const f = fixture();
+    writeLocalSecrets({ GITHUB_APP_PRIVATE_KEY: APP_KEY }, f.paths);
     const before = readLocalSecrets(f.paths);
+    const rotatedKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64');
     let retained!: Parameters<Parameters<typeof configureLocalSignIn>[1]>[0];
     await configureLocalSignIn(f.paths, async (install) => {
       retained = install;
+      install({ clientId: 'Iv1.first', clientSecret: 'first', privateKey: rotatedKey });
       install({ clientId: 'Iv1.first', clientSecret: 'first' });
     });
     expect(() => retained({ clientId: 'Iv1.invalid', clientSecret: 'invalid' })).toThrow(/no longer holds/);
@@ -113,6 +122,6 @@ describe('native sign-in registration', () => {
     await configureLocalSignIn(f.paths, async (install) => {
       install({ clientId: 'Iv1.second', clientSecret: 'second' });
     });
-    expect(readLocalSecrets(f.paths)).toEqual({ ...before, GITHUB_CLIENT_ID: 'Iv1.second', GITHUB_CLIENT_SECRET: 'second' });
+    expect(readLocalSecrets(f.paths)).toEqual({ ...before, GITHUB_CLIENT_ID: 'Iv1.second', GITHUB_CLIENT_SECRET: 'second', GITHUB_APP_PRIVATE_KEY: rotatedKey });
   });
 });

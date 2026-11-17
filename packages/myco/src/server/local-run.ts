@@ -95,6 +95,7 @@ export function optionsFromRecord(
     SESSION_SECRET: secrets.SESSION_SECRET,
     GITHUB_CLIENT_ID: secrets.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: secrets.GITHUB_CLIENT_SECRET,
+    GITHUB_APP_PRIVATE_KEY: secrets.GITHUB_APP_PRIVATE_KEY,
   };
 }
 

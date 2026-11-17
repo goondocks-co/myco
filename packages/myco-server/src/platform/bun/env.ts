@@ -111,6 +111,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
     secrets: {
       GITHUB_CLIENT_ID: config.GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET: config.GITHUB_CLIENT_SECRET,
+      GITHUB_APP_PRIVATE_KEY: config.GITHUB_APP_PRIVATE_KEY,
       SESSION_SECRET: config.SESSION_SECRET,
     },
     platform: bunPlatform(config),

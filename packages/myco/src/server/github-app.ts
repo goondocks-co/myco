@@ -15,10 +15,12 @@ import { LOCAL_OWNER_NEXT } from '@goondocks/myco-shared/setup-guidance';
  *
  * The app is public. GitHub lets only members of the owning account authorize
  * a private app, and authorization is the sign-in flow — a private app would
- * sign in its owner and nobody else. Installation is never used; membership
- * is decided by the Deployment on every request.
+ * sign in its owner and nobody else. Repository installations grant read access;
+ * Deployment membership independently controls who may sign in.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { GITHUB_APP_PERMISSIONS, type GitHubAppIdentity } from '@goondocks/myco-shared/github-app';
+import { appExtensionInstructions, IMPORT_NEXT, normalizeAppKey, proveAppKey } from './github-app-key.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isIP } from 'node:net';
@@ -54,13 +56,16 @@ export interface GitHubAppManifest {
   redirect_url: string;
   callback_urls: string[];
   public: true;
-  default_permissions: Record<string, never>;
+  default_permissions: typeof GITHUB_APP_PERMISSIONS;
+  hook_attributes: { active: false };
 }
 
-/** The credentials GitHub answers a manifest conversion with; the app's key and webhook secret are never read. */
+/** Conversion credentials; the webhook secret is discarded. */
 export interface RegisteredApp {
   clientId: string;
   clientSecret: string;
+  privateKey?: string;
+  privateKeyPem?: string;
   slug: string;
   htmlUrl: string;
   name: string;
@@ -78,6 +83,8 @@ export interface RegisterOptions {
   org?: string;
   name?: string;
   existing?: Pick<RegisteredApp, 'clientId' | 'clientSecret'>;
+  privateKeyPem?: string;
+  readPrivateKey?: () => Promise<string>;
   target: SignInTarget;
   runner?: CommandRunner;
   fetchImpl?: typeof fetch;
@@ -92,6 +99,8 @@ export interface RegisterOptions {
 export interface RegistrationResult {
   app: Pick<RegisteredApp, 'slug' | 'htmlUrl' | 'name' | 'clientId' | 'ownerLogin'>;
   callbackUrl: string;
+  repositoryAccess?: 'instructions' | 'installed';
+  signInInstalled?: true;
   verified: VerifyResult;
 }
 
@@ -118,7 +127,7 @@ function isLoopbackHost(host: string): boolean {
   return host === '[::1]' || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
 }
 
-/** The manifest GitHub receives: identity only — no permissions, no webhook, public. */
+/** Public sign-in and read-only repository access, with no webhook delivery. */
 export function manifestFor(opts: { url: string; name?: string; redirectUrl: string; machineHostname?: string }): GitHubAppManifest {
   const origin = new URL(opts.url).origin;
   return {
@@ -127,7 +136,8 @@ export function manifestFor(opts: { url: string; name?: string; redirectUrl: str
     redirect_url: opts.redirectUrl,
     callback_urls: [`${origin}/auth/callback`],
     public: true,
-    default_permissions: {},
+    default_permissions: GITHUB_APP_PERMISSIONS,
+    hook_attributes: { active: false },
   };
 }
 
@@ -183,25 +193,25 @@ export async function convertManifestCode(code: string, fetchImpl: typeof fetch 
     headers: { accept: 'application/vnd.github+json', 'content-type': 'application/json', 'x-github-api-version': '2022-11-28' },
   });
   if (res.status !== 201) throw new RegistrationRefused(`GitHub did not convert the registration (HTTP ${res.status})`);
-  const body = await res.json() as { client_id?: unknown; client_secret?: unknown; slug?: unknown; html_url?: unknown; name?: unknown; owner?: { login?: unknown } | null };
-  if (typeof body.client_id !== 'string' || typeof body.client_secret !== 'string' || typeof body.slug !== 'string' || typeof body.html_url !== 'string' || typeof body.name !== 'string') {
+  const body = await res.json().catch(() => { throw new RegistrationRefused('GitHub returned invalid registration JSON; no credentials were installed. Run myco server github-app again.'); }) as { client_id?: unknown; client_secret?: unknown; slug?: unknown; html_url?: unknown; name?: unknown; pem?: unknown; owner?: { login?: unknown } | null } | null;
+  if (body === null || typeof body !== 'object' || typeof body.client_id !== 'string' || typeof body.client_secret !== 'string' || typeof body.slug !== 'string' || typeof body.html_url !== 'string' || typeof body.name !== 'string') {
     throw new RegistrationRefused('GitHub answered the registration without the app credentials');
   }
-  return { clientId: body.client_id, clientSecret: body.client_secret, slug: body.slug, htmlUrl: body.html_url, name: body.name, ownerLogin: typeof body.owner?.login === 'string' ? body.owner.login : null };
+  return { clientId: body.client_id, clientSecret: body.client_secret, privateKeyPem: typeof body.pem === 'string' ? body.pem : undefined, slug: body.slug, htmlUrl: body.html_url, name: body.name, ownerLogin: typeof body.owner?.login === 'string' ? body.owner.login : null };
 }
 
-/** The target's own way of holding the two secrets. */
-export async function installSignInSecrets(target: SignInTarget, app: Pick<RegisteredApp, 'clientId' | 'clientSecret'>, runner?: CommandRunner): Promise<void> {
+/** Install infrastructure App credentials through the target's protected writer. */
+export async function installSignInSecrets(target: SignInTarget, app: Pick<RegisteredApp, 'clientId' | 'clientSecret' | 'privateKey'>, runner?: CommandRunner): Promise<void> {
   if (target.kind === 'local') {
     return configureLocalSignIn(target.paths, async (install) => { install(app); });
   }
   if (target.kind === 'cloudflare') {
-    await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner, mycoHome: target.mycoHome }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret });
+    await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, runner, mycoHome: target.mycoHome }, { GITHUB_CLIENT_ID: app.clientId, GITHUB_CLIENT_SECRET: app.clientSecret, ...(app.privateKey === undefined ? {} : { GITHUB_APP_PRIVATE_KEY: app.privateKey }) });
     return;
   }
 }
 
-export type VerifyResult = { ok: true } | { ok: false; reason: string; pendingStart?: true };
+export type VerifyResult = { ok: true } | { ok: false; reason: string; pendingStart?: true; notChecked?: true };
 
 /**
  * Observe the server's GitHub authorization redirect, including the expected
@@ -297,6 +307,8 @@ function readSignInPending(target: SignInTarget, url?: string): PendingSignIn | 
       || !Number.isFinite(pending.at) || !(pending.ownerLogin === null || typeof pending.ownerLogin === 'string')
       || !(pending.installed === undefined || typeof pending.installed === 'boolean')) throw new Error('invalid pending registration');
     validateCredentials(pending);
+    if (pending.privateKey !== undefined && (typeof pending.privateKey !== 'string' || !/^[A-Za-z0-9+/]+=*$/.test(pending.privateKey))) throw new Error('invalid pending App key');
+    if (pending.privateKeyPem !== undefined && typeof pending.privateKeyPem !== 'string') throw new Error('invalid pending App PEM');
     if (url !== undefined) assertPendingUrl(target, pending, url);
     return { ...pending, installed: pending.installed === true };
   } catch (error) {
@@ -355,7 +367,7 @@ function cleanPendingTemps(target: SignInTarget): void {
   const base = path.basename(file);
   let removed = false;
   for (const entry of entries) {
-    if (entry.startsWith(`${base}.`) && (entry.endsWith('.tmp') || entry.startsWith(`${base}.tmp-`))) {
+    if (entry.startsWith(`${base}.`) && (entry.endsWith('.tmp') || entry.startsWith(`${base}.tmp-`) || entry.startsWith(`${base}.key.tmp-`))) {
       fs.unlinkSync(path.join(path.dirname(file), entry));
       removed = true;
     }
@@ -385,6 +397,12 @@ async function withRegistrationLock<T>(target: SignInTarget, operation: () => Pr
 export async function discardSignInPending(target: SignInTarget, log: (line: string) => void): Promise<void> {
   return withRegistrationLock(target, async () => {
     const file = signInPendingPath(target);
+    const keyJournal = `${file}.key`;
+    if (fs.existsSync(keyJournal)) {
+      fs.unlinkSync(keyJournal);
+      syncDirectoryForDurability(path.dirname(file));
+      log('Discarded the pending App key import. Sign-in credentials were preserved. Generate a new key in GitHub and run the import again.');
+    }
     let stat: fs.Stats;
     try { stat = fs.lstatSync(file); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
@@ -448,7 +466,9 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
       const target = options.target;
       const completed = pending;
       await new LocalVolume(target.paths).reading(async () => {
-        if (readLocalSecrets(target.paths).GITHUB_CLIENT_ID === completed.clientId) {
+        const secrets = readLocalSecrets(target.paths);
+        const keySettled = completed.privateKeyPem === undefined && (completed.privateKey === undefined || secrets.GITHUB_APP_PRIVATE_KEY === completed.privateKey);
+        if (secrets.GITHUB_CLIENT_ID === completed.clientId && secrets.GITHUB_CLIENT_SECRET === completed.clientSecret && keySettled) {
           clearSignInPending(target);
           pending = null;
         }
@@ -461,16 +481,19 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
     }
     if (pending !== null || options.target.kind !== 'local') {
       const state = await signInState(options.url, options.fetchImpl);
-      if (pending !== null && state.kind === 'configured' && state.clientId !== pending.clientId && options.existing === undefined) {
-        throw pendingRefusal(options.target, `Pending sign-in registration at ${signInPendingPath(options.target)} names client ${pending.clientId}, but the server uses client ${state.clientId}. Keep the live app by discarding the pending registration, or replace it with myco server github-app --existing --target ${options.target.kind} --url ${new URL(options.url).origin} --client-id ${pending.clientId} --client-secret-stdin`);
+      if (pending === null && state.kind === 'configured' && options.existing === undefined) {
+        return extendApp(options, state.clientId, async (key) => {
+          await installHostedKey(options, key);
+        });
       }
-      if (pending?.installed && state.kind === 'configured' && state.clientId === pending.clientId && options.existing === undefined) {
+      if (pending !== null && state.kind === 'configured' && state.clientId !== pending.clientId && options.existing === undefined) {
+        throw pendingRefusal(options.target, `Pending sign-in registration at ${signInPendingPath(options.target)} names client ${pending.clientId}, but the server uses client ${state.clientId}. Keep the live app by discarding the pending registration, then import its private key with myco server github-app --target ${options.target.kind} --url ${new URL(options.url).origin} --private-key-file <downloaded.pem>`);
+      }
+      if (options.target.kind === 'cloudflare' && pending?.installed && state.kind === 'configured' && state.clientId === pending.clientId && options.existing === undefined) {
         recordSignInUrl(options);
-        const clear = () => clearSignInPending(options.target);
-        // The registration lock owns the journal; the shared lease preserves the served volume's identity.
-        if (options.target.kind === 'local') await new LocalVolume(options.target.paths).reading(async () => { clear(); });
-        else clear();
-        return registrationResult(pending, options.url, { ok: true });
+        const repositoryAccess = await finishRepositoryAccess(options, pending, (app) => installHostedKey(options, app.privateKey));
+        clearSignInPending(options.target);
+        return { ...registrationResult(pending, options.url, { ok: true }), repositoryAccess, signInInstalled: true };
       }
       if (state.kind === 'unavailable' && options.target.kind !== 'local') {
         const reason = `Could not check GitHub sign-in: ${state.reason}. Check the server and run myco server github-app again`;
@@ -479,17 +502,36 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
     }
     if (options.target.kind === 'local') {
       const result = await configureLocalSignIn(options.target.paths,
-        (install) => registerWithInstaller(options, async (app) => { install(app); }, pending), options.url);
+        async (install, current) => {
+          if (pending !== null && current.GITHUB_CLIENT_ID && current.GITHUB_CLIENT_ID !== pending.clientId && options.existing === undefined) throw pendingRefusal(options.target, 'Pending registration differs from the native Deployment’s sign-in App; discard the pending registration and import the live App’s key');
+          const { GITHUB_CLIENT_ID: clientId, GITHUB_CLIENT_SECRET: clientSecret } = current;
+          if (pending === null && clientId && clientSecret && options.existing === undefined) {
+            return extendApp(options, clientId, async (key) => {
+              install({ clientId, clientSecret, privateKey: key });
+            });
+          }
+          return registerWithInstaller(options, async (app) => { install(app); }, pending, async (app) => { install(app); });
+        }, options.url);
       const linked = existsSync(options.target.paths.databasePath) && await localOwnerLinked(options.target.paths, carriedNative());
       return { ...result, verified: { ok: false, pendingStart: true, reason: linked ? LOCAL_START_NEXT : LOCAL_OWNER_NEXT } };
     }
-    return registerWithInstaller(options, (app) => installSignInSecrets(options.target, app, options.runner), pending);
+    return registerWithInstaller(options, (app) => installSignInSecrets(options.target, app, options.runner), pending, (app) => installHostedKey(options, app.privateKey));
   });
 }
 
 const LOCAL_START_NEXT = 'start it: myco server install --target local.';
 
-async function registerWithInstaller(options: RegisterOptions, install: (app: RegisteredApp) => Promise<void>, pending: PendingSignIn | null): Promise<RegistrationResult> {
+type SignInPair = Pick<RegisteredApp, 'clientId' | 'clientSecret'>;
+type KeyInstaller = (app: SignInPair & { privateKey: string }) => Promise<void>;
+
+async function installHostedKey(options: RegisterOptions, key: string): Promise<void> {
+  const target = options.target;
+  if (target.kind !== 'cloudflare') throw new Error('hosted target required');
+  await putWorkerSecrets({ accountId: target.record.accountId, workerName: target.record.workerName, mycoHome: target.mycoHome, runner: options.runner }, { GITHUB_APP_PRIVATE_KEY: key });
+}
+
+async function registerWithInstaller(options: RegisterOptions, install: (app: SignInPair) => Promise<void>, pending: PendingSignIn | null, installKey: KeyInstaller): Promise<RegistrationResult> {
+  if (pending === null && options.existing === undefined && (options.privateKeyPem !== undefined || options.readPrivateKey !== undefined)) throw new RegistrationRefused('App key was not installed: this Deployment has no configured sign-in App. Recover sign-in first: myco server github-app --existing --target <local|cloudflare> --url <url> --client-id <id> --client-secret-stdin');
   const log = options.log ?? (() => undefined);
   const fetchImpl = options.fetchImpl ?? fetch;
   const state = randomBytes(32).toString('base64url');
@@ -498,6 +540,7 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Re
   const app = options.existing !== undefined ? {
     ...options.existing, slug: pending?.slug ?? '', htmlUrl: pending?.htmlUrl ?? 'https://github.com/settings/apps',
     name: pending?.name ?? options.name ?? 'Existing GitHub App', ownerLogin: pending?.ownerLogin ?? null,
+    privateKey: pending?.privateKey, privateKeyPem: pending?.privateKeyPem,
   } : pending ?? await new Promise<RegisteredApp>((resolve, reject) => {
     let formServed = false;
     let callbackTaken = false;
@@ -564,15 +607,15 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Re
   }
   const owner = options.existing === undefined && app.ownerLogin !== null ? `, owned by ${app.ownerLogin}` : '';
   log(`Installing ${app.name}${owner} (${app.htmlUrl}) on the server…`);
-  await install(app);
-  if (options.target.kind === 'local') clearSignInPending(options.target);
-  else persistSignInPending(options.target, app, options.url, pending?.at ?? Date.now(), true);
+  await install({ clientId: app.clientId, clientSecret: app.clientSecret });
+  persistSignInPending(options.target, app, options.url, pending?.at ?? Date.now(), true);
   recordSignInUrl(options);
   const verified: VerifyResult = options.target.kind === 'local'
     ? { ok: false, pendingStart: true, reason: LOCAL_START_NEXT }
     : await verifySignIn(options.url, app.clientId, { fetchImpl });
-  if (verified.ok) clearSignInPending(options.target);
-  return registrationResult(app, options.url, verified);
+  const repositoryAccess = await finishRepositoryAccess(options, app, installKey);
+  if (verified.ok || options.target.kind === 'local') clearSignInPending(options.target);
+  return { ...registrationResult(app, options.url, verified), repositoryAccess, signInInstalled: true };
 }
 
 function registrationResult(app: RegisteredApp, url: string, verified: VerifyResult): RegistrationResult {
@@ -590,4 +633,83 @@ function assertRegistrationOwner(options: RegisterOptions, app: RegisteredApp, p
   const reason = `GitHub answered with an app owned by ${app.ownerLogin ?? 'an unknown account'}, not ${options.org}`;
   if (pending) throw pendingRefusal(options.target, reason);
   throw new RegistrationRefused(`${reason}. Delete the unwanted app at ${app.htmlUrl}, then run myco server github-app --target ${options.target.kind} --url ${options.url} --org ${options.org} again.`);
+}
+
+async function readPrivateKey(options: RegisterOptions): Promise<string | undefined> {
+  return options.readPrivateKey === undefined ? options.privateKeyPem : options.readPrivateKey();
+}
+
+async function finishRepositoryAccess(options: RegisterOptions, app: RegisteredApp, install: KeyInstaller): Promise<'instructions' | 'installed'> {
+  const log = options.log ?? (() => undefined);
+  try {
+    const pem = await readPrivateKey(options);
+    const identity = await importAppKey({ file: `${signInPendingPath(options.target)}.key`, target: options.target.kind,
+      clientId: app.clientId, url: new URL(options.url).origin, pem,
+      converted: pem === undefined && (app.privateKey !== undefined || app.privateKeyPem !== undefined) ? app : undefined,
+      fetchImpl: options.fetchImpl ?? fetch, install: (privateKey) => install({ clientId: app.clientId, clientSecret: app.clientSecret, privateKey }) });
+    if (identity !== null) {
+      log('GitHub App key installed. Check repository access in dashboard Settings → Sign-in and access.');
+      return 'installed';
+    }
+    log('Sign-in credentials installed. Repository access still needs setup: no App private key was supplied.');
+  } catch (error) {
+    log(`Sign-in credentials installed. Repository access still needs setup. ${error instanceof Error ? error.message : 'App key setup failed.'}`);
+  }
+  log(`Next: myco server github-app --target ${options.target.kind} --url ${new URL(options.url).origin} (resume a pending key import, or add --private-key-file <downloaded.pem>).`);
+  appExtensionInstructions(log);
+  return 'instructions';
+}
+
+async function extendApp(options: RegisterOptions, clientId: string, install: (key: string) => Promise<void>): Promise<RegistrationResult> {
+  if (options.org !== undefined || options.name !== undefined) throw new RegistrationRefused('The configured App was not changed: --org and --app-name apply to a new registration. Omit them to extend repository access: myco server github-app --target <local|cloudflare> --url <url>.');
+  const log = options.log ?? (() => undefined);
+  const app = await importAppKey({ file: `${signInPendingPath(options.target)}.key`, target: options.target.kind, clientId, url: new URL(options.url).origin,
+    pem: await readPrivateKey(options), fetchImpl: options.fetchImpl ?? fetch, install });
+  if (app === null) appExtensionInstructions(log);
+  else log('GitHub App key installed. Check repository access in dashboard Settings → Sign-in and access. Sign-in credentials were preserved.');
+  return {
+    app: { clientId, slug: app?.slug ?? '', name: 'Existing GitHub App', htmlUrl: 'https://github.com/settings/apps', ownerLogin: null },
+    callbackUrl: `${new URL(options.url).origin}/auth/callback`, verified: { ok: false, notChecked: true, reason: 'Sign-in credentials were unchanged; no sign-in installation was performed.' }, repositoryAccess: app === null ? 'instructions' : 'installed',
+  };
+}
+
+interface PendingKey { clientId: string; privateKey: string; url: string }
+
+/** Owns the private import journal under the registration's target lock. */
+async function importAppKey(options: {
+  file: string; target: SignInTarget['kind']; clientId: string; url: string; pem?: string; fetchImpl: typeof fetch;
+  converted?: Pick<RegisteredApp, 'privateKey' | 'privateKeyPem'>;
+  install: (key: string) => Promise<void>;
+}): Promise<GitHubAppIdentity | null> {
+  let pending: PendingKey | null = null;
+  try {
+    const stat = fs.lstatSync(options.file);
+    if (!stat.isFile() || !isPrivateMode(stat.mode)) throw new Error('key import journal must be a private regular file');
+    const value: unknown = JSON.parse(fs.readFileSync(options.file, 'utf8'));
+    if (value === null || typeof value !== 'object') throw new Error('invalid key import journal');
+    const record = value as PendingKey;
+    if (record.clientId !== options.clientId || record.url !== options.url || typeof record.privateKey !== 'string') throw new Error('key import journal belongs to another App or origin');
+    pending = record;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`App key was not installed: cannot resume the private import journal. Restore its permissions and origin, then run ${IMPORT_NEXT}`, { cause: error });
+  }
+  if (pending !== null && options.pem !== undefined && normalizeAppKey(options.pem) !== pending.privateKey) {
+    throw new Error(`App key was not installed: a different key import is pending. Resume it without a key input first: myco server github-app --target <local|cloudflare> --url ${options.url}`);
+  }
+  const pem = options.pem ?? options.converted?.privateKeyPem;
+  const key = pending?.privateKey ?? (pem === undefined ? options.converted?.privateKey : normalizeAppKey(pem));
+  if (key === undefined) return null;
+  const persist = () => {
+    fs.mkdirSync(path.dirname(options.file), { recursive: true, mode: 0o700 });
+    atomicWriteFileSync(options.file, `${JSON.stringify({ clientId: options.clientId, url: options.url, privateKey: key })}\n`, { mode: 0o600, durable: true });
+  };
+  if (pending === null && options.converted !== undefined) persist();
+  const app = await proveAppKey(options.clientId, key, options.fetchImpl);
+  if (pending === null && options.converted === undefined) persist();
+  try { await options.install(key); } catch (error) {
+    throw new Error(`App key installation was not acknowledged; it may already be installed. The private pending import is preserved at ${options.file}. Reason: ${error instanceof Error ? error.message : 'the secret writer returned no acknowledgment'}. Next: myco server github-app --target ${options.target} --url ${options.url} (omit the key input to replay the same verified key).`, { cause: error });
+  }
+  fs.unlinkSync(options.file);
+  syncDirectoryForDurability(path.dirname(options.file));
+  return app;
 }

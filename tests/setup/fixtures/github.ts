@@ -1,11 +1,20 @@
+import { createPrivateKey, generateKeyPairSync } from 'node:crypto';
 import type { OutboundFetch } from '@myco-server-worker/core/adapters.js';
 import type { RegisteredApp } from '@myco/server/github-app.js';
 
+export const APP_RSA = generateKeyPairSync('rsa', { modulusLength: 2048 });
+export const APP_PEM = APP_RSA.privateKey.export({ type: 'pkcs1', format: 'pem' }).toString();
+export const APP_KEY = createPrivateKey(APP_PEM).export({ type: 'pkcs8', format: 'der' }).toString('base64');
+// https://docs.github.com/en/rest/apps/apps#get-the-authenticated-app
+export const APP_RESPONSE = { id: 12345, client_id: 'setup-fixture-client', slug: 'setup-fixture', permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' } };
+
 export const SETUP_APP: RegisteredApp = {
-  clientId: 'setup-fixture-client', clientSecret: 'setup-fixture-secret',
+  clientId: 'setup-fixture-client', clientSecret: 'setup-fixture-secret', privateKey: APP_KEY,
   slug: 'setup-fixture', htmlUrl: 'https://github.com/apps/setup-fixture',
   name: 'Myco (setup.invalid)', ownerLogin: 'setup-owner',
 };
+const { privateKey: _key, ...convertedApp } = SETUP_APP;
+export const CONVERTED_APP: RegisteredApp = { ...convertedApp, privateKeyPem: APP_PEM };
 export const SETUP_IDENTITIES = {
   owner: { id: 900000000001, login: 'setup-owner' },
   teammate: { id: 770001, login: 'setup-teammate' },
@@ -17,8 +26,11 @@ export function fakeGitHub() {
   const fetchImpl: OutboundFetch = async (input, init) => {
     const request = new Request(input, init);
     calls.push(request.clone());
+    if (request.url === 'https://api.github.com/app') return Response.json(APP_RESPONSE);
+    // https://docs.github.com/en/rest/apps/apps#create-a-github-app-from-a-manifest
     if (request.url === 'https://api.github.com/app-manifests/setup-conversion/conversions' && request.method === 'POST') {
       return Response.json({
+        pem: APP_PEM,
         client_id: SETUP_APP.clientId, client_secret: SETUP_APP.clientSecret,
         slug: SETUP_APP.slug, html_url: SETUP_APP.htmlUrl, name: SETUP_APP.name,
         owner: { login: SETUP_APP.ownerLogin },

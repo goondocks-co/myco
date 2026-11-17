@@ -242,6 +242,7 @@ export interface DeploymentOptions extends TrustedProxyConfig {
   SESSION_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
   /**
    * The launch this deployment binds, built from a callback origin it can only
    * read once the socket is bound. Absent, the in-process embedding runtime is bound.
@@ -347,6 +348,7 @@ export async function startDeployment(options: DeploymentOptions): Promise<Start
     SESSION_SECRET: options.SESSION_SECRET,
     GITHUB_CLIENT_ID: options.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: options.GITHUB_CLIENT_SECRET,
+    GITHUB_APP_PRIVATE_KEY: options.GITHUB_APP_PRIVATE_KEY,
   });
   boundPort = started.port;
 
@@ -434,6 +436,7 @@ export async function main(): Promise<StartedDeployment | undefined> {
     SESSION_SECRET: secretOf('SESSION_SECRET', false),
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: secretOf('GITHUB_CLIENT_SECRET', false),
+    GITHUB_APP_PRIVATE_KEY: secretOf('GITHUB_APP_PRIVATE_KEY', false),
   });
 }
 

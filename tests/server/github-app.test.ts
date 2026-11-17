@@ -5,13 +5,14 @@
  * and stdin a runner receives, the bytes on disk, the HTTP the fake GitHub
  * sees — never on a live registration.
  */
+import { APP_KEY, APP_PEM, APP_RESPONSE } from '../setup/fixtures/github.js';
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, readFileSync, statSync, writeFileSync, existsSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   convertManifestCode, installSignInSecrets, isDeploymentUrl, manifestFor, manifestFormAction, manifestPage,
-  registerGitHubApp, RegistrationRefused, resolveSignInTarget, verifySignIn,
+  registerGitHubApp, RegistrationRefused, resolveSignInTarget, verifySignIn, signInPendingPath,
 } from '@myco/server/github-app.js';
 import { deploymentRecordPath, putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
 import { systemRunner, type CommandRunner, type CommandResult, type RunOptions } from '@myco/server/runner.js';
@@ -34,13 +35,13 @@ const ACCOUNT = 'b134c2135129c4800082e677fbffb286';
 const RECORD = { accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: '2026-08-29T00:00:00Z' };
 
 describe('the manifest', () => {
-  it('asks GitHub for a public app with the Deployment callback, identity only: no permissions, no webhook', () => {
+  it('asks GitHub for a public app with the Deployment callback, read-only repository permissions and no webhook delivery', () => {
     const manifest = manifestFor({ url: `${URL_}/`, redirectUrl: 'http://127.0.0.1:4242/callback' });
     expect(manifest).toEqual({
       name: 'Myco (myco.example.co)', url: URL_, redirect_url: 'http://127.0.0.1:4242/callback',
-      callback_urls: [`${URL_}/auth/callback`], public: true, default_permissions: {},
+      callback_urls: [`${URL_}/auth/callback`], public: true, default_permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' }, hook_attributes: { active: false },
     });
-    expect('hook_attributes' in manifest).toBe(false);
+    expect(manifest.hook_attributes.active).toBe(false);
     expect(manifestFor({ url: URL_, name: 'Team sign-in', redirectUrl: 'http://127.0.0.1:1/callback' }).name).toBe('Team sign-in');
   });
 
@@ -76,13 +77,15 @@ describe('the manifest', () => {
 });
 
 /** A fake GitHub: converts one code into one app, records every request. */
-function fakeGitHub(app: Partial<{ name: string; owner: { login: string } | null }> = {}) {
+function fakeGitHub(app: Partial<{ name: string; owner: { login: string } | null; pem: string | undefined }> = {}) {
   const requests: { url: string; method: string }[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     requests.push({ url, method: init?.method ?? 'GET' });
+    if (url === 'https://api.github.com/app') return Response.json({ ...APP_RESPONSE, client_id: 'Iv1.deadbeef' });
+    // https://docs.github.com/en/rest/apps/apps#create-a-github-app-from-a-manifest
     if (/\/app-manifests\/good\/conversions$/.test(url) && init?.method === 'POST') {
-      return Response.json({ id: 1, slug: 'myco-myco-example-co', name: 'Myco (myco.example.co)', html_url: 'https://github.com/apps/myco-myco-example-co', client_id: 'Iv1.deadbeef', client_secret: 's3cr3t', webhook_secret: 'w', pem: 'p', owner: { login: 'goondocks-co' }, ...app }, { status: 201 });
+      return Response.json({ id: 1, slug: 'myco-myco-example-co', name: 'Myco (myco.example.co)', html_url: 'https://github.com/apps/myco-myco-example-co', client_id: 'Iv1.deadbeef', client_secret: 's3cr3t', webhook_secret: 'w', pem: APP_PEM, owner: { login: 'goondocks-co' }, ...app }, { status: 201 });
     }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
@@ -90,12 +93,13 @@ function fakeGitHub(app: Partial<{ name: string; owner: { login: string } | null
 }
 
 describe('the conversion', () => {
-  it('posts the code to GitHub and reads the credentials, never the key or webhook secret', async () => {
+  it('posts the code to GitHub and reads the credentials, retaining the downloaded key and discarding the webhook secret', async () => {
     const gh = fakeGitHub();
     const app = await convertManifestCode('good', gh.fetchImpl);
-    expect(app).toEqual({ clientId: 'Iv1.deadbeef', clientSecret: 's3cr3t', slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', ownerLogin: 'goondocks-co' });
+    expect(app).toEqual({ clientId: 'Iv1.deadbeef', clientSecret: 's3cr3t', privateKeyPem: APP_PEM, slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', ownerLogin: 'goondocks-co' });
     expect(gh.requests).toEqual([{ url: 'https://api.github.com/app-manifests/good/conversions', method: 'POST' }]);
     await expect(convertManifestCode('stale', gh.fetchImpl)).rejects.toThrow(RegistrationRefused);
+    expect(await convertManifestCode('good', fakeGitHub({ pem: undefined }).fetchImpl)).toMatchObject({ clientId: 'Iv1.deadbeef', clientSecret: 's3cr3t' });
   });
 });
 
@@ -186,7 +190,7 @@ describe('the whole flow on a loopback listener', () => {
     const okLocation = `https://github.com/login/oauth/authorize?client_id=Iv1.deadbeef&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}`;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url === `${URL_}/auth/login`) return new Response(null, { status: 302, headers: { location: okLocation } });
+      if (url === `${URL_}/auth/login`) return calls.some((call) => call.args.includes('bulk')) ? new Response(null, { status: 302, headers: { location: okLocation } }) : Response.json({ error: 'sign_in_unconfigured' }, { status: 401 });
       return gh.fetchImpl(input, init);
     }) as typeof fetch;
     const logs: string[] = [];
@@ -210,8 +214,8 @@ describe('the whole flow on a loopback listener', () => {
     expect(back.status).toBe(200);
     const result = await pending;
     await expect(fetch(pageUrl)).rejects.toThrow();
-    expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
-    expect(calls.map((c) => c.args.slice(0, 4))).toEqual([['--no-install', 'wrangler', '--version'], ['--no-install', 'wrangler', 'secret', 'bulk']]);
+    expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true }, signInInstalled: true, repositoryAccess: 'installed' });
+    expect(Object.assign({}, ...calls.filter(call => call.args.includes('bulk')).map(call => JSON.parse(call.options!.input!)))).toEqual({ GITHUB_CLIENT_ID: 'Iv1.deadbeef', GITHUB_CLIENT_SECRET: 's3cr3t', GITHUB_APP_PRIVATE_KEY: APP_KEY });
     for (const call of calls) expect({ args: call.args.join(' '), cwd: call.options?.cwd }).toEqual({ args: call.args.join(' '), cwd: dirname(deploymentRecordPath(home)) });
     expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);
@@ -226,7 +230,7 @@ describe('the whole flow on a loopback listener', () => {
     const okLocation = `https://github.com/login/oauth/authorize?client_id=Iv1.deadbeef&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}`;
     const withLogin = (gh: ReturnType<typeof fakeGitHub>) => (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url === `${URL_}/auth/login`) return new Response(null, { status: 302, headers: { location: okLocation } });
+      if (url === `${URL_}/auth/login`) return calls.some((call) => call.args.includes('bulk')) ? new Response(null, { status: 302, headers: { location: okLocation } }) : Response.json({ error: 'sign_in_unconfigured' }, { status: 401 });
       return gh.fetchImpl(input, init);
     }) as typeof fetch;
     const drive = async (opts: { org?: string; app: Parameters<typeof fakeGitHub>[0] }) => {
@@ -260,4 +264,47 @@ describe('the deployment record', () => {
     writeFileSync(join(home, 'server', 'cloudflare', 'record.json'), JSON.stringify(RECORD));
     expect(resolveSignInTarget('cloudflare', home)).toEqual({ kind: 'cloudflare', record: RECORD, mycoHome: home });
   });
+});
+
+
+it('extends the configured App with a proven key only, refusing wrong identity or missing reads and replaying an unacknowledged installation', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'myco-app-import-'));
+  writeDeploymentRecord(RECORD, home);
+  const target = resolveSignInTarget('cloudflare', home);
+  const journal = `${signInPendingPath(target)}.key`;
+  const installed: unknown[] = [];
+  const logs: string[] = [];
+  let response: Omit<typeof APP_RESPONSE, 'permissions'> & { permissions: Record<string, string> } = { ...APP_RESPONSE, client_id: 'live-client' };
+  let interrupted = true;
+  const fetchImpl: typeof fetch = Object.assign(async (input: RequestInfo | URL) => {
+    if (String(input) === `${URL_}/auth/login`) return new Response(null, { status: 302, headers: { location: `https://github.com/login/oauth/authorize?client_id=live-client&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}` } });
+    expect(String(input)).toBe('https://api.github.com/app');
+    return Response.json(response);
+  }, { preconnect: () => {} });
+  const commandRunner: CommandRunner = { async run(_command, args, options) {
+    if (args.includes('bulk')) {
+      expect(statSync(journal).mode & 0o777).toBe(0o600);
+      installed.push(JSON.parse(options!.input!));
+      if (interrupted) { interrupted = false; throw new Error('lost acknowledgment'); }
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  } };
+  const options = { url: URL_, target, fetchImpl, runner: commandRunner, log: (line: string) => logs.push(line), openUrl: async () => { throw new Error('must preserve existing registration'); } };
+  expect((await registerGitHubApp(options)).repositoryAccess).toBe('instructions');
+  response = { ...response, client_id: 'another-app' };
+  await expect(registerGitHubApp({ ...options, privateKeyPem: APP_PEM })).rejects.toThrow('client id');
+  response = { ...response, client_id: 'live-client', permissions: Object.fromEntries(Object.entries(response.permissions).filter(([name]) => name !== 'metadata')) };
+  await expect(registerGitHubApp({ ...options, privateKeyPem: APP_PEM })).rejects.toThrow('metadata must be read-only (currently absent)');
+  response = { ...APP_RESPONSE, client_id: 'live-client', permissions: { ...APP_RESPONSE.permissions, contents: 'write' } };
+  await expect(registerGitHubApp({ ...options, privateKeyPem: APP_PEM })).rejects.toThrow('contents must be read-only (currently write)');
+  expect(existsSync(journal)).toBe(false);
+  expect(installed).toEqual([]);
+  response = { ...APP_RESPONSE, client_id: 'live-client' };
+  await expect(registerGitHubApp({ ...options, privateKeyPem: APP_PEM })).rejects.toThrow('installation was not acknowledged');
+  expect(existsSync(journal)).toBe(true);
+  expect((await registerGitHubApp(options)).repositoryAccess).toBe('installed');
+  expect(installed).toEqual([{ GITHUB_APP_PRIVATE_KEY: APP_KEY }, { GITHUB_APP_PRIVATE_KEY: APP_KEY }]);
+  expect(existsSync(journal)).toBe(false);
+  expect((await verifySignIn(URL_, 'live-client', { fetchImpl, attempts: 1 })).ok).toBe(true);
+  for (const secret of [APP_KEY, APP_PEM]) expect(logs.join('\n')).not.toContain(secret);
 });

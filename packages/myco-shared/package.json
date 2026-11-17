@@ -46,6 +46,7 @@
       "import": "./dist/run-holds.js",
       "types": "./dist/run-holds.d.ts"
     },
+    "./github-app": { "import": "./dist/github-app.js", "types": "./dist/github-app.d.ts" },
     "./repository": {
       "import": "./dist/repository.js",
       "types": "./dist/repository.d.ts"

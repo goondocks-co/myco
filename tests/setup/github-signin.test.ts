@@ -12,9 +12,10 @@ import { readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudf
 import { createLocalDeployment, DEFAULT_LOCAL_RECORD, readLocalSecrets, resolveLocalPaths, writeLocalSecrets } from '@myco/server/local.js';
 import { LocalVolume, volumeIdentity } from '@myco/server/local-volume.js';
 import { createBunHandler, type BunHandler } from '@myco-server-worker/entry/bun.js';
+import { SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
 import type { CommandRunner } from '@myco/server/runner.js';
-import { fakeGitHub, SETUP_APP } from './fixtures/github.js';
+import { APP_PEM, fakeGitHub, SETUP_APP } from './fixtures/github.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { convertedBeforeInstall } from './fixtures/interrupted-state.js';
@@ -75,7 +76,7 @@ describe('sign-in observations', () => {
     expect(await signInState(URL_, fetchImpl)).toMatchObject({ kind: 'unavailable', reason: expect.stringContaining(fix) });
     const f = hosted();
     await expect(registerGitHubApp({ ...f.options, fetchImpl })).rejects.toThrow(fix);
-    expect(f.github.calls).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
     expect(f.installs).toHaveLength(0);
     expect(fs.existsSync(signInPendingPath(f.options.target))).toBe(false);
   });
@@ -112,17 +113,17 @@ function hosted() {
   writeDeploymentRecord(record, home);
   const target: SignInTarget = { kind: 'cloudflare', record, mycoHome: home };
   const github = fakeGitHub();
-  const installs: unknown[] = [];
+  const installs: Record<string, string>[] = [];
   let installed = false;
   let liveClient = SETUP_APP.clientId;
   let interrupt: 'before-install' | 'after-install' | null = null;
   const runner: CommandRunner = { async run(_command, args, options) {
     if (args.includes('bulk')) {
-      expect(fs.statSync(signInPendingPath(target)).mode & 0o777).toBe(0o600);
-      if (interrupt === 'before-install') { interrupt = null; throw new Error('interrupted before install'); }
       const values = JSON.parse(options!.input!);
+      expect(fs.statSync(`${signInPendingPath(target)}${values.GITHUB_CLIENT_ID === undefined ? '.key' : ''}`).mode & 0o777).toBe(0o600);
+      if (interrupt === 'before-install') { interrupt = null; throw new Error('interrupted before install'); }
       installs.push(values);
-      liveClient = values.GITHUB_CLIENT_ID;
+      if (values.GITHUB_CLIENT_ID !== undefined) liveClient = values.GITHUB_CLIENT_ID;
       installed = true;
       if (interrupt === 'after-install') { interrupt = null; throw new Error('interrupted after install'); }
     } else expect(args).toEqual(['--no-install', 'wrangler', '--version']);
@@ -152,11 +153,11 @@ describe('durable registration recovery', () => {
     if (step !== 'conversion') f.interruptAt(step);
     await expect(registerThroughBrowser({ ...f.options, log: step === 'conversion' ? (line) => { if (line.startsWith('Installing ')) throw new Error('interrupted after conversion'); } : undefined })).rejects.toThrow(/interrupted|installation did not finish/);
     const file = signInPendingPath(f.options.target);
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ ...SETUP_APP, url: URL_ });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ clientId: SETUP_APP.clientId, clientSecret: SETUP_APP.clientSecret, url: URL_ });
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect((await registerGitHubApp(f.options)).verified).toEqual({ ok: true });
-    expect(f.installs).toEqual(Array.from({ length: step === 'after-install' ? 2 : 1 }, () => ({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret })));
-    expect(f.github.calls).toHaveLength(1);
+    expect(Object.assign({}, ...f.installs)).toEqual({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret, GITHUB_APP_PRIVATE_KEY: SETUP_APP.privateKey });
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(1);
     expect(fs.existsSync(file)).toBe(false);
   });
 
@@ -168,7 +169,7 @@ describe('durable registration recovery', () => {
     await expect(registerGitHubApp({ ...f.options, url: 'https://other.invalid' })).rejects.toThrow(file);
     await expect(registerGitHubApp({ ...f.options, url: 'https://other.invalid' })).rejects.toThrow('--discard-pending');
     expect(fs.readFileSync(file)).toEqual(before);
-    expect(f.github.calls).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
     expect(f.installs).toHaveLength(0);
   });
 
@@ -188,19 +189,19 @@ describe('durable registration recovery', () => {
     expect(f.installs).toHaveLength(0);
   });
 
-  it('refuses a pending app over a different live client and permits explicit existing-app replacement', async () => {
+  it('preserves a different live sign-in App and permits explicit existing-app replacement', async () => {
     const f = hosted();
     await writeSignInPending(f.options.target, SETUP_APP, URL_);
     const file = signInPendingPath(f.options.target);
     const before = fs.readFileSync(file);
     f.alreadyConfigured('different-live-client');
     const result = await registerGitHubApp(f.options).then(() => null, (error: Error) => error.message);
-    for (const detail of [file, SETUP_APP.clientId, 'different-live-client', '--discard-pending', '--existing']) expect(result).toContain(detail);
+    for (const detail of [file, SETUP_APP.clientId, 'different-live-client', '--discard-pending', '--private-key-file']) expect(result).toContain(detail);
     expect(f.installs).toHaveLength(0);
-    expect(f.github.calls).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
     expect(fs.readFileSync(file)).toEqual(before);
     expect((await registerGitHubApp({ ...f.options, existing: SETUP_APP })).verified.ok).toBe(true);
-    expect(f.installs).toHaveLength(1);
+    expect(Object.assign({}, ...f.installs)).toMatchObject({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret });
   });
 
   it('names discard as the way out of a pending organization mismatch', async () => {
@@ -279,14 +280,14 @@ describe('durable registration recovery', () => {
     expect(f.installs).toHaveLength(0);
   });
 
-  it('cleans both pending tempfile formats on the next run and preserves neighboring files', async () => {
+  it('discards sign-in and key journal tempfiles and preserves neighboring files', async () => {
     const f = hosted();
     const file = signInPendingPath(f.options.target);
-    const strays = [`${file}.123.abc123.tmp`, `${file}.tmp-123-deadbeef`];
+    const strays = [`${file}.123.abc123.tmp`, `${file}.tmp-123-deadbeef`, `${file}.key.tmp-123-deadbeef`];
     for (const stray of strays) fs.writeFileSync(stray, SETUP_APP.clientSecret, { mode: 0o600 });
     const neighbor = path.join(path.dirname(file), 'other.tmp');
     fs.writeFileSync(neighbor, 'keep');
-    await registerGitHubApp({ ...f.options, existing: SETUP_APP });
+    await discardSignInPending(f.options.target, () => {});
     for (const stray of strays) expect(fs.existsSync(stray)).toBe(false);
     expect(fs.readFileSync(neighbor, 'utf8')).toBe('keep');
   });
@@ -295,8 +296,8 @@ describe('durable registration recovery', () => {
     const f = hosted();
     const result = await registerGitHubApp({ ...f.options, existing: SETUP_APP });
     expect(result.verified).toEqual({ ok: true });
-    expect(f.github.calls).toHaveLength(0);
-    expect(f.installs).toHaveLength(1);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
+    expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
     expect(fs.existsSync(signInPendingPath(f.options.target))).toBe(false);
   });
 
@@ -306,18 +307,37 @@ describe('durable registration recovery', () => {
     await expect(registerGitHubApp({ ...f.options, existing: SETUP_APP })).rejects.toThrow(/interrupted|installation did not finish/);
     await expect(registerGitHubApp({ ...f.options, existing: { clientId: 'another', clientSecret: 'regenerated' } })).rejects.toThrow(/different client id/);
     expect((await registerGitHubApp(f.options)).verified.ok).toBe(true);
-    expect(f.github.calls).toHaveLength(0);
-    expect(f.installs).toHaveLength(1);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
+    expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
   });
 
-  it('replays a regenerated secret even when the old secret still produces the same client-id redirect', async () => {
+  it('guides extension of a configured App without replacing the sign-in credentials', async () => {
     const f = hosted();
     f.alreadyConfigured();
-    f.interruptAt('before-install');
-    await expect(registerGitHubApp({ ...f.options, existing: SETUP_APP })).rejects.toThrow(/installation did not finish/);
-    expect(JSON.parse(fs.readFileSync(signInPendingPath(f.options.target), 'utf8')).installed).toBe(false);
-    expect((await registerGitHubApp(f.options)).verified.ok).toBe(true);
-    expect(f.installs).toEqual([{ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret }]);
+    const logs: string[] = [];
+    const result = await registerGitHubApp({ ...f.options, log: (line) => logs.push(line) });
+    expect(result.repositoryAccess).toBe('instructions');
+    expect(logs.join('\n')).toContain('--private-key-file');
+    expect(f.installs).toHaveLength(0);
+    expect(result.verified).toMatchObject({ ok: false, notChecked: true });
+    await expect(registerGitHubApp({ ...f.options, name: 'Ignored name' })).rejects.toThrow('--app-name');
+  });
+
+
+  it('installs sign-in before App verification and replays its separate key journal after GitHub recovers', async () => {
+    const f = hosted();
+    const logs: string[] = [];
+    const fetchImpl: typeof fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === 'https://api.github.com/app') throw new TypeError('GitHub unreachable');
+      return f.options.fetchImpl!(input, init);
+    }, { preconnect: () => {} });
+    expect((await registerThroughBrowser({ ...f.options, fetchImpl, log: line => logs.push(line) })).verified.ok).toBe(true);
+    expect(Object.assign({}, ...f.installs)).toEqual({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret });
+    expect(logs.join('\n')).toContain('Repository access still needs setup');
+    expect(logs.join('\n')).toContain('--private-key-file');
+    expect(fs.existsSync(signInPendingPath(f.options.target))).toBe(false);
+    expect((await registerGitHubApp(f.options)).repositoryAccess).toBe('installed');
+    expect(Object.assign({}, ...f.installs)).toMatchObject({ GITHUB_APP_PRIVATE_KEY: SETUP_APP.privateKey });
   });
 
   it('reconciles the target URL before clearing an installed, configured pending app', async () => {
@@ -334,11 +354,13 @@ describe('durable registration recovery', () => {
       await expect(registerThroughBrowser({ ...f.options, fetchImpl })).rejects.toThrow(/EACCES/);
     } finally { fs.chmodSync(parent, 0o700); }
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).installed).toBe(true);
+    const { privateKey: _key, privateKeyPem: _pem, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify(legacy));
     f.options.target.record.url = 'https://old.invalid';
     writeDeploymentRecord(f.options.target.record, f.options.target.mycoHome);
     expect((await registerGitHubApp(f.options)).verified.ok).toBe(true);
     expect(readDeploymentRecord(f.options.target.mycoHome)?.url).toBe(URL_);
-    expect(f.installs).toHaveLength(1);
+    expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
     expect(fs.existsSync(file)).toBe(false);
   });
 
@@ -354,10 +376,10 @@ describe('durable registration recovery', () => {
       return f.options.fetchImpl!(input, init);
     }, { preconnect: () => {} });
     expect((await registerThroughBrowser({ ...f.options, fetchImpl, timeoutMs: 200 })).verified.ok).toBe(true);
-    expect(f.github.calls).toHaveLength(1);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(1);
   });
 
-  it('leaves no native journal after durable installation and opens GitHub for a second native registration', async () => {
+  it('leaves no native journal after durable installation and extends the same native App', async () => {
     const paths = resolveLocalPaths(fresh());
     const url = 'http://127.0.0.1:18806';
     createLocalDeployment({ ...DEFAULT_LOCAL_RECORD, port: 18806 }, { library: null, vec0: null }, paths);
@@ -367,37 +389,42 @@ describe('durable registration recovery', () => {
     expect((await registerThroughBrowser(options)).verified).toMatchObject({ pendingStart: true });
     expect(fs.existsSync(signInPendingPath(target))).toBe(false);
     expect(readLocalSecrets(paths).GITHUB_CLIENT_ID).toBe(SETUP_APP.clientId);
-    expect((await registerThroughBrowser({ ...options, name: 'myco Whisker Engineering' })).verified).toMatchObject({ pendingStart: true });
-    expect(github.calls).toHaveLength(2);
-    expect(github.calls.every((call) => call.url.endsWith('/conversions'))).toBe(true);
+    expect((await registerThroughBrowser(options)).verified).toMatchObject({ pendingStart: true });
+    expect(github.calls.filter((call) => call.url.endsWith('/conversions'))).toHaveLength(1);
+    expect(readLocalSecrets(paths).GITHUB_APP_PRIVATE_KEY).toBe(SETUP_APP.privateKey);
+    const before = readLocalSecrets(paths);
+    await registerGitHubApp({ ...options, privateKeyPem: APP_PEM });
+    expect(readLocalSecrets(paths)).toEqual(before);
+    await registerGitHubApp({ ...options, existing: { clientId: SETUP_APP.clientId, clientSecret: 'rotated-native-secret' } });
+    expect(readLocalSecrets(paths)).toEqual({ ...before, GITHUB_CLIENT_SECRET: 'rotated-native-secret' });
     expect(fs.existsSync(signInPendingPath(target))).toBe(false);
   });
 
-  it('clears a completed native journal matching secrets.env before a fresh registration, even at an old URL', async () => {
+  it('clears a completed native journal matching the installed credentials even at an old URL', async () => {
     const paths = resolveLocalPaths(fresh());
     const url = 'http://127.0.0.1:18806';
     createLocalDeployment({ ...DEFAULT_LOCAL_RECORD, port: 18806 }, { library: null, vec0: null }, paths);
-    writeLocalSecrets({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret }, paths);
+    writeLocalSecrets({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret, GITHUB_APP_PRIVATE_KEY: SETUP_APP.privateKey }, paths);
     const target: SignInTarget = { kind: 'local', paths };
     const record = await writeSignInPending(target, SETUP_APP, 'https://old.invalid');
     atomicWriteFileSync(signInPendingPath(target), JSON.stringify({ ...record, installed: true }), { mode: 0o600, durable: true });
     const github = fakeGitHub();
-    await registerThroughBrowser({ url, target, fetchImpl: github.registrationFetch, name: 'Myco Renamed', timeoutMs: 1000 });
-    expect(github.calls).toHaveLength(1);
+    await registerThroughBrowser({ url, target, fetchImpl: github.registrationFetch, timeoutMs: 1000 });
+    expect(github.calls).toHaveLength(0);
     expect(fs.existsSync(signInPendingPath(target))).toBe(false);
   });
 
-  it('clears an installed native journal matching the live client without reinstalling it', async () => {
+  it('replays an installed native journal when the actual key is absent', async () => {
     const paths = resolveLocalPaths(fresh());
     const url = 'http://127.0.0.1:18806';
     createLocalDeployment({ ...DEFAULT_LOCAL_RECORD, port: 18806 }, { library: null, vec0: null }, paths);
     const target: SignInTarget = { kind: 'local', paths };
     const record = await writeSignInPending(target, SETUP_APP, url);
     atomicWriteFileSync(signInPendingPath(target), JSON.stringify({ ...record, installed: true }), { mode: 0o600, durable: true });
-    const result = await registerGitHubApp({ url, target, fetchImpl: responseFetch(() => redirect(SETUP_APP.clientId, `${url}/auth/callback`)),
+    const result = await registerGitHubApp({ url, target, fetchImpl: fakeGitHub().registrationFetch,
       openUrl: async () => { throw new Error('must not register again'); }, timeoutMs: 1000 });
-    expect(result.verified.ok).toBe(true);
-    expect(readLocalSecrets(paths).GITHUB_CLIENT_ID).toBeUndefined();
+    expect(result.verified).toMatchObject({ pendingStart: true });
+    expect(readLocalSecrets(paths).GITHUB_APP_PRIVATE_KEY).toBe(SETUP_APP.privateKey);
     expect(fs.existsSync(signInPendingPath(target))).toBe(false);
   });
 
@@ -409,9 +436,9 @@ describe('durable registration recovery', () => {
     const github = fakeGitHub();
     const artifact = await convertedBeforeInstall(home, github.registrationFetch, url);
     const target: SignInTarget = { kind: 'local', paths };
-    const options: RegisterOptions = { url, target, fetchImpl: responseFetch(() => { throw new TypeError('stopped'); }), openUrl: async () => { throw new Error('must not register again'); } };
+    const options: RegisterOptions = { url, target, fetchImpl: github.registrationFetch, openUrl: async () => { throw new Error('must not register again'); } };
     expect((await registerGitHubApp(options)).verified).toMatchObject({ pendingStart: true });
-    expect(readLocalSecrets(paths)).toMatchObject({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret });
+    expect(readLocalSecrets(paths)).toMatchObject({ GITHUB_CLIENT_ID: SETUP_APP.clientId, GITHUB_CLIENT_SECRET: SETUP_APP.clientSecret, GITHUB_APP_PRIVATE_KEY: SETUP_APP.privateKey });
     expect(fs.existsSync(artifact.file)).toBe(false);
     const secrets = readLocalSecrets(paths);
     const handler = await createBunHandler({ databasePath: paths.databasePath, blobDir: path.join(paths.root, 'blobs'), header: 'x-forwarded-for', wakeLoop: false,
@@ -431,7 +458,7 @@ describe('durable registration recovery', () => {
         headers: { 'x-forwarded-for': '192.0.2.1', cookie: `${OAUTH_STATE_COOKIE}=${state}` },
       }));
       expect(callback.status).toBe(302);
-      expect(github.calls.map((call) => call.url)).toEqual(['https://api.github.com/app-manifests/setup-conversion/conversions', 'https://github.com/login/oauth/access_token', 'https://api.github.com/user']);
+      expect(callback.headers.get('set-cookie')).toContain(`${SESSION_COOKIE}=`);
     } finally { await serving.stop(); }
   });
 });
@@ -447,7 +474,7 @@ describe('GitHub App names', () => {
     expect(f.installs).toHaveLength(0);
     expect(fs.existsSync(signInPendingPath(f.options.target))).toBe(false);
     expect((await registerThroughBrowser({ ...f.options, name: 'myco Whisker Engineering' })).verified.ok).toBe(true);
-    expect(f.installs).toHaveLength(1);
+    expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
   });
   it('keeps a short host, shortens long hosts deterministically and distinguishes first-label collisions', () => {
     expect(defaultAppName('https://myco.example.com')).toBe('Myco (myco.example.com)');
@@ -472,7 +499,7 @@ describe('GitHub App names', () => {
     const f = hosted();
     for (const name of ['', 'x'.repeat(APP_NAME_MAX + 1)]) await expect(registerGitHubApp({ ...f.options, name })).rejects.toThrow(/--name/);
     for (const clientSecret of ['', 'bad\nsecret']) await expect(registerGitHubApp({ ...f.options, existing: { clientId: 'id', clientSecret } })).rejects.toThrow(/single-line/);
-    expect(f.github.calls).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
     expect(f.installs).toHaveLength(0);
   });
 });

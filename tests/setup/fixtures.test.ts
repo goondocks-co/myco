@@ -21,7 +21,7 @@ import { legacyFixtureHome, LEGACY_PROJECT_IDS } from './fixtures/legacy-home.js
 import { seedMisleadingHistory } from './fixtures/misleading-history.js';
 import { interruptOnce, refuseImportAfter, SETUP_INTERRUPTION_POINTS, SetupInterrupted } from './fixtures/interruption.js';
 import { convertedBeforeInstall, createdBeforeSignIn, enrolledBeforeInstall, expiredOwnerLink, timedOutApproval } from './fixtures/interrupted-state.js';
-import { fakeGitHub, SETUP_APP } from './fixtures/github.js';
+import { CONVERTED_APP, fakeGitHub } from './fixtures/github.js';
 import { cutoverAfterFirstProject } from './fixtures/cutover.js';
 
 const NOW = Date.UTC(2026, 9, 10);
@@ -103,7 +103,7 @@ describe('persisted setup interruption fixtures', () => {
     const stop = interruptOnce('after-github-conversion-before-install');
     const artifact = await convertedBeforeInstall(fresh(), github.registrationFetch);
     expect(() => stop.checkpoint('after-github-conversion-before-install')).toThrow(SetupInterrupted);
-    expect(JSON.parse(fs.readFileSync(artifact.file, 'utf8'))).toMatchObject({ ...SETUP_APP, url: 'https://setup.invalid' });
+    expect(JSON.parse(fs.readFileSync(artifact.file, 'utf8'))).toMatchObject({ ...CONVERTED_APP, url: 'https://setup.invalid' });
     expect(fs.statSync(artifact.file).mode & 0o777).toBe(0o600);
     expect(github.calls).toHaveLength(1);
   });

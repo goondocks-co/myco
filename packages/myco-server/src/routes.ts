@@ -14,6 +14,7 @@ import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, han
 import type { RawAction, RawResource } from './core/raw-resources.js';
 import { handleProcessedBody } from './api/processed.js';
 import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
+import { handleGitHubApp } from './api/github-app.js';
 import { handleRepository, handleSaveRepository, handleRemoveRepository } from './api/repositories.js';
 import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
@@ -336,6 +337,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/runs/finished', auth: 'session', authority: 'member', handler: handleFinishedRuns },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/presence', auth: 'session', authority: 'member', handler: handlePresence },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/github-app', auth: 'session', authority: 'admin', handler: handleGitHubApp },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PUT', path: '/api/settings/{leaf}', pattern: /^\/api\/settings\/(?<leaf>[A-Za-z0-9._-]{1,96})$/, auth: 'session', authority: 'admin', handler: handleSetSetting },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/settings/agent.tasks/repair', auth: 'session', authority: 'admin', handler: handleRepairTaskDocument },

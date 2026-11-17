@@ -160,10 +160,11 @@ export type BlobFailureClassifier = (message: string) => BlobStoreFailure | null
 // The environment the core runs against
 // ---------------------------------------------------------------------------
 
-/** Sign-in material, supplied at deploy. Absent, no human route answers; who may enter is a membership question. */
+/** Infrastructure credentials for GitHub sign-in, App signing and dashboard sessions. */
 export interface OwnerBindings {
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
   SESSION_SECRET?: string;
 }
 
