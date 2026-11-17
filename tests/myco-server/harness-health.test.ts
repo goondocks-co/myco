@@ -1,3 +1,7 @@
+import { schemaSqlite } from './helpers/schema-template.js';
+import { sqliteD1 } from './helpers/d1.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { NEXT_ATTENTION } from '@myco-server-worker/db/schema-vNEXT-attention.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
@@ -14,6 +18,7 @@ import {
   parseProvisionedHarnessReport,
   recordProvisionedHarnessReport,
   provisionedHarnessHealth,
+  provisionedHarnessAttention,
 } from '@myco-server-worker/core/harness-health.js';
 import { latestHarnessCapture } from '@myco-server-worker/db/runners/harness-health.js';
 import { readAttention, type AttentionItem } from '@myco-server-worker/core/attention.js';
@@ -38,8 +43,8 @@ async function rig(onSql?: (sql: string) => void) {
   const attention = async (now = NOW) => (await readAttention(fixture.serverEnv, now)).items
     .filter((item): item is Extract<AttentionItem, { kind: 'harness_needs_repair' | 'harness_capture_silent' }> => item.kind === 'harness_needs_repair' || item.kind === 'harness_capture_silent');
   const session = (machine: string, id: string, agent: string, at: number, channel: 'cli' | 'import' = 'cli', createdAt = at) => {
-    fixture.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, last_live_received_at)
-      VALUES ('proj_1', ?, ?, 'mt_test', ?, ?, ?, ?)`, [id, machine, at, at, agent, channel === 'import' ? null : at]);
+    fixture.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, last_live_received_at,last_trust_start_at)
+      VALUES ('proj_1', ?, ?, 'mt_test', ?, ?, ?, ?,?)`, [id, machine, at, at, agent, channel === 'import' ? null : at,channel === 'import' ? null : Math.min(at,createdAt)]);
     fixture.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
       VALUES ('proj_1', ?, ?, 'mt_test', 'session.start', ?, '{}', 'test', ?, ?)`, [`event_${id}`, id, channel, createdAt, at]);
   };
@@ -47,18 +52,6 @@ async function rig(onSql?: (sql: string) => void) {
 }
 
 describe('provisioned harness health', () => {
-  it('does not read capture history for healthy reports without a prior trust hold', async () => {
-    const sql: string[] = [];
-    const r = await rig((statement) => sql.push(statement));
-    sql.length = 0;
-    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW);
-    sql.length = 0;
-    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Approve Codex in system settings.')] }, NOW + 1);
-    sql.length = 0;
-    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW + 2);
-    expect(sql.some((statement) => statement.includes('JOIN events'))).toBe(true);
-  });
-
   it('advertises the additive report and accepts a machine-bound snapshot with one action for each broken harness', async () => {
     const r = await rig();
     expect(SERVER_FEATURES).toContain(HARNESS_HEALTH_FEATURE);
@@ -116,6 +109,27 @@ describe('provisioned harness health', () => {
     expect(await r.attention()).toEqual([]);
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [settled] }, NOW);
     expect(await r.attention()).toEqual([]);
+  });
+
+  it('confirms trust from fresh captured starts independently of report commit order', async () => {
+    const r = await rig();
+    const now = Date.now();
+    r.session('machine_1', 'running', 'codex', now - 2_000);
+    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Trust Codex.')] }, now - 1_000);
+    const prompt = await worker.fetch(memberPost(r.token1, envelope({ sessionId: 'running', createdAt: now })), r.fixture.env);
+    expect(await prompt.json()).toMatchObject({ persisted: true });
+    expect((await r.attention(now)).map(item => item.kind)).toEqual(['harness_needs_repair']);
+    const start = await worker.fetch(memberPost(r.token1, envelope({ eventId: uuid(200), sessionId: 'new-start', kind: 'session.start', createdAt: now, payload: { agent: 'codex' } })), r.fixture.env);
+    expect(await start.json()).toMatchObject({ persisted: true });
+    expect(await r.attention(now)).toEqual([]);
+    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, Date.now());
+    await Bun.sleep(2);
+    const reportReceivedAt = Date.now();
+    await Bun.sleep(2);
+    const overlap = await worker.fetch(memberPost(r.token1, envelope({ eventId: uuid(201), sessionId: 'overlap', kind: 'session.start', createdAt: Date.now(), payload: { agent: 'codex' } })), r.fixture.env);
+    expect(await overlap.json()).toMatchObject({ persisted: true });
+    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Trust Codex.')] }, reportReceivedAt);
+    expect(await r.attention(Date.now())).toEqual([]);
   });
 
   it('does not treat an imported transcript as proof that a newly changed hook ran', async () => {
@@ -218,13 +232,12 @@ describe('provisioned harness health', () => {
     expect(await r.attention()).toEqual([expect.objectContaining({ kind: 'harness_capture_silent', harness: 'codex', lastCapturedAt: ancientCapture })]);
   });
 
-  it('indexes recent live capture by machine and harness without reading the event log for Health', async () => {
-    const sql: string[] = [];
-    const r = await rig((statement) => sql.push(statement));
+  it('retains live capture at zero when an imported receipt is newer', async () => {
+    const r = await rig();
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW - 2 * HOUR);
-    r.session('machine_1', 'live_codex', 'codex', NOW - HOUR);
+    r.session('machine_1', 'live_codex', 'codex', 0);
     r.session('machine_1', 'imported_codex', 'codex', NOW, 'import');
-    expect(await latestHarnessCapture(r.fixture.db)).toEqual([{ machine_id: 'machine_1', agent: 'codex', at: NOW - HOUR }]);
+    expect(await latestHarnessCapture(r.fixture.db)).toEqual([{ machine_id: 'machine_1', agent: 'codex', at: 0 }]);
   });
 
   it('reads harness facts once per Health answer and marks both rules unavailable if that read fails', async () => {
@@ -319,4 +332,23 @@ it('keeps a confirmed repair generation confirmed across later activity reports 
   expect(await r.attention()).toEqual([]);
   await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [{ ...held, hookRepairAt: NOW + 1 }] }, NOW + 1);
   expect(await r.attention(NOW + 1)).toEqual([expect.objectContaining({ kind: 'harness_needs_repair', state: 'trust_required', since: NOW + 1 })]);
+});
+
+it('an upgrade retains live trust evidence when an imported session owns the newer receipt', async () => {
+  const sqlite = schemaSqlite({ through: NEXT_ATTENTION - 1 });
+  const db = sqliteD1(sqlite);
+  try {
+    sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('p','Project',1)");
+    sqlite.run("INSERT INTO members(id,label,created_at) VALUES('member','Reader',1)");
+    sqlite.run("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)");
+    await recordProvisionedHarnessReport(db, 'machine', { harnesses: [fact('codex', 'trust_required', 'Trust Codex.')] }, 100_000);
+    sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,agent,first_received_at,last_received_at,last_live_received_at)
+      VALUES('p','live','machine','token','codex',250000,250000,250000),('p','imported','machine','token','codex',300000,300000,NULL)`);
+    sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      VALUES('p','live-start','live','token','session.start','cli','{}','hash',200000,250000),
+      ('p','imported-start','imported','token','session.start','import','{}','hash',300000,300000)`);
+    for (const step of SCHEMA_STEPS.filter(step => step.version >= NEXT_ATTENTION)) for (const sql of step.statements) sqlite.exec(sql);
+    expect(await provisionedHarnessAttention(db, 300_000)).toEqual([]);
+    expect(await latestHarnessCapture(db)).toEqual([{ machine_id: 'machine', agent: 'codex', at: 250_000 }]);
+  } finally { sqlite.close(); }
 });

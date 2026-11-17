@@ -38,7 +38,7 @@ async function migratedD1(binding: 'DB_COST' | 'DB_LAUNCH' | 'DB_PARENT') {
 
 it('upgrades populated v95 sessions to a nullable launch parent, clears deleted sessions\' own parents and indexes both parent columns on native and D1', async () => {
   const native = new Database(':memory:');
-  const fresh = schemaSqlite();
+  const fresh = schemaSqlite({ through: 96 });
   try {
     expect(SERVER_SCHEMA_VERSION).toBeGreaterThanOrEqual(96);
     const d1 = await mf.getD1Database('DB_UPGRADE');

@@ -1,3 +1,8 @@
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { recordProvisionedHarnessReport } from '@myco-server-worker/core/harness-health.js';
+import { ownerCookie, OWNER_ENV } from './helpers/owner.js';
+import { issueMemberToken } from './helpers/member-token.js';
+import { AUTOMATIC_HEADER } from '@goondocks/myco-shared/live-marks';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -212,3 +217,68 @@ it('D1 capture writes cost the same as the Deployment\'s history grows, in the c
     warm: true,
   }));
 }, 300_000);
+
+/** Poll cost excludes old sessions, events and terminal runs outside the attention window. */
+it('D1 dashboard polls keep the same cost with twenty thousand and one hundred thousand retained events', async () => {
+  const now = 1_800_000_000_000;
+  const old = now - 90 * 86_400_000;
+  const maxPollRows = 2_000;
+  let cookie = '';
+  const paths = [
+    '/api/attention', '/api/work/now', '/api/status', '/api/settings', '/api/embedding/switch', '/api/kpis?window=30',
+    '/api/backups/restores/poll-restore', '/api/projects/poll/release-provenance', '/api/projects/poll/runs/poll-live',
+    `/api/sessions?limit=50&project=poll&state=open&window=activity&since=${now - 3_600_000}`,
+    '/api/maintenance', '/api/machines/poll-machine/settings',
+  ];
+  const server = createServer({ now: () => now, sourceOf: () => '192.0.2.1', fetchImpl: () => { throw new Error('unexpected outbound request'); } });
+  const blobs = memoryBlobStore();
+  const costs = await d1TwoScale({
+    sizes: [2_000, 10_000],
+    setup: async db => {
+      await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('poll','Polling',1)").run();
+      await db.prepare("INSERT INTO members(id,label,created_at,role,github_id) VALUES('poll-member','Reader',1,'admin','42')").run();
+      await db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('poll-machine','poll-member',1)").run();
+      const credential = await issueMemberToken(db, { memberId: 'poll-member', machineId: 'poll-machine' }, now);
+      await recordProvisionedHarnessReport(db, 'poll-machine', { harnesses: [{ id: 'codex', provisioned: true, state: 'trust_required', action: 'Trust Codex.' }] }, old - 1);
+      const start = await planEventWrite(db, { projectId: 'poll', machineId: 'poll-machine', tokenId: credential.tokenId, now, bodyBytes: 1 }, {
+        eventId: uuid(900), sessionId: 'poll-session', kind: 'session.start', createdAt: now, channel: 'cli',
+        producer: { adapter: 'codex', version: '1' }, payload: { agent: 'codex' },
+      });
+      if (!start.ok) throw new Error(JSON.stringify(start));
+      expect(start.write.interpret(await commit(db, ...start.write.statements))).toMatchObject({ persisted: true });
+      await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('poll-agent','Agent','built-in',1,1)").run();
+      await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('poll','poll-live','poll-agent','title-summary','running',?1)`).bind(now).run();
+      await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,origin,held_by,run_context)
+        VALUES('poll','poll-budget','poll-agent','extract-curate','queued',?1,'automatic','budget','{"budgetEstimateUsd":1,"budgetQuotedAt":1}')`).bind(now).run();
+      await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,error_code)
+        VALUES('poll','poll-audit','poll-agent','extract-curate','failed',?1,?1,'report_without_audit')`).bind(now - 10).run();
+      await db.prepare(`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at) VALUES('poll','poll-audit','poll-attempt','worker',?1)`).bind(now - 10).run();
+      await db.prepare(`INSERT INTO restore_jobs(id,artifact_sha256,upload_key,upload_size,requested_by,adopt_lineage,cursor,rows_total,outcome,accepted_at,updated_at)
+        VALUES('poll-restore','digest','uploads/poll',1,'poll-member',0,'{}',1,'{}',?1,?1)`).bind(now).run();
+      cookie = await ownerCookie(db, now, '42');
+    },
+    grow: async (db, from, to) => {
+      await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,last_live_received_at)
+        SELECT 'poll',printf('history-%06d',i),'poll-machine','old',?3,?3,'codex',?3 FROM n`, old);
+      for (let part = 0; part < 10; part++) await eachUnit(db, from, to, `INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+        SELECT 'poll',printf('history-${part}-%06d',i),printf('history-%06d',i),'old','${part === 0 ? 'session.start' : 'notification'}','cli','{}','hash',?3,?3 FROM n`, old);
+      await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at)
+        SELECT 'poll',printf('history-%06d',i),'poll-agent','extract-curate','completed',?3,?3 FROM n`, old);
+    },
+    cases: paths.map(path => ({ name: path, run: async db => {
+      const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter(), ...OWNER_ENV });
+      const response = await server.handleRequest(new Request(`https://s${path}`, { headers: { cookie, accept: 'application/json', [AUTOMATIC_HEADER]: '1' } }), env);
+      expect(response.status, path).toBe(200);
+      const answer = await response.json() as { unavailable?: unknown[]; items?: Array<{ kind: string }> };
+      if (path === '/api/status') expect(answer.unavailable).toEqual([]);
+      if (path === '/api/attention') {
+        expect(answer.items?.some(item => item.kind === 'harness_needs_repair')).toBe(false);
+        expect(answer.items?.some(item => item.kind === 'runs_without_audit')).toBe(true);
+      }
+    } })),
+  });
+  for (const cost of costs) {
+    expect(cost.reads[1], cost.name).toBe(cost.reads[0]);
+    expect(cost.reads[1], cost.name).toBeLessThan(maxPollRows);
+  }
+}, 180_000);
