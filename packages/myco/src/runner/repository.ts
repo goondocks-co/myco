@@ -11,6 +11,17 @@ export function digestListing(digests: readonly CheckoutFileDigest[]): string {
   return digests.map((file) => `${file.sha256}  ${file.path}\n`).join('');
 }
 
+/**
+ * Ends the checkout token a preparation answer carries, if any, on the revoke's own deadline. A failure is logged in
+ * fixed words; the token is never logged.
+ */
+export async function revokeRepositoryToken(answer: unknown, options: Pick<WorkerCheckoutOptions, 'fetchImpl' | 'log'>): Promise<void> {
+  const token = ((answer as { repository?: RepositoryAccess | null } | null)?.repository)?.credential?.token;
+  if (typeof token === 'string' && !await revokeInstallationToken(options.fetchImpl ?? fetch, token, runnerRequestSignal())) {
+    options.log?.('the repository token could not be revoked; it expires within the hour');
+  }
+}
+
 /** The Deployment settled this attempt during source preparation. */
 export class RepositoryAlreadyCurrent extends Error {}
 
@@ -29,9 +40,7 @@ export async function prepareWorkerCheckout(
   const answer = await request({}, checkoutSignal);
   const repository = answer.repository as RepositoryAccess | null | undefined;
   const token = repository?.credential?.token;
-  const revoke = async () => {
-    if (typeof token === 'string' && !await revokeInstallationToken(options.fetchImpl ?? fetch, token, runnerRequestSignal())) options.log?.('the repository token could not be revoked; it expires within the hour');
-  };
+  const revoke = () => revokeRepositoryToken(answer, options);
   // From here the runner owns the token: every exit before checkout ends, cancellation included, revokes it.
   let checkout: RepositoryCheckout;
   let comparison: ReturnType<typeof parseRepositoryComparison>;

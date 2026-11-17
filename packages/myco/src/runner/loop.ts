@@ -47,7 +47,7 @@ import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
-import { prepareWorkerCheckout, RepositoryAlreadyCurrent } from './repository.js';
+import { prepareWorkerCheckout, RepositoryAlreadyCurrent, revokeRepositoryToken } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
 import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
@@ -197,12 +197,22 @@ class SerializedBody {
   constructor(readonly text: string) {}
 }
 
-async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
+async function post(options: Requester, path: string, body: unknown, discarded?: (late: WorkerAnswer) => Promise<void>): Promise<WorkerAnswer> {
   try {
-    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal);
+    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal, discarded);
   } catch (error) {
     return { kind: 'unreachable', detail: error instanceof Error ? error.message : String(error) };
   }
+}
+
+/**
+ * A repository preparation request. An answer carrying a checkout token that arrives after the run stopped waiting is
+ * never dropped: its token is revoked, on the revoke's own deadline.
+ */
+function postRepository(options: Requester & Pick<WorkerOptions, 'githubApi' | 'log'>, body: unknown): Promise<WorkerAnswer> {
+  return post(options, '/worker/repository', body, async (late) => {
+    if (late.kind === 'answered') await revokeRepositoryToken(late.body, { fetchImpl: options.githubApi, log: options.log });
+  });
 }
 
 async function postWithin(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
@@ -578,7 +588,7 @@ async function drive(
       preparing = true;
       try {
         checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
-          const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
+          const answer = await postRepository({ ...options, signal }, { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
           if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
           if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
           if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
@@ -587,7 +597,7 @@ async function drive(
       } catch (error) {
         if (!KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) || lost || stopping.signal.aborted) throw error;
         const unavailable = error instanceof RepositoryCheckoutError ? {code:error.failure.code} : {code:'checkout_failed'};
-        const recorded = await post(options,'/worker/repository',{projectId:run.projectId,runId:run.id,attemptId:run.attemptId,unavailable});
+        const recorded = await postRepository(options,{projectId:run.projectId,runId:run.id,attemptId:run.attemptId,unavailable});
         if (recorded.kind !== 'answered') throw new Error('Could not record unavailable repository preparation.');
         if (recorded.body.held !== true) { lost=true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         repositoryUnavailable = true;

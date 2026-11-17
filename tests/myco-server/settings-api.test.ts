@@ -1,4 +1,6 @@
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { inviteExpiry } from '@myco-server-worker/core/jobs-run.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
@@ -374,14 +376,23 @@ describe('provider credentials through the surface', () => {
     for (const name of ['not_a_provider', 'github']) expect((await worker.fetch(await put(e.db, `/api/secrets/${name}`, { value: 'x' }), e.all)).status).toBe(404);
   });
 
-  it('removes a stored row a previous release wrote under a name no slot admits, and keeps every provider key', async () => {
+  it('removes rows a previous release wrote under retired names on the housekeeping schedule, keeps every provider key, and never makes the read depend on it', async () => {
     const e = env();
     await worker.fetch(await put(e.db, '/api/secrets/openai', { value: 'sk-aaaaaaaaaaaaaaaaaaaa' }), e.all);
     for (const name of ['github', 'repository:proj_1:rev', 'release-provenance:proj_1:rev']) {
       e.sqlite.run("INSERT INTO deployment_secrets(name,ciphertext,iv,key_version,updated_at,updated_by) SELECT ?,ciphertext,iv,key_version,updated_at,updated_by FROM deployment_secrets WHERE name='openai'", [name]);
     }
-    expect((await worker.fetch(await asOwner(e.db, '/api/secrets'), e.all)).status).toBe(200);
-    expect(e.sqlite.query('SELECT name FROM deployment_secrets ORDER BY name').all()).toEqual([{ name: 'openai' }]);
+    const names = () => e.sqlite.query('SELECT name FROM deployment_secrets ORDER BY name').all();
+    const read = async () => (await worker.fetch(await asOwner(e.db, '/api/secrets'), e.all)).status;
+    const housekeeping = () => inviteExpiry(serverEnvFromBindings(e.all as never), Date.now());
+    expect(await read()).toBe(200);
+    expect(names()).toHaveLength(4);
+    e.sqlite.run("CREATE TRIGGER refuse_secret_delete BEFORE DELETE ON deployment_secrets BEGIN SELECT RAISE(ABORT, 'housekeeping refused'); END");
+    await expect(housekeeping()).rejects.toThrow('housekeeping refused');
+    expect(await read()).toBe(200);
+    e.sqlite.run('DROP TRIGGER refuse_secret_delete');
+    await housekeeping();
+    expect(names()).toEqual([{ name: 'openai' }]);
   });
 
   it('refuses an empty value rather than storing one nothing can authenticate with', async () => {

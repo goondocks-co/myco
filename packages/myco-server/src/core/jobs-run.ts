@@ -1,4 +1,5 @@
 import { isDirectRunContext } from './run-deadline.js';
+import { deploymentSecretStore } from './secrets.js';
 import { pruneExpiredReservations } from '../db/context/reservations.js';
 import { CARDS_PENDING_HOLD } from '@goondocks/myco-shared/run-holds';
 import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
@@ -236,8 +237,14 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
  */
 export async function inviteExpiry(env: ServerEnv, now: number): Promise<number> {
   const { reclaimed } = await reclaimFinishedAuthorities(env.db, now, JOB_BATCH);
-  return reclaimed;
+  // A previous release serving during an update can store a key under a retired name; it is removed here, on this
+  // job's own schedule, in one bounded statement on the small sealed-credential table.
+  const removed = await deploymentSecretStore(env.db, env.wrappingKey).removeRetired(RETIRED_SECRET_REMOVER, now);
+  return reclaimed + removed.length;
 }
+
+/** The actor a retired sealed credential's removal is recorded under. */
+const RETIRED_SECRET_REMOVER = 'deployment-housekeeping';
 
 /**
  * Every External Agent grant past its expiry is ended in the record.

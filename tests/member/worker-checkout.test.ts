@@ -1,7 +1,9 @@
 import { budgetFixture } from '../myco-server/helpers/budget-fixture.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { describe, expect, it } from 'bun:test';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { stubProfileHarness } from '../helpers/stub-profile-harness.ts';
 import { join } from 'node:path';
 import { dispatchTask } from '@myco-server-worker/core/harness.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
@@ -305,3 +307,45 @@ if(process.argv.includes('status'))process.exit(0);
     expect(e.sqlite.query('SELECT COUNT(*) n FROM agent_run_attempts WHERE run_id=?').get(run.id)).toEqual({n:1});
   } finally {process.env.PATH=previousPath;server.stop(true);e.sqlite.close();await source.dispose();}
 },30_000);
+
+for (const cancelled of [false, true]) it(`revokes a checkout token exactly once when the run is ${cancelled ? 'stopped as the complete answer arrives' : 'not stopped'}`, async () => {
+  const e = sqliteEnv({ workerLogin: true }), github = githubFixture();
+  const root = await mkdtemp(join(tmpdir(), 'myco-late-token-'));
+  const stopping = new AbortController();
+  const safety = setTimeout(() => stopping.abort(), 10_000);
+  try {
+    stubProfileHarness();
+    const failingGit = join(root, 'git');
+    await writeFile(failingGit, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const now = Date.now(), origin = 'https://fixture.invalid';
+    await ensureMember(e.db, 'mem_worker', now, 'admin', 'worker');
+    const owner = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
+    const env = withApp(e.serverEnv, github);
+    await connectRepository(env, 'proj_1', { actor: 'mem_worker', now });
+    e.sqlite.run("INSERT OR IGNORE INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES('proj_1','vault_evolution',1,?,'test')", [now]);
+    e.sqlite.run("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','myco-agent','built-in',1,?)", [now]);
+    e.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context) VALUES('proj_1','run_seed','myco-agent','vault-seed','queued',?,'worker',?,'{}')",
+      [now, JSON.stringify({ serverUrl: origin, actor: 'mem_worker', timeoutSeconds: 30 })]);
+    const pipeline = createServer({ now: Date.now, sourceOf: () => '1.2.3.4', fetchImpl: github.fetchImpl });
+    // The Deployment's answer arrives whole; with cancellation, the run is stopped the moment its body has been read.
+    const transport = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const response = await pipeline.handleRequest(request, env);
+      if (new URL(request.url).pathname !== '/worker/repository') return response;
+      const text = await response.text();
+      const delivered = new Response(text, { status: response.status, headers: { ...Object.fromEntries(response.headers), 'content-length': String(Buffer.byteLength(text)) } });
+      const read = delivered.text.bind(delivered);
+      delivered.text = async () => { const body = await read(); if (cancelled) stopping.abort(new Error('stopped as the answer arrived')); return body; };
+      return delivered;
+    };
+    const lines: string[] = [];
+    await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot: root, only: ['claude-code'], once: true, pollIdleMs: 1,
+      signal: stopping.signal, fetchImpl: transport as typeof fetch, githubApi: github.fetchImpl, repositoryGitPath: failingGit, log: line => lines.push(line) });
+    const checkout = github.state.issued.at(-1)!;
+    expect(checkout.body).toEqual({ permissions: { contents: 'read', metadata: 'read' }, repository_ids: [1296269] });
+    const deadline = Date.now() + 5_000;
+    while (!github.state.revoked.includes(checkout.token) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(github.state.revoked.filter(token => token === checkout.token)).toHaveLength(1);
+    for (const { token } of github.state.issued) expect(lines.join('\n')).not.toContain(token);
+  } finally { clearTimeout(safety); stopping.abort(); e.sqlite.close(); await rm(root, { recursive: true, force: true }); }
+}, 20_000);
