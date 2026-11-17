@@ -10,13 +10,13 @@ const winner = `excluded.last_received_at>machine_capture_heads.last_received_at
 const advances = LIVE_CAPTURE_FIELDS.map(column => liveEvidenceAdvances('machine_capture_heads', column)).join(' OR ');
 const recedes = LIVE_CAPTURE_FIELDS.map(column => `(OLD.${column} IS NOT NULL AND (NEW.${column} IS NULL OR OLD.${column}>NEW.${column}))`).join(' OR ');
 
-/** Receipt identity and live evidence have independent monotonic orders within a machine/harness pair. */
-function merge(select: string): string {
+/** Start proof is monotonic while a pair has a head; replacement receipts and activity reflect its remaining sessions. */
+function merge(select: string, mode: 'advance' | 'replace' = 'advance'): string {
   return `INSERT INTO machine_capture_heads(${fields.join(',')}) ${select}
     ON CONFLICT(machine_id,agent_json) DO UPDATE SET
-      ${receiptFields.map(column => `${column}=CASE WHEN ${winner} THEN excluded.${column} ELSE machine_capture_heads.${column} END`).join(',')},
-      ${LIVE_CAPTURE_FIELDS.map(column => `${column}=${liveEvidenceMax('machine_capture_heads', column)}`).join(',')}
-    WHERE ${winner} OR ${advances}`;
+      ${receiptFields.map(column => `${column}=${mode === 'replace' ? `excluded.${column}` : `CASE WHEN ${winner} THEN excluded.${column} ELSE machine_capture_heads.${column} END`}`).join(',')},
+      ${LIVE_CAPTURE_FIELDS.map(column => `${column}=${mode === 'replace' && column === 'last_live_received_at' ? `excluded.${column}` : liveEvidenceMax('machine_capture_heads', column)}`).join(',')}
+    WHERE ${mode === 'replace' ? '1' : `${winner} OR ${advances}`}`;
 }
 
 const minute = `(NEW.last_received_at-(NEW.last_received_at%${CAPTURE_RECEIPT_GRAIN_MS}+${CAPTURE_RECEIPT_GRAIN_MS})%${CAPTURE_RECEIPT_GRAIN_MS})`;
@@ -26,8 +26,10 @@ const live = (column: string) => `(SELECT s.${column} FROM sessions s
 const receipt = `SELECT * FROM (${unnamedCaptureHeadSelect('OLD.machine_id')}) WHERE OLD.agent IS NULL
   UNION ALL SELECT * FROM (${namedCaptureHeadSelect('OLD.machine_id', 'OLD.agent')}) WHERE OLD.agent IS NOT NULL`;
 const rebuild = [
-  `DELETE FROM machine_capture_heads WHERE ${group('OLD')}`,
-  merge(`SELECT r.*,${live('last_live_received_at')},${live('last_trust_start_at')} FROM (${receipt}) r WHERE 1`),
+  merge(`SELECT r.*,${live('last_live_received_at')},${live('last_trust_start_at')} FROM (${receipt}) r WHERE 1`, 'replace'),
+  `DELETE FROM machine_capture_heads WHERE ${group('OLD')} AND NOT EXISTS(SELECT 1 FROM sessions s
+    WHERE s.project_id=machine_capture_heads.project_id AND s.session_id=machine_capture_heads.session_id
+      AND s.machine_id=machine_capture_heads.machine_id AND json_quote(s.agent)=machine_capture_heads.agent_json)`,
 ];
 const owned = `EXISTS(SELECT 1 FROM machine_capture_heads WHERE ${group('OLD')} AND
   ((project_id,session_id)=(OLD.project_id,OLD.session_id) OR last_live_received_at=OLD.last_live_received_at OR last_trust_start_at=OLD.last_trust_start_at))`;

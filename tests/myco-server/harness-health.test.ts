@@ -352,3 +352,28 @@ it('an upgrade retains live trust evidence when an imported session owns the new
     expect(await latestHarnessCapture(db)).toEqual([{ machine_id: 'machine', agent: 'codex', at: 250_000 }]);
   } finally { sqlite.close(); }
 });
+
+it('an upgrade keeps a non-head start confirmed through receipt replacement while a session remains', async () => {
+  const sqlite = schemaSqlite({ through: NEXT_ATTENTION - 1 });
+  const db = sqliteD1(sqlite);
+  try {
+    sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('p','Project',1)");
+    sqlite.run("INSERT INTO members(id,label,created_at) VALUES('member','Reader',1)");
+    sqlite.run("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)");
+    await recordProvisionedHarnessReport(db, 'machine', { harnesses: [fact('codex', 'trust_required', 'Trust Codex.')] }, NOW + 2_000);
+    sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,agent,first_received_at,last_received_at,last_live_received_at)
+      VALUES('p','a','machine','token','codex',?1,?1,?1),('p','b','machine','token','codex',?2,?2,?2)`, [NOW + 1_000, NOW + 3_000]);
+    sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+      VALUES('p','a-start','a','token','session.start','cli','{}','hash',?1,?1),('p','b-start','b','token','session.start','cli','{}','hash',?2,?2)`, [NOW + 1_000, NOW + 3_000]);
+    expect(sqlite.query('SELECT session_id FROM machine_capture_heads').get()).toEqual({ session_id: 'a' });
+    for (const step of SCHEMA_STEPS.filter(step => step.version >= NEXT_ATTENTION)) for (const sql of step.statements) sqlite.exec(sql);
+    expect(await provisionedHarnessAttention(db, NOW + 4_000)).toEqual([]);
+    expect(sqlite.query('SELECT session_id,last_trust_start_at FROM sessions ORDER BY session_id').all())
+      .toEqual([{ session_id: 'a', last_trust_start_at: null }, { session_id: 'b', last_trust_start_at: null }]);
+    expect(await latestHarnessCapture(db)).toEqual([{ machine_id: 'machine', agent: 'codex', at: NOW + 3_000 }]);
+    sqlite.run("DELETE FROM sessions WHERE project_id='p' AND session_id='a'");
+    expect(await provisionedHarnessAttention(db, NOW + 4_000)).toEqual([]);
+    sqlite.run("DELETE FROM sessions WHERE project_id='p' AND session_id='b'");
+    expect(await provisionedHarnessAttention(db, NOW + 4_000)).toEqual([expect.objectContaining({ kind: 'harness_needs_repair', harness: 'codex' })]);
+  } finally { sqlite.close(); }
+});

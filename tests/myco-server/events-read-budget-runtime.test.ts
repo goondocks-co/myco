@@ -225,6 +225,7 @@ it('D1 dashboard polls keep the same cost with twenty thousand and one hundred t
   const maxPollRows = 2_000;
   let cookie = '';
   const paths = [
+    '/auth/me',
     '/api/attention', '/api/work/now', '/api/status', '/api/settings', '/api/embedding/switch', '/api/kpis?window=30',
     '/api/backups/restores/poll-restore', '/api/projects/poll/release-provenance', '/api/projects/poll/runs/poll-live',
     `/api/sessions?limit=50&project=poll&state=open&window=activity&since=${now - 3_600_000}`,
@@ -256,6 +257,9 @@ it('D1 dashboard polls keep the same cost with twenty thousand and one hundred t
       await db.prepare(`INSERT INTO restore_jobs(id,artifact_sha256,upload_key,upload_size,requested_by,adopt_lineage,cursor,rows_total,outcome,accepted_at,updated_at)
         VALUES('poll-restore','digest','uploads/poll',1,'poll-member',0,'{}',1,'{}',?1,?1)`).bind(now).run();
       cookie = await ownerCookie(db, now, '42');
+      const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter(), ...OWNER_ENV });
+      const signedIn = await server.handleRequest(new Request('https://s/auth/me', { headers: { cookie, [AUTOMATIC_HEADER]: '1' } }), env);
+      expect(signedIn.status).toBe(200);
     },
     grow: async (db, from, to) => {
       await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,last_live_received_at)
