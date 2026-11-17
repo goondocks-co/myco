@@ -3,6 +3,6 @@
  * names one of these as the slot its runs read (`runner.credential.slot`), or declares a slot of its own; the
  * generator refuses any other name.
  */
-export const PROVIDER_SLOT_NAMES = ['anthropic', 'openai', 'openrouter', 'github'] as const;
+export const PROVIDER_SLOT_NAMES = ['anthropic', 'openai', 'openrouter'] as const;
 
 export type ProviderSlotName = (typeof PROVIDER_SLOT_NAMES)[number];

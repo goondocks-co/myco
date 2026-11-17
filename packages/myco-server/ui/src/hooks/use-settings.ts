@@ -4,7 +4,7 @@ import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus, HealthPassedOverLi
 import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 
 import type { SecretRow, SettingsAnswer, SecretsAnswer, TitlingBackfillProgress } from '../features/admin/settings/wire';
-import type { CapabilitiesAnswer, RepositoryAnswer } from '../features/admin/project/wire';
+import type { ApprovedAccountRow, CapabilitiesAnswer, InstallationsAnswer, RepositoryAnswer, RepositoryChoicesAnswer } from '../features/admin/project/wire';
 import { live } from '../lib/live';
 export type { LeafRow, SecretRow } from '../features/admin/settings/wire';
 export type { RepositoryRow } from '../features/admin/project/wire';
@@ -60,6 +60,7 @@ export function settingsRefusalText(err: unknown): string {
   if (err instanceof ApiError) {
     const body = err.body as { error?: unknown; reason?: unknown; detail?: unknown } | null;
     if (body?.error === 'conflict') return 'This changed since the page read it. Refresh before saving again.';
+    if (body?.error === 'github_access' && typeof body.reason === 'string') return body.reason;
     if (body?.error === 'bad_request') return 'The server could not accept that.';
     switch (body?.reason) {
       case 'not_deployment_tier':
@@ -204,12 +205,48 @@ export function useRepositoryActions(projectId: string) {
   return {
     save: useMutation({
       gcTime: 0,
-      mutationFn: (input: { url: string; branch: string; revision: string | null; credential?: { username: string; token: string } | null }) =>
+      mutationFn: (input: { installationId: number; repositoryId: number; branch: string; revision: string | null }) =>
         putJson<RepositoryAnswer>(path, input),
       onSuccess: refresh,
     }),
     remove: useMutation({
       mutationFn: (revision: string) => deleteJson(path, {}, { revision }),
+      onSuccess: refresh,
+    }),
+  };
+}
+
+const INSTALLATIONS_KEY = ['github-app', 'installations'] as const;
+
+/** The App's installations and the accounts approved here, asked of GitHub only when an admin opens or refreshes them. */
+export function useGitHubInstallations(enabled: boolean) {
+  return useQuery({
+    queryKey: [...INSTALLATIONS_KEY], enabled, retry: false,
+    queryFn: ({ signal }) => fetchJson<InstallationsAnswer>('/api/github-app/installations', signal),
+    ...live('still'),
+  });
+}
+
+/** One page of an approved installation's repositories, asked of GitHub when an admin picks the installation. */
+export function useInstallationRepositories(installationId: number | null, page: number) {
+  return useQuery({
+    queryKey: [...INSTALLATIONS_KEY, installationId, page], enabled: installationId !== null, retry: false,
+    queryFn: ({ signal }) => fetchJson<RepositoryChoicesAnswer>(`/api/github-app/installations/${installationId}/repositories?page=${page}`, signal),
+    ...live('still'),
+  });
+}
+
+/** Approve the account holding an installation, or withdraw an account's approval. */
+export function useGitHubAccountActions() {
+  const client = useQueryClient();
+  const refresh = () => client.invalidateQueries({ queryKey: [...INSTALLATIONS_KEY] });
+  return {
+    approve: useMutation({
+      mutationFn: (installationId: number) => postJson<{ account: ApprovedAccountRow }>('/api/github-app/accounts', { installationId }),
+      onSuccess: refresh,
+    }),
+    withdraw: useMutation({
+      mutationFn: (accountId: number) => deleteJson(`/api/github-app/accounts/${accountId}`, {}, {}),
       onSuccess: refresh,
     }),
   };

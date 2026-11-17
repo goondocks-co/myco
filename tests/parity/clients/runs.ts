@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
-import { memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { connectRepository, memberHeadersFor, type ParityTarget } from '../harness.ts';
 import { person } from './identity.ts';
 import { event, owner, runTool, untilPublished, type ClaimedRun, type RouteTarget } from './requests.ts';
 
@@ -39,8 +39,8 @@ export async function failRun(target: RouteTarget, run: ClaimedRun, extra: Recor
 export async function cancelRun(target: RouteTarget, id: string): Promise<void> {
   expect((await owner(target, `/api/projects/${target.projectId}/runs/${id}/cancel`, { method: 'POST' })).status).toBe(200);
 }
-export async function repository(target: RouteTarget, source = { url: 'https://example.test/repo.git', branch: 'main' }): Promise<void> {
-  expect((await owner(target, `/api/projects/${target.projectId}/repository`, { method: 'PUT', body: JSON.stringify({ ...source, revision: null }) })).status).toBe(200);
+export async function repository(target: Pick<ParityTarget, 'sql' | 'projectId'>, source = { url: 'https://github.com/example/repo', branch: 'main' }): Promise<void> {
+  await connectRepository(target, source);
 }
 export async function captureSession(target: RouteTarget, id: string, text: string, options: { ended?: boolean; at?: number; channel?: string } = {}): Promise<void> {
   const at = options.at ?? Date.now(), extra = { channel: options.channel ?? 'cli' };

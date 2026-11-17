@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, parseRepositoryComparison, parseRepositoryChanges, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, parseRepositoryComparison, parseRepositoryChanges, repositoryUrl, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { revokeInstallationToken } from '@goondocks/myco-shared/github-app';
 import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
@@ -12,10 +13,13 @@ export function digestListing(digests: readonly CheckoutFileDigest[]): string {
 /** The Deployment settled this attempt during source preparation. */
 export class RepositoryAlreadyCurrent extends Error {}
 
-/** Worker checkout task, Git executable, digest listing and optional knowledge cache. */
-export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string; task?: string }
+/** Worker checkout task, Git executable, digest listing, optional knowledge cache, the worker's log and GitHub's API transport. */
+export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string; task?: string; log?: (line: string) => void; fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> }
 
-/** Prepare source with credentials held only by the checkout process, and, where asked, write its digest listing beside it. */
+/**
+ * Prepare source with credentials held only by the checkout process, and, where asked, write its digest listing beside
+ * it. The repository token is revoked as soon as Git no longer needs it, whether the checkout succeeded or not.
+ */
 export async function prepareWorkerCheckout(
   spec: RepositoryCheckoutSpec, scratchDir: string, signal: AbortSignal,
   request: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>, options: WorkerCheckoutOptions = {},
@@ -23,17 +27,25 @@ export async function prepareWorkerCheckout(
   const checkoutSignal = AbortSignal.any([signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
   const answer = await request({}, checkoutSignal);
   const repository = answer.repository as RepositoryAccess | null | undefined;
-  if (repository == null || repository.url !== spec.url || repository.branch !== spec.branch) throw new Error('The run repository is unavailable or changed.');
-  if (repository.commit !== undefined && !REPOSITORY_COMMIT_PATTERN.test(repository.commit)) throw new Error('The run repository commit is invalid.');
-  if (repository.credential !== undefined && (repository.credential === null || typeof repository.credential.username !== 'string' || typeof repository.credential.token !== 'string')) {
-    throw new Error('The repository read credential is invalid.');
-  }
+  const token = repository?.credential?.token;
+  const revoke = async () => {
+    if (typeof token === 'string' && !await revokeInstallationToken(options.fetchImpl ?? fetch, token)) options.log?.('the repository token could not be revoked; it expires within the hour');
+  };
+  let remote: string;
+  try {
+    if (repository == null || repository.url !== spec.url || repository.branch !== spec.branch) throw new Error('The run repository is unavailable or changed.');
+    if (repository.commit !== undefined && !REPOSITORY_COMMIT_PATTERN.test(repository.commit)) throw new Error('The run repository commit is invalid.');
+    if (typeof token !== 'string' || typeof repository.credential.username !== 'string') throw new Error('The repository read credential is invalid.');
+    remote = repositoryUrl(String(repository.remote));
+  } catch (error) { await revoke(); throw error; }
+  const credential = repository.credential;
   checkoutSignal.throwIfAborted();
   const comparison = parseRepositoryComparison(answer.comparison);
-  const checkout = await prepareRepositoryCheckout({
-    url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
+  let checkout: RepositoryCheckout;
+  try { checkout = await prepareRepositoryCheckout({
+    url: remote, branch: spec.branch, historyDepth: spec.historyDepth,
     compareCommit: comparison?.commit,
-    credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
+    credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
     removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
     pin: async (commit) => {
@@ -44,7 +56,7 @@ export async function prepareWorkerCheckout(
       }
       return pin.commit;
     },
-  });
+  }); } finally { await revoke(); }
   try {
     if (comparison !== null) {
       const candidate = { ...comparison, ...checkout.changes };

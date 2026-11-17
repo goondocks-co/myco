@@ -17,14 +17,3 @@ export const removeSecret = write<[string], { name: string }>({
 export function recordSecretDeletion(name: string, actor: string, nowMs: number, deleted: boolean): void {
   emit({ kind: 'deployment_secret_deleted', name, actor, deleted, at: nowMs });
 }
-
-/** Admission, reference writes and optional retirement share one commit. */
-export async function commitSecretChange(
-  db: RelationalStore,
-  admission: Bound<unknown, 'assertion'>,
-  writes: readonly Bound[],
-  retirement: { name: string; actor: string; now: number } | null,
-): Promise<void> {
-  const results = await commit(db, admission, ...writes, ...(retirement === null ? [] : [removeSecret.bind(retirement.name)]));
-  if (retirement !== null) recordSecretDeletion(retirement.name, retirement.actor, retirement.now, results.at(-1)!.results.length === 1);
-}

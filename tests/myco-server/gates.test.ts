@@ -29,7 +29,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { connectRepository, githubFixture, withApp } from './helpers/github-app.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 
@@ -533,11 +533,10 @@ describe('gates', () => {
     // What a door could hand out: a provider key a claimed run's harness reads, a repository credential a leased run
     // checks out with, and a queued run either would be answered for.
     const PROVIDER_KEY = 'sk-ant-api03-bm9uLXJvdGF0aW5nLWRvb3ItZml4dHVyZQ';
-    const REPOSITORY_TOKEN = 'synthetic-non-rotating-repository-credential';
     const secrets = deploymentSecretStore(serverEnv.db, serverEnv.wrappingKey);
     await secrets.put('anthropic', PROVIDER_KEY, 'mem_machine_1', issuedAt);
     await settingsWriter(db).setLeaf('agent.harnesses.claude-code.credential', 'deployment', 'mem_machine_1', Date.now());
-    await projectRepositories(db, secrets).save('proj_1', { url: 'https://example.test/team/source', branch: 'main', revision: null, credential: { username: 'reader', token: REPOSITORY_TOKEN } }, 'mem_machine_1', issuedAt);
+    await connectRepository(withApp(serverEnv, githubFixture()), 'proj_1', { now: issuedAt });
     sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [issuedAt]);
     sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context)
       VALUES ('proj_1', 'run_door', 'myco-agent', 'vault-seed', 'queued', ?, 'worker', ?, '{}')`, [issuedAt, JSON.stringify({ serverUrl: 'https://s', actor: 'mem_machine_1' })]);
@@ -572,7 +571,7 @@ describe('gates', () => {
       const text = await answered.text();
       expect({ route, authenticated: answered.status !== 401 }).toEqual({ route, authenticated: true });
       expect({ route, authority: authority() }).toEqual({ route, authority: before });
-      expect({ route, providerKey: text.includes(PROVIDER_KEY), repositoryCredential: text.includes(REPOSITORY_TOKEN) }).toEqual({ route, providerKey: false, repositoryCredential: false });
+      expect({ route, providerKey: text.includes(PROVIDER_KEY), repositoryCredential: /ghs_/.test(text) }).toEqual({ route, providerKey: false, repositoryCredential: false });
       let parsed: unknown = null;
       try { parsed = JSON.parse(text); } catch { parsed = null; }
       expect({ route, credentials: credentialsIn(parsed, nonRotating.token) }).toEqual({ route, credentials: [] });

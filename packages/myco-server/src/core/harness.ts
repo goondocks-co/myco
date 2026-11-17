@@ -29,7 +29,7 @@ import {
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { NOTHING_DUE } from './learning-sessions.js';
-import { harnessCredentialAvailability, secretReadable } from './secrets.js';
+import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
 import type { HarnessStop } from '@goondocks/myco-shared/run-text';
@@ -39,7 +39,7 @@ import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 import { REQUIRED_REPOSITORY_TASKS, REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec, type RepositoryFailure } from '@goondocks/myco-shared/repository';
-import { repositoryIdentity } from './repositories.js';
+import { repositoryReady } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
  * whatever asked for it — an owner's dispatch control, a session's end, a
@@ -127,11 +127,12 @@ const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
  * none clears by retrying.
  */
 export type DispatchRefusal =
-  | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'no_instruction' | 'not_landed'
+  | 'harness_unavailable' | 'unknown_task' | 'unknown_project' | 'repository_missing' | 'repository_unavailable' | 'no_instruction' | 'not_landed'
   | 'no_provider' | 'capability_off';
 
 export const DISPATCH_REFUSAL_MESSAGE: Readonly<Record<DispatchRefusal, string>> = {
   repository_missing: 'Connect the project repository in Settings before running a code task.',
+  repository_unavailable: 'GitHub repository access needs setup on this server before a code task can run. The server operator runs `myco server github-app`.',
   harness_unavailable: 'this server cannot start tasks itself',
   unknown_task: 'this server cannot run that task',
   no_instruction: 'this server has no instructions for that task',
@@ -546,8 +547,9 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 
   // Unavailable tasks are refused before repository and provider requirements.
   if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
-  if (REQUIRED_REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }, slot => secretReadable(env.db, env.wrappingKey, slot)) === null) {
-    return { ok: false, refusal: 'repository_missing' };
+  if (REQUIRED_REPOSITORY_TASKS.includes(task)) {
+    const readiness = await repositoryReady(env, { projectId });
+    if (readiness !== 'ready') return { ok: false, refusal: readiness === 'missing' ? 'repository_missing' : 'repository_unavailable' };
   }
 
   // A worker-served task queues and stops here. Its harness, and the credential

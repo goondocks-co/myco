@@ -19,7 +19,7 @@ const CONFIG: ReleaseRefConfig = {
 
 async function classify(headSha: string | null, changedPaths: string[] = [], opts: { repo?: Repo; maxLookups?: number; fetcher?: typeof fetch; config?: ReleaseRefConfig } = {}) {
   const calls: string[] = [];
-  const reads = githubReads({ repo: 'o/r', token: 'fixture-token', maxLookups: opts.maxLookups ?? 50, fetcher: opts.fetcher ?? fakeGithub(opts.repo ?? REPO, calls) });
+  const reads = githubReads({ repositoryId: 1, token: 'fixture-token', maxLookups: opts.maxLookups ?? 50, fetcher: opts.fetcher ?? fakeGithub(opts.repo ?? REPO, calls) });
   const run = await resolveRunRefs(reads, opts.config ?? CONFIG);
   const outcome = await classifyCommit(reads, memoizedCompare(reads), run, { headSha, changedPaths });
   return { outcome, calls, used: reads.lookupsUsed() };
@@ -95,25 +95,25 @@ describe('release classification', () => {
     const offline = (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
     expect(state((await classify(A, [], { fetcher: offline })).outcome)).toBe('unavailable:network');
     const hang = ((_: unknown, init: RequestInit) => new Promise((_, reject) => init.signal!.addEventListener('abort', () => reject(new Error('aborted'))))) as unknown as typeof fetch;
-    const reads = githubReads({ repo: 'o/r', token: null, maxLookups: 5, fetcher: hang, timeoutMs: 5 });
+    const reads = githubReads({ repositoryId: 1, token: 'fixture-token', maxLookups: 5, fetcher: hang, timeoutMs: 5 });
     expect(await reads.compare(A, 'main')).toEqual({ ok: false, failure: 'timeout' });
   });
 
-  it('never sends the token anywhere but the Authorization header, and omits it when absent', async () => {
-    const seen: Array<{ url: string; auth: string | null }> = [];
+  it('addresses the repository by its id, sends the token only as the Authorization header, and answers a redirect without following it', async () => {
+    const seen: Array<{ url: string; auth: string | null; redirect?: string }> = [];
     const spy = (async (input: RequestInfo | URL, init: RequestInit) => {
-      seen.push({ url: String(input), auth: new Headers(init.headers).get('authorization') });
-      return new Response(JSON.stringify({ status: 'ahead' }));
+      seen.push({ url: String(input), auth: new Headers(init.headers).get('authorization'), redirect: init.redirect });
+      return seen.length === 1 ? new Response(JSON.stringify({ status: 'ahead' })) : new Response(null, { status: 301, headers: { location: 'https://api.github.com/repositories/2' } });
     }) as typeof fetch;
-    await githubReads({ repo: 'o/r', token: 'secret-token', maxLookups: 1, fetcher: spy }).compare(A, 'main');
-    await githubReads({ repo: 'o/r', token: null, maxLookups: 1, fetcher: spy }).compare(A, 'main');
-    expect(seen[0]).toEqual({ url: `https://api.github.com/repos/o/r/compare/${A}...main?per_page=1`, auth: 'Bearer secret-token' });
-    expect(seen[1].auth).toBeNull();
+    const reads = githubReads({ repositoryId: 1296269, token: 'secret-token', maxLookups: 2, fetcher: spy });
+    expect(await reads.compare(A, 'main')).toEqual({ ok: true, value: 'ahead' });
+    expect(seen[0]).toEqual({ url: `https://api.github.com/repositories/1296269/compare/${A}...main?per_page=1`, auth: 'Bearer secret-token', redirect: 'manual' });
+    expect(await reads.compare(B, 'main')).toEqual({ ok: false, failure: 'unexpected_response', status: 301 });
   });
 
   it('spends one compare per commit and ref across a run', async () => {
     const calls: string[] = [];
-    const reads = githubReads({ repo: 'o/r', token: null, maxLookups: 50, fetcher: fakeGithub(REPO, calls) });
+    const reads = githubReads({ repositoryId: 1, token: 'fixture-token', maxLookups: 50, fetcher: fakeGithub(REPO, calls) });
     const run = await resolveRunRefs(reads, CONFIG);
     const compare = memoizedCompare(reads);
     await classifyCommit(reads, compare, run, { headSha: A, changedPaths: [] });

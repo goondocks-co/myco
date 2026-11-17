@@ -360,19 +360,18 @@ describe('provider credentials through the surface', () => {
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
     const secrets = (JSON.parse(text) as { secrets: Array<Record<string, unknown>> }).secrets;
-    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'single-turn', 'github']);
+    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'single-turn']);
     expect(secrets.find((s) => s.name === 'openai')).toMatchObject({ configured: false, maskedValue: null });
   });
 
-  it('deletes a credential, and reports a slot it does not define as absent', async () => {
+  it('deletes a credential, and reports a slot it does not define, the retired GitHub slot among them, as absent', async () => {
     const e = env();
-    await worker.fetch(await put(e.db, '/api/secrets/github', { value: 'ghp_aaaaaaaaaaaaaaaaaaaa' }), e.all);
-    expect(await json(await worker.fetch(new Request('https://s/api/secrets/github', {
-      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost(e.db, '/api/secrets/github')).headers) },
+    await worker.fetch(await put(e.db, '/api/secrets/openai', { value: 'sk-aaaaaaaaaaaaaaaaaaaa' }), e.all);
+    expect(await json(await worker.fetch(new Request('https://s/api/secrets/openai', {
+      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost(e.db, '/api/secrets/openai')).headers) },
     }), e.all))).toEqual({ deleted: true });
 
-    const unknown = await worker.fetch(await put(e.db, '/api/secrets/not_a_provider', { value: 'x' }), e.all);
-    expect(unknown.status).toBe(404);
+    for (const name of ['not_a_provider', 'github']) expect((await worker.fetch(await put(e.db, `/api/secrets/${name}`, { value: 'x' }), e.all)).status).toBe(404);
   });
 
   it('refuses an empty value rather than storing one nothing can authenticate with', async () => {

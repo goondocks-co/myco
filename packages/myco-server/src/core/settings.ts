@@ -160,9 +160,6 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
 /** No retired Deployment leaf remains in the active contract. */
 export const RETIRED_LEAVES: ReadonlySet<string> = new Set();
 
-/** Secret slots the Deployment still stores that nothing reads. */
-export const RETIRED_SECRET_SLOTS: ReadonlySet<string> = new Set(['github']);
-
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
 

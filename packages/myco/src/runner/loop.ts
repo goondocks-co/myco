@@ -81,6 +81,8 @@ export interface WorkerOptions {
   reportHome?: string;
   /** Git executable override for a controlled checkout environment. */
   repositoryGitPath?: string;
+  /** GitHub API transport for ending a checkout's token, for a controlled environment; defaults to `fetch`. */
+  githubApi?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   /** Private persistent mirrors shared by this runner's attempts. */
   repositoryCacheRoot?: string;
   serverUrl: string;
@@ -581,7 +583,7 @@ async function drive(
           if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
           if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
           return answer.body;
-        }, { task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories') });
+        }, { task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories'), log: options.log, fetchImpl: options.githubApi });
       } catch (error) {
         if (!KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) || lost || stopping.signal.aborted) throw error;
         const unavailable = error instanceof RepositoryCheckoutError ? {code:error.failure.code} : {code:'checkout_failed'};

@@ -1,4 +1,5 @@
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
+import { UNSIGNED_APP } from './helpers/github-app.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import {
@@ -47,11 +48,12 @@ const OFFERED = [offeredHarness('claude-code')];
 
 async function rig() {
   const e = sqliteEnv({ workerLogin: true });
+  Object.assign(e.env, UNSIGNED_APP);
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
-  e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
+  e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES ('proj_1','rev_1','https://github.com/goondocks-co/myco','main',1296269,41,?,'mem_x')`, [NOW]);
   // A live plan nobody has touched for a month, which plan curation reads.
   e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
     VALUES ('proj_1', 'stale-plan', 's-plan', 'e-plan', 'm1', 'Stale plan', '- [ ] pending', 'h', 'active', ?1, ?1, 'tok_1', ?1)`, [NOW - 30 * 86_400_000]);

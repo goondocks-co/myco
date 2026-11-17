@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-text';
 import { MAP_ACTION, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
-import { memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { connectRepository, memberHeadersFor, type ParityScenario } from '../harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 import { allowWorkerClaims, putCapability, putSetting, wake } from '../clients/requests.ts';
 import { captureSession, dispatch, runList, takeRun } from '../clients/runs.ts';
@@ -10,7 +10,9 @@ import { captureSession, dispatch, runList, takeRun } from '../clients/runs.ts';
  * A map run on the worker path, on both targets: the worker's repository step
  * pins the commit and the map input together, the run writes its map over its
  * own credential, the worker's end is judged against the stored row, a second
- * pass over the same commit closes unchanged, and a member reads the map.
+ * pass over the same commit closes unchanged, and a member reads the map. The
+ * App key both targets hold cannot sign, so a source read is refused by name
+ * and hands out no token; a pin needs no token.
  */
 export const canopy: ParityScenario = {
   name: 'canopy: a worker map run pinned to its commit, closed on its map, and read over MCP',
@@ -32,10 +34,10 @@ export const canopy: ParityScenario = {
     const tool = async (credential: string, name: string, args: Record<string, unknown>) =>
       (await post('/mcp', credential, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })).result.structuredContent.result;
 
-    const source = { url: 'https://example.test/map.git', branch: 'main' };
+    const source = { url: 'https://github.com/example/map', branch: 'main' };
     const commit = 'a'.repeat(40);
     const endpoint = `/api/projects/${target.projectId}`;
-    const connected = await owner(`${endpoint}/repository`, 'PUT', { ...source, revision: null });
+    await connectRepository(target, source);
     const claimed = new Map<string, { attemptId: string }>();
     const leasedRun = async (pinnedCommit = commit) => {
       const run = await takeRun(target, (await dispatch(target, 'canopy-map')).runId);
@@ -106,42 +108,23 @@ export const canopy: ParityScenario = {
       expect(scheduled).toBeDefined();
       const automatic = await takeRun(target, scheduled.id);
       const identity = { projectId: target.projectId, runId: automatic.id, attemptId: automatic.attemptId };
+      // A source read mints a token through the App; a key that cannot sign is named, and no token is handed out.
       const access = await post('/worker/repository', target.memberToken, identity);
-      expect(access.comparison).toMatchObject({ commit, revision: stored.revision });
+      expect(access).toMatchObject({ persisted: true, held: true, error: expect.stringContaining('GitHub') });
+      expect(access).not.toHaveProperty('repository');
       const nextCommit = 'd'.repeat(40);
       expect(await post('/worker/repository', target.memberToken, { ...identity, ...source, commit: nextCommit }))
         .toMatchObject({ pin: { commit: nextCommit } });
-      expect(await post('/worker/repository', target.memberToken, { ...identity, ...source, commit: nextCommit,
-        comparison: { ...access.comparison, complete: true, changes: [{ status: 'A', path: 'src/other.ts' }] } }))
-        .toMatchObject({ alreadyCurrent: true, held: true });
-      const carryDetail = (await owner(`${endpoint}/runs/${automatic.id}`)).run;
-      expect(carryDetail).toMatchObject({ status: 'skipped', skipReasonCode: 'input_unchanged', tokensUsed: 0, leaseExpiresAt: null });
-      expect(carryDetail.actionsTaken).toContain('the code map was already current');
-      expect((await owner(`${endpoint}/canopy-map`)).map)
-        .toMatchObject({ artifact, generatedAt: stored.generatedAt, sourceRunId: first.runId, repository: { ...source, commit: nextCommit } });
-      const carriedWork = await owner(`/api/work?project=${target.projectId}&since=${now - 1000}&until=${Date.now() + 10_000}`);
-      expect(carriedWork.maps.find((map: { projectId: string }) => map.projectId === target.projectId))
-        .toMatchObject({ commit: nextCommit, sourceRunId: first.runId, carriedForward: true });
+      expect(await post('/worker/end', target.memberToken, { ...identity, status: 'failed', error: 'the worker failed while driving the run (repository_unprepared)' }))
+        .toMatchObject({ ended: true });
       const revoked = await fetch(target.url + '/mcp', { method: 'POST',
         headers: memberHeadersFor(automatic.runToken, target.projectId, { 'content-type': 'application/json' }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
       expect(revoked.status).toBe(401);
-      expect((await putSetting(target, 'agent.tasks', { 'canopy-map': { schedule: { enabled: true, intervalSeconds: 0,
-        maxRunsPerDay: 0, runIn: ['active', 'idle', 'sleep'] } } })).status).toBe(200);
-      await captureSession(target, 'map-held-work', 'More source work is waiting.', { ended: true });
-      await wake(target);
-      const day = new Date(now);
-      day.setUTCHours(0, 0, 0, 0);
-      const nextDay = new Date(day);
-      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-      const splitWork = await owner(`/api/work?project=${target.projectId}&since=${day.getTime()}&until=${nextDay.getTime()}`);
-      expect(splitWork.summary.find((entry: { task: string }) => entry.task === 'canopy-map'))
-        .toMatchObject({ runs: { skipped: 1 }, alreadyCurrent: 1 });
-
       expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
 
     } finally {
-      await owner(`${endpoint}/repository`, 'DELETE', { revision: connected.repository.revision });
+      await owner(`${endpoint}/repository`, 'DELETE', { revision: (await owner(`${endpoint}/repository`)).repository.revision });
     }
   },
 };

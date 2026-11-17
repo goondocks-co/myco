@@ -12,7 +12,7 @@ import { writeRunDir, discardRunDir } from '@myco/runner/mcp-config.js';
 import { beginRunProcess, retryPendingRunDirectoryDiscards } from '@myco/runner/run-directory.js';
 import { RUN_REPOSITORY_DIGESTS_FILE } from '@goondocks/myco-shared/repository';
 
-import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
+import { gitRepositoryFixture, GIT_READ_CREDENTIAL, tokenRevocations } from '../helpers/git-repository.js';
 
 let fixture: Awaited<ReturnType<typeof gitRepositoryFixture>>;
 let home: string;
@@ -107,29 +107,32 @@ describe('committed repository checkout', () => {
   it('writes the digest listing beside a worker checkout only when the run asks for one', async () => {
     const answer = async (input: Record<string, unknown>) => input.files !== undefined
       ? (expect(input.files).toEqual(['AGENTS.md']), {filesStored:true}) : input.commit === undefined
-      ? { repository: { url, branch: 'main', credential: { username: 'reader', token } } }
+      ? { repository: { url, branch: 'main', remote: url, expiresAt: Date.now() + 3_600_000, credential: { username: 'reader', token } } }
       : { pin: { url, branch: 'main', commit: input.commit } };
     const spec = { url, branch: 'main', historyDepth: 1 };
+    const github = tokenRevocations();
     for (const digests of [true, false]) {
       const allocation = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
       const { scratchDir: scratch } = writeRunDir(allocation, 'run_checkout', { serverUrl: 'https://server.example.test', runToken: 'synthetic-run-token', projectId: 'project_fixture' });
       try {
-        const checkout = await prepareWorkerCheckout(spec, scratch, AbortSignal.timeout(15_000), answer, { gitPath, digests });
+        const checkout = await prepareWorkerCheckout(spec, scratch, AbortSignal.timeout(15_000), answer, { gitPath, digests, fetchImpl: github.fetchImpl });
         try {
           const listing = await readFile(join(scratch, RUN_REPOSITORY_DIGESTS_FILE), 'utf8').catch(() => null);
           expect({ digests, listing }).toEqual({ digests, listing: digests ? `${createHash('sha256').update('Second committed rules.').digest('hex')}  AGENTS.md\n` : null });
         } finally { await checkout.dispose(); }
       } finally { discardRunDir(scratch); await rm(allocation, { recursive: true, force: true }); }
     }
+    // The token ends as soon as Git no longer needs it, before the harness would start.
+    expect(github.revoked).toEqual([token, token]);
   });
 
   it('preserves worker checkout files until their registered harness owner exits', async () => {
     const allocation = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
     const { scratchDir } = writeRunDir(allocation, 'run_owned_checkout', { serverUrl: 'https://server.example.test', runToken: 'synthetic-run-token', projectId: 'project_fixture' });
     const answer = async (input: Record<string, unknown>) => input.commit === undefined
-      ? { repository: { url, branch: 'main', credential: { username: 'reader', token } } }
+      ? { repository: { url, branch: 'main', remote: url, expiresAt: Date.now() + 3_600_000, credential: { username: 'reader', token } } }
       : { pin: { url, branch: 'main', commit: input.commit } };
-    const checkout = await prepareWorkerCheckout({ url, branch: 'main', historyDepth: 1 }, scratchDir, AbortSignal.timeout(15_000), answer, { gitPath });
+    const checkout = await prepareWorkerCheckout({ url, branch: 'main', historyDepth: 1 }, scratchDir, AbortSignal.timeout(15_000), answer, { gitPath, fetchImpl: tokenRevocations().fetchImpl });
     const launch = beginRunProcess(scratchDir)!;
     const owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: checkout.root, detached: process.platform !== 'win32', stdio: 'ignore', env: process.env });
     const exited = new Promise<void>((resolve) => owner.once('close', () => resolve()));
@@ -250,8 +253,8 @@ it('continues mapping without posting an oversized committed inventory',async()=
   const calls:Record<string,unknown>[]=[];
   try {
     const checkout=await prepareWorkerCheckout({url,branch:'main',historyDepth:1},home,AbortSignal.timeout(1000),async input=>{
-      calls.push(input);return {repository:{url,branch:'main'}};
-    },{digests:true});
+      calls.push(input);return {repository:{url,branch:'main',remote:url,expiresAt:Date.now()+3_600_000,credential:GIT_READ_CREDENTIAL}};
+    },{digests:true,fetchImpl:tokenRevocations().fetchImpl});
     expect(calls).toEqual([{}]);
     await checkout.dispose();
   }finally{prepare.mockRestore();}
@@ -319,9 +322,9 @@ it('map and seed history reads need no repository access outside the run directo
   for(const task of ['canopy-map','vault-seed']) {
     const allocation=writeRunDir(join(home,'history-runs'),'run_'+task,{serverUrl:'https://fixture.test',projectId:'project',runToken:'synthetic-token'});
     const checkout=await prepareWorkerCheckout({url,branch:'main',historyDepth:200},allocation.scratchDir,AbortSignal.timeout(15_000),async input=>
-      input.commit === undefined ? {repository:{url,branch:'main',credential:GIT_READ_CREDENTIAL}}
+      input.commit === undefined ? {repository:{url,branch:'main',remote:url,expiresAt:Date.now()+3_600_000,credential:GIT_READ_CREDENTIAL}}
         : {pin:{url,branch:'main',commit:input.commit}},
-    {task,cacheRoot,gitPath,digests:task==='canopy-map'});
+    {task,cacheRoot,gitPath,digests:task==='canopy-map',fetchImpl:tokenRevocations().fetchImpl});
     try {
       const usedCache=existsSync(cacheRoot);
       const detachedRoot=await mkdtemp(join(tmpdir(),'myco-contained-history-'));

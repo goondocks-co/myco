@@ -9,7 +9,6 @@
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { releaseProvenance, reconcileReleaseProvenance, type ReleaseProvenanceWrite } from '@myco-server-worker/core/release-provenance.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
@@ -26,6 +25,7 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { A, B, D, MISSING, REPO, fakeGithub, type Repo } from './helpers/github-fake.js';
+import { connectRepository, githubFixture, withReads } from './helpers/github-app.js';
 
 configureSqliteLibrary();
 const P = 'proj_1';
@@ -297,17 +297,17 @@ describe('embedding revisions follow the values a vector is built from', () => {
 });
 
 describe('the release check re-embeds only what changed state', () => {
-  const TOKEN = 'fixture-release-token-with-no-real-permissions';
   const settings: ReleaseProvenanceWrite = {
-    revision: null, enabled: true, githubRepo: 'o/r',
+    revision: null, enabled: true,
     productionRefs: ['refs/tags/a/v*', 'refs/tags/b/v*'], integrationRefs: ['origin/main'], packageMap: [],
-    includeUnknown: true, maxLookups: 50, credential: { token: TOKEN },
+    includeUnknown: true, maxLookups: 50,
   };
 
   async function configured() {
     const f = fixture();
-    f.env.SECRET_WRAP_KEY = { get: async () => btoa('a'.repeat(32)) };
-    const store = releaseProvenance(f.db, deploymentSecretStore(f.db, f.serverEnv.wrappingKey));
+    const github = githubFixture();
+    await connectRepository(withReads(f.serverEnv, github, fakeGithub(REPO)), P);
+    const store = releaseProvenance(f.db);
     await store.save(P, settings, 'mem_1', 1);
     // Released, merged but unreleased, on no release line, and not on GitHub at all.
     for (const [sessionId, headSha] of [['s_released', A], ['s_merged', B], ['s_nowhere', D], ['s_unpushed', MISSING]] as const) {
@@ -322,7 +322,7 @@ describe('the release check re-embeds only what changed state', () => {
       throw new Error('embedding did not settle');
     };
     const check = (repo: Repo, now: number) => {
-      const env = { ...f.serverEnv, outbound: fakeGithub(repo) };
+      const env = withReads(f.serverEnv, github, fakeGithub(repo));
       return store.requestCheck(P, now).then(() => reconcileReleaseProvenance(env, now)).then((outcome) => outcome.changed);
     };
     const pending = (now: number) => hasEmbeddingWork(f.db, P, provider.modelKey, now);

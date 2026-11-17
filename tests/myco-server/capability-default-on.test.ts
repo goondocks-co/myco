@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from 'bun:test';
+import { storedConnection, UNSIGNED_APP } from './helpers/github-app.js';
 import { enabledCapabilities, PROJECT_CAPABILITIES, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CAPABILITY_ON_SQL } from '@myco-server-worker/db/settings/admission.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -6,8 +7,6 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { claimNextRun, dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { decideTask, readScheduleFacts, runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import type { TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import {
@@ -20,6 +19,9 @@ import { CONTACT_RECENT_MS, recordWorkerContact } from '@myco-server-worker/core
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { legacyWorker } from './helpers/worker-principal.js';
+
+/** A Deployment whose App key is configured, so code tasks are ready wherever a connection is stored. */
+const appEnv = () => { const f = sqliteEnv({ workerLogin: true }); Object.assign(f.env, UNSIGNED_APP); return f; };
 
 const NOW = 1_800_000_000_000;
 const OFFERED = [offeredHarness('claude-code')];
@@ -79,10 +81,9 @@ describe('project capability defaults across readers', () => {
 
 describe('default-on task enforcement', () => {
   it('admits extraction and seeding with no rows, and an explicit Learning opt-out stops new and queued work', async () => {
-    const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    const { db, sqlite, serverEnv } = appEnv();
     try {
-      await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
-        .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      sqlite.run(...storedConnection('proj_1'));
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
       for (const task of [EXTRACTION_TASK, SEEDING_TASK]) {
@@ -103,10 +104,9 @@ describe('default-on task enforcement', () => {
   });
 
   it('claims a default-on code-map through atomic admission without adding a capability row', async () => {
-    const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    const { db, sqlite, serverEnv } = appEnv();
     try {
-      await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
-        .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      sqlite.run(...storedConnection('proj_1'));
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
       expect(await dispatchTask(serverEnv, MAP_TASK, 'proj_1', { serverUrl: 'https://s', actor: 'test' }, NOW))
@@ -119,10 +119,9 @@ describe('default-on task enforcement', () => {
 
   it('refuses archive and opt-out races at the atomic queue write for code-map and capture tasks', async () => {
     for (const [task, change] of [[MAP_TASK, 'archive'], [MAP_TASK, 'off'], [TITLING_TASK, 'archive']] as const) {
-      const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+      const { db, sqlite, serverEnv } = appEnv();
       try {
-        await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
-          .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
+        sqlite.run(...storedConnection('proj_1'));
         let changed = false;
         const interleaved = {
           ...serverEnv,
@@ -147,10 +146,9 @@ describe('default-on task enforcement', () => {
   });
 
   it('does not schedule archived Projects or claim their already queued default-on work', async () => {
-    const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    const { db, sqlite, serverEnv } = appEnv();
     try {
-      await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
-        .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      sqlite.run(...storedConnection('proj_1'));
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
       await recordWorkerContact(db, { credentialId: credential.tokenId, machineId: 'm1', offers: OFFERED, capabilities: [...WORKER_CAPABILITIES], now: NOW });
@@ -169,7 +167,7 @@ describe('default-on task enforcement', () => {
   });
 
   it('skips an archived title at the queue head and claims later live work', async () => {
-    const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    const { db, sqlite, serverEnv } = appEnv();
     try {
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
@@ -187,6 +185,7 @@ describe('default-on task enforcement', () => {
 
   for (const value of ['oops', '{"skip":"repository_missing","at":"bad"}']) it(`resets invalid persistent skip state ${value} and visits both Projects`, async () => {
     const f = sqliteEnv();
+    Object.assign(f.env, UNSIGNED_APP);
     const events: Array<{ kind: string; projectId?: string; task?: string; skip?: string }> = [];
     const log = spyOn(console, 'log').mockImplementation(message => { events.push(JSON.parse(message)); });
     try {
@@ -205,6 +204,7 @@ describe('default-on task enforcement', () => {
 
   it('reads repository workers once per task per wake and rate-limits persistent skip telemetry per Project', async () => {
     const f = sqliteEnv();
+    Object.assign(f.env, UNSIGNED_APP);
     const events: Array<{ kind: string; task?: string; projectId?: string; skip?: string }> = [];
     const log = spyOn(console, 'log').mockImplementation((message: string) => { events.push(JSON.parse(message)); });
     try {
@@ -213,8 +213,7 @@ describe('default-on task enforcement', () => {
       for (const project of ['proj_1', 'proj_2']) {
         f.sqlite.run("INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES (?,'recent','m','t',?,?)", [project, NOW, NOW]);
       }
-      const repositories = projectRepositories(f.db, deploymentSecretStore(f.db, f.serverEnv.wrappingKey));
-      await repositories.save('proj_2', { url: 'https://example.test/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      f.sqlite.run(...storedConnection('proj_2'));
       const wake = async (at: number) => {
         f.executed.length = 0;
         expect((await runScheduledTasks(f.serverEnv, 'sleep', at, 'https://s')).dispatched).toBe(0);
@@ -229,7 +228,7 @@ describe('default-on task enforcement', () => {
       ]);
       await wake(NOW + 900_000);
       expect(skips()).toHaveLength(2);
-      await repositories.save('proj_1', { url: 'https://example.test/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      f.sqlite.run(...storedConnection('proj_1'));
       await wake(NOW + 1_800_000);
       expect(skips()).toHaveLength(3);
       expect(skips()[2]).toMatchObject({ projectId: 'proj_1', skip: 'worker_unavailable' });
@@ -241,19 +240,16 @@ describe('default-on task enforcement', () => {
   });
 
   it('schedules a default-on code map only with repository access and a recent capable worker, retaining ceilings and overlap', async () => {
-    const { db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    const { db, sqlite, serverEnv } = appEnv();
     const schedule = { intervalSeconds: 60, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 1 } satisfies TaskSchedule;
     const leaves = { activeWindowDays: 10, coldThresholdDays: 10 };
     const decide = (now = NOW) => decideTask(serverEnv, 'proj_1', NOW, MAP_TASK, schedule, 'sleep', leaves, now);
     try {
       expect(await decide()).toBe('repository_missing');
       expect(await decideTask(serverEnv, 'proj_1', NOW, MAP_TASK, { ...schedule, preCondition: 'not-registered' }, 'sleep', leaves, NOW)).toBe('repository_missing');
-      await projectRepositories(db, deploymentSecretStore(db, serverEnv.wrappingKey))
-        .save('proj_1', { url: 'https://example.test/team/repo.git', branch: 'main', revision: null }, 'test', NOW);
+      sqlite.run(...storedConnection('proj_1'));
       expect(await decide()).toBe('worker_unavailable');
-      sqlite.run("UPDATE project_repositories SET secret_slot = 'repository:missing', username='test' WHERE project_id='proj_1'");
-      expect(await decide()).toBe('repository_unavailable');
-      sqlite.run("UPDATE project_repositories SET secret_slot=NULL, username=NULL WHERE project_id='proj_1'");
+      expect(await decideTask({ ...serverEnv, secrets: {} }, 'proj_1', NOW, MAP_TASK, schedule, 'sleep', leaves, NOW)).toBe('repository_unavailable');
       await ensureMember(db, 'mem_worker', NOW, 'admin', 'test');
       const credential = await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
       const report = (capabilities: string[], authenticated = true, now = NOW) => recordWorkerContact(db, {

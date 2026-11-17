@@ -17,7 +17,7 @@ import { agentListRefusal, deadlineWords, LeafControl, savedWords, WORKER_AGENTS
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
 import { effectiveSettings } from '../../packages/myco-server/src/core/settings-policies';
 import { sqliteEnv } from '../myco-server/helpers/fixtures';
-import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../packages/myco-server/src/core/settings';
+import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '../../packages/myco-server/src/core/settings';
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
@@ -105,11 +105,10 @@ const leaves = (over: Record<string, Partial<{ value: unknown; revision: string;
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
-  { name: 'anthropic', retired: RETIRED_SECRET_SLOTS.has('anthropic'), configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? ADA : null },
-  { name: 'codex', retired: RETIRED_SECRET_SLOTS.has('codex'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'openai', retired: RETIRED_SECRET_SLOTS.has('openai'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'openrouter', retired: RETIRED_SECRET_SLOTS.has('openrouter'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'github', retired: RETIRED_SECRET_SLOTS.has('github'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'anthropic', configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? ADA : null },
+  { name: 'codex', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'openai', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'openrouter', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
 ] });
 const TITLING = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: true, building: false, remaining: 12, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
 
@@ -832,20 +831,15 @@ describe('Settings, in five sections', () => {
     expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
   });
 
-  it('takes which settings and keys are retired from the server\'s answer, not from a list of its own', async () => {
+  it('takes which settings are retired from the server\'s answer, not from a list of its own', async () => {
     server(base({
       '/api/settings': () => Response.json(leaves({
         'cortex.digest.tier': { value: 8000, updatedBy: ADA, updatedAt: NOW, retired: true },
       })),
-      '/api/secrets': () => {
-        const answer = secrets(false);
-        answer.secrets[1] = { ...answer.secrets[1]!, retired: true, configured: true, maskedValue: 'c…x', updatedAt: NOW, updatedBy: ADA };
-        return Response.json(answer);
-      },
     }));
     mount('/settings/models');
+    await screen.findByText('Anthropic');
     expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
-    expect(await screen.findByRole('button', { name: 'Older keys' })).toBeTruthy();
   });
 
   it('shows every switch at the value the server applies while nothing is stored', async () => {
@@ -911,7 +905,7 @@ describe('older links to a Settings tab', () => {
 
 describe('provider keys', () => {
   it('stores a key from the session alone and never shows it afterwards, and removes one from its menu behind a confirm', async () => {
-    const { sent } = server(base({ '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', retired: RETIRED_SECRET_SLOTS.has('anthropic'), configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: ADA })) }));
+    const { sent } = server(base({ '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: ADA })) }));
     mount('/settings/models');
     const keys = await group('Keys');
     await waitFor(() => expect(within(keys).getByText(/s…c/)).toBeTruthy());
@@ -957,20 +951,8 @@ describe('provider keys', () => {
     expect(row('OpenAI')).toContain('Used for embeddings, when the embedding provider is OpenAI.');
     expect(row('OpenAI')).not.toContain('Codex');
     expect(row('Anthropic')).toContain('Claude Code and OpenCode use this key');
-    // Nothing reads the GitHub key: with none stored it is not offered.
+    // Repository access is the server's GitHub App: no GitHub key is offered.
     expect(within(keys).queryByText('GitHub')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Older keys' })).toBeNull();
-  });
-
-  it('lists a stored GitHub key, which nothing reads, under Older keys with no control', async () => {
-    const stored = secrets(true);
-    stored.secrets[4] = { ...stored.secrets[4]!, configured: true, maskedValue: 'g…h', updatedAt: NOW, updatedBy: ADA };
-    server(base({ '/api/secrets': () => Response.json(stored) }));
-    mount('/settings/models');
-    fireEvent.click(await screen.findByRole('button', { name: 'Older keys' }));
-    const older = await screen.findByRole('group', { name: 'Older keys' });
-    expect(older.textContent).toContain('Nothing on this server reads this key any more.');
-    expect(within(older).queryAllByRole('button')).toEqual([]);
   });
 });
 
@@ -1100,9 +1082,11 @@ describe('Title imported sessions', () => {
 });
 
 describe('Sign-in and access', () => {
-  it('shows App setup, missing reads and a successful explicit recheck', async () => {
+  it('shows App setup, missing reads, a successful explicit recheck and the accounts approved here', async () => {
     let state: unknown = { state: 'key_absent' };
-    server(base({ '/api/github-app': () => Response.json(state) }));
+    const { sent } = server(base({ '/api/github-app': () => Response.json(state),
+      '/api/github-app/installations': () => Response.json({ installations: [], accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW }] }),
+      '/api/github-app/accounts/9001': () => Response.json({ withdrawn: true }) }));
     mount('/settings/access');
     await screen.findByText('Check whether repository access is set up.');
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
@@ -1114,6 +1098,9 @@ describe('Sign-in and access', () => {
     state = { state: 'ready', app: { slug: 'myco-app' }, missing: [] };
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
     await screen.findByText('Repository access is set up for myco-app.');
+    const approved = (await screen.findByText('goondocks-co (an organization)')).parentElement as HTMLElement;
+    fireEvent.click(within(approved).getByRole('button', { name: 'Remove approval' }));
+    await waitFor(() => expect(sent.filter((request) => request.method === 'DELETE').map(({ method, path }) => ({ method, path }))).toEqual([{ method: 'DELETE', path: '/api/github-app/accounts/9001' }]));
   });
 
   it('counts the people who can sign in, never Myco, and leads to People & machines, My machines and each live project\'s access keys', async () => {

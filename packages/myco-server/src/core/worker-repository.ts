@@ -4,7 +4,7 @@ import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import type { ServerEnv } from './adapters.js';
 import { carryMapForward, mapRepositoryComparison } from './canopy-carry-forward.js';
 import { pinMapRepositoryAtCommit } from './canopy.js';
-import { prepareRunRepository } from './run-repository.js';
+import { prepareRunRepository, revokeUndelivered } from './run-repository.js';
 import { recordKnowledgeRepositoryUnavailable, repositoryCheckoutOfRun, repositoryPinOfRun } from '../db/runs/preparation.js';
 import { type RunRow } from '../db/runs/lifecycle.js';
 import { withLeasedRunCommit, withLeasedRunSecret, type WorkerLeaseOwner, type WorkerRunIdentity } from './worker-run.js';
@@ -45,7 +45,7 @@ const prepare = async (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRu
     : answer;
 };
 
-const prepareRead = withLeasedRunSecret(prepare);
+const prepareRead = withLeasedRunSecret(prepare, revokeUndelivered);
 const preparePin = withLeasedRunCommit(prepare);
 
 export const prepareWorkerRepository = (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRunIdentity & { body: Record<string, unknown> }) =>

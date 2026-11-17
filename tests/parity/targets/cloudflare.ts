@@ -11,7 +11,7 @@ import { carryToPreviousSchema } from '../schema-carry.ts';
 import { seedDeployment } from '../upgrade-seed/index.ts';
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PARITY_APP_KEY, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
 import {decodeReadTrace} from '../../helpers/statement-recorder.js';
 import type { EmbeddingFixture } from '../embedding/bindings.ts';
 import {CLOCK_NAME} from '@myco-server-worker/platform/cloudflare/clock-name.js';
@@ -199,7 +199,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     if (!deploymentId) throw new Error('Cloudflare parity target has no Deployment identity');
 
     const vars = {
-      SESSION_SECRET, GITHUB_CLIENT_ID: 'parity-client', GITHUB_CLIENT_SECRET: 'parity-secret',
+      SESSION_SECRET, GITHUB_CLIENT_ID: 'parity-client', GITHUB_CLIENT_SECRET: 'parity-secret', GITHUB_APP_PRIVATE_KEY: PARITY_APP_KEY,
       ...(options.embeddingRuntime ? {} : { HARNESS_LAUNCH_MODE: 'record', CLOCK_MODE: 'manual' }),
     };
     let reply = await runtime.command({ op: 'start', tag, config: configPath, persist: persistDir, vars });

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
-import { Button, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, ErrorState, Input, LoadingState, MoreMenu } from '../../../design';
+import { Button, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, Input, LoadingState, MoreMenu } from '../../../design';
 import { settingsRefusalText, useSecrets, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
@@ -57,7 +57,7 @@ export function Credentials() {
         : (
           <>
           <RowCard label="Keys">
-            {secrets.data.secrets.filter((secret) => !secret.retired).map((secret) => (
+            {secrets.data.secrets.map((secret) => (
               <SettingRow
                 key={secret.name}
                 setting={`secret.${secret.name}`}
@@ -80,22 +80,6 @@ export function Credentials() {
               />
             ))}
           </RowCard>
-          {secrets.data.secrets.some((secret) => secret.retired && secret.configured) && (
-            <Disclosure summary="Older keys">
-              <RowCard label="Older keys">
-                {secrets.data.secrets.filter((secret) => secret.retired && secret.configured).map((secret) => (
-                  <SettingRow
-                    key={secret.name}
-                    setting={`secret.${secret.name}`}
-                    label={labelOf(secret.name)}
-                    note="Nothing on this server reads this key any more."
-                    status={keyStatus(secret, nameOf(secret.updatedBy), now)}
-                    control={null}
-                  />
-                ))}
-              </RowCard>
-            </Disclosure>
-          )}
           </>
         )}
 

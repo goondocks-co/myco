@@ -1,15 +1,18 @@
 import { expect } from 'bun:test';
-import { MEMBER_ID, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { connectRepository, memberHeadersFor, type ParityScenario } from '../harness.ts';
 import { putCapability } from '../clients/requests.ts';
 
+/**
+ * A Project's repository connection on both targets: the notices that ask for one, the owner reads and refusals of the
+ * App-backed route, and the retired run route. Parity holds an App key that cannot sign, so every refusal that would
+ * need GitHub is named without asking it.
+ */
 export const repositories: ParityScenario = {
-  name: 'repositories: sealed owner access and retired run route',
+  name: 'repositories: App-backed connection refusals, repository notices and retired run route',
   async run(target) {
     const endpoint = `/api/projects/${target.projectId}/repository`;
-    const source = 'https://github.com/example/source.git';
-    const secret = 'parity-repository-token-with-no-real-permissions';
-    const owner = async (method: string, body?: unknown) => {
-      const result = await fetch(target.url + endpoint, { method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const owner = async (method: string, body?: unknown, path = endpoint) => {
+      const result = await fetch(target.url + path, { method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
       return { status: result.status, body: await result.json() as any };
     };
     const dispatch = async (task: string, projectId = target.projectId) => {
@@ -35,40 +38,31 @@ export const repositories: ParityScenario = {
     };
     for (const capability of ['canopy', 'vault_evolution']) expect((await putCapability(target, capability, false)).status).toBe(200);
     expect(await needed()).toEqual([]);
-    expect(await setupNeeded()).toEqual([]);
-    expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
-    expect(await needed()).toEqual([]);
-    expect(await setupNeeded()).toEqual([]);
     expect((await putCapability(target, 'canopy', true)).status).toBe(200);
     expect(await needed()).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: target.projectId }]);
     expect(await setupNeeded()).toEqual([{ projectId: target.projectId }]);
-    const prior = await owner('GET');
-    expect(prior.status).toBe(200);
-    expect(prior.body.repository).toBeNull();
+    expect(await owner('GET')).toEqual({ status: 200, body: { repository: null, appConfigured: true } });
     try {
-      const saved = await owner('PUT', { url: source, branch: 'main', revision: null, credential: { username: 'reader', token: secret } });
-      expect(saved.status).toBe(200);
+      // The token-era body is refused by name; a choice GitHub cannot confirm stores nothing.
+      expect(await owner('PUT', { url: 'https://github.com/example/source', branch: 'main', revision: null }))
+        .toMatchObject({ status: 400, body: { reason: expect.stringContaining('`url` is no longer accepted') } });
+      expect(await owner('PUT', { installationId: 41, repositoryId: 1296269, branch: 'main', revision: null }))
+        .toMatchObject({ status: 503, body: { failure: 'github_unavailable' } });
+      expect(await owner('GET', undefined, '/api/github-app/installations')).toMatchObject({ status: 503, body: { failure: 'github_unavailable' } });
+      expect((await owner('GET')).body.repository).toBeNull();
+      await connectRepository(target, { url: 'https://github.com/example/source', branch: 'main' });
+      const connected = (await owner('GET')).body.repository;
+      expect(connected).toMatchObject({ url: 'https://github.com/example/source', branch: 'main', repositoryId: 1296269, installationId: 41 });
       expect(await needed()).toEqual([]);
       expect(await setupNeeded()).toEqual([]);
-      expect(saved.body.repository.updatedBy).toBe(MEMBER_ID);
-      expect(saved.body.repository.credential.readable).toBe(true);
-      expect(JSON.stringify(saved.body)).not.toContain(secret);
-      expect((await owner('PUT', { url: source, branch: 'main', revision: 'stale' })).status).toBe(409);
       const retired = await fetch(target.url + '/runs/repository', {
         method: 'POST', headers: memberHeadersFor(target.memberToken, target.projectId, { 'content-type': 'application/json' }),
         body: JSON.stringify({ runId: 'retired-repository-route' }),
       });
       expect(retired.status).toBe(401);
-      expect((await owner('GET')).body.repository).toEqual(saved.body.repository);
-      const edited = await owner('PUT', { url: 'https://example.test/new.git', branch: 'main', revision: saved.body.repository.revision });
-      expect(edited.status).toBe(200);
-      expect(edited.body.repository.credential).toBeNull();
-      expect((await owner('DELETE', { revision: edited.body.repository.revision })).status).toBe(200);
-      expect((await owner('GET')).body.repository).toBeNull();
+      expect((await owner('DELETE', { revision: 'stale' })).status).toBe(409);
+      expect((await owner('DELETE', { revision: connected.revision })).status).toBe(200);
       expect(await needed()).toHaveLength(1);
-      for (const capability of ['canopy', 'vault_evolution']) expect((await putCapability(target, capability, false)).status).toBe(200);
-      expect(await needed()).toEqual([]);
-      expect(await setupNeeded()).toEqual([]);
     } finally {
       const current = await owner('GET');
       if (current.status === 200 && current.body.repository !== null) {

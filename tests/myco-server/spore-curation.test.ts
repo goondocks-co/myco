@@ -1,4 +1,5 @@
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import { UNSIGNED_APP } from './helpers/github-app.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { droppedFeatureFacts } from '@myco-server-worker/core/dropped-features.js';
 import { recordProjectRemote } from '@myco-server-worker/core/remotes.js';
@@ -37,7 +38,7 @@ async function fixture(deferred = false) {
   const get = vectors.get.bind(vectors), query = vectors.query.bind(vectors);
   vectors.get = async (...args) => { calls.get++; const found=await get(...args); visits.push(...found.map(row=>row.metadata.record_id)); return found; };
   vectors.query = (...args) => { calls.query++; return query(...args); };
-  const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
+  const env = { ...f.serverEnv, secrets: { ...f.serverEnv.secrets, ...UNSIGNED_APP }, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
   const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
   const add = async (id: string, values = [1, 0], created = f.now, content = `Whole content for ${id}`, stats: {mean:number;std:number}|null = {mean:0.4,std:0.04}) => {
     f.sqlite.run(`INSERT OR IGNORE INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at)
@@ -780,8 +781,8 @@ test('knowledge curation retires a dropped feature citing its decision and merge
     const f = await fixture();
     try {
       await recordProjectRemote(f.db, 'proj_1', 'github.com/goondocks-co/myco', f.now);
-      if (connected) f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-        VALUES('proj_1','connection','https://github.com/goondocks-co/myco','main',1,'test')`);
+      if (connected) f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+        VALUES('proj_1','connection','https://github.com/goondocks-co/myco','main',1296269,41,1,'test')`);
       await f.enable();
       await f.add('retired', [1,0], f.now, 'skill-evolve generates and evolves skills automatically.');
       for (const id of ['a','b','c']) await f.add(id, [1,0], f.now + 1, 'Increment counters atomically to preserve concurrent updates. Historical hint: src/gone.ts.');
@@ -835,8 +836,8 @@ test('DROP facts are absent for an existing Project not bound to the Myco remote
   try {
     f.sqlite.run("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('proj_other','Other',1)");
     await recordProjectRemote(f.db,'proj_other','github.com/example/other',f.now);
-    f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-      VALUES('proj_other','connection','https://github.com/goondocks-co/myco','main',1,'test')`);
+    f.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+      VALUES('proj_other','connection','https://github.com/goondocks-co/myco','main',1296269,41,1,'test')`);
     expect(await droppedFeatureFacts(f.db,'proj_other')).toBe('');
   } finally { f.sqlite.close(); }
 });

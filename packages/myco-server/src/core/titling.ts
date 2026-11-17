@@ -98,6 +98,7 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
   unknown_task: 'error',
   unknown_project: 'error',
   repository_missing: 'error',
+  repository_unavailable: 'error',
 };
 
 /**

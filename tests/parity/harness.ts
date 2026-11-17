@@ -162,6 +162,21 @@ export async function ageRows(target: ParityTarget, options: { table: string; co
   await target.sql(`UPDATE ${table} SET ${column} = ${column} - ${byMs} WHERE ${where}`);
 }
 
+/**
+ * The App key both targets hold: configured, so code work is ready wherever a connection is stored, and unable to sign,
+ * so no request reaches GitHub.
+ */
+export const PARITY_APP_KEY = 'parity-app-key-that-cannot-sign';
+
+/**
+ * The connection an admin's App choice stores, for the Project `target` works in. Parity has no GitHub to confirm a
+ * choice through the route, so this is the one seam that stores it; the route's own refusals are a scenario's to assert.
+ */
+export async function connectRepository(target: Pick<ParityTarget, 'sql' | 'projectId'>, source: { url: string; branch: string }): Promise<void> {
+  await target.sql(`INSERT OR REPLACE INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+    VALUES(?,?,?,?,1296269,41,?,'parity')`, [target.projectId, crypto.randomUUID(), source.url, source.branch, Date.now()]);
+}
+
 /** Polls `read` until `pred` answers true or `ms` elapses; answers the last read either way. */
 export async function waitFor<T>(read: () => Promise<T>, pred: (value: T) => boolean, ms = 45_000): Promise<T> {
   const deadline = Date.now() + ms;

@@ -968,7 +968,7 @@
     "tests/member/prompt-files-killed.test.ts": 2000
   },
   "parity": {
-    "github app: keyless sign-in and admin-only setup status": 500,
+    "github app: sign-in independent of the App key, and admin-only setup status": 500,
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,
     "schema upgrade: a Deployment populated by its users upgrades from the previous schema with every record, refusal and write unchanged": 125000,
@@ -996,7 +996,6 @@
     "harness deployment activity: scoped silence, legacy exclusion and replacement": 60000,
     "hook placement then wake: retention excludes fresh context answers": 60000,
     "hook placement: session and Project hints, delivery, and unplaced hook records": 120000,
-    "identity and Project writes: a replaced repository credential retires its old secret": 40000,
     "learning dispatch needs no pause or resume marker": 100000,
     "learning: verbatim failure becomes a session-citing spore and daily spend stops the next claim": 15000,
     "legacy spores: later vault retirement converges and replays once": 60000,
@@ -1022,7 +1021,7 @@
     "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 230000,
     "recall: semantic configuration, independent guidance and capability admission": 19000,
     "receipt snapshots: served plan metadata survives edits and source tombstones redact it": 60000,
-    "repositories: sealed owner access and retired run route": 14000,
+    "repositories: App-backed connection refusals, repository notices and retired run route": 14000,
     "repository preparation failure: leased worker metadata reaches runs and work on both targets": 18000,
     "retired schema: backup restore-upload skips retired tables and refuses unknown tables": 15000,
     "run reads: a run's read of its session is recorded, and a member reads it off the session and the run": 22000,

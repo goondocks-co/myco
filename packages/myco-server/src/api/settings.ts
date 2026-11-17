@@ -20,7 +20,6 @@ import {
   taskOverridesMetadata,
   type SettingsRefusal,
   RETIRED_LEAVES,
-  RETIRED_SECRET_SLOTS,
 } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { readQuietPolicy } from '../db/learning/quiet-policy.js';
@@ -447,7 +446,7 @@ export const handleSetProjectCapability = settingRevisionRoute(ctx => `project.$
  */
 export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const store = deploymentSecretStore(env.db, env.wrappingKey);
-  const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)), retired: RETIRED_SECRET_SLOTS.has(name) })));
+  const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)) })));
   return ok({ secrets: described });
 }
 

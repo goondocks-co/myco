@@ -24,9 +24,9 @@ function repositoryName(connection: RepositoryRow): string {
 }
 
 /** One capability's switch, saving as it is flipped and saying why when the server refuses. */
-function CapabilityRow({ projectId, capability, enabled, revision, repository, repositoryState, tasks, taskState }: {
+function CapabilityRow({ projectId, capability, enabled, revision, repository, appConfigured, repositoryState, tasks, taskState }: {
   projectId: string; capability: string; enabled: boolean; revision: number;
-  repository: RepositoryRow | null | undefined; repositoryState: 'ready' | 'loading' | 'error';
+  repository: RepositoryRow | null | undefined; appConfigured: boolean; repositoryState: 'ready' | 'loading' | 'error';
   tasks: readonly TaskDescription[] | undefined; taskState: 'ready' | 'loading' | 'error';
 }) {
   const actions = useSettingsActions();
@@ -39,20 +39,20 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, r
   const independentTasks = capabilityTasks.filter((task) => !REQUIRED_REPOSITORY_TASKS.includes(task.task));
   const readsRepository = repositoryTasks.length > 0;
   const allNeedRepository = allTasksRequireRepository(capabilityTasks.map((task) => task.task));
-  const missingToken = repository?.credential != null && (!repository.credential.configured || !repository.credential.readable);
-  const repositoryRequirement = missingToken ? 'repository token' : 'repository';
-  const repositoryAction = missingToken ? 'enter the repository token' : 'connect the repository';
-  const missingNote = allNeedRepository ? `Needs this project’s ${repositoryRequirement} to read its code.`
+  const needsSetup = repository != null && !appConfigured;
+  const repositoryAction = needsSetup ? 'set up repository access on this server' : 'connect the repository';
+  const missingNote = needsSetup ? `${allNeedRepository ? 'Code tasks' : repositoryTasks.map((task) => task.name).join(', ')} wait until the server operator sets up repository access: \`myco server github-app\`.`
+    : allNeedRepository ? 'Needs this project’s repository to read its code.'
     : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; ${repositoryAction} to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
-  const missingStatus = missingToken ? (allNeedRepository ? 'On · Code tasks need a repository token' : 'On · Some tasks need a repository token')
+  const missingStatus = needsSetup ? (allNeedRepository ? 'On · Code tasks need repository access set up' : 'On · Some tasks need repository access set up')
     : allNeedRepository ? 'On · Code tasks cannot run until a repository is connected' : 'On · Some tasks need a repository';
-  const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && (repository === null || missingToken);
+  const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && (repository === null || needsSetup);
   const repositoryNote = taskState === 'loading' ? 'Checking task requirements.'
     : taskState === 'error' ? 'Couldn’t check task requirements.'
       : !readsRepository ? null
     : repositoryState === 'loading' ? 'Checking this project’s repository.'
       : repositoryState === 'error' ? 'Couldn’t check this project’s repository.'
-        : repository === null || missingToken ? missingNote
+        : repository === null || needsSetup ? missingNote
           : repository === undefined ? 'Couldn’t check this project’s repository.'
             : allNeedRepository ? `Reads ${repositoryName(repository)} @ ${repository.branch}`
               : `${repositoryTasks.map((task) => task.name).join(', ')} reads ${repositoryName(repository)} @ ${repository.branch}`;
@@ -70,7 +70,7 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, r
       note={<>{words.note}{repositoryNote !== null && <span className="block">{repositoryNote}</span>}</>}
       status={error ?? (enabled ? enabledStatus : 'Off')}
       refused={error !== null}
-      details={enabled && missingRepository && <ActionLink to={projectRepositoryPath(projectId, !missingToken)}>{missingToken ? 'Enter repository token' : 'Connect repository'}</ActionLink>}
+      details={enabled && missingRepository && !needsSetup && <ActionLink to={projectRepositoryPath(projectId, true)}>Connect repository</ActionLink>}
       control={(
         <Switch
           id={id}
@@ -128,6 +128,7 @@ export function Capabilities({ projectId }: { projectId: string }) {
                 <CapabilityRow
                   key={capability} projectId={projectId} capability={capability} enabled={enabled} revision={caps.data.capabilityRevisions[capability] ?? 0}
                   repository={repository.isSuccess ? repository.data.repository : undefined}
+                  appConfigured={repository.isSuccess ? repository.data.appConfigured : true}
                   repositoryState={repository.isSuccess ? 'ready' : repository.isError ? 'error' : 'loading'}
                   tasks={tasks.data?.tasks}
                   taskState={tasks.isSuccess ? 'ready' : tasks.isError ? 'error' : 'loading'}

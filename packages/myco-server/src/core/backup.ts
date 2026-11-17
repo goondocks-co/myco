@@ -127,7 +127,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * state, transient upload-reservation state, the credential-store table nothing else may
  * touch, the backup index itself, the migration guard and holding tables, operator
  * configuration, and current machine and worker reports, which attached machines send again. Settings (the Deployment's and each machine's), capability
- * admissions, repository connections, release provenance settings and sealed secrets require their validated writers and a recorded actor.
+ * admissions, repository connections, approved GitHub App accounts, release provenance settings and sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore. Embedding state is rebuilt from the sources an
  * artifact carries, calibration members and their stored vector pages among it; the sources embedding passes over are found again, and an embedding model switch is not carried, so a restored Deployment
  * spends on another model only once an admin there starts the switch again. The search index, its stored plan-body work and
@@ -151,7 +151,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...['', '_data', '_idx', '_docsize', '_config'].map(suffix => `search_documents_fts${suffix}`),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
-  'backup_week_heads', 'backup_retention_state', 'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
+  'backup_week_heads', 'backup_retention_state', 'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'github_app_accounts', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'restore_jobs', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_settlement_intents', 'object_reconciliation_cursor', 'object_store_reconciliation', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',

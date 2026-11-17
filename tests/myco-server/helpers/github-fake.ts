@@ -34,9 +34,10 @@ export const REPO: Repo = {
 };
 
 export function fakeGithub(repo: Repo, calls: string[] = []): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.redirect !== 'manual') throw new TypeError('the fake refuses a request Workers would refuse: GitHub reads leave redirects to the caller');
     const url = new URL(String(input));
-    const path = decodeURIComponent(url.pathname.replace(/^\/repos\/[^/]+\/[^/]+/, ''));
+    const path = decodeURIComponent(url.pathname.replace(/^\/repositories\/\d+/, ''));
     calls.push(path);
     const json = (body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status: 200, headers });
     if (path === '') return json({ default_branch: 'main' });

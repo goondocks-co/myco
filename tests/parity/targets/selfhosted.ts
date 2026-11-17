@@ -15,7 +15,7 @@ import { memberAccountBind } from '@myco-server-worker/db/identity/member-standi
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { createBunHandler, serve, type BunServerOptions } from '@myco-server-worker/entry/bun.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
-import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, lit, memberHeadersFor, volumeSql, type ParityTarget } from '../harness.ts';
+import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PARITY_APP_KEY, PROJECT_ID, SESSION_SECRET, grantHeadersFor, lit, memberHeadersFor, volumeSql, type ParityTarget } from '../harness.ts';
 import { stopRaceFixture } from '../owner-review/stop-race.ts';
 import {statementRecorder,observeStatementSpans,withStatementSpan,type StatementFrame} from '../../helpers/statement-recorder.js';
 import { upgradeNativeStore } from '../schema-carry.ts';
@@ -59,6 +59,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean; embeddingFix
     SECRET_WRAP_KEY: wrapKey,
     GITHUB_CLIENT_ID: 'parity-client',
     GITHUB_CLIENT_SECRET: 'parity-secret',
+    GITHUB_APP_PRIVATE_KEY: PARITY_APP_KEY,
   };
   const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
   // The embedding endpoint a Deployment seeded for an upgrade recalls through, for as long as the target runs.

@@ -10,9 +10,9 @@
  * it is refused as `budget_exhausted` without leaving the process, so a run
  * never makes more requests than the owner allowed.
  *
- * **A failure is named, never collapsed into "no".** A rejected credential, a
- * refused token-less lookup (`forbidden`), a rate limit, a timeout and a
- * truncated listing each come back as their own failure, and the classifier
+ * **A failure is named, never collapsed into "no".** A rejected token, a rate
+ * limit, a timeout and a truncated listing each come back as their own
+ * failure, and the classifier
  * treats every one of them as the absence of evidence rather than as evidence
  * of absence.
  *
@@ -22,13 +22,16 @@
  * its base; its merge commit, from the pull-request read, is what the base
  * contains.
  *
+ * **The repository is named by GitHub's numeric id**, so a rename or transfer
+ * reads the same repository. A redirect is answered, never followed.
+ *
  * The token is sent only as the Authorization header of these requests and is
  * never returned, logged or placed in evidence.
  */
 
+import { GITHUB_API_ORIGIN } from '@goondocks/myco-shared/github-app';
 import type { OutboundFetch } from './adapters.js';
 
-const GITHUB_API = 'https://api.github.com';
 export const GITHUB_READ_TIMEOUT_MS = 5_000;
 
 /** A tag listing longer than this is treated as truncated rather than read whole. */
@@ -37,7 +40,6 @@ export const MAX_LISTED_REFS = 2_000;
 export type GithubFailure =
   | 'budget_exhausted'
   | 'credential_rejected'
-  | 'forbidden'
   | 'rate_limited'
   | 'not_found'
   | 'truncated'
@@ -61,7 +63,7 @@ export interface MergedPull {
 }
 
 export interface GithubReads {
-  /** Whether the repository is reachable with this credential; a private repository without one reads `not_found`. */
+  /** Whether the repository is reachable with this token. */
   repository(): Promise<GithubRead<{ defaultBranch: string }>>;
   /** Every ref under `refs/{prefix}` with the object it points at, or `truncated` when GitHub signals more or the list exceeds the bound. */
   matchingRefs(prefix: string): Promise<GithubRead<ListedRef[]>>;
@@ -77,17 +79,15 @@ export interface GithubReads {
 }
 
 interface GithubReadOptions {
-  repo: string;
-  token: string | null;
+  repositoryId: number;
+  token: string;
   maxLookups: number;
   fetcher?: OutboundFetch;
   timeoutMs?: number;
 }
 
-const REPO_GRAMMAR = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 const SHA_GRAMMAR = /^[0-9a-f]{40}$/;
 
-export const isGithubRepo = (value: unknown): value is string => typeof value === 'string' && REPO_GRAMMAR.test(value);
 export const isCommitSha = (value: unknown): value is string => typeof value === 'string' && SHA_GRAMMAR.test(value);
 
 const COMPARE_STATUSES = new Set<string>(['ahead', 'identical', 'behind', 'diverged']);
@@ -97,12 +97,12 @@ const RATE_LIMIT_MESSAGE = /rate limit/i;
 
 /**
  * A refused read, named. A 429, or a 403 carrying `x-ratelimit-remaining: 0`, `retry-after` or GitHub's rate-limit
- * message, is a rate limit. Any other 401 or 403 refused the token, or, on a lookup without one, the lookup itself.
+ * message, is a rate limit. Any other 401 or 403 refused the token.
  */
-async function failureFor(response: Response, token: string | null): Promise<GithubFailure> {
+async function failureFor(response: Response): Promise<GithubFailure> {
   const { status, headers } = response;
   if (status === 429 || (status === 403 && (headers.get('x-ratelimit-remaining') === '0' || headers.has('retry-after') || RATE_LIMIT_MESSAGE.test(await response.text())))) return 'rate_limited';
-  if (status === 401 || status === 403) return token ? 'credential_rejected' : 'forbidden';
+  if (status === 401 || status === 403) return 'credential_rejected';
   if (status === 404 || status === 422) return 'not_found';
   return 'unexpected_response';
 }
@@ -110,15 +110,15 @@ async function failureFor(response: Response, token: string | null): Promise<Git
 const encodeRef = (ref: string) => ref.split('/').map(encodeURIComponent).join('/');
 
 export function githubReads(options: GithubReadOptions): GithubReads {
-  if (!isGithubRepo(options.repo)) throw new Error('A GitHub repository is named owner/name.');
+  if (!Number.isSafeInteger(options.repositoryId) || options.repositoryId <= 0) throw new Error('A GitHub repository is named by its numeric id.');
   const fetcher = options.fetcher ?? fetch;
   const timeoutMs = options.timeoutMs ?? GITHUB_READ_TIMEOUT_MS;
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',
     'user-agent': 'myco-release-provenance',
+    authorization: `Bearer ${options.token}`,
   };
-  if (options.token) headers.authorization = `Bearer ${options.token}`;
   let used = 0;
 
   async function read<T>(path: string, parse: (body: unknown, response: Response) => GithubRead<T>): Promise<GithubRead<T>> {
@@ -126,8 +126,8 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     used += 1;
     const signal = AbortSignal.timeout(timeoutMs);
     try {
-      const response = await fetcher(`${GITHUB_API}/repos/${options.repo}${path ? `/${path}` : ''}`, { headers, signal });
-      if (!response.ok) return { ok: false, failure: await failureFor(response, options.token), status: response.status };
+      const response = await fetcher(`${GITHUB_API_ORIGIN}/repositories/${options.repositoryId}${path ? `/${path}` : ''}`, { headers, signal, redirect: 'manual' });
+      if (!response.ok) return { ok: false, failure: await failureFor(response), status: response.status };
       return parse(await response.json(), response);
     } catch (error) {
       return { ok: false, failure: signal.aborted ? 'timeout' : error instanceof SyntaxError ? 'unexpected_response' : 'network' };

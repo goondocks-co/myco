@@ -1,4 +1,5 @@
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { UNSIGNED_APP } from './helpers/github-app.js';
 import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
@@ -48,6 +49,7 @@ const OFFERED = [offeredHarness('claude-code')];
 
 async function rig() {
   const e = sqliteEnv({ workerLogin: true });
+  Object.assign(e.env, UNSIGNED_APP);
   turnOnGatedCapabilities(e.sqlite);
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ?)`, [NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
@@ -298,7 +300,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     r.e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'vault_evolution', 1, ?, 'test')`, [NOW]);
     r.e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
-    r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
+    r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES ('proj_1','rev_1','https://github.com/goondocks-co/myco','main',1296269,41,?,'mem_x')`, [NOW]);
     expect(await dispatchTask(r.e.serverEnv, SEEDING_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW)).toMatchObject({ dispatched: true, queued: true });
     const claimed = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     expect(claimed.claimed).toBe(true);
@@ -328,7 +330,7 @@ describe('what a worker reporting `completed` actually closes', () => {
       [id, SEEDING_TASK, at, JSON.stringify({ serverUrl: ORIGIN, actor: 'deployment', timeoutSeconds: 3600 }), JSON.stringify({ timeoutSeconds: 3600 })],
     );
     r.e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
-    r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
+    r.e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES ('proj_1','rev_1','https://github.com/goondocks-co/myco','main',1296269,41,?,'mem_x')`, [NOW]);
     queue('run_seed_a', NOW);
     const a = await claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerToken, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
     if (!a.claimed) throw new Error('not claimed');

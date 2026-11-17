@@ -1,4 +1,5 @@
 import { PUBLICATION_MARK_STEPS } from './schema-steps-publication-mark.js';
+import { GITHUB_APP_PROJECT_STEPS } from './schema-steps-github-app-projects.js';
 import { TOOL_DELIVERY_STEPS } from './schema-steps-tool-delivery.js';
 import { DIRECT_TITLE_STEPS } from './schema-steps-direct-titles.js';
 import { MACHINE_UPDATE_STEPS } from './schema-steps-machine-updates.js';
@@ -2415,6 +2416,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...MACHINE_UPDATE_STEPS.map(stamp),
   ...TOOL_DELIVERY_STEPS.map(stamp),
   ...PUBLICATION_MARK_STEPS.map(stamp),
+  ...GITHUB_APP_PROJECT_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

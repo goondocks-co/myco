@@ -1,21 +1,20 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 
 import { ReleaseTracking, checkSummary } from '../../packages/myco-server/ui/src/features/admin/project/ReleaseTracking';
 import { checkPending, RELEASE_CHECK_REFRESH_MS, type ReleaseProvenanceRow } from '../../packages/myco-server/ui/src/hooks/use-release-provenance';
 
 const NOW = Date.now();
-const TOKEN = 'ghp_fixturetokenvalue1234567890';
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
 const row = (over: Partial<ReleaseProvenanceRow> = {}): ReleaseProvenanceRow => ({
-  enabled: true, githubRepo: 'goondocks-co/myco', productionRefs: ['refs/tags/myco/v*'], integrationRefs: ['main'],
+  enabled: true, productionRefs: ['refs/tags/myco/v*'], integrationRefs: ['main'],
   packageMap: [{ pathGlob: 'packages/myco/', tagPattern: 'refs/tags/myco/v*' }], includeUnknown: true, maxLookups: 50,
-  revision: 'rev_1', updatedAt: NOW, updatedBy: 'mem_1',
-  credential: { configured: true, purpose: 'Reads release tags and pull requests for this Project. It is not used for code tasks.' },
-  suggestedRepo: 'goondocks-co/myco', problem: null, building: false, unresolvedStates: 0,
+  revision: 'rev_1', updatedAt: NOW, updatedBy: 'mem_1', repository: { url: 'https://github.com/goondocks-co/myco', branch: 'main' },
+  problem: null, building: false, unresolvedStates: 0,
   check: { requestedAt: null, startedAt: NOW - 60_000, finishedAt: NOW - 60_000, status: 'complete', failure: null,
     counts: { checked: 48, changed: 3, unchanged: 43, unknown: 2, unavailable: 0, deferred: 0 }, lookups: 20, lastCompleteAt: NOW - 60_000 },
   ...over,
@@ -23,11 +22,11 @@ const row = (over: Partial<ReleaseProvenanceRow> = {}): ReleaseProvenanceRow => 
 
 function mount(node: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><MemoryRouter>{node}</MemoryRouter></QueryClientProvider>);
 }
 
 describe('release tracking in project settings', () => {
-  it('shows the configuration, whether a credential is configured and its purpose, never any of the token, and requests a check', async () => {
+  it('shows the configuration and the connected repository it reads, and requests a check', async () => {
     const sent: Array<{ method: string; path: string }> = [];
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = new URL(String(input), 'https://s').pathname;
@@ -36,11 +35,8 @@ describe('release tracking in project settings', () => {
     }) as typeof fetch;
     const { container } = mount(<ReleaseTracking projectId="x" />);
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
-    expect(container.textContent).toContain('goondocks-co/myco');
+    expect(screen.getByTestId('release-repository').textContent).toBe('https://github.com/goondocks-co/myco');
     expect(container.textContent).toContain('packages/myco/ → refs/tags/myco/v*');
-    expect(screen.getByTestId('release-credential').textContent).toBe('Stored · Reads release tags and pull requests for this Project. It is not used for code tasks.');
-    expect(container.textContent).not.toContain('ghp_');
-    expect(container.textContent).not.toContain(TOKEN.slice(-4));
     expect(screen.getByTestId('release-check').textContent).toContain('48 checked · 3 changed · 2 unknown · 0 not reached');
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/projects/x/release-provenance/check' }]));
@@ -63,11 +59,19 @@ describe('release tracking in project settings', () => {
     expect(reads).toBe(2);
   });
 
-  it('names a failed check and unreadable stored settings honestly', () => {
-    expect(checkSummary(row({ check: { ...row().check!, status: 'unavailable', failure: 'rate_limited',
-      counts: { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 1, deferred: 4 } } }).check))
-      .toContain('stopped: GitHub rate limit reached. Earlier states are kept.');
+  it('names a failed check in the reader’s words, including a refusal of the App’s access', () => {
+    const stopped = (failure: string) => checkSummary(row({ check: { ...row().check!, status: 'unavailable', failure,
+      counts: { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 1, deferred: 4 } } }).check);
+    expect(stopped('rate_limited')).toContain('stopped: GitHub rate limit reached; it resets within the hour. Earlier states are kept.');
+    expect(stopped('account_not_approved')).toContain('stopped: the account that installed the App is not approved here.');
+    expect(stopped('repository_not_connected')).toContain('no repository is connected; connect one under Repository');
     expect(checkSummary(null)).toBe('Not checked yet');
+  });
+
+  it('leads to Repository when no repository is connected', async () => {
+    globalThis.fetch = (async () => Response.json({ releaseProvenance: row({ repository: null }) })) as unknown as typeof fetch;
+    mount(<ReleaseTracking projectId="x" />);
+    expect((await screen.findByRole('link', { name: 'Connect a repository to check releases' })).getAttribute('href')).toBe('/p/x/settings?connect=repository#repository');
   });
 
   it('says while release history is being prepared, and how many older records were kept aside', async () => {
@@ -91,7 +95,7 @@ describe('release tracking in project settings', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('cannot be read');
   });
 
-  it('saves the form as one write with the credential only when a new token is typed', async () => {
+  it('saves the form as one write naming refs and rules, never a repository or a token', async () => {
     const puts: unknown[] = [];
     globalThis.fetch = (async (_: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === 'PUT') puts.push(JSON.parse(String(init.body)));
@@ -101,67 +105,7 @@ describe('release tracking in project settings', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Edit release tracking' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Save release tracking' }));
     await waitFor(() => expect(puts).toHaveLength(1));
-    expect(puts[0]).toEqual({ revision: 'rev_1', enabled: true, githubRepo: 'goondocks-co/myco', productionRefs: ['refs/tags/myco/v*'],
+    expect(puts[0]).toEqual({ revision: 'rev_1', enabled: true, productionRefs: ['refs/tags/myco/v*'],
       integrationRefs: ['main'], packageMap: [{ pathGlob: 'packages/myco/', tagPattern: 'refs/tags/myco/v*' }], maxLookups: 50, includeUnknown: true });
-  });
-});
-
-describe('a lookup token, by the target this Deployment runs on', () => {
-  /** A Deployment whose status names `target` (or fails), whose release tracking has no token, and whose last check stopped with `failure`. */
-  function deployment(target: string | null, failure = 'rate_limited_without_credential') {
-    const stopped = row({ credential: { ...row().credential, configured: false },
-      check: { ...row().check!, status: 'unavailable', failure, lookups: 1,
-        counts: { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 1, deferred: 47 } } });
-    globalThis.fetch = (async (input: RequestInfo | URL) => new URL(String(input), 'https://s').pathname === '/api/status'
-      ? (target === null ? new Response(null, { status: 503 }) : Response.json({ target }))
-      : Response.json({ releaseProvenance: stopped })) as typeof fetch;
-    mount(<ReleaseTracking projectId="x" />);
-  }
-  const openForm = async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'Edit release tracking' }));
-    return screen.findByLabelText(/Lookup token/);
-  };
-
-  it('on Cloudflare says a token is needed even for a public repository, in the row and the form', async () => {
-    deployment('cloudflare');
-    await waitFor(() => expect(screen.getByTestId('release-credential').textContent).toContain('one is needed here even for a public repository'));
-    expect((await openForm()).getAttribute('placeholder')).toBe('Needed here, even for a public repository');
-    expect(screen.getByText(/on Cloudflare that address is shared/)).toBeTruthy();
-  });
-
-  it('on the native target keeps the token optional for a public repository', async () => {
-    deployment('bun');
-    await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
-    expect(await openForm().then((input) => input.getAttribute('placeholder'))).toBe('Optional for a public repository');
-    expect(screen.getByText(/optional for a public one/)).toBeTruthy();
-    expect(screen.getByTestId('release-credential').textContent).toStartWith('none · ');
-    expect(document.body.textContent).not.toContain('Cloudflare');
-  });
-
-  it('says nothing either way about a public repository while the target is unknown', async () => {
-    deployment(null);
-    await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
-    expect((await openForm()).getAttribute('placeholder')).toBe('Needed for a private repository');
-    expect(screen.getByTestId('release-credential').textContent).toStartWith('none · ');
-    expect(document.body.textContent).not.toMatch(/public/);
-  });
-
-  it('names the remedy when the check GitHub rate-limited ran without a token', async () => {
-    deployment('bun');
-    await waitFor(() => expect(screen.getByTestId('release-check').textContent)
-      .toContain('stopped: GitHub rate limit reached without a lookup token. Earlier states are kept. Add a read-only lookup token'));
-  });
-
-  it('says GitHub refused a lookup made without a token, blaming no credential', async () => {
-    deployment('bun', 'forbidden_without_credential');
-    await waitFor(() => expect(screen.getByTestId('release-check').textContent)
-      .toContain('stopped: GitHub refused lookups made without a lookup token. Earlier states are kept.'));
-    expect(screen.getByTestId('release-check').textContent).not.toMatch(/refused the credential|forbidden_without_credential/);
-  });
-
-  it('names no token remedy when the rate-limited check had one, even if it was removed since', async () => {
-    deployment('bun', 'rate_limited');
-    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('stopped: GitHub rate limit reached. Earlier states are kept.'));
-    expect(screen.getByTestId('release-check').textContent).not.toContain('Add a read-only lookup token');
   });
 });

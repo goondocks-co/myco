@@ -28,12 +28,12 @@ type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 /** `GET /api/settings`: one leaf as `deploymentSettings` builds it. */
 type ServerLeaf = SettingsLeafRow;
 /** `GET /api/secrets`: each slot named and described, as `handleSecrets` answers. */
-type ServerSecret = { name: string; retired: boolean } & SecretDescription;
+type ServerSecret = { name: string } & SecretDescription;
 
 const SAME: [
   Same<Settings.LeafRow, ServerLeaf>,
   Same<Settings.TaskTierRow, TaskTierRow>,
-  Same<Omit<Settings.SecretRow, 'name' | 'retired'>, SecretDescription>,
+  Same<Omit<Settings.SecretRow, 'name'>, SecretDescription>,
   Same<Project.KeyDescription, SecretDescription>,
   Same<Project.ReleaseCheck, ReleaseCheck>,
 ] = [true, true, true, true, true];

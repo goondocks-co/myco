@@ -1,26 +1,27 @@
 import { useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, FactRow, Input, LoadingState, MoreMenu, Switch,
+  Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, FactRow, Input, LoadingState, MoreMenu, Select,
 } from '../../../design';
-import { settingsRefusalText, useRepository, useRepositoryActions } from '../../../hooks/use-settings';
+import {
+  settingsRefusalText, useGitHubAccountActions, useGitHubInstallations, useInstallationRepositories, useRepository, useRepositoryActions,
+} from '../../../hooks/use-settings';
 import { PROJECT_SETTINGS_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
 import { useMemberNames } from '../members';
-import type { RepositoryRow } from './wire';
+import type { InstallationRow, RepositoryRow } from './wire';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
-/** How code tasks reach the repository, in words; never the credential. */
-function accessWords(connection: RepositoryRow): string {
-  if (connection.credential === null) return 'Public, with no token';
-  if (!connection.credential.configured) return 'Its token is missing; enter it again';
-  return connection.credential.readable ? 'With a read-only token' : 'Its token can no longer be opened; enter it again';
-}
+/** The operator's step when this server holds no GitHub App key. */
+export const APP_SETUP_WORDS = 'Repository access needs setup on this server: the server operator runs `myco server github-app` to give it the GitHub App’s key.';
+
+const accountKind = (type: InstallationRow['account']['type']) => (type === 'Organization' ? 'an organization' : 'a personal account');
 
 /**
- * The committed source a project's code tasks read: which repository and
- * branch, how it is reached, and who set it. Connecting or editing it is a
- * form; disconnecting is in the section's menu, behind a confirm.
+ * The committed source a project's code tasks read: one repository this
+ * server's GitHub App was installed on, its branch, and who connected it.
+ * Connecting is a choice among the App's installations; an installation is
+ * offered only once an admin approves the account that installed it.
  */
 export function Repository({ projectId }: { projectId: string }) {
   const query = useRepository(projectId);
@@ -32,6 +33,7 @@ export function Repository({ projectId }: { projectId: string }) {
   const [editing, setEditing] = useState(false);
   const [removing, setRemoving] = useState(false);
   const connection = query.data?.repository ?? null;
+  const appConfigured = query.data?.appConfigured ?? true;
   const connectRequested = searchParams.get('connect') === 'repository';
   const closeEditing = () => {
     setEditing(false);
@@ -42,10 +44,11 @@ export function Repository({ projectId }: { projectId: string }) {
     }
   };
   const closeRemove = () => { setRemoving(false); actions.remove.reset(); };
+  const open = editing || (connectRequested && query.isSuccess && connection === null && appConfigured);
 
   const sectionActions = query.isSuccess ? (
     <>
-      <Button onClick={() => setEditing(true)}>{connection === null ? 'Connect repository' : 'Edit repository'}</Button>
+      {appConfigured && <Button onClick={() => setEditing(true)}>{connection === null ? 'Connect repository' : 'Change repository'}</Button>}
       {connection !== null && (
         <MoreMenu label="More for the repository" items={[{ label: 'Disconnect repository', tone: 'danger', onSelect: () => setRemoving(true) }]} />
       )}
@@ -56,35 +59,39 @@ export function Repository({ projectId }: { projectId: string }) {
     <AdminSection
       id={PROJECT_SETTINGS_ANCHORS.repository}
       title="Repository"
-      description="Code tasks, such as the code map, read a committed snapshot of this repository. A public repository needs no token."
+      description="Code tasks, such as the code map, read a committed snapshot of this repository through this server’s GitHub App, with read-only access that ends when the snapshot is taken."
       actions={sectionActions}
     >
       {query.isPending ? <LoadingState label="Loading the repository" count={2} />
         : query.isError ? <ErrorState error={query.error} onRetry={() => void query.refetch()} />
-        : connection === null ? <Card><p className="t-body text-muted">No repository connected. Code tasks here need one before they can run.</p></Card>
         : (
-          <Card className="py-s2" data-repository="">
-            <dl className="flex flex-col divide-y divide-line">
-              <FactRow term="Repository" mono>{connection.url}</FactRow>
-              <FactRow term="Branch" mono>{connection.branch}</FactRow>
-              <FactRow term="Access">{accessWords(connection)}</FactRow>
-              <FactRow term="Set">{`${agoWords(connection.updatedAt, Date.now())}${nameOf(connection.updatedBy) === null ? '' : ` by ${nameOf(connection.updatedBy)}`}`}</FactRow>
-            </dl>
-          </Card>
+          <>
+            {!appConfigured && <p role="status" className="t-small text-muted" data-testid="repository-setup">{APP_SETUP_WORDS}</p>}
+            {connection === null ? <Card><p className="t-body text-muted">No repository connected. Code tasks here need one before they can run.</p></Card>
+              : (
+                <Card className="py-s2" data-repository="">
+                  <dl className="flex flex-col divide-y divide-line">
+                    <FactRow term="Repository" mono>{connection.url}</FactRow>
+                    <FactRow term="Branch" mono>{connection.branch}</FactRow>
+                    <FactRow term="Set">{`${agoWords(connection.updatedAt, Date.now())}${nameOf(connection.updatedBy) === null ? '' : ` by ${nameOf(connection.updatedBy)}`}`}</FactRow>
+                  </dl>
+                </Card>
+              )}
+          </>
         )}
 
-      <Dialog open={editing || (connectRequested && query.isSuccess && connection === null)} onOpenChange={(open) => { if (open) setEditing(true); else closeEditing(); }}>
+      <Dialog open={open} onOpenChange={(next) => { if (next) setEditing(true); else closeEditing(); }}>
         <DialogContent
-          title={connection === null ? 'Connect a repository' : 'Edit the repository'}
-          description="Choose the repository and branch code tasks should read. For a private repository, give a token that can only read it."
+          title={connection === null ? 'Connect a repository' : 'Change the repository'}
+          description="Choose a repository the server’s GitHub App was installed on, and the branch code tasks should read."
         >
-          {(editing || (connectRequested && query.isSuccess && connection === null)) && <RepositoryForm projectId={projectId} connection={connection} onClose={closeEditing} />}
+          {open && <RepositoryForm projectId={projectId} connection={connection} onClose={closeEditing} />}
         </DialogContent>
       </Dialog>
 
       <ConfirmDialog
         open={removing}
-        onOpenChange={(open) => { if (!open) closeRemove(); }}
+        onOpenChange={(next) => { if (!next) closeRemove(); }}
         title="Disconnect the repository?"
         description="New code tasks need a repository before they can run. The project’s memory stays."
         confirmLabel="Disconnect"
@@ -96,56 +103,87 @@ export function Repository({ projectId }: { projectId: string }) {
   );
 }
 
+/** One installation as an admin meets it: chosen, approved, or waiting for an approval it can be given here. */
+function InstallationLine({ installation, onApprove, pending }: { installation: InstallationRow; onApprove: () => void; pending: boolean }) {
+  const who = `${installation.account.login} (${accountKind(installation.account.type)})`;
+  if (!installation.approved) {
+    return (
+      <div className="flex items-center justify-between gap-s3" data-installation={installation.installationId}>
+        <p className="t-small">{`Installed by an account this server has not approved: ${who}`}</p>
+        <Button onClick={onApprove} pending={pending}>Approve</Button>
+      </div>
+    );
+  }
+  return <p className="t-small text-muted" data-installation={installation.installationId}>{installation.suspended ? `${who}: suspended in GitHub` : `${who}: approved`}</p>;
+}
+
 function RepositoryForm({ projectId, connection, onClose }: { projectId: string; connection: RepositoryRow | null; onClose: () => void }) {
   const actions = useRepositoryActions(projectId);
-  const [url, setUrl] = useState(connection?.url ?? '');
-  const [branch, setBranch] = useState(connection?.branch ?? 'main');
-  const [username, setUsername] = useState(connection?.username ?? 'x-access-token');
-  const [token, setToken] = useState('');
-  const [publicAccess, setPublicAccess] = useState(connection?.credential == null);
-  const canKeepCredential = connection?.url === url && connection.username === username && connection.credential?.configured === true && connection.credential.readable;
+  const accounts = useGitHubAccountActions();
+  const installations = useGitHubInstallations(true);
+  const usable = (installations.data?.installations ?? []).filter((installation) => installation.approved && !installation.suspended);
+  const [installationId, setInstallationId] = useState<number | null>(connection?.installationId ?? null);
+  const chosenInstallation = usable.some((installation) => installation.installationId === installationId) ? installationId : null;
+  const [page, setPage] = useState(1);
+  const repositories = useInstallationRepositories(chosenInstallation, page);
+  const [repositoryId, setRepositoryId] = useState<number | null>(connection?.repositoryId ?? null);
+  const [branch, setBranch] = useState(connection?.branch ?? '');
+  const choices = repositories.data?.repositories ?? [];
+  const chosen = choices.find((repository) => repository.id === repositoryId) ?? null;
   return (
     <form
       className="flex flex-col gap-s3"
       onSubmit={(event) => {
         event.preventDefault();
-        const credential = publicAccess ? null : token ? { username, token } : undefined;
-        if (!publicAccess && !token && !canKeepCredential) return;
+        if (chosenInstallation === null || repositoryId === null) return;
         actions.save.mutate(
-          { url, branch, revision: connection?.revision ?? null, credential },
-          { onSuccess: () => { setToken(''); actions.save.reset(); onClose(); } },
+          { installationId: chosenInstallation, repositoryId, branch: branch || chosen?.defaultBranch || 'main', revision: connection?.revision ?? null },
+          { onSuccess: () => { actions.save.reset(); onClose(); } },
         );
       }}
     >
-      <label htmlFor="repository-url" className="t-small text-muted">HTTPS repository address</label>
-      <Input id="repository-url" type="url" required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/example/repository.git" />
-      <label htmlFor="repository-branch" className="t-small text-muted">Branch</label>
-      <Input id="repository-branch" required value={branch} onChange={(e) => setBranch(e.target.value)} />
-      <div className="flex items-center justify-between gap-s3 py-s1">
-        <label htmlFor="repository-public" className="t-body text-ink">Use without a token</label>
-        <Switch id="repository-public" checked={publicAccess} onCheckedChange={(checked) => { setPublicAccess(checked); setToken(''); }} />
+      <div className="flex items-center justify-between gap-s3">
+        <p className="t-small text-muted">Accounts the App is installed on</p>
+        <Button variant="ghost" pending={installations.isFetching} onClick={() => void installations.refetch()}>Refresh GitHub access</Button>
       </div>
-      {!publicAccess && (
-        <>
-          <p className="t-small text-muted">For a private GitHub repository, use a fine-grained token limited to this repository with Contents: Read-only</p>
-          <label htmlFor="repository-username" className="t-small text-muted">Git username</label>
-          <Input id="repository-username" required autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} />
-          <label htmlFor="repository-token" className="t-small text-muted">Read token</label>
-          <Input
-            id="repository-token"
-            type="password"
-            autoComplete="off"
-            required={!canKeepCredential}
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder={canKeepCredential ? 'Leave blank to keep the current token' : ''}
-          />
-        </>
+      {installations.isPending ? <LoadingState label="Asking GitHub for the App’s installations" count={2} />
+        : installations.isError ? <ErrorState error={installations.error} onRetry={() => void installations.refetch()} />
+        : installations.data.installations.length === 0
+          ? <p className="t-small text-muted">The App is not installed on any account yet. Install it from GitHub, choosing only the repositories code tasks should read, then refresh.</p>
+          : installations.data.installations.map((installation) => (
+            <InstallationLine key={installation.installationId} installation={installation}
+              pending={accounts.approve.isPending && accounts.approve.variables === installation.installationId}
+              onApprove={() => accounts.approve.mutate(installation.installationId)} />
+          ))}
+      {accounts.approve.error && <p role="alert" className="t-small text-bad">{settingsRefusalText(accounts.approve.error)}</p>}
+      {usable.length > 0 && (
+        <Select
+          id="repository-installation" label="Account" placeholder="Choose an account"
+          value={chosenInstallation === null ? '' : String(chosenInstallation)}
+          onValueChange={(value) => { setInstallationId(Number(value)); setPage(1); setRepositoryId(null); }}
+          options={usable.map((installation) => ({ value: String(installation.installationId), label: installation.account.login }))}
+        />
       )}
+      {chosenInstallation !== null && (repositories.isPending ? <LoadingState label="Asking GitHub for the repositories this account selected" count={1} />
+        : repositories.isError ? <ErrorState error={repositories.error} onRetry={() => void repositories.refetch()} />
+        : choices.length === 0 ? <p className="t-small text-muted">This installation includes no repositories. Add one to it in GitHub, then refresh.</p>
+        : (
+          <>
+            <Select
+              id="repository-choice" label="Repository" placeholder="Choose a repository"
+              value={repositoryId === null ? '' : String(repositoryId)}
+              onValueChange={(value) => { const next = choices.find((repository) => repository.id === Number(value)); setRepositoryId(Number(value)); setBranch(next?.defaultBranch ?? ''); }}
+              options={choices.map((repository) => ({ value: String(repository.id), label: repository.fullName }))}
+            />
+            {repositories.data.more && <Button variant="ghost" onClick={() => setPage(page + 1)}>Show the next repositories</Button>}
+          </>
+        ))}
+      <label htmlFor="repository-branch" className="t-small text-muted">Branch</label>
+      <Input id="repository-branch" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder={chosen?.defaultBranch ?? 'main'} />
       {actions.save.error && <p role="alert" className="t-small text-bad">{settingsRefusalText(actions.save.error)}</p>}
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button type="submit" variant="primary" pending={actions.save.isPending}>Save repository</Button>
+        <Button type="submit" variant="primary" disabled={chosenInstallation === null || repositoryId === null} pending={actions.save.isPending}>Save repository</Button>
       </DialogFooter>
     </form>
   );
