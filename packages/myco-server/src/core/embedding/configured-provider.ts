@@ -3,6 +3,7 @@ import type { DeploymentTarget } from '@goondocks/myco-shared/settings-contract'
 import { EMBEDDING_CATALOGUE } from '@goondocks/myco-shared/settings-contract';
 import { storedEmbedding } from '../settings.js';
 import { openProviderCredential, providerCredentialReady } from '../provider-credentials.js';
+import { providerHttp } from '../provider-http.js';
 import { embeddingText, embeddingValues, failureDetail, retryAfterMs, EmbeddingUnavailable, EMBEDDING_TIMEOUT_MS, type EmbeddingProvider } from './provider.js';
 import { resolveEmbedding, type EmbeddingResolution, type EmbeddingSelection, type StoredEmbedding } from './policy.js';
 
@@ -33,25 +34,23 @@ export async function embeddingResolution(db: RelationalStore, wrappingKey: Secr
 /** A provider reached over HTTP. A credential travels only to its provider's own fixed endpoint. */
 function httpEmbeddingProvider(selection: EmbeddingSelection & { url: string }, credential: string | null, outbound: OutboundFetch): EmbeddingProvider {
   const ollama = EMBEDDING_CATALOGUE[selection.provider].api === 'ollama';
+  const post = providerHttp(outbound, async (response, kind) => {
+    if (kind === 'redirect') return new EmbeddingUnavailable(`embedding provider refused redirect (HTTP ${response.status})`, { kind, status: response.status });
+    const said = await response.text().then(failureDetail, () => null);
+    return new EmbeddingUnavailable(`embedding provider returned HTTP ${response.status}`,
+      { kind, status: response.status, retryAfterMs: retryAfterMs(response.headers.get('retry-after'), Date.now()), detail: said });
+  });
   return {
     modelKey: selection.modelKey,
     async embed(text) {
       const signal = AbortSignal.timeout(EMBEDDING_TIMEOUT_MS);
       let response: Response;
       try {
-        response = await outbound(selection.url, {
-          method: 'POST', redirect: 'error', signal,
-          headers: { 'content-type': 'application/json', ...(credential === null ? {} : { authorization: `Bearer ${credential}` }) },
-          body: JSON.stringify({ model: selection.model, input: [embeddingText(text)] }),
-        });
+        response = await post({ url: selection.url, credential, signal, body: { model: selection.model, input: [embeddingText(text)] } });
       } catch (error) {
+        if (error instanceof EmbeddingUnavailable) throw error;
         if (signal.aborted) throw new EmbeddingUnavailable('embedding provider timed out', { kind: 'timeout' });
         throw new EmbeddingUnavailable('embedding provider could not be reached', { kind: 'unreachable', detail: failureDetail(error) });
-      }
-      if (!response.ok) {
-        const said = await response.text().then(failureDetail, () => null);
-        throw new EmbeddingUnavailable(`embedding provider returned HTTP ${response.status}`,
-          { kind: 'http', status: response.status, retryAfterMs: retryAfterMs(response.headers.get('retry-after'), Date.now()), detail: said });
       }
       let body: { embeddings?: unknown[]; data?: Array<{ embedding?: unknown }> };
       try { body = await response.json(); }

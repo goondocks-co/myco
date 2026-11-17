@@ -44,6 +44,8 @@ export function providerFailureAction(error: unknown, failures: number, now: num
         return later(`The embedding model's provider did not answer in time${diagnostic}. Myco tries again shortly.`);
       case 'unreachable':
         return later(`Myco could not reach the embedding model's provider${diagnostic}. It tries again shortly.`);
+      case 'redirect':
+        return pause(`The embedding model's provider redirected the request (HTTP ${failure.status})${diagnostic}. Redirects are refused. Check the provider and its endpoint, then resume.`);
       case 'http': {
         const { status } = failure;
         if (status === 401 || status === 403) return pause(`The embedding model's provider turned down its key (HTTP ${status})${diagnostic}. Check the key under Provider keys, then resume.`);

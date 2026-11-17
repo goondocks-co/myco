@@ -39,6 +39,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/myco-server/plan-status-intent.test.ts',
   'tests/myco-server/plans-activity-cost.test.ts',
   'tests/myco-server/prompt-answer-retention-cost.test.ts',
+  'tests/myco-server/provider-http-workerd.test.ts',
   'tests/myco-server/raw-proof-cost.test.ts',
   'tests/myco-server/recovery-alarm-runtime.test.ts',
   'tests/myco-server/recovery-download-runtime.test.ts',

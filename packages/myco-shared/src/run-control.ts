@@ -93,4 +93,6 @@ export const RUN_FAILURE_WORDS: Readonly<Record<string, string>> = {
   agent_tools_unused: 'The agent didn’t use Myco’s tools.',
   run_cancelled: 'A member cancelled this run.',
   run_failed: 'The task stopped before it could finish.',
+  completion_redirect: 'The model service redirected the request. Myco refuses provider redirects. '
+    + 'Check the API base URL in Settings, then try again.',
 };
