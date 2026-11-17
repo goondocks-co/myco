@@ -127,7 +127,9 @@ describe('member envelope — field rules', () => {
     expect(out.envelope.payload).toMatchObject({ toolName: 'mcp__myco__myco_cortex', mycoTool: 'myco_cortex', mycoOp: 'canopy_map', success: true, filesAffected: ['/x'] });
     expect((out.envelope.payload.output as string).length).toBe(TOOL_OUTPUT_CAPTURE_CHARS);
     expect(TOOL_OUTPUT_CAPTURE_CHARS).toBe(4096);
-
+    const named = (tool_name: string) => toolUseEvent(ctx(), input({ tool_name, tool_input: { op: 'list' }, tool_output: '' })).envelope.payload.mycoTool;
+    for (const name of ['myco_plans', 'myco-myco_plans', 'myco__myco_plans', 'mcp__plugin_myco_myco__myco_plans']) expect(named(name)).toBe('myco_plans');
+    for (const name of ['mcp__other__myco_plans', 'mcp__mycology__myco_plans', 'other-myco_plans']) expect(named(name)).toBeUndefined();
   });
 
   it('carries a structured tool result as compact JSON, reading the tool_response key a runtime delivers it under', () => {
