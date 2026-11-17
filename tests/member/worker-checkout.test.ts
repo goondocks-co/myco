@@ -308,7 +308,9 @@ if(process.argv.includes('status'))process.exit(0);
   } finally {process.env.PATH=previousPath;server.stop(true);e.sqlite.close();await source.dispose();}
 },30_000);
 
-for (const cancelled of [false, true]) it(`revokes a checkout token exactly once when the run is ${cancelled ? 'stopped as the complete answer arrives' : 'not stopped'}`, async () => {
+const LATE_ANSWERS = { kept: 'not stopped', declared: 'stopped as a whole answer of declared length arrives', chunked: 'stopped while a chunked answer of no declared length is still arriving' } as const;
+for (const [arrival, words] of Object.entries(LATE_ANSWERS)) it(`revokes a checkout token exactly once when the run is ${words}`, async () => {
+  const cancelled = arrival !== 'kept';
   const e = sqliteEnv({ workerLogin: true }), github = githubFixture();
   const root = await mkdtemp(join(tmpdir(), 'myco-late-token-'));
   const stopping = new AbortController();
@@ -333,6 +335,21 @@ for (const cancelled of [false, true]) it(`revokes a checkout token exactly once
       const response = await pipeline.handleRequest(request, env);
       if (new URL(request.url).pathname !== '/worker/repository') return response;
       const text = await response.text();
+      if (arrival === 'chunked') {
+        // The run is stopped after the first half of the body; the rest still arrives, as a hosted Deployment's chunked answer does.
+        const bytes = new TextEncoder().encode(text);
+        const body = new ReadableStream<Uint8Array>({ async start(controller) {
+          controller.enqueue(bytes.slice(0, bytes.length >> 1));
+          await new Promise(resolve => setTimeout(resolve, 5));
+          stopping.abort(new Error('stopped while the answer arrived'));
+          await new Promise(resolve => setTimeout(resolve, 20));
+          controller.enqueue(bytes.slice(bytes.length >> 1));
+          controller.close();
+        } });
+        const headers = new Headers(response.headers);
+        headers.delete('content-length');
+        return new Response(body, { status: response.status, headers });
+      }
       const delivered = new Response(text, { status: response.status, headers: { ...Object.fromEntries(response.headers), 'content-length': String(Buffer.byteLength(text)) } });
       const read = delivered.text.bind(delivered);
       delivered.text = async () => { const body = await read(); if (cancelled) stopping.abort(new Error('stopped as the answer arrived')); return body; };
@@ -347,5 +364,7 @@ for (const cancelled of [false, true]) it(`revokes a checkout token exactly once
     while (!github.state.revoked.includes(checkout.token) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     expect(github.state.revoked.filter(token => token === checkout.token)).toHaveLength(1);
     for (const { token } of github.state.issued) expect(lines.join('\n')).not.toContain(token);
+    // A stopped run never reads its source: its preparation failed for its caller.
+    if (cancelled) expect(e.sqlite.query("SELECT status FROM agent_runs WHERE id='run_seed'").get()).not.toEqual({ status: 'completed' });
   } finally { clearTimeout(safety); stopping.abort(); e.sqlite.close(); await rm(root, { recursive: true, force: true }); }
 }, 20_000);

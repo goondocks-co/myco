@@ -1,5 +1,5 @@
 import { abortable } from '@myco/utils/abortable.js';
-import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
+import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS, type LateResult } from './request.js';
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
@@ -197,23 +197,30 @@ class SerializedBody {
   constructor(readonly text: string) {}
 }
 
-async function post(options: Requester, path: string, body: unknown, discarded?: (late: WorkerAnswer) => Promise<void>): Promise<WorkerAnswer> {
+async function post(options: Requester, path: string, body: unknown, late?: LateResult<WorkerAnswer>): Promise<WorkerAnswer> {
   try {
-    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal, discarded);
+    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal, late);
   } catch (error) {
     return { kind: 'unreachable', detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
 /**
- * A repository preparation request. An answer carrying a checkout token that arrives after the run stopped waiting is
- * never dropped: its token is revoked, on the revoke's own deadline.
+ * A repository preparation request. When the run stops waiting while the answer is still arriving, the read may finish
+ * within `REPOSITORY_ANSWER_LINGER_MS` for cleanup alone: a whole answer carrying a checkout token has that token
+ * revoked, on the revoke's own deadline. An answer that does not finish in that time, or cannot be shown whole, is not
+ * read as one; a token it held stays usable for at most the hour GitHub gives it, for reads of one repository.
  */
 function postRepository(options: Requester & Pick<WorkerOptions, 'githubApi' | 'log'>, body: unknown): Promise<WorkerAnswer> {
-  return post(options, '/worker/repository', body, async (late) => {
-    if (late.kind === 'answered') await revokeRepositoryToken(late.body, { fetchImpl: options.githubApi, log: options.log });
+  return post(options, '/worker/repository', body, {
+    lingerMs: REPOSITORY_ANSWER_LINGER_MS,
+    discarded: async (late) => {
+      if (late.kind === 'answered') await revokeRepositoryToken(late.body, { fetchImpl: options.githubApi, log: options.log });
+    },
   });
 }
+/** How long a repository answer still arriving may finish, for its cleanup, once the run stopped waiting for it. */
+const REPOSITORY_ANSWER_LINGER_MS = 10_000;
 
 async function postWithin(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
   await options.renew?.(false, options.signal);

@@ -17,6 +17,11 @@ import { emit } from '../telemetry.js';
  * **Every token has one owner on every exit.** A token exists only inside `withToken`'s scope, from the moment GitHub's
  * answer carries it: the scope revokes it on any exit unless the work returns it as a `HandedOver` answer, whose
  * receiver then owns revoking it.
+ *
+ * **What no code here can revoke**, each a read-only token for one repository alive for at most the hour GitHub gives
+ * it: a token GitHub issued whose answer a request deadline cut before it reached the Deployment; a handed-over answer
+ * the platform failed to send; and an answer a runner stopped waiting for that did not finish arriving within its
+ * cleanup allowance.
  */
 
 /** Why repository access is refused, each named in the reader's words. */
