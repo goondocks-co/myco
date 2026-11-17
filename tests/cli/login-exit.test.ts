@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { expect, it } from 'bun:test';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -96,7 +95,7 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
 
     const binary = process.env.MYCO_LOGIN_TEST_BINARY;
     const args = !isSetup ? ['login', address, ...(operation === 'invite' ? ['--root', root] : [])] : ['setup', '--join', serverUrl, '--root', root, '--project', 'proj_1', '--no-agents', '--no-runner', '--no-cutover', '--yes'];
-    const command = binary ? [binary, ...args] : [process.execPath, '--tsconfig-override', path.join(REPO, 'tsconfig.json'), fileURLToPath(import.meta.resolve('./fixtures/login-exit.ts')), ...args];
+    const command = binary ? [binary, ...args] : [process.execPath, '--tsconfig-override', path.join(REPO, 'tsconfig.json'), path.join(REPO, 'tests/cli/fixtures/login-exit.ts'), ...args];
     const invocation = !tty ? command : ['python3', path.join(REPO, 'tests/cli/fixtures/terminal-process.py'), ...command];
     const child = spawn(invocation[0]!, invocation.slice(1), { cwd: home, env, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
@@ -140,7 +139,7 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
       if (operation === 'login' && !tty && stalled) {
         for (const args of [['member', 'provision', '--refresh'], ['logout', serverUrl], ['logout', serverUrl, '--local-only']]) {
           revokeMissing = args[0] === 'logout';
-          const next = binary ? [binary, ...args] : [process.execPath, '--tsconfig-override', path.join(REPO, 'tsconfig.json'), fileURLToPath(import.meta.resolve('./fixtures/login-exit.ts')), ...args];
+          const next = binary ? [binary, ...args] : [process.execPath, '--tsconfig-override', path.join(REPO, 'tsconfig.json'), path.join(REPO, 'tests/cli/fixtures/login-exit.ts'), ...args];
           const commandProcess = spawn(next[0]!, next.slice(1), { cwd: home, env, stdio: ['pipe', 'pipe', 'pipe'] });
           let text = '';
           commandProcess.stdout!.on('data', chunk => { text += chunk.toString(); });

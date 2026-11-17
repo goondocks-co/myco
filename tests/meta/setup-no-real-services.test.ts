@@ -19,8 +19,8 @@ for (const stub of [true, false]) {
     roots.push(root);
     const env = sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root, MYCO_SETUP_FIXTURE_ROOT: root,
       ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}) });
-    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', fileURLToPath(import.meta.resolve('../setup/sandbox-preload.ts')),
-      '--tsconfig-override', path.join(repo, 'tsconfig.json'), fileURLToPath(import.meta.resolve('../setup/fixtures/legacy_service_boundary_test.ts'))],
+    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+      '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_service_boundary_test.ts')],
     { env, cwd: root, encoding: 'utf8', timeout: 30_000 });
     if (stub) {
       expect({ status: child.status, stderr: child.stderr }).toMatchObject({ status: 0 });
@@ -38,8 +38,8 @@ for (const operation of ['inspect', 'prepare', 'recover', 'setup-status', 'setup
     roots.push(root);
     const env = sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root, MYCO_NATIVE_LIFECYCLE_OPERATION: operation,
       ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}) });
-    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', fileURLToPath(import.meta.resolve('../setup/sandbox-preload.ts')),
-      '--tsconfig-override', path.join(repo, 'tsconfig.json'), fileURLToPath(import.meta.resolve('../setup/fixtures/native_lifecycle_boundary_test.ts'))],
+    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+      '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/native_lifecycle_boundary_test.ts')],
     { env, cwd: root, encoding: 'utf8', timeout: 30_000 });
     if (stub) {
       expect({ status: child.status, stderr: child.stderr }).toMatchObject({ status: 0 });

@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,7 +16,7 @@ for (const command of ['mcp', 'tool']) for (const kind of ['empty', 'member', 'l
       fs.writeFileSync(path.join(env.MYCO_HOME!, 'member', 'cutover.json'), '{}');
     }
     if (kind === 'legacy') env.MYCO_HOME = legacyFixtureHome(root).mycoHome;
-    const result = spawnSync(process.execPath, [fileURLToPath(import.meta.resolve('../fixtures/no-legacy-spawn.ts')), command], {
+    const result = spawnSync(process.execPath, [path.resolve(import.meta.dir, '../fixtures/no-legacy-spawn.ts'), command], {
       cwd: root, env, encoding: 'utf8', timeout: 15_000,
     });
     expect(result.stderr).not.toContain('FORBIDDEN_PROCESS_SPAWN');

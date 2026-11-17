@@ -18,8 +18,9 @@ Make reinstalls the workspace or dashboard packages only when they no longer mat
 
 `npm run build:ui` builds the Deployment dashboard and embeds it in the ignored
 `packages/myco/src/server-ui-assets.generated.ts` carrier. Codegen, lint, test
-typechecking and source builds prepare it automatically; `npm test` prepares it
-only when a selected test imports it, including through another module. The
+typechecking and source builds prepare it automatically. Every executing
+`npm test` invocation prepares it once before tests start, including each CI shard,
+so source-closure checks and subprocess entry points have the same artifacts. The
 local `.inputs.json` receipt beside the carrier caches hashes of the UI and shared
 sources, build configuration, lockfiles and emitted assets. Source changes,
 including deletions and changes with preserved timestamps, invalidate that cache.

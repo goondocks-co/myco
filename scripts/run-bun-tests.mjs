@@ -19,7 +19,6 @@ import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { RUNNER_REMOVED_DASHBOARD_PACKAGES } from './ensure-deps.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
-import { reachesModule } from './pr-test-selection.mjs';
 import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup, readTestProcessTable, readTestProcessCommands } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
@@ -181,11 +180,14 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
 
 // Test prerequisites share the run's temp root and leak gate.
-const generated = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'], {
-  cwd: REPO, env: process.env, stdio: 'inherit',
-});
-if (generated.error) throw generated.error;
-if (generated.status !== 0) process.exit(generated.status ?? 1);
+function prepareGeneratedModule(nodeArgs) {
+  const generated = spawnSync(process.execPath, nodeArgs, {
+    cwd: REPO, env: process.env, stdio: 'inherit',
+  });
+  if (generated.error) throw generated.error;
+  if (generated.status !== 0) process.exit(generated.status ?? 1);
+}
+prepareGeneratedModule(['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']);
 
 function resolveBunExecutable() {
   const extensions = process.platform === 'win32'
@@ -1656,14 +1658,7 @@ if (process.env.MYCO_RUNNER_DRY_RUN === '1') {
   process.exit(0);
 }
 
-if (reachesModule({ root: REPO, entries: selected.flatMap(phase => sourceFiles(phase.args)),
-  target: 'packages/myco/src/server-ui-assets.generated.ts' })) {
-  const dashboard = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts'], {
-    cwd: REPO, env: process.env, stdio: 'inherit',
-  });
-  if (dashboard.error) throw dashboard.error;
-  if (dashboard.status !== 0) process.exit(dashboard.status ?? 1);
-}
+prepareGeneratedModule(['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts']);
 
 const phaseReports = [];
 const NODE_PRELOAD = './tests/setup/sandbox-preload.ts';

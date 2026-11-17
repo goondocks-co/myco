@@ -8,8 +8,11 @@ const INDEX_FILE = /(?:^|\/)index\.[cm]?[jt]sx?$/;
 const require = createRequire(import.meta.url);
 let compiler;
 
-function moduleResolver(root, virtualFiles) {
+/** Static imports, one re-exporting index, one non-test module under tests/, and a changed JSON file a test imports. */
+export function affectedTests({ root, files, changed }) {
   const ts = compiler ??= require('typescript-v6');
+  const relative = file => path.relative(root, file).split(path.sep).join('/');
+  const changedSet = new Set(changed);
   const config = ts.readConfigFile(path.join(root, 'tsconfig.json'), ts.sys.readFile);
   if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, '\n'));
   const converted = ts.convertCompilerOptionsFromJson(config.config.compilerOptions, root);
@@ -18,60 +21,18 @@ function moduleResolver(root, virtualFiles) {
     ...converted.options.paths,
     '@goondocks/myco-shared/*': ['packages/myco-shared/src/*'],
   } };
-  const virtual = new Set(virtualFiles.map(file => path.resolve(root, file)));
-  const host = { ...ts.sys, fileExists: file => ts.sys.fileExists(file) || virtual.has(path.resolve(file)) };
+  const host = { ...ts.sys, fileExists: file => ts.sys.fileExists(file) || changedSet.has(relative(file)) };
   const cache = ts.createModuleResolutionCache(root, file => file, options);
-  const resolve = (specifier, file) => ts.resolveModuleName(specifier, file, options, host, cache).resolvedModule?.resolvedFileName;
-  return { ts, resolve };
-}
-
-/** Imports and explicit module locations used as subprocess entry points. */
-function moduleSpecifiers(ts, file, text) {
-  const specifiers = ts.preProcessFile(text, true, true).importedFiles.map(imported => imported.fileName);
-  if (text.includes('import.meta.resolve')) {
-    const visit = node => {
-      if (ts.isCallExpression(node) && node.expression.getText() === 'import.meta.resolve'
-        && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) specifiers.push(node.arguments[0].text);
-      ts.forEachChild(node, visit);
-    };
-    visit(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true));
-  }
-  return specifiers;
-}
-
-/** Whether any entry imports a target, transitively, including an as-yet ungenerated module. */
-export function reachesModule({ root, entries, target }) {
-  const { ts, resolve } = moduleResolver(root, [target]);
-  const destination = path.resolve(root, target);
-  const seen = new Set();
-  const visit = file => {
-    if (file === destination) return true;
-    if (seen.has(file) || file.includes(`${path.sep}node_modules${path.sep}`) || !MODULE_FILE.test(file)) return false;
-    seen.add(file);
-    const text = fs.readFileSync(file, 'utf8');
-    return moduleSpecifiers(ts, file, text).some(specifier => {
-      const resolved = resolve(specifier, file);
-      return resolved && visit(resolved);
-    });
-  };
-  return entries.some(file => visit(path.resolve(root, file)));
-}
-
-/** Static imports, one re-exporting index, one non-test module under tests/, and a changed JSON file a test imports. */
-export function affectedTests({ root, files, changed }) {
-  const { ts, resolve: resolveModule } = moduleResolver(root, changed);
-  const relative = file => path.relative(root, file).split(path.sep).join('/');
-  const changedSet = new Set(changed);
   const dependencies = new Map();
   const exports = new Map();
   for (const file of files.filter(file => MODULE_FILE.test(file) && fs.existsSync(path.join(root, file)))) {
     const absolute = path.join(root, file);
     const text = fs.readFileSync(absolute, 'utf8');
     const resolve = specifier => {
-      const resolved = resolveModule(specifier, absolute);
-      return resolved && relative(resolved);
+      const resolved = ts.resolveModuleName(specifier, absolute, options, host, cache).resolvedModule;
+      return resolved && relative(resolved.resolvedFileName);
     };
-    dependencies.set(file, new Set(moduleSpecifiers(ts, file, text).map(resolve).filter(Boolean)));
+    dependencies.set(file, new Set(ts.preProcessFile(text, true, true).importedFiles.map(imported => resolve(imported.fileName)).filter(Boolean)));
     if (INDEX_FILE.test(file) && !file.startsWith('tests/')) {
       const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest);
       exports.set(file, new Set(tree.statements.filter(node => ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier))

@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { afterAll, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +11,7 @@ const legacy = legacyFixtureHome(root);
 const cwd = legacy.projects[0].root;
 execFileSync('git', ['init', '-q', cwd]);
 const env = sandboxChildEnv(root, { HOME: legacy.home, MYCO_HOME: path.join(root, 'member-home') });
-const fixture = fileURLToPath(import.meta.resolve('../fixtures/no-legacy-spawn.ts'));
+const fixture = path.resolve(import.meta.dir, '../fixtures/no-legacy-spawn.ts');
 const cli = path.resolve(import.meta.dir, '../../packages/myco/src/cli.ts');
 const before = fs.readFileSync(legacy.vault);
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));

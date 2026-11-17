@@ -28,7 +28,7 @@ const holdRows = (databasePath: string) => {
 async function invokeServer(root: string, args: string[]) {
   const repo = fileURLToPath(new URL('../../', import.meta.url));
   const child = Bun.spawn([process.execPath, '--no-env-file', '--tsconfig-override', path.join(repo, 'tsconfig.json'), '-e',
-    `import {run} from ${JSON.stringify(fileURLToPath(import.meta.resolve('../../packages/myco/src/cli/server.ts')))}; await run(${JSON.stringify(args)});`], {
+    `import {run} from ${JSON.stringify(path.join(repo, 'packages/myco/src/cli/server.ts'))}; await run(${JSON.stringify(args)});`], {
     cwd: root, env: { ...process.env, MYCO_HOME: path.join(root, 'home'), MYCO_TRAMPOLINED: '1', PATH: root },
     stdout: 'pipe', stderr: 'pipe',
   });
