@@ -94,9 +94,7 @@ export const objectLifecycle: ParityScenario = {
       await target.clockWake();
     }
     expect(await journal(key)).toEqual([]);
-    const health = await fetch(`${target.url}/api/recovery/exports`, { headers: target.ownerHeaders() });
-    expect(health.status).toBe(200);
-    expect(String((await health.json() as { rewind: string }).rewind)).toContain(target.name === 'cloudflare' ? 'Safe rewind is unavailable' : 'no Time Travel');
+
 
   },
 };

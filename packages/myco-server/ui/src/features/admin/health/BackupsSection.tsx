@@ -1,3 +1,4 @@
+import { D1_REWIND_RETENTION_MS } from '../../../../../src/constants';
 import { useState } from 'react';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
@@ -13,6 +14,8 @@ import {
 import { ApiError } from '../../../lib/api';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
+const DAY_MS = 24 * 60 * 60 * 1000;
+const OBJECT_HOLD_DAYS = D1_REWIND_RETENTION_MS / DAY_MS;
 const BACKUP_SETTINGS = SETTINGS_SECTIONS.find((section) => section.id === 'backups')!.to;
 
 /** A failed request in words chosen by its status or refusal code, never the server's own sentence. */
@@ -25,7 +28,7 @@ const failure = (error: unknown): string => error instanceof ApiError && error.c
  * restore behind a preview and a confirm, then automatic recovery, the
  * complete-recovery path the Deployment runs on its own clock.
  */
-export function BackupsSection() {
+export function BackupsSection({ target }: { target?: string | null }) {
   const backupPermission = permissionOf(useMe().data, 'backups');
   const backups = useBackups();
   const [confirming, setConfirming] = useState<{ row: BackupRow; preview: RestorePreview } | null>(null);
@@ -64,6 +67,9 @@ export function BackupsSection() {
         For larger backups or a complete replacement, follow the{' '}
         <ExternalLink href={RECOVERY_PROCEDURE}>operator backup and recovery procedure</ExternalLink>.
       </p>
+      {target === 'cloudflare' && <p className="max-w-measure t-small text-muted" data-testid="stored-data-hold">
+        Deleted stored data is kept for {OBJECT_HOLD_DAYS} days before it is removed.
+      </p>}
       {retention?.state === 'failed' && (
         <Card role="status" className="t-body text-warn" data-backup-retention-failed="">
           Backup retention failed. Create a backup to retry retention.
@@ -221,7 +227,6 @@ function RecoveryCard() {
   return (
     <Card className="flex flex-col gap-s3" data-health-recovery="">
       <h3 className="t-h3 text-ink">Automatic recovery</h3>
-      {answer?.rewind !== undefined && <p className="t-body text-muted" data-testid="recovery-rewind">{answer.rewind}</p>}
       {recovery.isPending && <LoadingState label="Reading automatic recovery" count={1} />}
       {unsupportedHere && (
         <p className="t-body text-muted" data-testid="recovery-unavailable">{RECOVERY_UNAVAILABLE_WORDS}</p>

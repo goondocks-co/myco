@@ -77,7 +77,7 @@ export function HealthPage() {
       </section>
       <StatusSection status={status} now={now} projectName={projectName} />
       <WorkersSection status={status} now={now} projectName={projectName} />
-      <BackupsSection />
+      <BackupsSection target={status.error === null ? status.data?.target : undefined} />
       <UpkeepSection />
       <MeasuresSection />
     </AdminPage>

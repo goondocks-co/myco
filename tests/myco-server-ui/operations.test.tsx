@@ -63,6 +63,12 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 }
 
 describe('backups on Health', () => {
+  it('explains the hosted hold on deleted stored data', async () => {
+    server({ '/api/status': () => Response.json({ ...STATUS, target: 'cloudflare' }) });
+    mount();
+    expect((await screen.findByTestId('stored-data-hold')).textContent).toContain('Deleted stored data is kept for 30 days before it is removed.');
+  });
+
   it('words a refused backup by its status, never the server\'s sentence, and gives the operator recovery path', async () => {
     const reason = 'The assembled backup is past the supported byte bound.';
     server({
@@ -77,6 +83,7 @@ describe('backups on Health', () => {
     expect(screen.getByRole('link', { name: 'operator backup and recovery procedure' }).getAttribute('href'))
       .toBe('https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md');
     expect(screen.getByText('No backups yet. The first one is a click away.')).toBeTruthy();
+    expect(screen.queryByTestId('stored-data-hold')).toBeNull();
   });
 
   it('lists a backup by when it was made, with its size, and downloads, pins and restores it from its menu', async () => {
@@ -206,10 +213,9 @@ describe('automatic recovery on Health', () => {
     cleanup();
 
     // A Deployment that runs no producer says so in a 200, and nothing about attempts or a schedule follows.
-    server({ '/api/recovery/exports': () => Response.json({ supported: false, rewind: 'This self-hosted Deployment has no Time Travel. Recover from a verified backup.', reason: 'this Deployment runs no hosted recovery producer', schedule: { ...recoveryBase, supported: false, configured: false } }) });
+    server({ '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { ...recoveryBase, supported: false, configured: false } }) });
     mount();
     expect((await screen.findByTestId('recovery-unavailable')).textContent).toContain('Automatic recovery doesn’t run on this server');
-    expect(screen.getByTestId('recovery-rewind').textContent).toContain('no Time Travel. Recover from a verified backup');
     for (const id of ['recovery-cadence', 'recovery-latest', 'recovery-available', 'recovery-unreadable']) expect(screen.queryByTestId(id)).toBeNull();
   });
 

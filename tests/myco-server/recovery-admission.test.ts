@@ -126,7 +126,6 @@ it('reads a status without touching the attempt or claiming recoverability', asy
   // A complete staging is still not a recoverable artifact: only a materialized and verified one is.
   expect([body.stage, body.recoverable]).toEqual(['complete', false]);
   expect(String(body.usable)).toContain('a complete staging is not yet one');
-  expect(String(body.rewind)).toContain('Safe rewind is unavailable');
   env.sqlite.close();
 });
 

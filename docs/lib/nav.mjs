@@ -25,7 +25,7 @@ export const NAV = [
     group: 'Reference',
     items: [
       { slug: 'architecture/actors-and-boundaries', title: 'Actors & boundaries' },
-      { slug: 'architecture/hosted-rewind', title: 'Hosted rewind safety' },
+      { slug: 'architecture/hosted-rewind', title: 'Hosted data retention' },
       { slug: 'architecture/platform-packages', title: 'Platform packages' },
     ],
   },

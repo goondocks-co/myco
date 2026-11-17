@@ -1,5 +1,7 @@
 # Deployment recovery artifacts
 
+Cloudflare Time Travel restores the D1 database alone. Myco does not yet coordinate that restore with writers, in-flight jobs, Durable Object state or Vectorize, which remain at their newer state. Hosted stored objects are held for 30 days after release, regardless of plan, so a database restored within that protected window can still read its referenced bytes. Objects removed before the hold was installed cannot be recovered by it. A complete recovery artifact is separate and may not exist; verify its presence and coverage before choosing artifact recovery. See [hosted stored-data retention and the coordination boundary](hosted-rewind.md).
+
 Session selection facts (`session_read_facts`) and Project session counts (`project_session_counts`) are derivable from sessions, prompts, transcripts and tombstones. Portable backups exclude them; restore source writes maintain them through database triggers. Complete database snapshots retain them.
 
 Schema 83 rollback: an alpha.4 Worker running on schema 83 commits prompt marks (`processed = 1`) but reports `marked: false`, because its success check excludes the trigger writes. This applies during the migration-to-Worker-upload interval and after a Worker-only rollback. Keep the schema-83-compatible Worker, or restore the recorded pre-migration database bookmark together with the matching Worker. Restoring that bookmark also rolls back writes committed since the bookmark; capture a recovery artifact before choosing it.
