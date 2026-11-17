@@ -17,8 +17,8 @@ export const excludedLockfiles = {
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
-function command(tool, args) {
-  return spawnSync(tool, args, { encoding: 'utf8' });
+function command(tool, args, options = {}) {
+  return spawnSync(tool, args, { ...options, encoding: 'utf8', shell: process.platform === 'win32' && tool === 'npm' });
 }
 
 function requireTool(tool, remedy, args = ['--version']) {
@@ -28,13 +28,14 @@ function requireTool(tool, remedy, args = ['--version']) {
 }
 
 function requireExecutable(tool, remedy) {
-  const available = (process.env.PATH ?? '').split(path.delimiter).some(directory => {
-    try { fs.accessSync(path.join(directory, tool), fs.constants.X_OK); return true; }
+  const extensions = process.platform === 'win32' ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')] : [''];
+  const available = (process.env.PATH ?? '').split(path.delimiter).some(directory => extensions.some(extension => {
+    try { fs.accessSync(path.join(directory, tool + extension), fs.constants.X_OK); return true; }
     catch (error) {
       if (['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) return false;
       throw error;
     }
-  });
+  }));
   if (!available) throw new Error(`${tool} is required. ${remedy}`);
 }
 
@@ -128,7 +129,7 @@ export function ensureDeps(root, uiOnly = false) {
     const reason = staleReason(directory, undefined, item.removable);
     if (!reason) continue;
     console.log(`${item.label} ${reason}; reinstalling`);
-    const result = spawnSync('npm', ['ci'], { cwd: directory, stdio: 'inherit' });
+    const result = command('npm', ['ci'], { cwd: directory, stdio: 'inherit' });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`npm ci failed for ${item.label} (exit ${result.status ?? result.signal}).`);
     const remaining = staleReason(directory, undefined, item.removable);

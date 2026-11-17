@@ -14,14 +14,19 @@ import { parse as parseYaml } from 'yaml';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-// Build preparation uses the caller's environment before test-harness modules load.
-for (const nodeArgs of [
-  ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'],
-  ['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts'],
-]) {
-  const generated = spawnSync(process.execPath, nodeArgs, { cwd: REPO, env: process.env, stdio: 'inherit' });
-  if (generated.error) throw generated.error;
-  if (generated.status !== 0) process.exit(generated.status ?? 1);
+// Descendants reuse completed preparation only for the same checkout.
+const preparedRepo = fs.realpathSync(REPO);
+if (process.env.MYCO_PREPARED_REPO !== preparedRepo) {
+  // Build preparation uses the caller's environment before test-harness modules load.
+  for (const nodeArgs of [
+    ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'],
+    ['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts'],
+  ]) {
+    const generated = spawnSync(process.execPath, nodeArgs, { cwd: REPO, env: process.env, stdio: 'inherit' });
+    if (generated.error) throw generated.error;
+    if (generated.status !== 0) process.exit(generated.status ?? 1);
+  }
+  process.env.MYCO_PREPARED_REPO = preparedRepo;
 }
 
 const { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } = await import('./test-shards.mjs');

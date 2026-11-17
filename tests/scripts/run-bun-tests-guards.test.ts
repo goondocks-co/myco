@@ -506,7 +506,7 @@ describe('run-bun-tests guards', () => {
       syncBuiltinESMExports();
     `);
     const { status, output } = await runRunner(STDIN_FIXTURE, {
-      MYCO_RUNNER_STDIN_FIXTURE: '1', MYCO_RUNNER_GROUP_BUDGET_MS: '20000', MYCO_RUNNER_REPORT_DIR: reports,
+      MYCO_PREPARED_REPO: '', MYCO_RUNNER_STDIN_FIXTURE: '1', MYCO_RUNNER_GROUP_BUDGET_MS: '20000', MYCO_RUNNER_REPORT_DIR: reports,
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}`.trim(),
     });
     expect({ status, output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });

@@ -30,7 +30,7 @@ test.each([
   [['docs/install.ps1', 'docs/a.md'], [], ['installer and source install', 'docs site'], ['installer under Windows PowerShell 5.1 (CI only: it runs on Windows PowerShell 5.1)']],
   [['README.md', 'packages/myco/skills/a/SKILL.md'], ['tests/parity/parity.test.ts', 'tests/member/rbac-routing-smoke.test.ts', windowsTests[0]!], ['compiled repository routing', 'parity smoke (self-hosted)'],
     ['Windows contracts (CI only: it runs on Windows)', "parity, full run and Cloudflare target (CI only: lanes never boot the Cloudflare target, and the full run is CI's)"]],
-  [['scripts/smoke-container-persistence.mjs'], [], [], [IMAGE_BUILD, 'Darwin release recipe (CI only: it cross-compiles and signs a release distribution)']],
+  [['scripts/smoke-container-persistence.mjs'], [], ['test runner consumers'], [IMAGE_BUILD, 'Darwin release recipe (CI only: it cross-compiles and signs a release distribution)']],
 ])('check:pr changing %j, reaching %j, runs %j and names %j as not run', (changed, tests, runs, notRun) => {
   expect(names(changed, tests)).toEqual({ runs, notRun });
 });

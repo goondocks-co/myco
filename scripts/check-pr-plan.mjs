@@ -34,6 +34,12 @@ export const CONSUMERS = [
     requires: ['pwsh', 'cc', 'shellcheck'],
   },
   {
+    name: 'test runner consumers',
+    ci: 'tests (node): tests/scripts exercise the runner and its tooling through subprocesses',
+    when: { paths: ['scripts/**'] },
+    tests: ['tests/scripts/**'],
+  },
+  {
     name: 'self-hosted image inputs (build inputs only)',
     ci: 'self-hosted-container: Build for both architectures',
     when: { paths: IMAGE },
