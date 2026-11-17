@@ -16,6 +16,20 @@ make source-build
 
 Make reinstalls the workspace or dashboard packages only when they no longer match the committed lockfile. This also recognizes installs made with plain `npm ci` or `npm install`. Use `make install` to prepare packages without building. Direct dashboard `build:ui` and `check:ui` scripts use the same check and require only Node and npm.
 
+`npm run build:ui` builds the Deployment dashboard and embeds it in the ignored
+`packages/myco/src/server-ui-assets.generated.ts` carrier. Codegen, lint, test
+typechecking and source builds prepare it automatically. Each top-level `npm test`
+invocation prepares generated modules with the invoking shell’s environment before
+loading test isolation, including each CI shard. Descendant runners inherit completion
+for that checkout and reuse its modules. Tests keep their isolated homes and PATH. The
+local `.inputs.json` receipt beside the carrier caches hashes of the UI and shared
+sources, build configuration, lockfiles and emitted assets. Source changes,
+including deletions and changes with preserved timestamps, invalidate that cache.
+Do not commit the carrier or regenerate it after rebasing. CI and release builds
+generate it from the sources they ship; the embedded dashboard tests verify its
+shell and assets are served. The generator still refuses unreachable stale chunks
+and a missing dashboard shell.
+
 The documentation site is built separately and is explicitly excluded from Make's preparation. Install its dependencies before running its scripts:
 
 ```bash

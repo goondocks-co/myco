@@ -235,7 +235,7 @@ jobs:
           path: packages/myco/vendor-src/libsqlite3/${{ matrix.target }}/
 
       # Build the Deployment dashboard before codegen embeds it in the binary.
-      - run: npm run build:ui -w @goondocks/myco
+      - run: npm run build:ui
 
       - run: npm run codegen -w @goondocks/myco
 

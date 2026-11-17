@@ -18,10 +18,15 @@ const { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 const WORKER_DIR = path.join(REPO_ROOT, 'packages', 'myco-server');
+const workerRequire = createRequire(path.join(WORKER_DIR, 'package.json'));
+const wranglerPackage = workerRequire.resolve('wrangler/package.json');
+const wranglerBin = (JSON.parse(readFileSync(wranglerPackage, 'utf8')) as { bin: { wrangler: string } }).bin.wrangler;
+const WRANGLER_ENTRY = path.resolve(path.dirname(wranglerPackage), wranglerBin);
 const OUTPUT_PATH = path.join(REPO_ROOT, 'packages', 'myco', 'src', 'worker-bundle.generated.ts');
 const EXPORT_NAME = 'BUNDLED_WORKER';
 const VERSION_EXPORT_NAME = 'BUNDLED_WORKER_WRANGLER';
@@ -75,9 +80,13 @@ export function pinnedWranglerVersion(): string {
   return pinned;
 }
 
+function runWrangler(args: string[]): string {
+  return execFileSync(process.execPath, [WRANGLER_ENTRY, ...args], { cwd: WORKER_DIR, encoding: 'utf-8' });
+}
+
 /** The wrangler that answers in the Worker package, which is the one that must build the bundle. */
 function installedWranglerVersion(): string {
-  const printed = execFileSync('npx', ['--no-install', 'wrangler', '--version'], { cwd: WORKER_DIR, encoding: 'utf-8' });
+  const printed = runWrangler(['--version']);
   const version = /(\d+\.\d+\.\d+)/.exec(printed)?.[1];
   if (version === undefined) throw new Error(`wrangler did not print a version in ${WORKER_DIR}:\n${printed}`);
   return version;
@@ -119,11 +128,7 @@ export function buildWorkerBundle(): string {
   const config = path.join(WORKER_DIR, `wrangler.bundle-${path.basename(out)}.toml`);
   try {
     writeFileSync(config, bundleConfig(readFileSync(path.join(WORKER_DIR, 'wrangler.toml'), 'utf-8')), 'utf-8');
-    execFileSync('npx', ['--no-install', 'wrangler', 'deploy', '--dry-run', '--minify', '--outdir', out, '-c', config], {
-      cwd: WORKER_DIR,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    runWrangler(['deploy', '--dry-run', '--minify', '--outdir', out, '-c', config]);
     const built = path.join(out, 'index.js');
     if (!existsSync(built)) throw new Error(`wrangler wrote no bundle to ${out}`);
     return readFileSync(built, 'utf-8').replace(SOURCE_MAP_COMMENT, '\n');
@@ -164,4 +169,4 @@ function main(): void {
   process.stdout.write(`worker-bundle.generated.ts (${bytes} bytes of Worker)\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

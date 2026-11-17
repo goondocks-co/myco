@@ -43,7 +43,7 @@ install: deps
 # Native assets and generated carriers required by the compiled product.
 prepare-build: deps
 	bash packages/myco/scripts/build-libsqlite3-target.sh $(HOST_TARGET)
-	npm run build:ui -w @goondocks/myco
+	npm run build:ui
 	cd packages/myco && npm run codegen
 
 source-build: prepare-build
@@ -59,7 +59,7 @@ worktree-sweep: deps
 
 # Cross-compile the same member/server product for a Windows development machine.
 source-build-windows: deps
-	npm run build:ui -w @goondocks/myco
+	npm run build:ui
 	cd packages/myco && npm run codegen
 	npm i --no-save --force sqlite-vec-windows-x64
 	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
@@ -68,6 +68,6 @@ source-build-windows: deps
 # Cross-compile the member and runner product for a Windows ARM64 machine. It carries no native SQLite artifacts, so it
 # hosts no Deployment and needs no compiler.
 source-build-windows-arm64: deps
-	npm run build:ui -w @goondocks/myco
+	npm run build:ui
 	cd packages/myco && npm run codegen
 	cd packages/myco && TARGET=windows-arm64 node scripts/build-single-target.mjs
