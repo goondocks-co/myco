@@ -16,6 +16,7 @@ export type GitHubTokenPurpose = keyof typeof GITHUB_TOKEN_PERMISSIONS;
 export const GITHUB_APP_KEY_MAX_BYTES = 5_000;
 const JWT_CLOCK_SKEW_SECONDS = 60;
 const JWT_LIFETIME_SECONDS = 9 * 60;
+const REQUEST_TIMEOUT_MS = 10_000;
 const RSA = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' } as const;
 
 export interface GitHubAppIdentity {
@@ -50,7 +51,7 @@ export function githubAppAccess(options: { clientId: string; privateKey: string;
   };
   /** A request authenticated as the App itself. */
   const app = async (path: string, request: { method?: string; body?: unknown; next: string }): Promise<Response> =>
-    githubApi(options.fetchImpl, path, { ...request, bearer: await jwt() });
+    githubApi(options.fetchImpl, path, { ...request, bearer: await jwt(), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   return {
     app,
     async identity(): Promise<GitHubAppIdentity> {

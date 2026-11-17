@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, parseRepositoryComparison, parseRepositoryChanges, repositoryUrl, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { revokeInstallationToken } from '@goondocks/myco-shared/github-api';
+import { runnerRequestSignal } from './request.js';
 import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
@@ -29,7 +30,7 @@ export async function prepareWorkerCheckout(
   const repository = answer.repository as RepositoryAccess | null | undefined;
   const token = repository?.credential?.token;
   const revoke = async () => {
-    if (typeof token === 'string' && !await revokeInstallationToken(options.fetchImpl ?? fetch, token)) options.log?.('the repository token could not be revoked; it expires within the hour');
+    if (typeof token === 'string' && !await revokeInstallationToken(options.fetchImpl ?? fetch, token, runnerRequestSignal())) options.log?.('the repository token could not be revoked; it expires within the hour');
   };
   let remote: string;
   try {

@@ -69,6 +69,8 @@ export async function githubAppStatus(env: ServerEnv, now: number): Promise<GitH
 }
 
 const NEXT = 'Check again later.';
+/** How long one installation-token request to GitHub may take. */
+const GITHUB_REQUEST_TIMEOUT_MS = 10_000;
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const positiveId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 
@@ -121,7 +123,7 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
     catch (error) { if (error instanceof GitHubAppError) throw new GitHubAccessRefused('github_unavailable'); throw error; }
   };
   const asInstallation = async (token: string, path: string) => {
-    try { return await githubApi(env.outbound, path, { bearer: token, next: NEXT }); }
+    try { return await githubApi(env.outbound, path, { bearer: token, signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS), next: NEXT }); }
     catch (error) { if (error instanceof GitHubAppError) throw new GitHubAccessRefused('github_unavailable'); throw error; }
   };
 
@@ -137,7 +139,7 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
   };
 
   const revoke = async (token: string, purpose: GitHubTokenPurpose) => {
-    if (!await revokeInstallationToken(env.outbound, token)) emit({ kind: 'github_token_revoke_failed', purpose });
+    if (!await revokeInstallationToken(env.outbound, token, AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS))) emit({ kind: 'github_token_revoke_failed', purpose });
   };
 
   /**

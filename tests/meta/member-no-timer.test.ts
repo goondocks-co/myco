@@ -94,7 +94,6 @@ const BOUNDED_TIMERS: Readonly<Record<string, { calls: number; form: 'cleared' |
  * waits only for the requested unit teardown; member updates remain on-demand.
  */
 const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string }>> = {
-  'packages/myco-shared/src/github-api.ts': { calls: 1, bound: "one GitHub API request: a runner ends its checkout's token" },
   'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },
   'packages/myco/src/member/legacy-daemon-stop.ts': { calls: 1, bound: 'one health request to the daemon recorded by the selected home' },
   'packages/myco/src/member/legacy-service/cooperative-shutdown.ts': { calls: 2, bound: 'one shutdown request and the health polls inside its finite drain grace' },
