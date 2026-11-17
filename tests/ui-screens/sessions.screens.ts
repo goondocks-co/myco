@@ -619,7 +619,7 @@ test.describe('Sessions', () => {
         await openSession(page);
         await page.getByRole('button', { name: 'Session actions' }).click();
         const menu = page.getByRole('menu');
-        await expect(menu.getByRole('menuitem')).toHaveText(['Write a new title', 'Delete session']);
+        await expect(menu.getByRole('menuitem')).toHaveText(['Write a new title and summary', 'Delete session']);
         await expectAxeClean(page, ['[role="menu"]']);
         await menu.getByRole('menuitem', { name: 'Delete session' }).click();
         const dialog = page.getByRole('dialog', { name: 'Delete this session?' });

@@ -229,13 +229,7 @@ const MYCO_TOOL_FIELD_CHARS = 64;
  * `…<server>__<tool>` where the server segment is `myco` or ends in `_myco` (`mcp__myco__…`, `myco__…`, a plugin's
  * `mcp__plugin_<plugin>_myco__…`). Another server's tool of the same name is not Myco's.
  */
-function mycoToolLeaf(toolName: string): string | undefined {
-  const parts = toolName.split('__');
-  const leaf = parts.pop() ?? '';
-  const server = parts.pop();
-  if (server !== undefined) return (server === 'myco' || server.endsWith('_myco')) && /^myco_[a-z_]+$/.test(leaf) ? leaf : undefined;
-  return /^(?:myco-)?(myco_[a-z_]+)$/.exec(leaf)?.[1];
-}
+const MYCO_TOOL_NAME = /^(?:(?:.*__)?(?:\w*_)?myco__|myco-)?(myco_[a-z_]+)$/;
 
 /** Myco tool metadata from the Myco server's named call or wrapped MCP request. */
 export function mycoToolFields(toolName: string, input: unknown): { mycoTool?: string; mycoOp?: string } {
@@ -246,7 +240,7 @@ export function mycoToolFields(toolName: string, input: unknown): { mycoTool?: s
     toolName = request.ToolName;
     input = request.Arguments;
   }
-  const leaf = mycoToolLeaf(toolName);
+  const leaf = MYCO_TOOL_NAME.exec(toolName)?.[1];
   if (leaf === undefined) return {};
   const op = input !== null && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>).op : undefined;
   return { mycoTool: leaf.slice(0, MYCO_TOOL_FIELD_CHARS), ...(typeof op === 'string' ? { mycoOp: op.slice(0, MYCO_TOOL_FIELD_CHARS) } : {}) };
