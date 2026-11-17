@@ -100,7 +100,7 @@ function promptAsk(naming: PromptNaming, text: string, at: number, agent: string
 }
 
 export async function main(opts: HookMainOptions = {}) {
-  await runMemberHook('user-prompt-submit', opts, (run) => {
+  await runMemberHook('user-prompt-submit', opts, async (run) => {
     const { input, sessionId, agent, ctx, spool } = run;
     // `Session::` line matches the daemon's injection format (Branch::, Session::).
     const response = { additionalContext: `Session:: \`${sessionId}\`` };
@@ -129,6 +129,8 @@ export async function main(opts: HookMainOptions = {}) {
     const v1 = advertised(run, PROMPT_IDENTITY_FEATURE);
     const features: AskFeatures = { v1, schemes: v1 && advertised(run, PROMPT_SCHEME_FEATURE) };
     const named = namePrompt(HOOK_CONFIG[agent]?.promptIdentity, sessionId, input.promptKey, features, transcriptWritesRows);
+    const asksPrompt = (HOOK_CONFIG[agent]?.capabilities.promptSubmitInjection !== false || HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true)
+      && !isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text);
     const hash = sha256Text(text);
     const human = decision.origin === undefined || decision.origin === 'human';
     // The prompt id the turn-start event names: this submission's own, once it is named.
@@ -150,9 +152,8 @@ export async function main(opts: HookMainOptions = {}) {
         ? []
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
       const outgoing = { ...response, ...(promptId === undefined ? {} : { promptId }) };
-      if ((HOOK_CONFIG[agent]?.capabilities.promptSubmitInjection !== false || HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true)
-        && !isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)) {
-        asking = { naming, request: promptAsk(naming, text, run.now(), agent), response: outgoing };
+      if (asksPrompt) {
+        asking = { naming, request: { ...promptAsk(naming, text, run.now(), agent), promptFiles: { cwd: run.cwd, projectRoot: run.credential.root } }, response: outgoing };
       }
       return {
         events,

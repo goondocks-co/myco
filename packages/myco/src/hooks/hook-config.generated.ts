@@ -69,15 +69,47 @@ export interface HookConfigEntry {
   promptIdentity: PromptIdentityDeclaration;
 }
 
+const hookPart8 = (): HookConfigEntry["hookResponse"] => ({
+  "format": "json",
+  "fieldNames": {
+    "additionalContext": "additionalContext",
+    "promptId": "promptId",
+    "recallPending": "recallPending"
+  }
+});
+
+const capabilityDefaults: HookCapabilities = {
+  "preToolUseInjection": false,
+  "sessionStartInjection": true,
+  "sessionStartOnce": false,
+  "subagentStartInjection": false,
+  "postToolUseInjection": false,
+  "promptRecallToolDelivery": true,
+  "promptSubmitInjection": true,
+  "turnRowSource": "transcript",
+  "transcriptFidelity": "full"
+};
+const fieldDefaults = {
+  "sessionId": "session_id",
+  "transcriptPath": "transcript_path",
+  "lastResponse": "last_assistant_message",
+  "prompt": "prompt",
+  "toolName": "tool_name",
+  "toolInput": "tool_input",
+  "toolOutput": "tool_output"
+} satisfies Partial<HookConfigEntry['hookFields']>;
+type HookFieldOverrides = Omit<HookConfigEntry['hookFields'], keyof typeof fieldDefaults> & Partial<HookConfigEntry['hookFields']>;
+const withHookCapabilities = (overrides: Partial<HookCapabilities>): HookCapabilities => ({ ...capabilityDefaults, ...overrides });
+const withHookFields = (overrides: HookFieldOverrides): HookConfigEntry['hookFields'] => ({ ...fieldDefaults, ...overrides });
+const hookEvent = (hook: string, timeout?: number): HookEventEntry => timeout === undefined ? { hook } : { hook, timeout };
+
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "antigravity": {
     "pluginRootEnvVar": "ANTIGRAVITY_PLUGIN_ROOT",
     "configDir": ".agents/plugins/myco",
-    "hookFields": {
+    "hookFields": withHookFields({
       "sessionId": "conversationId",
       "transcriptPath": "transcriptPath",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
       "toolName": "toolCall.name",
       "toolInput": "toolCall.args",
       "toolOutput": [
@@ -85,40 +117,17 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "tool_response"
       ],
       "toolError": "error"
-    },
-    "hookEvents": {
-      "PostToolUse": {
-        "hook": "post-tool-use",
-        "timeout": 5
-      },
-      "PreInvocation": {
-        "hook": "session-start",
-        "timeout": 10
-      },
-      "SessionStart": {
-        "hook": "session-start",
-        "timeout": 10
-      },
-      "Stop": {
-        "hook": "stop",
-        "timeout": 30
-      }
-    },
+    }),
+    "hookEvents": {"PostToolUse": hookEvent("post-tool-use", 5), "PreInvocation": hookEvent("session-start", 10), "SessionStart": hookEvent("session-start", 10), "Stop": hookEvent("stop", 30)},
     "planDirs": [
       ".agents/plugins/myco/plans/"
     ],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
+    "capabilities": withHookCapabilities({
       "sessionStartOnce": true,
-      "subagentStartInjection": false,
-      "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
-    },
+    }),
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "member-transcript-v1"
@@ -142,48 +151,13 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "claude-code": {
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
     "configDir": ".claude",
-    "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
+    "hookFields": withHookFields({
       "toolOutput": [
         "tool_output",
         "tool_response"
       ]
-    },
-    "hookEvents": {
-      "PostToolUse": {
-        "hook": "prompt-recall",
-        "timeout": 5
-      },
-      "PostToolUseFailure": {
-        "hook": "prompt-recall",
-        "timeout": 5
-      },
-      "SessionEnd": {
-        "hook": "session-end",
-        "timeout": 10
-      },
-      "SessionStart": {
-        "hook": "session-start",
-        "timeout": 10
-      },
-      "Stop": {
-        "hook": "stop",
-        "timeout": 30
-      },
-      "SubagentStart": {
-        "hook": "subagent-start",
-        "timeout": 5
-      },
-      "UserPromptSubmit": {
-        "hook": "user-prompt-submit",
-        "timeout": 5
-      }
-    },
+    }),
+    "hookEvents": {"PostToolUse": hookEvent("prompt-recall", 5), "PostToolUseFailure": hookEvent("prompt-recall", 5), "SessionEnd": hookEvent("session-end", 10), "SessionStart": hookEvent("session-start", 10), "Stop": hookEvent("stop", 30), "SubagentStart": hookEvent("subagent-start", 5), "UserPromptSubmit": hookEvent("user-prompt-submit", 5)},
     "planDirs": [
       "~/.claude/plans/",
       ".claude/plans/"
@@ -191,17 +165,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "planTags": [
       "ultraplan"
     ],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
-      "subagentStartInjection": true,
-      "postToolUseInjection": false,
-      "promptRecallToolDelivery": true,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
-      "transcriptFidelity": "full"
-    },
+    "capabilities": withHookCapabilities({
+      "subagentStartInjection": true
+    }),
     "promptIdentity": {
       "kind": "harness-key",
       "scheme": "claude-v2",
@@ -453,29 +419,13 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "cline": {
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
     "configDir": ".cline",
-    "hookFields": {
-      "sessionId": "conversationId",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_output"
-    },
+    "hookFields": withHookFields({
+      "sessionId": "conversationId"
+    }),
     "hookEvents": {},
     "planDirs": [],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
-      "subagentStartInjection": false,
-      "postToolUseInjection": false,
-      "promptRecallToolDelivery": true,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
-      "transcriptFidelity": "full"
-    },
+    "capabilities": withHookCapabilities({}),
     "promptIdentity": {
       "kind": "stamped",
       "scheme": "stamp-or-offset-v1"
@@ -490,14 +440,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "member"
     },
-    "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "additionalContext",
-        "promptId": "promptId",
-        "recallPending": "recallPending"
-      }
-    },
+    "hookResponse": hookPart8(),
     "captureRules": [
       {
         "event": "user_prompt",
@@ -532,59 +475,21 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "codex": {
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
     "configDir": ".codex",
-    "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
+    "hookFields": withHookFields({
       "toolOutput": [
         "tool_output",
         "tool_response"
       ]
-    },
-    "hookEvents": {
-      "PostToolUse": {
-        "hook": "post-tool-use",
-        "timeout": 5
-      },
-      "SessionEnd": {
-        "hook": "session-end",
-        "timeout": 3
-      },
-      "SessionStart": {
-        "hook": "session-start",
-        "timeout": 10
-      },
-      "Stop": {
-        "hook": "stop",
-        "timeout": 30
-      },
-      "SubagentStart": {
-        "hook": "subagent-start",
-        "timeout": 5
-      },
-      "UserPromptSubmit": {
-        "hook": "user-prompt-submit",
-        "timeout": 5
-      }
-    },
+    }),
+    "hookEvents": {"PostToolUse": hookEvent("post-tool-use", 5), "SessionEnd": hookEvent("session-end", 3), "SessionStart": hookEvent("session-start", 10), "Stop": hookEvent("stop", 30), "SubagentStart": hookEvent("subagent-start", 5), "UserPromptSubmit": hookEvent("user-prompt-submit", 5)},
     "planDirs": [],
     "planTags": [
       "proposed_plan"
     ],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
+    "capabilities": withHookCapabilities({
       "subagentStartInjection": true,
-      "postToolUseInjection": false,
-      "promptRecallToolDelivery": true,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
-    },
+    }),
     "promptIdentity": {
       "kind": "harness-key",
       "scheme": "codex-turn-v1",
@@ -783,7 +688,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "copilot": {
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
     "configDir": ".copilot",
-    "hookFields": {
+    "hookFields": withHookFields({
       "sessionId": [
         "session_id",
         "sessionId"
@@ -796,7 +701,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "last_assistant_message",
         "response"
       ],
-      "prompt": "prompt",
       "toolName": [
         "tool_name",
         "toolName"
@@ -810,67 +714,15 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "tool_response",
         "toolResult"
       ]
-    },
-    "hookEvents": {
-      "ErrorOccurred": {
-        "hook": "error-occurred",
-        "timeout": 5
-      },
-      "Notification": {
-        "hook": "notification",
-        "timeout": 5
-      },
-      "PostToolUse": {
-        "hook": "post-tool-use",
-        "timeout": 5
-      },
-      "PostToolUseFailure": {
-        "hook": "post-tool-use-failure",
-        "timeout": 5
-      },
-      "PreCompact": {
-        "hook": "pre-compact",
-        "timeout": 5
-      },
-      "SessionEnd": {
-        "hook": "session-end",
-        "timeout": 10
-      },
-      "SessionStart": {
-        "hook": "session-start",
-        "timeout": 10
-      },
-      "Stop": {
-        "hook": "stop",
-        "timeout": 30
-      },
-      "SubagentStart": {
-        "hook": "subagent-start",
-        "timeout": 5
-      },
-      "SubagentStop": {
-        "hook": "subagent-stop",
-        "timeout": 10
-      },
-      "UserPromptSubmit": {
-        "hook": "user-prompt-submit",
-        "timeout": 5
-      }
-    },
+    }),
+    "hookEvents": {"ErrorOccurred": hookEvent("error-occurred", 5), "Notification": hookEvent("notification", 5), "PostToolUse": hookEvent("post-tool-use", 5), "PostToolUseFailure": hookEvent("post-tool-use-failure", 5), "PreCompact": hookEvent("pre-compact", 5), "SessionEnd": hookEvent("session-end", 10), "SessionStart": hookEvent("session-start", 10), "Stop": hookEvent("stop", 30), "SubagentStart": hookEvent("subagent-start", 5), "SubagentStop": hookEvent("subagent-stop", 10), "UserPromptSubmit": hookEvent("user-prompt-submit", 5)},
     "planDirs": [],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
+    "capabilities": withHookCapabilities({
       "subagentStartInjection": true,
-      "postToolUseInjection": false,
-      "promptRecallToolDelivery": true,
       "promptSubmitInjection": false,
-      "turnRowSource": "transcript",
-      "subagentRowSource": "hook",
-      "transcriptFidelity": "full"
-    },
+      "subagentRowSource": "hook"
+    }),
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "member-transcript-v1"
@@ -899,16 +751,11 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "cursor": {
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
     "configDir": ".cursor",
-    "hookFields": {
+    "hookFields": withHookFields({
       "sessionId": [
         "conversation_id",
         "session_id"
       ],
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
       "toolOutput": [
         "tool_output",
         "tool_response"
@@ -917,45 +764,18 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "/agent-transcripts/([^/]+)/\\1\\.jsonl$",
         "(?:^|/)([^/.]+)\\.txt$"
       ]
-    },
-    "hookEvents": {
-      "postToolUse": {
-        "hook": "post-tool-use",
-        "timeout": 5
-      },
-      "postToolUseFailure": {
-        "hook": "post-tool-use-failure",
-        "timeout": 5
-      },
-      "sessionEnd": {
-        "hook": "session-end",
-        "timeout": 10
-      },
-      "sessionStart": {
-        "hook": "session-start",
-        "timeout": 10
-      },
-      "stop": {
-        "hook": "stop",
-        "timeout": 30
-      }
-    },
+    }),
+    "hookEvents": {"postToolUse": hookEvent("post-tool-use", 5), "postToolUseFailure": hookEvent("post-tool-use-failure", 5), "sessionEnd": hookEvent("session-end", 10), "sessionStart": hookEvent("session-start", 10), "stop": hookEvent("stop", 30)},
     "planDirs": [
       "~/.cursor/plans/",
       ".cursor/plans/"
     ],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
-      "subagentStartInjection": false,
+    "capabilities": withHookCapabilities({
       "postToolUseInjection": true,
       "promptRecallToolDelivery": false,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
-    },
+    }),
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "offset-v1"
@@ -1001,34 +821,18 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   "opencode": {
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
     "configDir": ".opencode",
-    "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
+    "hookFields": withHookFields({
       "toolOutput": [
         "tool_output",
         "tool_response"
       ]
-    },
+    }),
     "hookEvents": {},
     "planDirs": [
       ".opencode/plans/"
     ],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
-      "subagentStartInjection": false,
-      "postToolUseInjection": false,
-      "promptRecallToolDelivery": true,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
-      "transcriptFidelity": "full"
-    },
+    "capabilities": withHookCapabilities({}),
     "promptIdentity": {
       "kind": "stamped",
       "scheme": "stamp-or-offset-v1"
@@ -1043,46 +847,23 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "member"
     },
-    "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "additionalContext",
-        "promptId": "promptId",
-        "recallPending": "recallPending"
-      }
-    }
+    "hookResponse": hookPart8()
   },
   "pi": {
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
     "configDir": ".pi",
-    "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
+    "hookFields": withHookFields({
       "toolOutput": [
         "tool_output",
         "tool_response"
       ]
-    },
+    }),
     "hookEvents": {},
     "planDirs": [
       ".pi/plans/"
     ],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
-      "sessionStartInjection": true,
-      "sessionStartOnce": false,
-      "subagentStartInjection": false,
-      "postToolUseInjection": false,
-      "promptRecallToolDelivery": true,
-      "promptSubmitInjection": true,
-      "turnRowSource": "transcript",
-      "transcriptFidelity": "full"
-    },
+    "capabilities": withHookCapabilities({}),
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "offset-v1"
@@ -1098,19 +879,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "harness"
     },
-    "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "additionalContext",
-        "promptId": "promptId",
-        "recallPending": "recallPending"
-      }
-    }
+    "hookResponse": hookPart8()
   },
   "windsurf": {
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
     "configDir": ".windsurf",
-    "hookFields": {
+    "hookFields": withHookFields({
       "sessionId": "trajectory_id",
       "transcriptPath": "tool_info.transcript_path",
       "lastResponse": "tool_info.response",
@@ -1118,45 +892,18 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "toolName": "agent_action_name",
       "toolInput": "tool_info",
       "toolOutput": "tool_info.mcp_result"
-    },
-    "hookEvents": {
-      "post_cascade_response": {
-        "hook": "stop"
-      },
-      "post_cascade_response_with_transcript": {
-        "hook": "stop"
-      },
-      "post_mcp_tool_use": {
-        "hook": "post-tool-use"
-      },
-      "post_read_code": {
-        "hook": "post-tool-use"
-      },
-      "post_run_command": {
-        "hook": "post-tool-use"
-      },
-      "post_write_code": {
-        "hook": "post-tool-use"
-      },
-      "pre_user_prompt": {
-        "hook": "user-prompt-submit"
-      }
-    },
+    }),
+    "hookEvents": {"post_cascade_response": hookEvent("stop"), "post_cascade_response_with_transcript": hookEvent("stop"), "post_mcp_tool_use": hookEvent("post-tool-use"), "post_read_code": hookEvent("post-tool-use"), "post_run_command": hookEvent("post-tool-use"), "post_write_code": hookEvent("post-tool-use"), "pre_user_prompt": hookEvent("user-prompt-submit")},
     "planDirs": [
       "~/.windsurf/plans/"
     ],
     "planTags": [],
-    "capabilities": {
-      "preToolUseInjection": false,
+    "capabilities": withHookCapabilities({
       "sessionStartInjection": false,
-      "sessionStartOnce": false,
-      "subagentStartInjection": false,
-      "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
       "promptSubmitInjection": false,
-      "turnRowSource": "hook",
-      "transcriptFidelity": "full"
-    },
+      "turnRowSource": "hook"
+    }),
     "promptIdentity": {
       "kind": "hook-owned",
       "scheme": "hook-mint-v1"

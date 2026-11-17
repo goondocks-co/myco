@@ -16,6 +16,7 @@
     "./report-order": { "import": "./dist/report-order.js", "types": "./dist/report-order.d.ts" },
     "./json": { "import": "./dist/json.js", "types": "./dist/json.d.ts" },
     "./antigravity-parser": { "import": "./dist/antigravity-parser.js", "types": "./dist/antigravity-parser.d.ts" },
+    "./prompt-file-references": { "import": "./dist/prompt-file-references.js", "types": "./dist/prompt-file-references.d.ts" },
     "./prompt-text": { "import": "./dist/prompt-text.js", "types": "./dist/prompt-text.d.ts" },
     "./search-types": {
       "import": "./dist/search-types.js",

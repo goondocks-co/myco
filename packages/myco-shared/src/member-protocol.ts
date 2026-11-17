@@ -128,6 +128,7 @@ export function isMachineSettingsRevision(value: unknown): value is string {
 /** The settings this machine's hooks consume, with their common defaults and bounds. */
 export const MACHINE_SETTING_SPECS = {
   'capture.plan_dirs': { type: 'path-list', maxItems: 16, maxChars: 256, default: [] as string[] },
+  'capture.prompt_file_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'prompt-files', default: [] as string[] },
   'capture.auto_join_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'capture', default: ['~/Repos'] },
   'capture.connect_roots': { type: 'root-map', maxItems: 256, default: {} as Record<string, string>, serverWritten: true },
 } as const;
@@ -143,7 +144,7 @@ export function resolveMachineSetting(leaf: MachineSettingLeaf, value: unknown):
     return { effective: Object.fromEntries(valid.slice(0, spec.maxItems)), refusal: valid.length !== entries.length || entries.length > spec.maxItems ? 'Some stored repository connections cannot be used.' : null };
   }
   if (!Array.isArray(value)) return { effective: spec.default, refusal: 'Expected a list of folders.' };
-  const rule = leaf === 'capture.auto_join_roots' ? captureFolderRefusal : planFolderRefusal;
+  const rule = folderRule('folders' in spec ? spec.folders : undefined);
   const valid = [...new Set(value.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '' && entry.length <= spec.maxChars && !/[\u0000-\u001F\u007F]/.test(entry) && rule(entry) === null))].slice(0, spec.maxItems);
   return { effective: valid, refusal: valid.length !== value.length ? 'Some stored folders cannot be used.' : null };
 }
@@ -331,6 +332,17 @@ export function captureFolderRefusal(entry: string): string | null {
   const rooted = home ? 'the home' : drive ? 'the drive' : 'the filesystem root';
   const named = segments.slice(home || drive ? 1 : 0).filter((s) => s !== '' && s !== '.');
   return named.length === 0 ? `expected a folder under ${rooted}, not ${rooted} itself` : null;
+}
+
+/** Named prompt roots are descendants of this machine's home, expressed without another machine's absolute paths. */
+export function promptFileRootRefusal(entry: string): string | null {
+  if (!/^~[\\/]/.test(entry)) return 'expected ~/ followed by a folder below the home; absolute paths, the home and its ancestors are not allowed';
+  return planFolderRefusal(entry);
+}
+
+/** Every path-list reader and writer applies its declared folder rule. */
+export function folderRule(kind?: 'capture' | 'prompt-files'): (entry: string) => string | null {
+  return kind === 'capture' ? captureFolderRefusal : kind === 'prompt-files' ? promptFileRootRefusal : planFolderRefusal;
 }
 
 /**

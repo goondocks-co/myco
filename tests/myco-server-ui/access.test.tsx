@@ -254,7 +254,7 @@ describe('invitations', () => {
 });
 
 describe('machines', () => {
-  it('offers a machine\'s settings once per machine, only on the viewer\'s own, never on one that names none, and saves its plan folders (#1393)', async () => {
+  it('offers a machine\'s settings once per machine, only on the viewer\'s own, never on one that names none, and saves its approved prompt file folders (#1393)', async () => {
     const puts: { path: string; body: unknown }[] = [];
     let stored: string[] = [];
     accessServer({
@@ -266,10 +266,10 @@ describe('machines', () => {
       ],
       run: [credential({ id: 'mt_runaaaaaaaaaa', memberId: 'mem_harness', machineId: 'harness', runtimeLabel: null, purpose: 'run' })],
     }, {
-      '/api/machines/ada_5a2d54af/settings': () => Response.json({ machineId: 'ada_5a2d54af', leaves: [{ leaf: 'capture.plan_dirs', configured: stored.length > 0, value: stored, updatedAt: null, updatedBy: null }] }),
-      '/api/machines/ada_5a2d54af/settings/capture.plan_dirs': (init) => {
+      '/api/machines/ada_5a2d54af/settings': () => Response.json({ machineId: 'ada_5a2d54af', leaves: [{ leaf: 'capture.prompt_file_roots', configured: stored.length > 0, value: stored, updatedAt: null, updatedBy: null }] }),
+      '/api/machines/ada_5a2d54af/settings/capture.prompt_file_roots': (init) => {
         const body = JSON.parse(String(init?.body)) as { value: string[] };
-        puts.push({ path: '/api/machines/ada_5a2d54af/settings/capture.plan_dirs', body });
+        puts.push({ path: '/api/machines/ada_5a2d54af/settings/capture.prompt_file_roots', body });
         stored = body.value;
         return Response.json({ applied: true });
       },
@@ -284,16 +284,16 @@ describe('machines', () => {
     expect(offers).toEqual([false, true]);
     fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
-    expect(await within(dialog).findByText('None: only each agent’s own plan folder.')).toBeTruthy();
+    expect(await within(dialog).findByText('None: only project and temporary folders.')).toBeTruthy();
     // A folder that names the whole home is refused before it is ever sent.
-    fireEvent.change(within(dialog).getByLabelText('Plan folder to add'), { target: { value: '~' } });
+    fireEvent.change(within(dialog).getByLabelText('Prompt file folder to add'), { target: { value: '~' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toContain('not the home itself');
-    expect(within(dialog).getByText('None: only each agent’s own plan folder.')).toBeTruthy();
-    fireEvent.change(within(dialog).getByLabelText('Plan folder to add'), { target: { value: '~/notes/plans' } });
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('~/');
+    expect(within(dialog).getByText('None: only project and temporary folders.')).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText('Prompt file folder to add'), { target: { value: '~/notes/plans' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.plan_dirs', body: { value: ['~/notes/plans'] } }]));
+    await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.prompt_file_roots', body: { value: ['~/notes/plans'] } }]));
   });
 
   it('offers the folders a machine captures on its own, at the default until changed, and saves only what changed', async () => {

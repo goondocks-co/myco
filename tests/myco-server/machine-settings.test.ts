@@ -17,8 +17,9 @@ import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_UPDATE_HEADE
 
 const NOW = 1_800_000_000_000;
 /** The auto-join leaves a machine holds (#1547), at their defaults. */
-const AT_DEFAULT = { 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
+const AT_DEFAULT = { 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
 const DEFAULT_ROWS = [
+  { leaf: 'capture.prompt_file_roots', configured: false, value: [], updatedAt: null, updatedBy: null },
   { leaf: 'capture.auto_join_roots', configured: false, value: ['~/Repos'], updatedAt: null, updatedBy: null },
   { leaf: 'capture.connect_roots', configured: false, value: {}, updatedAt: null, updatedBy: null },
 ];
@@ -100,6 +101,17 @@ describe('a machine\'s settings', () => {
     const refused = await Promise.all(broad.map(async (entry) => [entry, (await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', [entry], 'mem_a', NOW)).applied] as const));
     expect(Object.fromEntries(refused)).toEqual(Object.fromEntries(broad.map((entry) => [entry, false])));
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['./docs/plans', '~/notes/plans', '/srv/plans', 'a..b/plans'], 'mem_a', NOW)).toEqual({ applied: true });
+  });
+
+  it('saves only explicitly scoped prompt roots and answers the machine with the approved list', async () => {
+    const e = rig();
+    const leaf = 'capture.prompt_file_roots';
+    for (const root of ['~', '/', '/Users/example', '/Users', '~/../tasks']) {
+      expect(await setMachineLeaf(e.db, 'm_a', leaf, [root], 'mem_a', NOW)).toMatchObject({ applied: false, reason: 'invalid_value' });
+    }
+    expect(await setMachineLeaf(e.db, 'm_a', leaf, ['~/tasks'], 'mem_a', NOW)).toEqual({ applied: true });
+    expect((await machineBlockFor(e.db, 'mem_a', 'm_a'))?.leaves[leaf]).toEqual(['~/tasks']);
+    e.sqlite.close();
   });
 
   it('hold capture folders to the one capture folder rule: a drive root and a relative folder refused, a Windows home folder kept', async () => {

@@ -27,6 +27,7 @@
       "@goondocks/myco-shared/runner-update": ["./packages/myco-shared/src/runner-update.ts"],
       "@goondocks/myco-shared/relevance": ["./packages/myco-shared/src/relevance.ts"],
       "@goondocks/myco-shared/raw-claims": ["./packages/myco-shared/src/raw-claims.ts"],
+      "@goondocks/myco-shared/prompt-file-references": ["./packages/myco-shared/src/prompt-file-references.ts"],
       "@goondocks/myco-shared/prompt-text": ["./packages/myco-shared/src/prompt-text.ts"],
       "@goondocks/myco-shared/recall": ["./packages/myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/github-app": ["./packages/myco-shared/src/github-app.ts"],

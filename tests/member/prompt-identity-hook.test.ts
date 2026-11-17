@@ -359,3 +359,27 @@ it('a tool hook retains the native request key when transcript lines have not ar
   await hook('post-tool-use', { tool_use_id: 'late-orchard-call', tool_name: 'view' });
   expect(delivered(sessionId)).toHaveLength(1);
 });
+
+it('sends file context only in the selection ask and captures exactly the typed mixed prompt', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prompt-selection-'));
+  fs.writeFileSync(path.join(root, 'task.txt'), 'Repair capture ownership and preserve session history.');
+  const sessionId = 'sess-selection';
+  registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', root });
+  const served = serving('turn,prompt-identity');
+  const opts = { helpers: 'run' as const, fetch: served.fetch };
+  const tx = transcript(sessionId);
+  const prompt = 'Investigate capture delays. Read @task.txt.';
+  const common = { session_id: sessionId, cwd: root, transcript_path: tx };
+  fs.writeFileSync(tx, JSON.stringify({ type: 'user', uuid: '11111111-1111-4111-8111-111111111111', message: { role: 'user', content: prompt } }) + '\n');
+  await runHook('session-start', common, opts);
+  await runHook('user-prompt-submit', { ...common, prompt, prompt_id: '11111111-1111-4111-8111-111111111111' }, opts);
+  await runHook('stop', common, opts);
+  const selected = served.asked[0]!.text;
+  expect(selected.startsWith(prompt)).toBe(true);
+  expect('\n\n[File opening]\nRepair capture ownership and preserve session history.'.startsWith(selected.slice(prompt.length))).toBe(true);
+  const { publishFixture, readFixtureRecords } = await import('../myco-server/helpers/fixtures.js');
+  await publishFixture(rig.env);
+  const records = await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId);
+  expect(records.find(record => record.k === 'prompt')?.text).toBe(prompt);
+  fs.rmSync(root, { recursive: true, force: true });
+});

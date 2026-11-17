@@ -13,6 +13,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/install/install-ps1.test.ts',
   'tests/member/legacy-import.test.ts',
   'tests/member/offline-recovery.test.ts',
+  'tests/member/prompt-files-killed.test.ts',
   'tests/member/worker-process-cleanup.test.ts',
   'tests/meta/setup-no-real-services.test.ts',
   'tests/myco-server/auto-join-cost.test.ts',

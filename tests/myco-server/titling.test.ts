@@ -378,13 +378,13 @@ describe('titleSession on an owner\'s ask', () => {
 
 describe('direct session titles', () => {
   const answer = { title: 'Shipped bounded session titles', summary: 'Built direct session titling. Verified title and summary persistence.' };
-  function direct(complete: CompletionProvider['complete']) {
+  function direct(complete: CompletionProvider['complete'], opening = 'Read docs/task.md and do it.') {
     const h = harness({ bound: false });
     const pending: Promise<void>[] = [];
     h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete });
     h.env.afterResponse = work => { pending.push(work()); };
     h.session('direct');
-    h.prompt('direct', 'opening', 'Read docs/task.md and do it.', NOW - 8000);
+    h.prompt('direct', 'opening', opening, NOW - 8000);
     return { ...h, settle: () => Promise.all(pending) };
   }
 
@@ -552,10 +552,10 @@ describe('direct session titles', () => {
     h.sqlite.close();
   });
 
-  it('uses the head and tail, final replies and the stored task-file read rather than harness notices', async () => {
-    const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }));
+  it.each([['Read docs/task.md and do it.', 'docs/task.md'], ['Read @docs/task.md.', 'docs/task.md'], ['Fix the Makefile', 'Makefile']])('uses captured reads for %s, with head, tail and closing replies', async (opening, file) => {
+    const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }), opening);
     h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1','read-task','direct','tok_1','tool.use','cli',?,'hash',?,?)",
-      [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: '/work/docs/task.md' }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
+      [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: `/work/${file}` }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
     for (const [id, toolName, input] of [['shell', 'Bash', { command: 'env | head' }], ['unrelated', 'Read', { file_path: '/work/docs/other-task.md' }]] as const) {
       h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1',?,'direct','tok_1','tool.use','cli',?,'hash',?,?)",
         [id, JSON.stringify({ toolCallId: id, promptId: 'opening', toolName, input, output: 'DO NOT SEND UNRELATED OUTPUT', success: true }), NOW - 7950, NOW - 7950]);

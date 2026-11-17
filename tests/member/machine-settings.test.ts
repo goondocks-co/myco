@@ -12,7 +12,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { cacheMachineSettings, machinePlanDirs, beginMachineSettingsRequest, machineSettingsHeaders, forgetConnectRoot } from '@myco/member/machine-settings.js';
+import { cacheMachineSettings, machinePlanDirs, machinePromptFileRoots, beginMachineSettingsRequest, machineSettingsHeaders, forgetConnectRoot } from '@myco/member/machine-settings.js';
 import { MACHINE_UPDATE_HEADER, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, MACHINE_SETTINGS_ORDER_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { listDeploymentMemberships, machineSettingsPath } from '@myco/member/registry.js';
 import { tempMycoHome } from './helpers/server.js';
@@ -258,6 +258,8 @@ describe('the machine settings cache', () => {
     const home = tempMycoHome();
     cacheMachineSettings('https://one.example', { leaves: { 'capture.plan_dirs': ['/', '~', '~/', '.', '../up', 'docs/plans', '~/notes'] } }, home);
     expect(machinePlanDirs('https://one.example', home)).toEqual(['docs/plans', '~/notes']);
+    cacheMachineSettings('https://one.example', { leaves: { 'capture.prompt_file_roots': ['/', '~', '~/', '/Users/example', '~/../tasks', '~/tasks'] } }, home);
+    expect(machinePromptFileRoots('https://one.example', home)).toEqual(['~/tasks']);
   });
 });
 

@@ -1,3 +1,4 @@
+import { promptReferencesFile } from '@goondocks/myco-shared/prompt-file-references';
 import type { ContentStore } from '../core/adapters.js';
 import { titleMaterialSnapshot, titleMaterialTurns } from '../db/documents/titling-material.js';
 import { SessionDocument } from './session-pages.js';
@@ -29,6 +30,7 @@ function fileRead(record: DocRecord, prompt: string): boolean {
   return PATH_FIELDS.some(field => {
     const path = (input as Record<string, unknown>)[field];
     if (typeof path !== 'string' || path.length === 0) return false;
+    if (promptReferencesFile(prompt, path)) return true;
     const suffixes = [path, ...Array.from(path.matchAll(/[\\/]/g), match => path.slice(match.index + 1)).filter(Boolean)];
     return suffixes.some(named => {
       for (let at = prompt.indexOf(named); at >= 0; at = prompt.indexOf(named, at + 1)) {
