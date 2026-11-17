@@ -33,11 +33,15 @@ for (const [viewport, mode] of [['desktop', 'light'], ['phone', 'dark']] as cons
       await expectFits(page, viewport);
       await expectAxeClean(page, ['[role="dialog"]']);
       await page.screenshot({ path: path.join(evidence, `run-now-repository-refusal-${viewport}-${mode}.png`) });
-      await page.route(`**/api/projects/${project.projectId}/repository`, route => route.fulfill({ json: { repository: null } }));
+      await page.route(`**/api/projects/${project.projectId}/repository`, route => route.fulfill({ json: { repository: null, appConfigured: true } }));
+      await page.route('**/api/github-app/installations', route => route.fulfill({ json: {
+        installations: [{ installationId: 666, account: { id: 6660, login: 'someone-else', type: 'User' }, approved: false, suspended: false }], accounts: [],
+      } }));
       await dialog.getByRole('link', { name: 'Connect repository →' }).click();
       await expect(page.getByRole('dialog', { name: 'Connect a repository' })).toBeVisible();
-      await page.getByRole('dialog').getByRole('switch', { name: 'Use without a token' }).click();
-      await expect(page.getByRole('dialog')).toContainText('For a private GitHub repository, use a fine-grained token limited to this repository with Contents: Read-only');
+      await expect(page.getByRole('dialog')).toContainText('Installed by an account this server has not approved: someone-else (a personal account)');
+      await expect(page.getByRole('dialog').getByRole('button', { name: 'Approve' })).toBeVisible();
+      await expect(page.getByRole('dialog').getByRole('button', { name: 'Save repository' })).toBeDisabled();
       await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
       await page.goto(new URL(`/p/${project.projectId}`, screensEnv('url')).href);
       const needs = page.locator('[data-needs-you]');

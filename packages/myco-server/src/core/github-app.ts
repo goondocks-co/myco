@@ -1,7 +1,5 @@
-import {
-  GITHUB_TOKEN_PERMISSIONS, GitHubAppError, githubApi, githubAppAccess, gitHubAppPermissionIssues, revokeInstallationToken,
-  type GitHubAppStatus, type GitHubTokenPurpose,
-} from '@goondocks/myco-shared/github-app';
+import { GITHUB_TOKEN_PERMISSIONS, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppStatus, type GitHubTokenPurpose } from '@goondocks/myco-shared/github-app';
+import { GitHubAppError, githubApi, revokeInstallationToken } from '@goondocks/myco-shared/github-api';
 import { approveAccount, approvedAccount, approvedAccounts, withdrawAccount, type ApprovedAccount } from '../db/github-app/accounts.js';
 import type { ServerEnv } from './adapters.js';
 import { emit } from '../telemetry.js';

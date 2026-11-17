@@ -995,6 +995,7 @@ it('words every dispatch refusal and makes settled refusals final', () => {
   const expected: Record<DispatchRefusal, string> = {
     not_landed: 'This task is not available yet.',
     repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
+    repository_unavailable: 'Code tasks wait until the server operator sets up repository access with myco server github-app.',
     harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
     unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
     unknown_project: 'This project is no longer available here. Choose another project.',

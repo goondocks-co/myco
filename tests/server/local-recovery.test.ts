@@ -522,9 +522,9 @@ it('restores without held wrapping material, starts the server and names each cr
       const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
       const store = deploymentSecretStore(server.env.db, key);
       expect(await store.list()).toEqual([]);
-      expect(await prepareDispatch(server.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
-      // Connections are configuration a restore does not carry: an admin connects the repository again through the App.
-      expect((await releaseProvenance(server.env.db).describe('proj_1')).repository).toBeNull();
+      // The connection is kept as configuration; reading it waits for the App key, which is generated again and imported.
+      expect(await prepareDispatch(server.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_unavailable' });
+      expect((await releaseProvenance(server.env.db).describe('proj_1')).repository).toEqual({ url: 'https://github.com/example/source', branch: 'main' });
       expect(await providerCredentialReady(server.env.db, key, 'openai')).toBe(false);
       expect(await openHarnessCredential(server.env.db, key, 'anthropic')).toBeNull();
       expect(await harnessCredentialAvailable(server.env.db, key, 'claude-code')).toBe(false);

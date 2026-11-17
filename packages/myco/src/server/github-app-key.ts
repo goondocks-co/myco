@@ -1,5 +1,6 @@
 import { createPrivateKey } from 'node:crypto';
-import { GITHUB_APP_KEY_MAX_BYTES, GitHubAppError, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppIdentity } from '@goondocks/myco-shared/github-app';
+import { GITHUB_APP_KEY_MAX_BYTES, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppIdentity } from '@goondocks/myco-shared/github-app';
+import { GitHubAppError } from '@goondocks/myco-shared/github-api';
 
 export const IMPORT_NEXT = 'myco server github-app --target <local|cloudflare> --url <deployment-url> --private-key-file <downloaded.pem>';
 

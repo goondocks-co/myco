@@ -29,7 +29,7 @@
  * never returned, logged or placed in evidence.
  */
 
-import { GITHUB_API_ORIGIN } from '@goondocks/myco-shared/github-app';
+import { GITHUB_API_ORIGIN } from '@goondocks/myco-shared/github-api';
 import type { OutboundFetch } from './adapters.js';
 
 export const GITHUB_READ_TIMEOUT_MS = 5_000;

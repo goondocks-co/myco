@@ -1,7 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, parseRepositoryComparison, parseRepositoryChanges, repositoryUrl, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
-import { revokeInstallationToken } from '@goondocks/myco-shared/github-app';
+import { revokeInstallationToken } from '@goondocks/myco-shared/github-api';
 import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
