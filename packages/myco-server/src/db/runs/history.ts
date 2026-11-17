@@ -172,10 +172,10 @@ export const failingRows = async (db: RelationalStore, tasks: readonly string[],
 
 const audits = read<[string, string, number], Row>({ name: 'runs.auditFailures', sql: `SELECT r.project_id,COUNT(*) AS closed,SUM(r.error_code=?1) AS runs,
     MIN(CASE WHEN r.error_code=?1 THEN r.completed_at END) AS since,MAX(CASE WHEN r.error_code=?1 THEN r.completed_at END) AS latest_at,
-    (SELECT l.id FROM agent_runs l WHERE l.project_id=r.project_id AND l.error_code=?1 AND l.task IN (SELECT value FROM json_each(?2)) AND l.completed_at>=?3
+    (SELECT l.id FROM agent_runs l INDEXED BY idx_agent_runs_list_window WHERE l.project_id=r.project_id AND l.error_code=?1 AND l.task IN (SELECT value FROM json_each(?2)) AND l.completed_at>=?3 AND COALESCE(l.completed_at,l.queued_at,l.started_at)>=?3
       ORDER BY l.completed_at DESC,l.id DESC LIMIT 1) AS latest_run
-  FROM agent_runs r INDEXED BY idx_agent_runs_task
-  WHERE ${VISIBLE} AND r.task IN (SELECT value FROM json_each(?2)) AND r.status IN ('completed','failed') AND r.completed_at>=?3
+  FROM agent_runs r INDEXED BY idx_agent_runs_list_window
+  WHERE ${VISIBLE} AND r.task IN (SELECT value FROM json_each(?2)) AND r.status IN ('completed','failed') AND r.completed_at>=?3 AND COALESCE(r.completed_at,r.queued_at,r.started_at)>=?3
     AND EXISTS (SELECT 1 FROM agent_run_attempts a WHERE a.project_id=r.project_id AND a.run_id=r.id)
   GROUP BY r.project_id HAVING SUM(r.error_code=?1)>0 ORDER BY latest_at DESC` });
 export const auditRows = async (db: RelationalStore, code: string, tasks: readonly string[], lookbackFrom: number): Promise<Row[]> => (await readSet(db, audits.bind(code, JSON.stringify(tasks), lookbackFrom)))[0];
