@@ -261,6 +261,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound,
     platform: cloudflarePlatform(bindings, embeddingRuntime),
+    releaseRetention: 'd1-time-travel',
     db: bindings.MYCO_DB,
     blobs: durableR2Bucket(bindings.BUCKET),
     sourceLimit: bindings.SOURCE_LIMIT,

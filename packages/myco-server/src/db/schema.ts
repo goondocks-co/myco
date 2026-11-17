@@ -1,3 +1,4 @@
+import { REWIND_STEPS } from './schema-steps-rewind.js';
 import { PUBLICATION_MARK_STEPS } from './schema-steps-publication-mark.js';
 import { GITHUB_APP_PROJECT_STEPS } from './schema-steps-github-app-projects.js';
 import { TOOL_DELIVERY_STEPS } from './schema-steps-tool-delivery.js';
@@ -2416,6 +2417,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...MACHINE_UPDATE_STEPS.map(stamp),
   ...TOOL_DELIVERY_STEPS.map(stamp),
   ...PUBLICATION_MARK_STEPS.map(stamp),
+  ...REWIND_STEPS.map(stamp),
   ...GITHUB_APP_PROJECT_STEPS.map(stamp),
 ];
 

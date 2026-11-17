@@ -169,3 +169,6 @@ export const TRANSCRIPT_PARSE_ADAPTER = 'transcript-parse';
 
 /** The agent every member-recorded spore carries; seeded by the schema. */
 export const USER_AGENT_ID = 'user';
+
+/** Stored objects outlive every database point in the maximum D1 Time Travel window. */
+export const D1_REWIND_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;

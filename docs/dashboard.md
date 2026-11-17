@@ -122,6 +122,8 @@ The server pages sit at the foot of the menu. **People & machines** is readable 
 - **Needs you:** what is waiting for an administrator.
 - **Status:** whether the server is set up to hold your team's knowledge, and what each project last sent.
 - **Workers:** the execution status machines last reported. Use **Runners** to manage runner registrations.
-- **Backups:** the backups it holds, and how its automatic backups are doing.
+- **Backups:** the backups it holds, and how its automatic backups are doing. Each hosted backup pauses database requests during its database export; the dashboard and tools cannot read or save data, and member capture waits for later delivery. Larger databases take longer.
 - **Upkeep:** the housekeeping, search upkeep and store checks it does on its own, with a way to run each now.
 - **Measures:** figures such as how often agents call Myco per prompt, each with the sample behind it.
+
+On a hosted Deployment, deleting a session removes it from Myco now, while its stored data is kept for at least 30 days before removal. The confirmation says so before deletion. Native session deletion keeps its existing storage lifetime.

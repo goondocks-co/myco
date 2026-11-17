@@ -99,7 +99,7 @@ it('keeps a deletion decided during the copy from removing an object the snapsho
         // Between the snapshot and this copy, the Deployment deletes the blob and drains: the hold defers both.
         const outcome = await source.live((db) => releaseNow(db, [{ projectId: 'proj_1', key: source.key }], Date.now()));
         expect(outcome).toEqual({ released: 0, deferred: 1 });
-        await source.live(async (db) => { await drainObjectReleases({ db, blobs: diskBlobStore(source.paths.blobDir) }, Date.now()); });
+        await source.live(async (db) => { await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: diskBlobStore(source.paths.blobDir) }, Date.now()); });
         deleted += 1;
         const held = await diskBlobStore(source.paths.blobDir).get(object.source);
         if (held === null) throw new Error(`source Deployment is missing blob ${object.key}`);
@@ -108,7 +108,7 @@ it('keeps a deletion decided during the copy from removing an object the snapsho
     }, () => {});
     expect([manifest.status, deleted]).toEqual(['complete', 1]);
     // Once the artifact holds its own copy and the hold is released, the deferred deletion is decided.
-    await source.live(async (db) => { for (let pass = 0; pass < 4; pass += 1) await drainObjectReleases({ db, blobs: diskBlobStore(source.paths.blobDir) }, Date.now()); });
+    await source.live(async (db) => { for (let pass = 0; pass < 4; pass += 1) await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: diskBlobStore(source.paths.blobDir) }, Date.now()); });
     expect(await diskBlobStore(source.paths.blobDir).get(source.stored)).toBeNull();
     expect((await verifyRecoveryBundle(source.destination)).status).toBe('complete');
   } finally { source.cleanup(); }

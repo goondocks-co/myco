@@ -1,7 +1,7 @@
 import { objectJournalSql } from './object-journal.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { BackupIndexRow } from '../../core/backup.js';
-import { assertion, commit, read, readSet, write } from '../index.js';
+import { assertion, commit, write } from '../index.js';
 const begin = write<[key: string, expires: number]>({ name: 'storage.beginBackupPublication', sql:
   'INSERT INTO backup_publications(key,expires_at) VALUES(?,?)' });
 const intent = write<[key: string, expires: number]>({ name: 'storage.beginBackupPublicationIntent', sql:
@@ -25,11 +25,4 @@ export async function publishBackup(db: RelationalStore, row: BackupIndexRow, no
 }
 export async function abandonBackupPublication(db: RelationalStore, key: string, now: number) {
   await commit(db,journal.bind(key,now),consume.bind(key));
-}
-
-const registered = read<[key: string], unknown>({ name: 'storage.backupObjectRegistered', sql:
-  'SELECT 1 FROM backups WHERE key=?' });
-export async function backupObjectRegistered(db: RelationalStore, key: string): Promise<boolean> {
-  const [rows] = await readSet(db,registered.bind(key));
-  return rows.length>0;
 }

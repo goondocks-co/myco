@@ -149,7 +149,7 @@ export const lit = (value: string): string => `'${value.replace(/'/g, "''")}'`;
  * waiting out a time-to-live. Scenarios age rows through this one helper instead of writing rows themselves. It names
  * at least one row, and refuses when an instant would reach zero or below, which no clock produces.
  */
-export async function ageRows(target: ParityTarget, options: { table: string; column: string; byMs: number; match: Record<string, string> }): Promise<void> {
+export async function ageRows(target: Pick<ParityTarget, 'sql'>, options: { table: string; column: string; byMs: number; match: Record<string, string> }): Promise<void> {
   const { table, column, byMs, match } = options;
   const keys = Object.keys(match);
   if (![table, ...keys].every((name) => /^\w+$/.test(name)) || !/^\w+_at$/.test(column) || keys.length === 0

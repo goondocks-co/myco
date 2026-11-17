@@ -45,7 +45,9 @@ it('backs up committed WAL data and exact blob bytes, reading each blob from the
     live.run("UPDATE sessions SET title='Committed WAL title' WHERE session_id='s_backup'");
     const version = live.query("SELECT value FROM schema_meta WHERE key='version'").get();
     const destination = path.join(root, 'archive');
-    const result = await backupLocalDeployment({ destination, paths });
+    const reports: string[] = [];
+    const result = await backupLocalDeployment({ destination, paths, report: line => reports.push(line) });
+    expect(reports).toContain('A native backup copies the database and stored objects while Myco keeps serving.');
     expect(result.status).toBe('complete');
     expect(result.snapshot?.blobCount).toBe(2);
     expect(result.snapshot?.configuration).toMatchObject({ port: 8787, sourceFrom: 'socket', fleet: 2 });

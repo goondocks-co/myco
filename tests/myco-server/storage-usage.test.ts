@@ -86,7 +86,7 @@ function rng(seed: number) {
 
 async function drain(db: RelationalStore, blobs: ReturnType<typeof objectStore>['blobs'], at: number) {
   for (let i = 0; i < 40; i += 1) {
-    const reports = await drainObjectReleases({ db, blobs }, at);
+    const reports = await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, at);
     if (reports.deleted === 0 && reports.decided === 0 && reports.expired === 0) break;
   }
 }
@@ -220,7 +220,7 @@ describe('ordered release queues', () => {
       } as unknown as typeof objects.blobs;
       let now = 1_000;
       for (let pass = 0; pass < 8 && objects.objects.size > 1; pass += 1) {
-        const report = await drainObjectReleases({ db, blobs: failing }, now);
+        const report = await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: failing }, now);
         expect(report.unacknowledged).toBeLessThanOrEqual(1);
         now += 1;
       }
@@ -230,7 +230,7 @@ describe('ordered release queues', () => {
       expect(held!.retry_at).toBeGreaterThan(1_000);
       expect(typeof held!.last_failure).toBe('string');
       expect((await db.prepare(`SELECT COUNT(*) n FROM object_releases`).first<{ n: number }>())!.n).toBe(1);
-      await drainObjectReleases({ db, blobs: objects.blobs }, held!.retry_at);
+      await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: objects.blobs }, held!.retry_at);
       expect(objects.objects.size).toBe(0);
       expect((await db.prepare(`SELECT COUNT(*) n FROM object_releases`).first<{ n: number }>())!.n).toBe(0);
     });
@@ -255,7 +255,7 @@ describe('ordered release queues', () => {
       for (let pass = 1; pass <= 4; pass += 1) {
         const at = pass * 1_000;
         await expireUploads(at);
-        await drainObjectReleases({ db, blobs: recording }, at);
+        await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: recording }, at);
         if (pass === 1) expect(deleted[0]).toBe(older);
       }
       const order = deleted.map(key => createdAt.get(key));
@@ -463,7 +463,7 @@ describe('ordered release queues', () => {
       expect((await db.prepare(`SELECT physical FROM object_releases`).all<{ physical: string }>()).results).toEqual([{ physical: freeKey }]);
       expect(store.objects.has(freeKey)).toBe(true);
       await expectExact(db, 'after the decision, before the physical delete');
-      await drainObjectReleases({ db, blobs: store.blobs }, NOW + 1);
+      await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: store.blobs }, NOW + 1);
       expect(store.objects.has(freeKey)).toBe(false);
       expect(store.objects.has(heldKey)).toBe(true);
       expect((await db.prepare(`SELECT COUNT(*) n FROM object_releases`).first<{ n: number }>())!.n).toBe(0);

@@ -193,7 +193,9 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
   const f = fixture();
   try {
     f.downloadFails(true);
-    await expect(f.backup()).rejects.toThrow('HTTP 503');
+    const reports: string[] = [];
+    await expect(f.backup({ report: line => reports.push(line) })).rejects.toThrow('HTTP 503');
+    expect(reports).toContain('Each hosted backup pauses database requests while it exports the database: the dashboard and tools cannot read or save data, capture waits on members’ machines for later delivery, and larger databases take longer.');
     expect(JSON.parse(fs.readFileSync(path.join(f.destination, 'recovery.json'), 'utf8')).status).toBe('content');
     f.downloadFails(false);
     const result = await f.backup();

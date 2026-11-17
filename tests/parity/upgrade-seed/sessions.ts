@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
-import { documentsPublished, expectPersisted } from '../harness.ts';
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
+import { ageRows, documentsPublished, expectPersisted } from '../harness.ts';
 import { event, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
 
 /** The sessions a Deployment's members captured, by the ids the product answered. */
@@ -60,9 +61,20 @@ export async function seedSessions(target: SeedTarget, stamp: number): Promise<S
   await event(target, tombstoned.sessionId, 'session.start', { agent: 'claude-code', branch: 'abandoned', startedAt: stamp + 30 }, stamp + 30);
   await event(target, tombstoned.sessionId, 'prompt', { promptId: crypto.randomUUID(), text: 'never mind', origin: 'user' }, stamp + 31);
 
+  const retiredBlob = await blob(target, new TextEncoder().encode(`removed before upgrade ${stamp}`), 'text/plain');
+  await event(target, tombstoned.sessionId, 'attachment', { attachmentId: crypto.randomUUID(), blob: retiredBlob, description: 'removed attachment' }, stamp + 32);
+  await ageRows(target, { table: 'blobs', column: 'received_at', byMs: BLOB_RESERVATION_TTL_MS + 1000, match: { project_id: target.projectId, key: retiredBlob } });
+
   for (const sessionId of [captured.sessionId, sibling.sessionId, transcript.sessionId, tombstoned.sessionId]) await documentsPublished(target, sessionId);
   const removed = await owner(target, `/api/projects/${target.projectId}/sessions/${tombstoned.sessionId}/tombstone`, { method: 'POST', body: JSON.stringify({ reason: 'abandoned' }) });
   expect(removed.status).toBe(202);
+  for (let wake = 0; wake < 60; wake += 1) {
+    const progress = await owner(target, `/api/projects/${target.projectId}/sessions/${tombstoned.sessionId}/deletion`);
+    expect(progress.status).toBe(200);
+    if (progress.body.deletion.state === 'complete') break;
+    expect((await owner(target, '/api/wake', { method: 'POST' })).status).toBe(200);
+  }
+  expect((await owner(target, `/api/projects/${target.projectId}/sessions/${tombstoned.sessionId}/deletion`)).body.deletion.state).toBe('complete');
   const turns = await owner(target, `/api/projects/${target.projectId}/sessions/${transcript.sessionId}/turns`);
   transcript.promptIds = (turns.body.rows as Array<{ promptId: string }>).map((row) => row.promptId);
   expect(transcript.promptIds.length).toBe(2);

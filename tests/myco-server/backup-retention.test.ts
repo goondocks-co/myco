@@ -162,8 +162,8 @@ describe('a pass that cannot finish', () => {
     expect(ids(e).length).toBe(1 + victims - 4 * RETENTION_PAGE);
     let report = await drainObjectReleases(e.serverEnv, NOW + 1);
     expect(ids(e).length).toBe(1);
-    for (let pass = 0; pass < 8 && await objectReleaseBacklogged(e.db, NOW + 1, report); pass += 1) report = await drainObjectReleases(e.serverEnv, NOW + 1);
-    expect(await objectReleaseBacklogged(e.db, NOW + 1, report)).toBe(false);
+    for (let pass = 0; pass < 8 && await objectReleaseBacklogged(e.serverEnv, NOW + 1, report); pass += 1) report = await drainObjectReleases(e.serverEnv, NOW + 1);
+    expect(await objectReleaseBacklogged(e.serverEnv, NOW + 1, report)).toBe(false);
     expect([...e.bucket.deletes].sort()).toEqual(Array.from({ length: victims }, (_, i) => `backups/v${i + 1}.jsonl`).sort());
     e.sqlite.close();
   });

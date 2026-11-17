@@ -1,7 +1,8 @@
+import { retainedReleaseDue } from './rewind-retention.js';
 import { objectJournalSql as journalSql } from './object-journal.js';
 import { clearStorageUsage, restartStorageUsage } from './usage.js';
 import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
-import type { RelationalStore } from '../../core/adapters.js';
+import type { ObjectReleaseStore, RelationalStore } from '../../core/adapters.js';
 import { blobObjectKeySql } from '../../core/blob-objects.js';
 import { assertion, commit, read, readSet, write } from '../index.js';
 import { resetObjectStoreWalk } from './object-reconciliation.js';
@@ -29,8 +30,11 @@ export const clearSettledIntent = write<[physical: string]>({ name: 'storage.cle
   'DELETE FROM object_settlement_intents WHERE physical=?' });
 /** When a journal row is due: its rescheduled attempt, or its creation while no delete has failed. The queue index is over exactly this expression. */
 const EFFECTIVE_DUE = 'CASE WHEN retry_at=0 THEN created_at ELSE retry_at END';
-const due = read<[now: number, limit: number], { physical: string; attempts: number }>({ name: 'storage.dueObjectReleases', sql:
-  `SELECT physical,attempts FROM object_releases WHERE ${EFFECTIVE_DUE}<=? ORDER BY ${EFFECTIVE_DUE},physical LIMIT ?` });
+const releaseQuery = (expression: string, name: string) => read<[now: number, limit: number], { physical: string; attempts: number }>({ name,
+  sql: `SELECT physical,attempts FROM object_releases WHERE ${expression}<=?1 ORDER BY ${expression},physical LIMIT ?2` });
+const due = releaseQuery(EFFECTIVE_DUE, 'storage.dueObjectReleases');
+const retainedDue = releaseQuery(retainedReleaseDue, 'storage.dueRetainedObjectReleases');
+const dueIn = (retention: ObjectReleaseStore['releaseRetention']) => retention === 'd1-time-travel' ? retainedDue : due;
 const acknowledge = write<[physical: string], { physical: string }>({ name: 'storage.acknowledgeObjectRelease', sql:
   'DELETE FROM object_releases WHERE physical=? RETURNING physical' });
 const retireAcknowledged = write<[physical: string, issued: number, grace: number]>({ name: 'storage.retireAcknowledgedIntent', sql:
@@ -83,8 +87,8 @@ export async function reconcileObjectIntents(db: RelationalStore, now: number, l
 const authoritiesDue = read<[now: number], { due: number }>({ name: 'storage.expiredAuthoritiesDue', sql:
   `SELECT EXISTS(${expiredUploadsSql('?1','1')}) OR EXISTS(${expiredBackupsSql('?1','1')}) AS due` });
 /** Whether the drain's own steps have more than one pass took: expired authorities, or journal rows due now. */
-export async function releaseWorkDue(db: RelationalStore, now: number): Promise<boolean> {
-  const [authorities, journal] = await readSet(db,authoritiesDue.bind(now),due.bind(now,1));
+export async function releaseWorkDue({ db, releaseRetention }: ObjectReleaseStore, now: number): Promise<boolean> {
+  const [authorities, journal] = await readSet(db,authoritiesDue.bind(now),dueIn(releaseRetention).bind(now,1));
   return authorities[0]?.due === 1 || journal.length > 0;
 }
 export async function drainAuthorities(db: RelationalStore, now: number, limit: number) {
@@ -92,8 +96,8 @@ export async function drainAuthorities(db: RelationalStore, now: number, limit: 
     journalBackups.bind(now,limit),consumeBackups.bind(now,limit));
   return uploads.results.length+backups.results.length;
 }
-export async function dueObjectReleases(db: RelationalStore, now: number, limit: number) {
-  const [rows] = await readSet(db,due.bind(now,limit)); return rows;
+export async function dueObjectReleases({ db, releaseRetention }: ObjectReleaseStore, now: number, limit: number) {
+  const [rows] = await readSet(db,dueIn(releaseRetention).bind(now,limit)); return rows;
 }
 export async function acknowledgeRelease(db: RelationalStore, physical: string, issuedAt: number) {
   const [,removed]=await commit(db,retireAcknowledged.bind(physical,issuedAt,OBJECT_PUT_IN_FLIGHT_MS),acknowledge.bind(physical));

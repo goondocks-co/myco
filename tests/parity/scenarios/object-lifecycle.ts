@@ -1,4 +1,4 @@
-import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
+import { BLOB_RESERVATION_TTL_MS, D1_REWIND_RETENTION_MS } from '@myco-server-worker/constants.js';
 import { expect } from 'bun:test';
 import { ageRows, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -88,7 +88,13 @@ export const objectLifecycle: ParityScenario = {
     expect((await ownerWake()).jobs.map((job) => job.name)).not.toContain('object-release-drain');
     expect(await journal(key)).toEqual([physical]);
     await target.clockWake();
+    if (target.name === 'cloudflare') {
+      expect(await journal(key)).toEqual([physical]);
+      await ageRows(target, { table: 'object_releases', column: 'created_at', byMs: D1_REWIND_RETENTION_MS, match: { physical } });
+      await target.clockWake();
+    }
     expect(await journal(key)).toEqual([]);
+
 
   },
 };

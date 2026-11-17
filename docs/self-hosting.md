@@ -155,14 +155,26 @@ Each code task's runner receives a one-hour token that can read only the connect
 
 ## Back up and restore
 
-Use the backup command for the target you run:
+For a recent mistake or bad update on a hosted Deployment, Cloudflare Time Travel is the everyday database protection: it can put the database back to any minute within the last 30 days on Workers Paid, or 7 days on Free. Before an update changes an existing database's schema, Myco obtains and durably records a restore point; it refuses the schema change if that fails. Deleted stored objects are held for at least 30 days regardless of plan, preserving the bytes an older database names. Objects deleted before the hold was installed remain unavailable. [Cloudflare Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/), [plan limits](https://developers.cloudflare.com/d1/platform/limits/).
+
+Time Travel restores the existing database in place. Myco does not yet coordinate it with writers, runners, Durable Objects or search; read [the database-only restore boundary](architecture/hosted-rewind.md) before using it. Its history belongs to the database and account: it is not a copy you hold elsewhere. Deleting a database loses its earlier Time Travel history, even if Cloudflare later undeletes the database within its separate seven-day window. [Cloudflare database undeletion](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/undelete/).
+
+Use a complete copy you hold for losing the database or account, recovering beyond the available history, or moving to another Deployment. Keep it outside the source Deployment's account and keep its recovery credentials separately. Native Deployments have no Time Travel; their complete copies provide recovery.
+
+Make a complete copy with the backup command for your target:
 
 ```bash
-myco server backup --target local --to <backup-directory>
+myco server backup --to <backup-directory>
 myco server backup --target cloudflare --to <backup-directory>
 ```
 
-The command snapshots the database, copies its blobs and verifies every blob. Repeat the same command to resume an interrupted backup. Until it completes, the source retains objects the snapshot needs, so storage can grow. **Settings** → **Backups** also controls automatic backups.
+The command snapshots the database, copies every stored object the snapshot names, and verifies the copy. It does not copy recovery credentials; keep the credentials it names separately. Repeat the same command to resume an interrupted backup. Until it completes, the source retains objects the snapshot needs, so storage can grow.
+
+Health’s **Create backup** is a separate relational export for additive restore, limited to 64 MiB. It reads while writes continue and omits stored files, settings and secrets. It is not the complete recovery copy described here.
+
+Each hosted backup pauses database requests while it exports the database: the dashboard and tools cannot read or save data, capture waits on members’ machines for later delivery, and larger databases take longer. The pause ends when the database export ends; the later download, local snapshot reconstruction and object copy do not keep the database paused. This is a whole-database export, not a paged export. Capture already written to a member's spool remains there through retryable failures and is delivered on a later hook or drain after the Deployment answers again. A native backup copies the database and stored objects while the Deployment keeps serving. [Cloudflare export limitation](https://developers.cloudflare.com/d1/best-practices/import-export-data/#known-limitations).
+
+**Settings → Backups → Back up every** controls scheduled backups. Each hosted backup pauses database requests while it exports the database: the dashboard and tools cannot read or save data, capture waits on members’ machines for later delivery, and larger databases take longer. A hosted scheduled copy remains in the source account until an operator downloads it and turns it into a verified recovery artifact; it is not an independent copy the operator already holds. The schedule is optional, not a prerequisite for Time Travel. Choose its interval only with the export pause in mind.
 
 To retain stored provider keys on restore, keep the original wrapping key separately from the backup. Native Deployments hold it in `<MYCO_HOME>/server/local/secrets.env`; new hosted Deployments write it to `<MYCO_HOME>/server/cloudflare/secrets.env` with owner-only permissions before sending it to Secrets Store. Never publish this file. Hosted Deployments created before this change have no wrapping key the operator can hold and restore with `--new-credentials`. The backup data itself remains restorable without that key.
 
@@ -204,13 +216,13 @@ myco server rollback --target cloudflare
 
 Bare rollback selects the version observed serving before the latest admitted update attempt, including a code-only update. If that earlier version could not be proved (including older operator records), it refuses and asks for `--version <id>`; `wrangler deployments list` lists the versions. After a failed or unacknowledged update, it uses that attempt's observed prior version. It checks the current deployment and refuses if that prior version is still serving or the current version cannot be proved. Repeating create clears the saved rollback target.
 
-This rolls back the Worker, **not the database or blobs**. For a schema rollback, use the exact database restore command printed by the update while its bookmark remains within Time Travel retention, then return to the compatible Worker version:
+This rolls back the Worker, **not the database or blobs**. The update also prints a Cloudflare Time Travel command, which restores the database alone. Myco does not yet coordinate it with capture, in-flight work, Durable Object state or the external vector index. Those would remain at their newer state, and a database restored separately also requires a compatible Worker version:
 
 ```bash
 myco server rollback --target cloudflare --account-id <account-id> --version <worker-version-before-update>
 ```
 
-A database restore discards writes after its bookmark and does not restore R2 objects. Keep the restore output, including its undo bookmark. Choose full recovery into fresh resources when the database and blobs need to be recovered together.
+A database restore discards writes after its bookmark and does not restore R2 objects. Hosted object deletion retains released bytes for at least 30 days; this cannot recover objects deleted before the retention policy was installed. The hold is 30 days regardless of the Cloudflare plan. See [hosted stored-data retention and database recovery](architecture/hosted-rewind.md) for what remains inconsistent after a database-only restore. Keep the restore output, including its undo bookmark. A complete recovery artifact is separate and may not exist for a hosted Deployment; verify which artifacts you hold and their coverage before choosing full recovery into fresh resources.
 
 ## Custom-domain requests blocked before Myco
 

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { D1ExportStartBudget, exportD1, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
@@ -107,6 +108,7 @@ export async function backupCloudflareDeployment(
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error(missingDeploymentRecordMessage(options.mycoHome));
   if (record.accountId !== options.accountId) throw new Error('backup account does not match the Cloudflare Deployment record');
+  options.report?.(HOSTED_BACKUP_PAUSE_NOTICE);
   // One capture of the record names the export, renders its config and is what the artifact records.
   const config = renderDeployConfig(record, deploymentRecordPath(options.mycoHome));
   const recorded = recordedConfiguration(record);
@@ -145,7 +147,7 @@ export async function backupCloudflareDeployment(
       const tables = exportedTables(before);
       if (tables.length === 0) throw new Error('D1 holds no ordinary tables to recover');
       assertRecoverableSchema(before);
-      options.report?.('Exporting D1; Cloudflare temporarily pauses queries during the snapshot');
+      options.report?.('Exporting the database.');
       await exportD1({ ...exportContext, tables, schema: JSON.stringify(before), settled });
       const after = schemaObjects.parse(await read(SCHEMA_QUERY));
       if (JSON.stringify(before) !== JSON.stringify(after)
