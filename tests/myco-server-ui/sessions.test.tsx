@@ -761,12 +761,14 @@ describe('the session reading page', () => {
   });
 
   it('keeps an admin’s delete, end and new title in the ⋯ menu, each behind a confirmation, and shows a member none of them', async () => {
+    let finishTitle!: () => void;
+    const titleReady = new Promise<void>(resolve => { finishTitle = resolve; });
     let titled = false;
     let ended = false;
     let deleteAttempts = 0;
     const { requested } = server(routes({
       '/api/projects/x/sessions/s1': () => detail(ended ? { endedAt: NOW, endedBy: 'mem_q3Vb8xRk2LmT7wYz', endedByLabel: 'Ada' } : titled ? { title: 'Renamed the card', summary: 'Renamed it.' } : { label: 'Rename the card' }),
-      '/api/projects/x/sessions/s1/title': () => { titled = true; return Response.json({ outcome: 'dispatched', runId: 'run_t1aaaaaa' }); },
+      '/api/projects/x/sessions/s1/title': async () => { await titleReady; titled = true; return Response.json({ outcome: 'completed', title: 'Renamed the card', summary: 'Renamed it.' }); },
       '/api/projects/x/runs/run_t1aaaaaa': () => Response.json({ run: { id: 'run_t1aaaaaa', status: 'running' }, phases: [], reports: [], projectId: 'x' }),
       '/api/projects/x/sessions/s1/end': () => { ended = true; return Response.json({ outcome: 'ended', endedAt: NOW }); },
       '/api/projects/x/sessions/s1/tombstone': () => {
@@ -781,17 +783,20 @@ describe('the session reading page', () => {
       return screen.findByRole('menu');
     };
 
-    // A new title: named, cancelled with nothing sent, then confirmed; the page follows the run until the title lands.
-    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title' }));
-    let dialog = await screen.findByRole('dialog', { name: 'Write a new title?' });
+    // The ask can be cancelled; a completed ask displays the saved title and summary.
+    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title and summary' }));
+    let dialog = await screen.findByRole('dialog', { name: 'Write a new title and summary?' });
     expect(dialog.textContent).toContain('Rename the card');
     expect(dialog.textContent).toContain('spends tokens');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(requested.some((p) => p.endsWith('/title'))).toBe(false);
-    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Write a new title?' })).getByRole('button', { name: 'Write a new title' }));
+    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title and summary' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Write a new title and summary?' })).getByRole('button', { name: 'Write a new title and summary' }));
+    expect(screen.getByRole('dialog', { name: 'Write a new title and summary?' })).toBeTruthy();
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true));
+    finishTitle();
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect((await screen.findByText('The new title is in')).getAttribute('role')).toBe('status');
+    expect((await screen.findByText('The new title and summary are in')).getAttribute('role')).toBe('status');
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Renamed the card'));
 
     // End: offered while open, named, confirmed; once ended the menu no longer offers it, and every list that shows the session is read again.
@@ -830,14 +835,14 @@ describe('the session reading page', () => {
     expect(screen.queryByRole('button', { name: 'Session actions' })).toBeNull();
   });
 
-  it('says so when a new title could not be started, keeping the dialog open', async () => {
-    server(routes({ '/api/projects/x/sessions/s1/title': () => new Response(null, { status: 503 }) }));
+  it('shows a failed model call and how to ask again, keeping the dialog open', async () => {
+    server(routes({ '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'error' }) }));
     mount('/p/x/sessions/s1');
     fireEvent.keyDown(await screen.findByRole('button', { name: 'Session actions' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Write a new title' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Write a new title?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Write a new title' }));
-    expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t start writing a title. Try again.');
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Write a new title and summary' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Write a new title and summary?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Write a new title and summary' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('The title and summary couldn’t be written. Wait a minute and ask again.');
   });
 
   it('opens the newest typed turn with its prompt, image and reply, and reads a stored prompt only when asked for', async () => {

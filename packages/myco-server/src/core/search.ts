@@ -46,7 +46,7 @@ export async function searchDeployment(env: ServerEnv, scope: ReadScope, options
       if (semantic !== null) {
         try {
           const semanticAnswer = await semanticSearch(env.db, scope, semantic, documentKinds(request).filter(kind => kind !== 'chunk'),
-            { ...request.filters, query: options.query.trim() }, request.limit);
+            { ...request.filters, query: options.query }, request.limit);
           const { hits } = semanticAnswer;
           if (!semanticAnswer.filtered && hits.length > 0) return { hits, mode: 'semantic', provider_unavailable: false, coverage, partial: false, asOf: now, nextCursor: null };
           fallback = semanticAnswer.filtered ? 'filtered' : 'empty_semantic';
@@ -86,6 +86,11 @@ interface WordSearch {
 interface Walk extends WordSearch { binding: string; input: (scores: ReadonlyMap<number, number> | null) => PageInput }
 
 async function wordSearch(search: WordSearch): Promise<WordAnswer> {
+  const answer = await wordSearchPage(search);
+  return { ...answer, ...(search.request.wordTruncation === undefined ? {} : { wordTruncation: search.request.wordTruncation }) };
+}
+
+async function wordSearchPage(search: WordSearch): Promise<WordAnswer> {
   const { env, projects, request, reader, now, coverage } = search;
   const kinds = documentKinds(request);
   const empty: WordAnswer = { hits: [], coverage, partial: false, asOf: now, nextCursor: null };

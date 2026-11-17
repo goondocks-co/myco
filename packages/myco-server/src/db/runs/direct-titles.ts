@@ -49,14 +49,14 @@ export async function completeDirectTitle(db: RelationalStore, s: DirectTitleSet
 }
 
 /**
- * A named failure leaves the session's prior title and coverage intact. A provider fault, and a rate limit met before
- * any call, also give the attempt back; any other failure spends it.
+ * A failure leaves the session's prior title and coverage intact. Manual failures release their claim; a provider fault
+ * or an uncalled rate limit also gives an automatic attempt back.
  */
 export async function failDirectTitle(db: RelationalStore, s: DirectTitleSettlement, failure: {
   code: string; session: string; stamp: number; previous: number | null; mode: string;
 }): Promise<void> {
   const ask = { project: s.project, run: s.run, session: failure.session, stamp: failure.stamp, previous: failure.previous, mode: failure.mode, now: s.now };
-  const release = failure.code === 'completion_rate_limited' ? uncalledTitleRelease(ask) : PROVIDER_FAULTS.some(code => failure.code === `completion_${code}`) ? faultedTitleRelease(ask) : [];
+  const release = failure.mode === 'owner' ? faultedTitleRelease(ask) : failure.code === 'completion_rate_limited' ? uncalledTitleRelease(ask) : PROVIDER_FAULTS.some(code => failure.code === `completion_${code}`) ? faultedTitleRelease(ask) : [];
   await commit(db, ...release, settlement(s, failure.code));
 }
 

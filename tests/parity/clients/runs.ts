@@ -54,7 +54,7 @@ export async function publishedSession(target: RouteTarget, id: string, minimumT
 }
 export async function askTitle(target: RouteTarget, sessionId: string): Promise<string> {
   const answer = await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(sessionId)}/title`, { method: 'POST' });
-  expect(answer.status).toBe(200); expect(answer.body.outcome).toMatch(/^(queued|dispatched)$/); expect(typeof answer.body.runId).toBe('string'); return answer.body.runId;
+  expect(answer.status).toBe(200); expect(answer.body.outcome).toMatch(/^(queued|dispatched|completed)$/); expect(typeof answer.body.runId).toBe('string'); return answer.body.runId;
 }
 export async function report(target: RouteTarget, run: ClaimedRun, action: string, summary: string): Promise<void> {
   await runTool(target, run, 'myco_run', { op: 'report', action, summary, audit: RUN_AUDIT });

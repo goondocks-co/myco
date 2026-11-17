@@ -3,7 +3,7 @@ import completion from '../../fixtures/providers/workers-ai-completion.json';
 import { expect } from 'bun:test';
 import type { ParityScenario } from '../harness.ts';
 import { owner, sessionDetail, untilPublished } from '../clients/requests.ts';
-import { askTitle, captureSession, runDetail, runList } from '../clients/runs.ts';
+import { captureSession, runDetail, runList } from '../clients/runs.ts';
 import { withSettings } from '../clients/settings.ts';
 
 /** Both front doors call an OpenAI-compatible provider without a registered runner. */
@@ -26,7 +26,10 @@ export const directTitles: ParityScenario = {
       const session = 'direct-title-session';
       await captureSession(target, session, 'Add a bounded retry to delivery');
       await withSettings(target, { ...(stub === null ? {} : { 'single_turn.base_url': `http://127.0.0.1:${stub.port}/v1` }), 'single_turn.model': model }, async () => {
-        const runId = await askTitle(target, session);
+        const titled = await owner(target, `/api/projects/${target.projectId}/sessions/${session}/title`, { method: 'POST' });
+        expect(titled.status).toBe(200);
+        expect(titled.body).toMatchObject({ outcome: 'completed', ...answer });
+        const runId = titled.body.runId as string;
         const completed = await untilPublished(target, () => sessionDetail(target, session), value => value.body.session.title === answer.title);
         expect(completed.body.session).toMatchObject(answer);
         const run = await runDetail(target, runId);

@@ -21,8 +21,8 @@ const UNCONNECTED_FOLDER_PREVIEW_LIMIT = 3;
 const DELIVERY_GRACE_MS = HELPER_DEADLINE_MS + HELPER_LINGER_MS;
 
 /** Machine capture spans retained destinations as well as connected repositories. */
-export function captureHealthChecks(home: string, entries: readonly RegistryEntry[], now: number, reachable: ReadonlySet<string>): DoctorCheck[] {
-  const listing = listSpoolDestinationsResult(home);
+export function captureHealthChecks(home: string, entries: readonly RegistryEntry[], now: number, reachable: ReadonlySet<string>, options: { destinations?: readonly RegistryEntry[] } = {}): DoctorCheck[] {
+  const listing = options.destinations === undefined ? listSpoolDestinationsResult(home) : { destinations: options.destinations, issues: [] };
   const destinations = new Map([...listing.destinations, ...entries].map(entry => [routingKey(entry), entry]));
   const roots = new Map<string, string[]>();
   for (const entry of entries) roots.set(routingKey(entry), [...(roots.get(routingKey(entry)) ?? []), entry.root]);

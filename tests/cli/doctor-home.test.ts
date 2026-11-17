@@ -81,6 +81,11 @@ describe('home doctor', () => {
     }
     return { ok, text: lines.join('\n'), lines };
   };
+  const setupOutput = async () => {
+    const lines: string[] = [];
+    const code = await setup(['--status'], { ...deps, agents: () => ['claude-code'], stdout: line => lines.push(line) });
+    return { code, text: lines.join('\n') };
+  };
   const connectedHome = () => {
     const roots = Array.from({ length: 15 }, (_, index) => path.join(scratch, `repository-${index + 1}`));
     for (const [index, root] of roots.entries()) join(personal, root, `proj_repo_${index + 1}`);
@@ -208,12 +213,18 @@ describe('home doctor', () => {
 
   it('keeps growing transcripts and sessions idle between turns out of attention', async () => {
     const { root, spool } = connectedCapture();
+    recordDefaultDeployment(personal, { mycoHome: home });
+    spool.append('live', promptEvent({ agent: 'claude-code', sessionId: 'live', now: () => now - 1000 }, { promptId: mintId(), text: 'capture in progress' }));
     for (const [sessionId, minutes] of [['live', 1], ['idle', 57]] as const) transcript(spool, sessionId, now - minutes * 60_000);
     const compact = await output();
     expect(compact.text).toContain('nothing needs attention');
     expect(compact.text).toContain('2 sessions in progress; last delivery');
     expect(compact.text).not.toContain('myco member drain');
-    expect((await output(['--all'])).text).toContain('2 sessions waiting (0 with events, 2 with transcripts)');
+    expect((await output(['--all'])).text).toContain('2 sessions waiting (1 with events, 2 with transcripts)');
+    const status = await setupOutput();
+    expect(status.code).toBe(0);
+    expect(status.text).not.toContain('needs attention');
+    expect(status.text).toContain('capture in progress');
   });
 
   it('names the repository when a quiet transcript has not delivered', async () => {
@@ -224,6 +235,7 @@ describe('home doctor', () => {
     const problem = result.lines.find(line => line.startsWith('  WARN Capture waiting:'))!;
     expect(problem).toContain(root);
     expect(problem).toContain('myco member drain');
+    expect((await setupOutput()).text).toContain('session needs delivery');
   });
 
   it('keeps unconnected folder requests and older unrecognized records informational under --all', async () => {
@@ -268,6 +280,7 @@ describe('home doctor', () => {
     const result = await output();
     expect(result.ok).toBe(true);
     expect(result.text).toContain('1 lost payload, 1 damaged record, 1 unavailable transcript');
+    expect((await setupOutput()).text).toContain('1 lost payload, 1 damaged record, 1 unavailable transcript');
     expect(result.text).toContain('last 7 UTC days (including today)');
     expect(result.text).toContain(`most recent ${new Date(now).toISOString()}`);
     expect(result.text).not.toContain('1 lost plan');

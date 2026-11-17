@@ -149,19 +149,21 @@ export function renderSetupStatus(facts: readonly StatusObservation[]): string[]
       for (const fact of captures.filter(fact => fact.state !== 'complete')) lines.push(`  Capture: ${describe(fact, url)}`);
       continue;
     }
-    const problems = captures.filter(fact => fact.state !== 'complete');
+    const problems = captures.filter(fact => fact.state !== 'complete' && fact.capture?.needsAttention !== false);
+    const progressing = captures.some(fact => fact.id === 'machine.backlog' && fact.state === 'incomplete' && fact.capture?.needsAttention === false);
     const affected = new Set(problems.map(fact => fact.scope));
-    lines.push(`  Capture: ${plural(repositories.size, 'repository')}: ${problems.length === 0 ? 'nothing waiting' : `${repositories.size - affected.size} with nothing waiting; ${affected.size} ${affected.size === 1 ? 'needs' : 'need'} attention`}.`);
+    lines.push(`  Capture: ${plural(repositories.size, 'repository')}: ${problems.length === 0 ? progressing ? 'capture in progress' : 'nothing waiting' : `${repositories.size - affected.size} without a delivery problem; ${affected.size} ${affected.size === 1 ? 'needs' : 'need'} attention`}.`);
     for (const root of affected) {
       const rows = problems.filter(fact => fact.scope === root);
       const details = rows.map(fact => {
+        if (fact.capture?.attentionDetail !== undefined) return sentence(fact.capture.attentionDetail);
         if (fact.state === 'unavailable') return sentence(describe(fact, url));
-        if (fact.id === 'machine.backlog' && fact.capture?.waiting !== undefined && fact.capture.waiting !== null) return `${plural(fact.capture.waiting, 'event')} waiting`;
+        if (fact.id === 'machine.backlog' && fact.capture?.waiting !== undefined && fact.capture.waiting !== null) return fact.capture.waiting > 0 ? `${plural(fact.capture.waiting, 'event')} waiting` : sentence(withoutHint(fact.detail));
         if (fact.id === 'machine.latch' && fact.capture?.nextProbeAt !== undefined) return `delivery paused until ${new Date(fact.capture.nextProbeAt).toISOString()}`;
         if (fact.id === 'machine.refusals' && fact.capture) return [
           fact.capture.recentRefusals ? `${plural(fact.capture.recentRefusals, 'refused event')} in the last 7 days, refused by your Myco server` : '',
           fact.capture.unreadableLines ? plural(fact.capture.unreadableLines, 'unreadable log line') : '',
-        ].filter(Boolean).join('; ');
+        ].filter(Boolean).join('; ') || sentence(withoutHint(fact.detail));
         return sentence(withoutHint(fact.detail));
       });
       const commands = [...new Set(rows.filter(fact => fact.state !== 'unavailable').map(fact => fact.id === 'machine.refusals' ? 'myco logs' : 'myco member drain'))];

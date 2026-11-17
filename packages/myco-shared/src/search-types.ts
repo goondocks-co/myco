@@ -114,6 +114,8 @@ export interface SearchAnswer {
   hits: SearchResult[];
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
+  /** Present when word search uses only the first meaningful words of the question. */
+  wordTruncation?: { actual: number; searched: number };
   /** Why a requested semantic search used the word path. */
   fallback_reason?: 'no_vectors' | 'history' | 'empty_semantic' | 'provider_unavailable' | 'filtered';
   coverage: SearchCoverage;

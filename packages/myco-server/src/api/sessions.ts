@@ -322,7 +322,7 @@ export async function handleSessionTurnToolCalls(env: ServerEnv, ctx: OwnerConte
   return rows === null ? notFound() : rows === 'stale' ? staleCursor() : ok(rows);
 }
 
-/** `POST …/sessions/{sessionId}/title`: a person asks for the session's title and summary now, over its opening and closing prompts, replacing what is there. Answers the outcome of the ask — `dispatched` with the run that will write them, or the refusal — never the title itself. */
+/** A person's direct titling ask answers with the saved title and summary or a failure; runner work answers with its queued run. */
 export async function handleTitleSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
   if (sessionId === null) return notFound();

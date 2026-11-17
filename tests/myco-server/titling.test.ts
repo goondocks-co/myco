@@ -438,6 +438,9 @@ describe('direct session titles', () => {
     expect(calls).toBe(DIRECT_CALLS_PER_MINUTE);
     expect(h.runRows().some(run => run.error === 'completion_rate_limited')).toBe(true);
     expect(h.row('rate-' + DIRECT_CALLS_PER_MINUTE)).toEqual(untouched);
+    expect(await h.ask('direct', NOW + 30_000)).toMatchObject({ outcome: 'error' });
+    expect(h.row('direct')).toEqual(untouched);
+    expect(await h.ask('direct', NOW + 90_001)).toMatchObject({ outcome: 'completed', ...answer });
     h.sqlite.close();
   });
 

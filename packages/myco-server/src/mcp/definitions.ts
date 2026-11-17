@@ -99,7 +99,7 @@ const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEnt
 const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) are ignored; at most ${SEARCH_MAX_TERMS} words and ${SEARCH_QUERY_MAX_CHARS} characters are searched. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
+    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Queries must contain 1–${SEARCH_QUERY_MAX_CHARS} characters; longer queries are refused. Semantic search embeds the whole question. Word search ignores common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) and searches the first ${SEARCH_MAX_TERMS} meaningful words; wordTruncation reports actual and searched word counts when shortened, including semantic fallback. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -122,7 +122,8 @@ const definitions: readonly ServedToolDefinition[] = [
         "query": {
           "type": "string",
           "maxLength": SEARCH_QUERY_MAX_CHARS,
-          "description": "Natural language search query — describe what you are looking for"
+          "minLength": 1,
+          "description": `Natural language question, 1–${SEARCH_QUERY_MAX_CHARS} characters. Semantic search embeds it whole; word search and semantic fallback use the first ${SEARCH_MAX_TERMS} meaningful words and report wordTruncation. Example: cobalt cache`
         },
         "type": {
           "type": "string",

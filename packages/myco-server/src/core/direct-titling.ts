@@ -29,8 +29,8 @@ export interface DirectTitleAsk {
   project: string; session: string; run: string; stamp: number; previous: number | null; mode: TitlingMode; by?: string;
 }
 
-/** An unusable answer or unreadable material spends the session's attempt and keeps its claim; a provider fault, or a rate limit met before any call, gives both back and the session sleeps. */
-export async function executeDirectTitle(env: ServerEnv, provider: CompletionProvider, ask: DirectTitleAsk): Promise<void> {
+/** Settles the title or its failure. Manual failures release their claim; automatic failures retain the attempt unless the provider or admission failed. */
+export async function executeDirectTitle(env: ServerEnv, provider: CompletionProvider, ask: DirectTitleAsk): Promise<{ title: string; summary: string } | null> {
   const began = Date.now();
   const now = () => ask.stamp + Date.now() - began;
   let usage = { input: 0, output: 0 };
@@ -64,6 +64,7 @@ export async function executeDirectTitle(env: ServerEnv, provider: CompletionPro
     if (answer === null) throw new CompletionUnavailable('invalid_answer');
     const written = await completeDirectTitle(env.db, settled(), { ...answer, mode: ask.mode, session: ask.session, stamp: ask.stamp, by: ask.mode === 'owner' ? ask.by ?? null : null, snapshot: material.snapshot });
     if (!written) throw new Error('title_claim_lost');
+    return answer;
   } catch (error) {
     try {
       await failDirectTitle(env.db, settled(), { code: error instanceof CompletionUnavailable ? `completion_${error.code}` : 'title_material_or_write_failed',
@@ -72,5 +73,6 @@ export async function executeDirectTitle(env: ServerEnv, provider: CompletionPro
       emit({ kind: 'direct_title_persistence_failed', projectId: ask.project, sessionId: ask.session, runId: ask.run, error_class: classify(persistenceError) });
       throw persistenceError;
     }
+    return null;
   }
 }

@@ -40,7 +40,7 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
   const keptOpen = ending.data?.outcome === 'open';
 
   const items: MoreMenuItem[] = [
-    { label: 'Write a new title', icon: <PenLine aria-hidden className="size-s4" />, onSelect: () => setConfirming('retitle'), disabled: retitle.busy },
+    { label: 'Write a new title and summary', icon: <PenLine aria-hidden className="size-s4" />, onSelect: () => setConfirming('retitle'), disabled: retitle.busy },
     ...(open ? [{ label: 'End session', icon: <CircleStop aria-hidden className="size-s4" />, onSelect: () => setConfirming('end') }] : []),
     { label: 'Delete session', icon: <Trash2 aria-hidden className="size-s4" />, tone: 'danger', onSelect: () => setConfirming('delete') },
   ];
@@ -63,12 +63,12 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
       <ConfirmDialog
         open={confirming === 'retitle'}
         onOpenChange={close(retitle.pending, retitle.reset)}
-        title="Write a new title?"
+        title="Write a new title and summary?"
         description={`Myco reads “${heading}” again and writes its title and summary. This runs one of Myco’s tasks, which spends tokens with your model provider.`}
-        confirmLabel="Write a new title"
+        confirmLabel="Write a new title and summary"
         tone="primary"
         pending={retitle.pending}
-        error={retitle.failed ? 'Myco couldn’t start writing a title. Try again.' : null}
+        error={retitle.failed ? TITLING_OUTCOME_TEXT.error : null}
         onConfirm={() => retitle.ask(() => setConfirming(null))}
       />
 
@@ -134,16 +134,16 @@ function useRetitle(projectId: string, session: SessionRow) {
   }, [watching, client, projectId, session.sessionId, runId]);
 
   const outcome = titling.data?.outcome;
-  const note = landed ? 'The new title is in'
-    : asked !== null && runStatus === 'failed' ? 'The titling run failed'
-    : asked !== null && (expired || (runStatus !== null && isTerminal(runStatus))) ? 'The titling run ended without writing a title'
+  const note = landed ? 'The new title and summary are in'
+    : asked !== null && runStatus === 'failed' ? TITLING_OUTCOME_TEXT.error
+    : asked !== null && (expired || (runStatus !== null && isTerminal(runStatus))) ? TITLING_OUTCOME_TEXT.error
     : outcome !== undefined ? TITLING_OUTCOME_TEXT[outcome] : null;
   return {
     note,
     runHref: asked !== null && !landed ? runPath(projectId, asked.runId) : null,
     busy: titling.isPending || watching,
     pending: titling.isPending,
-    failed: titling.isError,
+    failed: titling.isError || titling.data?.outcome === 'error' || titling.data?.outcome === 'ceiling',
     reset: () => titling.reset(),
     ask: (done: () => void) => {
       if (titling.isPending) return;
@@ -153,7 +153,7 @@ function useRetitle(projectId: string, session: SessionRow) {
           if ((answer.outcome === 'dispatched' || answer.outcome === 'queued') && answer.runId !== undefined) {
             setAsked({ runId: answer.runId, title: session.title, summary: session.summary, at: Date.now() });
           }
-          done();
+          if (answer.outcome !== 'error' && answer.outcome !== 'ceiling') done();
         },
       });
     },

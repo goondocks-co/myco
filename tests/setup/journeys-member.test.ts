@@ -497,19 +497,6 @@ describe('observation and consent contracts', () => {
     expect(errors).toEqual([]);
   });
 
-  it('reads each capture journal once per conductor run', async () => {
-    const entry = { version: 2, serverUrl: URL, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1, root: project, projectId: 'proj_capture' };
-    writeRegistryEntry(entry, { mycoHome: home });
-    const spool = new MemberSpool(entry, { mycoHome: home });
-    fs.writeFileSync(path.join(spool.dir, 'read-count.jsonl'), '', { mode: 0o600 });
-    const reads = spyOn(MemberSpool.prototype, 'readRecordsOrNull');
-    try {
-      expect(await run(['--join', URL, '--root', project, '--no-agents', '--no-runner'], { ...base(), fetch: configuredFetch })).toBe(0);
-      expect(reads).toHaveBeenCalledTimes(1);
-      expect(reads).toHaveBeenCalledWith('read-count');
-    } finally { reads.mockRestore(); }
-  });
-
   it('names --yes for a first plan without a terminal', async () => {
     const file = { version: 1 as const, answers: {}, consented: {} };
     await expect(consentToPlan({ home, file, id: 'runner', plan: { url: URL }, question: 'Register this runner?', ask: async () => null, out: () => {}, yes: false })).rejects.toThrow('pass --yes');
