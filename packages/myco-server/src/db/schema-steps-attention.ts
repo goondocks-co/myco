@@ -7,6 +7,8 @@ const triggers = captureHeadTriggers();
  * Pending trust seeds only existing heads through the live-start window. Session proof starts empty.
  * Live activity uses each pair's indexed live-receipt maximum.
  * Observed trust survives receipt replacement; removing a pair's final session removes its head and proof.
+ * The deployed Worker requires idx_sessions_machine_live; a later step drops it once no deployed Worker names it.
+ * Member capture and claims require an exact schema version; the deployed Worker refuses them during handoff.
  */
 export const ATTENTION_STEPS: readonly SchemaStep[] = [{
   version: NEXT_ATTENTION,
@@ -19,7 +21,7 @@ export const ATTENTION_STEPS: readonly SchemaStep[] = [{
       JOIN machine_claims mc ON mc.machine_id=r.machine_id JOIN members m ON m.id=mc.member_id
       WHERE r.state='trust_required' AND m.revoked_at IS NULL
     ), oldest AS MATERIALIZED (SELECT MIN(since_at) AS at FROM pending), starts AS MATERIALIZED (
-      SELECT s.machine_id,json_quote(s.agent) AS agent_json,MAX(e.created_at) AS at FROM oldest o
+      SELECT s.machine_id,json_quote(s.agent) AS agent_json,MAX(MIN(e.created_at,e.received_at)) AS at FROM oldest o
       CROSS JOIN sessions s INDEXED BY idx_sessions_capture CROSS JOIN events e INDEXED BY idx_events_session
       WHERE s.machine_id IS NOT NULL AND s.agent IS NOT NULL AND s.last_received_at>o.at
         AND (s.machine_id,json_quote(s.agent)) IN (SELECT machine_id,agent_json FROM pending)
@@ -33,10 +35,9 @@ export const ATTENTION_STEPS: readonly SchemaStep[] = [{
       FROM sessions s INDEXED BY idx_sessions_harness_live WHERE s.machine_id=h.machine_id
         AND s.agent IS json_extract(h.agent_json,'$') AND s.last_live_received_at IS NOT NULL
       ORDER BY s.last_live_received_at DESC LIMIT 1)`,
-    'DROP INDEX idx_sessions_machine_live',
     'CREATE INDEX IF NOT EXISTS idx_sessions_unclaimed_live ON sessions(last_live_received_at) WHERE machine_id IS NULL AND last_live_received_at IS NOT NULL',
     'CREATE INDEX IF NOT EXISTS idx_sessions_harness_trust_start ON sessions(machine_id,agent,last_trust_start_at DESC) WHERE last_trust_start_at IS NOT NULL',
-    ...triggers.map(item => `DROP TRIGGER ${item.name}`),
+    ...triggers.map(item => `DROP TRIGGER IF EXISTS ${item.name}`),
     ...triggers.map(item => item.sql),
   ],
   reaches: [
@@ -44,7 +45,6 @@ export const ATTENTION_STEPS: readonly SchemaStep[] = [{
   ],
   retires: [
     ...retiring('trigger', triggers.map(item => item.name), 'Session heads carry live evidence independently of receipt identity.'),
-    ...retiring('index', ['idx_sessions_machine_live'], 'Machine capture heads serve live activity; only unclaimed legacy sessions need the receipt index.'),
   ],
   deploymentIndexes: [
     { index: 'idx_sessions_harness_trust_start', read: 'A removed live-start head seeks its replacement within one machine and harness.' },

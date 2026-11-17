@@ -220,6 +220,8 @@ it('D1 capture writes cost the same as the Deployment\'s history grows, in the c
 
 /** Poll cost excludes old sessions, events and terminal runs outside the attention window. */
 it('D1 dashboard polls keep the same cost with twenty thousand and one hundred thousand retained events', async () => {
+  // Without planner statistics the task-budget read leads with current task heads, including with a growing budget-held queue.
+  // This guard cannot distinguish the two join forms for that read.
   const now = 1_800_000_000_000;
   const old = now - 90 * 86_400_000;
   const maxPollRows = 2_000;
