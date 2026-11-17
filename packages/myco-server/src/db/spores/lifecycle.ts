@@ -3,6 +3,7 @@ import type { ResolutionAction, SporeInsert, SporeProvenance, SporeRow, SporeSta
 import type { ReadScope } from '../../read/scope.js';
 import { assertion, commitNamed, refusalCode, refusalDetail, write } from '../index.js';
 import { importAdmittedAssertion, importRefused, sporeInsertWrite } from './records.js';
+import { curationMergeHistory } from './curation-history.js';
 
 /**
  * Moving a spore out of the active set (one resolution or one consolidation) or a retired spore back into it (one restore), each one commit.
@@ -206,6 +207,7 @@ export async function consolidateSpores(db: RelationalStore, scope: ReadScope, r
     const committed = await commitNamed(db, {
       admitted: sourcesCurrent.bind(scope.projectId, encoded, grantOf(authority)),
       wisdom: sporeInsertWrite(scope, wisdom),
+      history: curationMergeHistory({ project: scope.projectId, target: wisdom.id, sources: sources.map(source=>source.id), now }),
       events: insertSourceEvents.bind(scope.projectId, encoded, event.agentId, wisdom.id, event.reason, event.sessionId, event.author,
         event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt),
       moved: moveSources.bind(now, scope.projectId, encoded),

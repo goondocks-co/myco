@@ -47,7 +47,7 @@ const membersOf = (row: Pick<Cluster, 'members'>): SeedMember[] => JSON.parse(ro
 const curationSubject = (projectId: string, key: string): string => `curation:${projectId}:${key}`;
 
 /** Original ids and revisions identify a seed assignment independently of vector order. */
-async function curationClusterKey(members: readonly Member[]): Promise<string> {
+export async function curationClusterKey(members: readonly Member[]): Promise<string> {
   return sha256Hex(JSON.stringify([...members].sort((a, b) => a.id < b.id ? -1 : 1).map(({id,revision})=>({id,revision}))));
 }
 

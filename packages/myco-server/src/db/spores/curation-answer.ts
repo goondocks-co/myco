@@ -5,6 +5,7 @@ import { CURATION_ANSWER_ATTEMPTS } from '../../core/spore-curation-contract.js'
 import { assertion, commitNamed, first, read, refusalCode, refusalDetail, rows, write } from '../index.js';
 import { sporeInsertWrite } from './records.js';
 import { curationDecisionSql } from './curation-consideration.js';
+import { curationAnswerHistory } from './curation-history.js';
 import { curationCloseWrites, type CurationMember, type CurationWork } from './curation-work.js';
 
 const ANSWER_CHANGED = refusalCode('curation_answer_changed');
@@ -87,6 +88,7 @@ export async function commitCurationAnswer(db: RelationalStore, options: {
   await commitNamed(db, {
     admitted: admitted.bind(project, run, checked.group, encoded, submission),
     notes: dryRun ? [] : checked.notes.map(note => sporeInsertWrite({ projectId: project }, note)),
+    history: dryRun ? [] : curationAnswerHistory({ project, run, group: checked.group, now, answer: checked.answer, outputs: checked.notes.map(note=>note.id) }),
     events: dryRun ? [] : events,
     considerations: dryRun ? [] : [
       considered.bind(project, encoded, 'reviewed', now),
