@@ -9,6 +9,7 @@
  * command, and this refuses to serve an unmigrated volume rather than answering
  * requests against one.
  */
+import { DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS } from '../core/completion/provider.js';
 import type { Database } from 'bun:sqlite';
 import { createServer, type ServerDeps } from '../pipeline.js';
 import { assertSchemaCurrent, openDatabase } from '../platform/bun/database.js';
@@ -159,7 +160,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
 
   const listen = (hostname: string, port: number) => {
     assertLoopbackLiteral(hostname);
-    return Bun.serve({ hostname, port, development: false, error: () => new Response(null, { status: 503 }), fetch: fetchImpl });
+    return Bun.serve({ hostname, port, development: false, idleTimeout: (DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS) / 1000, error: () => new Response(null, { status: 503 }), fetch: fetchImpl });
   };
 
   // Both families or none: a half-bound loopback surface leaves the other
@@ -171,6 +172,7 @@ export async function serve(options: BunServerOptions): Promise<{ port: number; 
     if ((options.bind ?? 'loopback') === 'all') {
       const server = Bun.serve({
         hostname: '::', port: servingPort, development: false,
+        idleTimeout: (DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS) / 1000,
         error: () => new Response(null, { status: 503 }),
         fetch: fetchImpl,
       });

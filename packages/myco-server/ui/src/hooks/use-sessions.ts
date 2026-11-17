@@ -503,16 +503,18 @@ export function useTurnToolCalls(projectId: string, sessionId: string, promptId:
 
 /** What the server answers when asked to title a session now: a run was started, or why none was; each names an outcome in the reader's words. */
 export type TitlingOutcome =
-  | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'error' | 'queued' | 'capture_pending';
+  | 'completed' | 'ceiling' | 'dispatched' | 'already' | 'no_material' | 'harness_unavailable' | 'error' | 'queued' | 'capture_pending';
 
 export const TITLING_OUTCOME_TEXT: Record<TitlingOutcome, string> = {
+  completed: 'The new title and summary are in',
+  ceiling: 'The title and summary couldn’t be written. Wait a minute and ask again.',
   dispatched: 'A new title is being written; it lands within a few minutes',
   queued: 'The new title is waiting for a machine; it starts as one frees up',
   already: 'A title was asked for a moment ago; try again shortly',
   no_material: 'Nothing was typed in this session to title yet',
   capture_pending: 'Capture is incomplete. Check the session transcript before retrying.',
   harness_unavailable: 'Myco has no way to write titles here yet',
-  error: 'Something went wrong starting the title',
+  error: 'The title and summary couldn’t be written. Wait a minute and ask again.',
 };
 
 /** How long the page keeps watching for a dispatched summary to land: the run's own bound plus the margin its container is held for. */
@@ -520,6 +522,8 @@ export const TITLING_WATCH_MS = (300 + 120) * 1000;
 
 export interface TitlingAnswer {
   outcome: TitlingOutcome;
+  title?: string;
+  summary?: string;
   /** The run that will write the title, on `dispatched`. */
   runId?: string;
 }

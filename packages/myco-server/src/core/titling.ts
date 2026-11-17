@@ -51,7 +51,7 @@ import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, type TitlingMode, type TitlingParam
  */
 type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable'
-  | 'error' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
+  | 'error' | 'completed' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
 
 /** A title normalized to one line with no trailing period or ellipsis. */
 export const normalizeTitle = (title:string):string => title.replace(/\s+/g, ' ').trim().replace(/[.…]+$/, '').trim();
@@ -83,6 +83,8 @@ interface TitlingResult {
   outcome: TitlingOutcome;
   /** The run that will write the title, on `dispatched`. */
   runId?: string;
+  title?: string;
+  summary?: string;
 }
 
 const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
@@ -147,7 +149,12 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
         await releaseUnlaunched();
         throw error;
       }
-      env.afterResponse(() => executeDirectTitle(env, provider, { project: projectId, session: sessionId, run: runId, stamp: now, previous, mode, ...(opts.by === undefined ? {} : { by: opts.by }) }));
+      const execute = () => executeDirectTitle(env, provider, { project: projectId, session: sessionId, run: runId, stamp: now, previous, mode, ...(opts.by === undefined ? {} : { by: opts.by }) });
+      if (mode === 'owner') {
+        const answer = await execute();
+        return answer === null ? { outcome: 'error', runId } : { outcome: 'completed', runId, ...answer };
+      }
+      env.afterResponse(async () => { await execute(); });
       return { outcome: 'dispatched', runId };
     }
 
