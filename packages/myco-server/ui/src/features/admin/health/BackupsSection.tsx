@@ -1,4 +1,3 @@
-import { D1_REWIND_RETENTION_MS } from '../../../../../src/constants';
 import { useState } from 'react';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
@@ -14,8 +13,6 @@ import {
 import { ApiError } from '../../../lib/api';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
-const DAY_MS = 24 * 60 * 60 * 1000;
-const OBJECT_HOLD_DAYS = D1_REWIND_RETENTION_MS / DAY_MS;
 const BACKUP_SETTINGS = SETTINGS_SECTIONS.find((section) => section.id === 'backups')!.to;
 
 /** A failed request in words chosen by its status or refusal code, never the server's own sentence. */
@@ -68,7 +65,7 @@ export function BackupsSection({ target }: { target?: string | null }) {
         <ExternalLink href={RECOVERY_PROCEDURE}>operator backup and recovery procedure</ExternalLink>.
       </p>
       {target === 'cloudflare' && <p className="max-w-measure t-small text-muted" data-testid="stored-data-hold">
-        Deleted stored data is kept for {OBJECT_HOLD_DAYS} days before it is removed.
+        Deleted stored data is kept for 30 days before it is removed.
       </p>}
       {retention?.state === 'failed' && (
         <Card role="status" className="t-body text-warn" data-backup-retention-failed="">
