@@ -39,10 +39,9 @@ it('admits a native update before stopping and proves serving after completion',
 });
 
 it('restores the previous service after a migration failure leaves its schema unchanged', async () => {
-  const f = fixture();
+  const f = fixture(true, 'myco', { through: SERVER_SCHEMA_VERSION - 1 });
   const sqlite = new Database(f.paths.databasePath);
   sqlite.exec('PRAGMA journal_mode = WAL');
-  sqlite.query("UPDATE schema_meta SET value = ? WHERE key = 'version'").run(String(SERVER_SCHEMA_VERSION - 1));
   sqlite.exec('BEGIN IMMEDIATE');
   try {
     installService(f.spec, f.deps.service);
@@ -87,10 +86,7 @@ it('names forward recovery when a stopped update has advanced the schema', async
 });
 
 it('reports a completed schema update and an unanswered service without suggesting data recovery', async () => {
-  const f = fixture();
-  const sqlite = new Database(f.paths.databasePath);
-  try { sqlite.query("UPDATE schema_meta SET value = ? WHERE key = 'version'").run(String(SERVER_SCHEMA_VERSION - 1)); }
-  finally { sqlite.close(); }
+  const f = fixture(true, 'myco', { through: SERVER_SCHEMA_VERSION - 1 });
   installService(f.spec, f.deps.service);
   let clock = 0;
   const failure = await updateLocalService(f.home, { ...f.deps,

@@ -86,30 +86,27 @@ export async function commitHarnessReport(db: RelationalStore, machineId: string
   }
 }
 
-/** Live session starts created after a machine's oldest pending trust confirmation. */
+/** Live start evidence after the machine's oldest pending trust epoch. */
 export async function machineHarnessCaptureSince(db: RelationalStore, machineId: string, since: number): Promise<Array<{ agent: string; at: number }>> {
-  return (await readSet(db, machineHarnessCaptureSinceRead.bind(machineId, since, since, since)))[0];
+  return (await readSet(db, machineHarnessCaptureSinceRead.bind(machineId, since)))[0];
 }
 
 /** Live session starts created after an outstanding trust report, without a silence lookback cutoff. */
 export async function trustConfirmationCapture(db: RelationalStore, since: number): Promise<HarnessCaptureRow[]> {
-  return (await readSet(db, trustConfirmationCaptureRead.bind(since, since, since)))[0];
+  return (await readSet(db, trustConfirmationCaptureRead.bind(since)))[0];
 }
 
-const machineHarnessCaptureSinceRead = read<[string, number, number, number], { agent: string; at: number }>({ name: 'runners.machineHarnessCaptureSince', sql: `SELECT s.agent, MAX(e.created_at) AS at FROM sessions s
-      JOIN events e ON e.project_id = s.project_id AND e.session_id = s.session_id
-      WHERE s.machine_id = ? AND s.agent IS NOT NULL AND s.last_received_at > ?
-        AND e.received_at > ? AND e.created_at > ? AND e.kind = 'session.start' AND e.channel <> 'import' GROUP BY s.agent` });
+const machineHarnessCaptureSinceRead = read<[machine: string, since: number], { agent: string; at: number }>({
+  name: 'runners.machineHarnessCaptureSince', sql: `SELECT json_extract(agent_json,'$') AS agent,last_trust_start_at AS at
+    FROM machine_capture_heads WHERE machine_id=?1 AND agent_json<>'null' AND last_trust_start_at>?2` });
 
 const provisionedRowsRead = read<[], HarnessReportRow>({ name: 'runners.provisionedHarnessReportRows', sql: `SELECT ${COLUMNS.split(',').map(column => `r.${column}`).join(',')} FROM machine_harness_reports r
     JOIN machine_claims mc ON mc.machine_id = r.machine_id
     JOIN members m ON m.id = mc.member_id WHERE m.revoked_at IS NULL ORDER BY r.machine_id, r.position` });
 
-const latestHarnessCaptureRead = read<[], Omit<HarnessCaptureRow, 'at'> & { at: number | null }>({ name: 'runners.latestHarnessCapture', sql: `SELECT r.machine_id, r.harness AS agent,
-      (SELECT s.last_live_received_at FROM sessions s
-       WHERE s.machine_id = r.machine_id AND s.agent = r.harness
-         AND s.last_live_received_at IS NOT NULL ORDER BY s.last_live_received_at DESC LIMIT 1) AS at
+const latestHarnessCaptureRead = read<[], Omit<HarnessCaptureRow, 'at'> & { at: number | null }>({ name: 'runners.latestHarnessCapture', sql: `SELECT r.machine_id, r.harness AS agent,h.last_live_received_at AS at
       FROM machine_harness_reports r
+      LEFT JOIN machine_capture_heads h ON h.machine_id=r.machine_id AND h.agent_json=json_quote(r.harness)
       JOIN machine_claims mc ON mc.machine_id = r.machine_id
       JOIN members m ON m.id = mc.member_id WHERE m.revoked_at IS NULL` });
 
@@ -119,17 +116,15 @@ export async function latestHarnessCapture(db: RelationalStore): Promise<Harness
   return rows.filter((row): row is HarnessCaptureRow => row.at !== null);
 }
 
-const recentMachineCaptureRead = read<[number], MachineActivityRow>({ name: 'runners.recentMachineCapture', sql: `SELECT machine_id, MAX(last_live_received_at) AS at FROM sessions INDEXED BY idx_sessions_machine_live
-    WHERE last_live_received_at >= ? AND machine_id IS NOT NULL GROUP BY machine_id` });
+const recentMachineCaptureRead = read<[since: number], MachineActivityRow>({ name: 'runners.recentMachineCapture', sql: `SELECT machine_id,MAX(last_live_received_at) AS at FROM machine_capture_heads
+    WHERE last_live_received_at>=?1 GROUP BY machine_id` });
 
-/** Recent live receipts from any harness establish machine activity through the time-range index. */
+/** Current live heads establish machine activity, including an unprovisioned harness. */
 export const recentMachineCapture = async (db: RelationalStore, since: number): Promise<MachineActivityRow[]> => (await readSet(db, recentMachineCaptureRead.bind(since)))[0];
 
-const trustConfirmationCaptureRead = read<[number, number, number], HarnessCaptureRow>({ name: 'runners.trustConfirmationCapture', sql: `SELECT s.machine_id, s.agent, MAX(e.created_at) AS at FROM sessions s
-    JOIN events e ON e.project_id = s.project_id AND e.session_id = s.session_id
-    WHERE s.machine_id IS NOT NULL AND s.agent IS NOT NULL AND s.last_received_at > ?
-      AND e.received_at > ? AND e.created_at > ? AND e.kind = 'session.start' AND e.channel <> 'import'
-    GROUP BY s.machine_id, s.agent` });
+const trustConfirmationCaptureRead = read<[since: number], HarnessCaptureRow>({ name: 'runners.trustConfirmationCapture', sql: `SELECT h.machine_id,r.harness AS agent,h.last_trust_start_at AS at
+    FROM machine_harness_reports r JOIN machine_capture_heads h ON h.machine_id=r.machine_id AND h.agent_json=json_quote(r.harness)
+    WHERE r.state='trust_required' AND h.last_trust_start_at>?1` });
 
 const workerMachineActivityRead = read<[since: number], MachineActivityRow>({ name: 'runners.workerMachineActivity', sql:
   `SELECT machine_id,latest_contact_at AS at FROM machine_head WHERE latest_contact_at>=?1` });

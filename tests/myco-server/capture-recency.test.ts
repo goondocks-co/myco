@@ -147,7 +147,8 @@ describe('capture recency', () => {
             ON CONFLICT(project_id,session_id) DO UPDATE SET last_received_at=excluded.last_received_at`, [session, received]);
         }
         expect(f.sqlite.query("SELECT * FROM machine_capture_heads WHERE machine_id='order-machine'").get())
-          .toEqual({ project_id: 'proj_1', machine_id: 'order-machine', agent_json: '"codex"', session_id: 'a', last_received_at: 0 });
+          .toEqual({ project_id: 'proj_1', machine_id: 'order-machine', agent_json: '"codex"', session_id: 'a', last_received_at: 0,
+            last_live_received_at: null, last_trust_start_at: null });
         expect(await captureRecencyWindow(f.db, CAPTURE_RECEIPT_GRAIN_MS))
           .toEqual([{ machine_id: 'order-machine', agent: 'codex', last_event_at: 50_000, project_id: 'proj_1' }]);
       } finally { f.sqlite.close(); }

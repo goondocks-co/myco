@@ -471,7 +471,7 @@
     "tests/myco-server/grants.test.ts": 677,
     "tests/myco-server/handler-arguments.test.ts": 138,
     "tests/myco-server/harness-dispatch.test.ts": 270,
-    "tests/myco-server/harness-health.test.ts": 1426,
+    "tests/myco-server/harness-health.test.ts": 6000,
     "tests/myco-server/harness-queue.test.ts": 2649,
     "tests/myco-server/harness-report-schema-upgrade.test.ts": 3000,
     "tests/myco-server/hash.test.ts": 4,

@@ -15,6 +15,7 @@ import { defaultSpec, installService, servicePaths, renderUnit } from '@myco/ser
 import { nativeServicePlatform } from '../../helpers/native-service-platform.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
+import { schemaSqlite } from '../../myco-server/helpers/schema-template.js';
 
 export const native = { library: null, vec0: null };
 export const homes: string[] = [];
@@ -23,12 +24,20 @@ export function installLocalLifecycle(): void {
   afterEach(() => { for (const dispose of disposers.splice(0)) dispose(); for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true }); });
 }
 
-export function fixture(create = true, name = 'myco') {
+export function fixture(create = true, name = 'myco', options: { through?: number } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-lifecycle-'));
   homes.push(root);
   const home = path.join(root, name);
   const paths = peekLocalPaths(home);
-  if (create) createLocalDeployment(DEFAULT_LOCAL_RECORD, native, paths);
+  if (create) {
+    if (options.through === undefined) createLocalDeployment(DEFAULT_LOCAL_RECORD, native, paths);
+    else {
+      ensureLocalSecrets(paths);
+      const sqlite = schemaSqlite({ through: options.through });
+      try { fs.writeFileSync(paths.databasePath, sqlite.serialize()); } finally { sqlite.close(); }
+      writeLocalRecord(DEFAULT_LOCAL_RECORD, paths);
+    }
+  }
   const spec = defaultSpec(path.join(root, 'bin', 'myco'), root, 'darwin', home);
   const platform = nativeServicePlatform(paths, spec);
   disposers.push(platform.dispose);

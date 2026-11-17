@@ -1,0 +1,2 @@
+export const NEXT_ATTENTION = 823;
+export const LAST_ATTENTION = NEXT_ATTENTION;

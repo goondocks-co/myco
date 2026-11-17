@@ -26,7 +26,7 @@ import { endTurn, startTurnFromEvent } from '../db/sessions/turns.js';
 import { commit, first, type Bound } from '../db/index.js';
 import { captureChecks, eventAdmitted, rawEventInsert, type CaptureFacts } from '../db/capture/admission.js';
 import { deliverAnswer, deliverInjection, deliverSessionRecord, type Delivered } from '../db/capture/deliveries.js';
-import { chargeStoredBytes, credentialStillLive, liveReceipt, sessionReceipt, storedEvent } from '../db/capture/event-write.js';
+import { chargeStoredBytes, credentialStillLive, sessionReceipt, storedEvent } from '../db/capture/event-write.js';
 
 import { EVENT_INLINE_PAYLOAD_BYTES, retainedEventPayload } from './event-payload.js';
 import { prepareEventBody, settleUnstoredEventBody } from '../core/event-body.js';
@@ -261,7 +261,8 @@ export async function planEventWrite(
   // on its own housekeeping. A server write still opens a session row that is
   // absent, so a derived event is never refused for want of one.
   const writer = { project: ctx.projectId, session: e.sessionId, machine: ctx.machineId, token: ctx.tokenId, event: e.eventId, nonce: write.nonce };
-  const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: e.kind === 'session.start' ? (p.agent as string) : null });
+  const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: e.kind === 'session.start' ? (p.agent as string) : null,
+    live: e.channel !== 'import', start: e.kind === 'session.start' });
 
   // The nonce, not a change count, decides whether THIS write stored the row: reading it back asks the store what
   // happened instead of asking the driver.
@@ -279,12 +280,10 @@ export async function planEventWrite(
   const turnStart = startedAt === null
     ? []
     : [startTurnFromEvent({ projectId: ctx.projectId, sessionId: e.sessionId, machineId: ctx.machineId, at: startedAt, eventId: e.eventId, nonce: write.nonce })];
-  const liveCapture = e.channel === 'import' ? [] : [liveReceipt(writer, ctx.now)];
   const incidental = [
     ...(plan.incidental ?? []),
     ...turnEnd,
     ...turnStart,
-    ...liveCapture,
     ...await deliveryStatements(write, e, p),
     ...(eventBody === undefined ? [] : eventBodyStatements(eventBody, ctx.now)),
   ];
