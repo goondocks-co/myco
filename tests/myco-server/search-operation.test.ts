@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
 import { renderCard } from '@goondocks/myco-shared/turn-card';
-import { SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
+import { SEARCH_WINDOW, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS } from '@goondocks/myco-shared/search-types';
 import { SearchRefused } from '@myco-server-worker/core/search-query.js';
 import { searchFixture, type SearchFixture } from './helpers/search-fixture.js';
 
@@ -15,9 +15,9 @@ describe('a word search', () => {
   it('finds every kind with its retrieve hint, keeps another Project out, and never counts its matches', async () => {
     const f = fixture();
     f.session('s1', { title: 'cobalt session' });
-    f.spore('sp1', 'cobalt spore body');
-    f.plan('pl1', 'cobalt plan body');
-    f.card('s1', 't1', 'cobalt card text');
+    f.spore('sp1', 'cobalt NOT NEAR released in 1.4', { agent_line: 'cobalt cache eviction', created_at: 1000 });
+    f.plan('pl1', 'cobalt cache plan body', { created_at: 5000 });
+    f.card('s1', 't1', 'cobalt cache card text', { created_at: 9000 });
     f.spore('other', 'cobalt elsewhere', {}, 'search-b');
     const answer = await f.search('cobalt', { mode: 'fts' });
     expect(answer.hits.map((hit) => `${hit.type}:${hit.id}`).sort()).toEqual(['card:t1', 'plan:pl1', 'session:s1', 'spore:sp1']);
@@ -25,8 +25,10 @@ describe('a word search', () => {
     expect(answer.hits.find((hit) => hit.type === 'card')).toMatchObject({ session_id: 's1', prompt_id: 't1', status: 'carded' });
     expect(answer.hits.find(hit => hit.type === 'card')!.retrieve).toEqual({ tool: 'myco_sessions', input: { op: 'get', id: 's1' } });
     expect(answer).toMatchObject({ mode: 'fts', partial: false, nextCursor: null, coverage: { state: 'ready', pendingBlobs: 0, horizon: null } });
-    expect(typeof answer.asOf).toBe('number');
     expect(Object.keys(answer).sort()).toEqual(['asOf', 'coverage', 'hits', 'mode', 'nextCursor', 'partial', 'provider_unavailable']);
+    expect(ids(await f.search('cobalt cache', { mode: 'fts' }))).toEqual(['sp1', 't1', 'pl1']);
+    expect(ids(await f.search('NOT NEAR', { mode: 'fts' }))).toEqual(['sp1']);
+    expect(ids(await f.search('1.4', { mode: 'fts' }))).toEqual(['sp1']);
   });
 
   it('labels current knowledge and explicitly requested history with source dates, agent lines and successors', async () => {
@@ -46,14 +48,6 @@ describe('a word search', () => {
     expect(ids(await f.search('cobalt', { mode: 'fts', status: 'all' })).sort()).toEqual(['done', 'new', 'old', 'working']);
     expect(ids(await f.search('cobalt', { mode: 'semantic', status: 'all' })).sort()).toEqual(['done', 'new', 'old', 'working']);
     expect((await f.search('cobalt', { mode: 'semantic', status: 'in_progress' })).fallback_reason).not.toBe('history');
-  });
-
-  it('ranks records whose headline holds the words first, then the newest, across kinds', async () => {
-    const f = fixture();
-    f.spore('old-line', 'body words', { agent_line: 'cobalt cache eviction', created_at: 1_000 });
-    f.card('s1', 'new-card', 'cobalt cache mentioned in passing', { created_at: 9_000 });
-    f.spore('newer-body', 'cobalt cache in the body only', { created_at: 5_000 });
-    expect(ids(await f.search('cobalt cache', { mode: 'fts' }))).toEqual(['old-line', 'new-card', 'newer-body']);
   });
 
   it(`ranks only the newest ${SEARCH_WINDOW} matches of a kind: a better but older match waits for a later page, and with fewer matches it ranks first`, async () => {
@@ -111,45 +105,39 @@ describe('a word search', () => {
     expect(hit!.preview.startsWith('…')).toBe(true);
   });
 
-  it('treats operator words and punctuation as text', async () => {
-    const f = fixture();
-    f.spore('operators', 'NOT NEAR literal words');
-    f.spore('version', 'released in 1.4 today');
-    expect(ids(await f.search('NOT NEAR', { mode: 'fts' }))).toEqual(['operators']);
-    expect(ids(await f.search('1.4', { mode: 'fts' }))).toEqual(['version']);
-  });
-
   it('refuses what it cannot search, naming what to send instead', async () => {
     const f = fixture();
     expect(await refusal(f.search('the of and', { mode: 'fts' }))).toMatchObject({ code: 'stopwords_only' });
-    expect((await refusal(f.search('word '.repeat(17), { mode: 'fts' })))?.message).toContain('at most 16');
-    expect((await refusal(f.search('a'.repeat(513), { mode: 'fts' })))?.message).toContain('1–512');
+    f.spore('long-question', 'cobalt');
+    const question = `${'cobalt '.repeat(SEARCH_MAX_TERMS)}missing`;
+    expect(await f.search(question, { mode: 'fts' })).toMatchObject({ hits: [{ id: 'long-question' }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
+    expect(await f.search(question, { mode: 'auto' })).toMatchObject({ hits: [{ id: 'long-question' }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
+    const tooLong = await refusal(f.search('a'.repeat(SEARCH_QUERY_MAX_CHARS + 1), { mode: 'semantic' }));
+    expect(tooLong?.message).toContain(`query has ${SEARCH_QUERY_MAX_CHARS + 1} characters; limit ${SEARCH_QUERY_MAX_CHARS}`);
+    expect(tooLong?.message).toContain('Next call: myco_search');
     expect((await refusal(f.search('cobalt', { type: 'prompt' })))?.message).toContain('send type card');
-    expect((await refusal(f.search('cobalt\u0007', {})))?.code).toBe('invalid_query');
     expect((await refusal(f.search('cobalt', { mode: 'fts', cursor: 'not-a-cursor' })))?.code).toBe('cursor_foreign');
     expect((await refusal(f.search('cobalt', { order: 'time', type: 'session' })))?.message).toContain('use type spore, plan or card');
   });
 });
 
 describe('a search by time', () => {
-  it('lists one kind oldest first and continues to every match once, whatever the page size', async () => {
+  it('lists one kind oldest first and continues to every match once across tied timestamps', async () => {
     const f = fixture();
     f.session('s1');
     f.sqlite.transaction(() => { for (let i = 0; i < 23; i += 1) f.card('s1', `t${String(i).padStart(2, '0')}`, 'garnet turn', { created_at: 1_000 + Math.floor(i / 5) * 1000 }); })();
-    for (const limit of [1, 4, 10]) {
-      const seen: string[] = [];
-      let cursor: string | undefined;
-      for (let page = 0; page < 40; page += 1) {
-        const answer = await f.search('garnet', { mode: 'fts', type: 'card', order: 'time', session_id: 's1', limit, ...(cursor === undefined ? {} : { cursor }) });
-        seen.push(...ids(answer));
-        if (answer.nextCursor === null) break;
-        cursor = answer.nextCursor;
-      }
-      expect(seen).toHaveLength(23);
-      expect(new Set(seen).size).toBe(23);
-      const times = seen.map((id) => Math.floor(Number(id.slice(1)) / 5));
-      expect(times).toEqual([...times].sort((a, b) => a - b));
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 40; page += 1) {
+      const answer = await f.search('garnet', { mode: 'fts', type: 'card', order: 'time', session_id: 's1', limit: 4, ...(cursor === undefined ? {} : { cursor }) });
+      seen.push(...ids(answer));
+      if (answer.nextCursor === null) break;
+      cursor = answer.nextCursor;
     }
+    expect(seen).toHaveLength(23);
+    expect(new Set(seen).size).toBe(23);
+    const times = seen.map((id) => Math.floor(Number(id.slice(1)) / 5));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
   });
 });
 

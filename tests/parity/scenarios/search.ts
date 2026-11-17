@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import type { SearchAcrossAnswer, SearchAnswer } from '@goondocks/myco-shared/search-types';
+import { SEARCH_MAX_TERMS, type SearchAcrossAnswer, type SearchAnswer } from '@goondocks/myco-shared/search-types';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { ageRows, expectPersisted, waitFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { allowWorkerClaims, createProject, event, mcp, owner, putSetting, untilPublished, wake } from '../clients/requests.ts';
@@ -51,6 +51,8 @@ export const search: ParityScenario = {
     // A wake runs the index in the background on a Deployment that defers its work: wake, then read until the body is indexed.
     const indexed = await waitFor(async () => { await wake(target); return searchFor(word); }, (answer) => answer.coverage.pendingBlobs === 0);
     expect(indexed.coverage.pendingBlobs).toBe(0);
+    const longQuestion = `${`${word} `.repeat(SEARCH_MAX_TERMS)}unmatched`;
+    expect(await searchFor(longQuestion, { mode: 'fts', type: 'spore' })).toMatchObject({ hits: [{ id: spore.id }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
     expect(indexed.hits.map((r) => r.type).sort()).toEqual(['card', 'plan', 'session', 'spore']);
     expect({ ...await mcp(target, 'myco_search', { query: word, limit: 20 }) as unknown as SearchAnswer, asOf: 0 }).toEqual({ ...indexed, asOf: 0 });
     expect((await searchFor(`${word} distantneedle`)).hits.map((r) => r.id).sort()).toEqual([prompt, plan].sort());

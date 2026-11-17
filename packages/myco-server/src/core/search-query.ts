@@ -23,6 +23,7 @@ export interface SearchFilters {
 export interface SearchRequest {
   /** Each word as a full-text phrase, stopwords removed. */
   terms: string[];
+  wordTruncation?: { actual: number; searched: number };
   /** The words as typed, lowercased, for cutting snippets. */
   words: string[];
   types: SearchType[];
@@ -46,15 +47,15 @@ const invalid = (message: string) => new SearchRefused('invalid_query', message)
 const phrase = (word: string) => `"${word.replace(/"/g, '""')}"`;
 
 export function searchRequest(options: SearchOptions): SearchRequest {
-  const query = (options.query ?? '').trim();
-  if (query.length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw invalid(`query has ${query.length} characters; send 1–${SEARCH_QUERY_MAX_CHARS}`);
+  const query = options.query ?? '';
+  if (query.trim().length === 0 || query.length > SEARCH_QUERY_MAX_CHARS) throw invalid(`Search was not run: query has ${query.length} characters; limit ${SEARCH_QUERY_MAX_CHARS}. Next call: myco_search with query containing 1–${SEARCH_QUERY_MAX_CHARS} characters`);
   if (CONTROL_CHARACTERS.test(query)) throw invalid('query must not contain control characters; send the words alone');
   const typed = query.split(/\s+/).filter((word) => /[\p{L}\p{N}]/u.test(word));
   const kept = typed.filter((word) => !STOPWORDS.has(word.toLowerCase()));
   if (kept.length === 0) {
     throw new SearchRefused('stopwords_only', `query "${query}" holds only common words a search ignores (${SEARCH_STOPWORDS.slice(0, 6).join(', ')}, …); send a word naming what the record is about`);
   }
-  if (kept.length > SEARCH_MAX_TERMS) throw invalid(`query has ${kept.length} words after ignoring common ones; at most ${SEARCH_MAX_TERMS} are searched: send at most ${SEARCH_MAX_TERMS}`);
+  const words = kept.slice(0, SEARCH_MAX_TERMS);
   const types = typesOf(options.type);
   const mode = (options.mode ?? 'auto') as SearchRequest['mode'];
   if (!MODES.includes(mode)) throw invalid(`mode "${options.mode}" is not one of auto, fts or semantic`);
@@ -81,7 +82,8 @@ export function searchRequest(options: SearchOptions): SearchRequest {
   if (options.since !== undefined) filters.since = options.since;
   if (options.until !== undefined) filters.until = options.until;
   return {
-    terms: kept.map(phrase), words: kept.map((word) => word.toLowerCase()), types, mode, match, order, limit, filters,
+    terms: words.map(phrase), words: words.map((word) => word.toLowerCase()), types, mode, match, order, limit, filters,
+    ...(kept.length > words.length ? { wordTruncation: { actual: kept.length, searched: words.length } } : {}),
     cursor: options.cursor === undefined || options.cursor === '' ? null : options.cursor, window: SEARCH_WINDOW,
   };
 }

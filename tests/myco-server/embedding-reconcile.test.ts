@@ -44,6 +44,9 @@ test('deleted sessions are hidden by both searches while saved knowledge remains
   f.sqlite.run("UPDATE spores SET session_id='s' WHERE project_id='p' AND id='kept'");
   for (let i = 0; i < 4; i++) await f.step();
   for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).hits.map((r) => r.id).sort()).toEqual(['kept', 's']);
+  const question = 'Explain the architecture decisions concerning storage capture delivery events sessions titles summaries projects members authentication records retention indexing embeddings';
+  expect(await f.search(question)).toMatchObject({ mode: 'semantic', hits: expect.arrayContaining([expect.objectContaining({ id: 'kept' })]) });
+  expect(f.calls).toContain(question);
   f.insert('session_tombstones', { project_id: 'p', session_id: 's', created_at: 2, created_by: 'operator' });
   for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).hits.map((r) => r.id)).toEqual(['kept']);
   await tombstoneSession(f.serverEnv, { projectId: 'p' }, 's', 'operator', 3);
