@@ -17,6 +17,7 @@
  *   asked for every `QUICK_MS`.
  * - **`heavy`**: an aggregate is read once when shown and again only when a person asks; no clock,
  *   tab return or heartbeat re-reads it.
+ * - **`whileFailed`**: retry a failed read while its error can recover, stopping on a successful answer.
  * - **`still`**: a read that changes only when a person changes it here (settings, members), or one a parent read
  *   that itself follows a mark re-reads when its revision moves (a session's turns, files and commits).
  *
@@ -46,6 +47,7 @@ const EXPIRY_FLOOR_MS = 1_000;
 export type Freshness<T> =
   | { follows: readonly Mark[]; until?: (data: T | undefined) => number | null }
   | { whileMoving: (data: T | undefined) => boolean; quick?: true }
+  | { whileFailed: (error: Error) => boolean }
   | 'heavy'
   | 'still';
 
@@ -86,6 +88,13 @@ export function live<T>(freshness: Freshness<T>): LiveOptions<T> {
       refetchIntervalInBackground: false,
     };
   }
+  if ('whileFailed' in freshness) return {
+    refetchInterval: (query) => {
+      const error = query.state.error;
+      return error !== null && freshness.whileFailed(error) ? QUICK_MS : false;
+    },
+    refetchIntervalInBackground: false,
+  };
   const { whileMoving, quick } = freshness;
   return {
     refetchInterval: (query) => (whileMoving(query.state.data) ? (quick ? QUICK_MS : MOVING_MS) : false),
