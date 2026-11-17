@@ -1,3 +1,4 @@
+import { captureHealthChecks } from '@myco/cli/doctor-capture.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -42,7 +43,7 @@ export interface Observation {
   legacyStrayHistoryError?: string;
   legacyConfirmationProjects?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmationProjects'];
   legacyConfirmation?: import('@myco/member/legacy-migration.js').LegacyMigrationState['confirmation'];
-  capture?: { waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
+  capture?: { needsAttention?: boolean; attentionDetail?: string; waiting?: number | null; nextProbeAt?: number; recentRefusals?: number; unreadableLines?: number };
   target?: 'cloudflare' | 'local';
 }
 export interface ObserveDeps {
@@ -224,15 +225,22 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
       const entries = listing.entries.filter((entry) => deploymentUrl(entry.serverUrl) === url);
       if (entries.length === 0) add('machine.backlog', 'complete', 'No repository capture backlog for this Deployment.', url, true);
       for (const entry of entries) {
-        const facts = observeProjectCapture(entry, home, (deps.now ?? Date.now)());
-        const readable = facts.spool.readable && facts.spool.stateReadable && facts.spool.unacknowledgedTotal !== null;
-        add('machine.backlog', !readable ? 'unavailable' : facts.spool.unacknowledgedTotal === 0 ? 'complete' : 'incomplete',
-          `${readable ? `${facts.spool.unacknowledgedTotal} event(s) waiting to deliver` : 'Spool or acknowledgement unavailable'}; last delivery ${facts.spool.lastDeliveryAt === null ? 'unknown' : new Date(facts.spool.lastDeliveryAt).toISOString()}. Run myco member drain from this repository to retry delivery.`, entry.root, true, { waiting: readable ? facts.spool.unacknowledgedTotal : null });
-        add('machine.latch', !facts.latchReadable ? 'unavailable' : facts.latch === null ? 'complete' : 'incomplete',
-          !facts.latchReadable ? 'Offline latch unavailable.' : facts.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(facts.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true, facts.latch === null ? {} : { nextProbeAt: facts.latch.nextProbeAt });
-        const refusals = facts.refusalHistory;
-        add('machine.refusals', !refusals.readable ? 'unavailable' : refusals.unreadableLines > 0 || refusals.recent > 0 ? 'incomplete' : 'complete',
-          `${refusals.readable ? `${refusals.total} refused event(s); newest ${observationInstant(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository.`, entry.root, true, { recentRefusals: refusals.recent, unreadableLines: refusals.unreadableLines });
+        const now = (deps.now ?? Date.now)();
+        const reachable = new Set(!deps.checkRemote || facts.some(fact => fact.id === 'deployment.health' && fact.state === 'complete') ? [url] : []);
+        const checks = captureHealthChecks(home, [entry], now, reachable, { destinations: [entry] });
+        const waiting = checks.find(check => check.name === 'Capture waiting')!;
+        const losses = checks.find(check => check.name === 'Capture losses')!;
+        const deliveryNeedsAttention = waiting.status !== 'ok';
+        const lossesNeedAttention = losses.status !== 'ok';
+        const capture = observeProjectCapture(entry, home, now);
+        const readable = capture.spool.readable && capture.spool.stateReadable && capture.spool.unacknowledgedTotal !== null;
+        add('machine.backlog', !readable ? 'unavailable' : capture.spool.unacknowledgedTotal === 0 && waiting.status === 'ok' ? 'complete' : 'incomplete',
+          `${readable ? `${capture.spool.unacknowledgedTotal} event(s) waiting to deliver` : 'Spool or acknowledgement unavailable'}; last delivery ${capture.spool.lastDeliveryAt === null ? 'unknown' : new Date(capture.spool.lastDeliveryAt).toISOString()}. Run myco member drain from this repository to retry delivery.`, entry.root, true, { waiting: readable ? capture.spool.unacknowledgedTotal : null, needsAttention: deliveryNeedsAttention, attentionDetail: waiting.summary ?? waiting.detail });
+        add('machine.latch', !capture.latchReadable ? 'unavailable' : capture.latch === null ? 'complete' : 'incomplete',
+          !capture.latchReadable ? 'Offline latch unavailable.' : capture.latch === null ? 'Delivery is not held off.' : `Delivery held off; next probe ${new Date(capture.latch.nextProbeAt).toISOString()}. Run myco member drain from this repository.`, entry.root, true, { ...(capture.latch === null ? {} : { nextProbeAt: capture.latch.nextProbeAt }), needsAttention: deliveryNeedsAttention });
+        const refusals = capture.refusalHistory;
+        add('machine.refusals', !refusals.readable ? 'unavailable' : refusals.unreadableLines > 0 || refusals.recent > 0 || lossesNeedAttention ? 'incomplete' : 'complete',
+          `${refusals.readable ? `${refusals.total} refused event(s); newest ${observationInstant(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'Refusal log unavailable'}. Run myco logs from this repository. ${losses.status === 'ok' ? '' : losses.summary ?? losses.detail}`, entry.root, true, { recentRefusals: refusals.recent, unreadableLines: refusals.unreadableLines, needsAttention: lossesNeedAttention, attentionDetail: losses.summary ?? losses.detail });
       }
     }, true);
   }
