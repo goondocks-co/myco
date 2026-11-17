@@ -1,0 +1,1 @@
+export const SPORE_SUCCESSOR_LIMIT = 50;

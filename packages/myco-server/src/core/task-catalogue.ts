@@ -93,7 +93,7 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
     'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_resolve_spore', 'vault_report',
   ],
   [CARD_TASK]: ['vault_turn_cards', 'vault_report'],
-  [CURATION_TASK]: ['vault_spore_curation', 'vault_search_semantic', 'vault_curate_spore', 'vault_report'],
+  [CURATION_TASK]: ['vault_spore_curation'],
   [PLAN_CURATION_TASK]: ['vault_plan_curation', 'vault_search_fts', 'vault_report'],
   [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_report'],
   [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_update_session'],
@@ -148,7 +148,7 @@ export function admissionForTask(taskName: string): RunAdmissionGate | null {
 
 /** Reader descriptions owned by the task declarations. */
 export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; description: string }>> = {
-  [CURATION_TASK]: { name: 'Curate overlapping spores', description: 'Review one cluster of closely related spores and record whether to resolve them or keep them apart.' },
+  [CURATION_TASK]: { name: 'Curate overlapping spores', description: 'Return one checked answer for a group: merge the same situation, split distinct situations, keep or retire against group evidence. Evidence outside the group and dropped-feature records are unused by this task.' },
   [PLAN_CURATION_TASK]: { name: 'Curate stale plans', description: 'Review plans nobody has touched for two weeks and record whether each landed, was dropped, was superseded or is still open, citing the evidence.' },
   [CARD_TASK]: { name: 'Card session turns', description: 'Write a short card for each finished turn of a session, keeping errors, fixes and decisions word for word.' },
   [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Save durable knowledge from sessions as spores, and retire knowledge they replace.' },

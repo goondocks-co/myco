@@ -1,4 +1,5 @@
-import { curationCompletedBy, curationOutcomeCounts } from '../db/spores/curation-run.js';
+import { curationAnswerPresent } from '../db/spores/curation-answer.js';
+import { curationOutcomeCounts } from '../db/spores/curation-run.js';
 import { runCardsFinished } from './turn-cards.js';
 import { assignmentOf } from '../db/run-context.js';
 import type { CardAssignment } from './learning-stages.js';
@@ -151,7 +152,7 @@ async function titleStands(db: RelationalStore, scope: ReadScope, run: RunRow): 
 
 /** What each task's run must have left behind, by task. Every retained task appears. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
-  'curate-spores': { description: ['A revision-bound decision with its reason for the assigned cluster, and a curation report.'], reports: ['curated'], artifact: curationCompletedBy },
+  'curate-spores': { description: ['One checked revision-bound answer, applied atomically or stored as a dry-run preview.'], reports: [], artifact: curationAnswerPresent },
   [PLAN_CURATION_TASK]: { description: ['A revision-bound decision with its note for every assigned plan, each status change citing its evidence, and a curation report with its audit.'], reports: ['curated'], artifact: planCurationCompletedBy, audited: true },
   [MAP_TASK]: { description: ['A report with its audit and a code map written by this run, or a report with its audit that the map is unchanged.'], reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy, audited: true },
   [EMBEDDING_TASK]: { description: ['A report of the search index update.'], reports: [EMBEDDING_REPORT_ACTION] },
@@ -204,11 +205,11 @@ export async function readRunCloseEvidence(db: RelationalStore, scope: ReadScope
   if (rule === undefined) return null;
   const evidence = (await listReports(db, scope, run.id)).reports.filter((report) => rule.reports.includes(report.action));
   const result: RunCloseEvidence = {
-    hasReport: evidence.length > 0, hasAudit: await owesAudit(db, scope, run) ? evidence.some((report) => report.audit !== null || report.auditMoved) : null,
+    hasReport: rule.reports.length === 0 || evidence.length > 0, hasAudit: await owesAudit(db, scope, run) ? evidence.some((report) => report.audit !== null || report.auditMoved) : null,
     artifactPresent: null, skipSupported: null, targetSessionId: sessionNamedByRun(run),
   };
-  if (!result.hasReport || rule.artifact === undefined || run.dryRun === 1) return result;
-  if (evidence.every((report) => report.action === RUN_SKIP_ACTION)) {
+  if (!result.hasReport || rule.artifact === undefined || run.dryRun === 1 && run.task !== CURATION_TASK) return result;
+  if (evidence.length > 0 && evidence.every((report) => report.action === RUN_SKIP_ACTION)) {
     result.skipSupported = rule.skipHolds === undefined || await rule.skipHolds(db, scope, run);
   } else {
     result.artifactPresent = await rule.artifact(db, scope, run);

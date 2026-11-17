@@ -93,6 +93,8 @@
   "session:admin GET /api/github-app/installations",
   "session:admin GET /api/github-app/installations/{installationId}/repositories",
   "session:admin GET /api/maintenance",
+  "session:admin GET /api/projects/{projectId}/curation/answers/{runId}",
+  "session:admin GET /api/projects/{projectId}/curation/coverage",
   "session:admin GET /api/projects/{projectId}/grants",
   "session:admin GET /api/projects/{projectId}/release-provenance",
   "session:admin GET /api/projects/{projectId}/repository",

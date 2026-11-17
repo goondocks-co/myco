@@ -1,7 +1,7 @@
 import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 /**
- * A run's report carries the agent's audit, and a run of an outcome closes completed only on one.
+ * A run's report carries the agent's audit; reporting outcomes close completed only on one.
  *
  * The audit is judged by its shape, never by what it says; a report without one is still recorded, is answered as a
  * failure naming what the audit lacks, and leaves the run to close failed in the reader's words with every write it
@@ -21,6 +21,7 @@ import {
 import { RUN_CLOSE_AUDIT_ERROR, runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 import { listReports } from '@myco-server-worker/db/runs/evidence.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
+import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 import { parseRunAudit, RUN_AUDIT_INSTRUCTION } from '@myco-server-worker/core/run-audit.js';
 import { INPUT_BUILDERS } from '@myco-server-worker/core/task-inputs.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
@@ -174,8 +175,9 @@ describe('the audit\'s shape', () => {
     expect(JSON.parse(stored[1]!.audit!).commands).toEqual(['mysql -u… -p… …']);
   });
 
-  it('is asked for by every outcome\'s prompt, which says to report again when the report answers with an error', async () => {
+  it('is asked for by each reporting outcome, whose prompt says to correct a refused report', async () => {
     for (const [task, builder] of Object.entries(INPUT_BUILDERS)) {
+      if (!TASK_TOOLS[task]?.includes('vault_report')) continue;
       const prompt = builder.template([]).promptTemplate ?? '';
       expect({ task, asks: prompt.includes(RUN_AUDIT_INSTRUCTION), stopsFirst: prompt.includes('Stop after the report') }).toEqual({ task, asks: true, stopsFirst: false });
     }

@@ -80,6 +80,8 @@ export interface SporeInsert {
    */
   agentLine?: string | null;
   createdAt: number;
+  observedAt?: number;
+  updatedAt?: number;
 }
 
 export interface SporeRow {
@@ -106,6 +108,7 @@ export interface SporeRow {
    */
   authorKind?: 'run' | 'member' | 'imported' | 'grant' | null;
   createdAt: number;
+  observedAt?: number | null;
   updatedAt: number | null;
   embedded: number;
 }

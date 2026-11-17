@@ -1,5 +1,6 @@
 import { REWIND_STEPS } from './schema-steps-rewind.js';
 import { ATTENTION_STEPS } from './schema-steps-attention.js';
+import { CURATION_ANSWER_STEPS } from './schema-steps-curation-answer.js';
 import { PUBLICATION_MARK_STEPS } from './schema-steps-publication-mark.js';
 import { GITHUB_APP_PROJECT_STEPS } from './schema-steps-github-app-projects.js';
 import { TOOL_DELIVERY_STEPS } from './schema-steps-tool-delivery.js';
@@ -2420,6 +2421,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...PUBLICATION_MARK_STEPS.map(stamp),
   ...REWIND_STEPS.map(stamp),
   ...ATTENTION_STEPS.map(stamp),
+  ...CURATION_ANSWER_STEPS.map(stamp),
   ...GITHUB_APP_PROJECT_STEPS.map(stamp),
 ];
 

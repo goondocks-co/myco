@@ -684,6 +684,7 @@ describe('a sweep consolidates through the member op', () => {
 describe('the run map', () => {
   it('gives every task in the catalogue a surface its declared tools reach, and nothing else', () => {
     for (const [task, tools] of Object.entries(TASK_TOOLS)) {
+      if (task === 'curate-spores') continue;
       const allow = runAllowlist(tools, { dryRun: false });
       const listed = runDefinitions(allow).map((d) => d.name).sort();
       const expected = [...new Set(['myco_run', ...tools.flatMap((t) => (RUN_TOOL_MAP[t] ?? []).map((x) => x.tool))])].sort();

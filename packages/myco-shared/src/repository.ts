@@ -7,7 +7,7 @@ export const REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000;
 /** Tasks that require a connection rather than optionally validate knowledge against source. */
 export const REQUIRED_REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 /** Knowledge runs may inspect files, without shell or edit tools. */
-export const KNOWLEDGE_REPOSITORY_TASKS: readonly string[] = ['curate-spores', 'extract-curate'];
+export const KNOWLEDGE_REPOSITORY_TASKS: readonly string[] = ['extract-curate'];
 export const REPOSITORY_TASKS: readonly string[] = [...REQUIRED_REPOSITORY_TASKS, ...KNOWLEDGE_REPOSITORY_TASKS];
 
 /** A capability needs a connection only when every task requires one. */

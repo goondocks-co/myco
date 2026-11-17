@@ -36,17 +36,20 @@ import { buildTaskInput, INPUT_BUILDERS, instructionFor, instructionsFileFor, un
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { buildSeedingInput, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { EXTRACTION_TASK, OUTCOME_TASKS, PULLED_ONLY_TASKS, UNLANDED_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { EXTRACTION_TASK, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
+import { insertSpore } from '@myco-server-worker/db/spores/records.js';
+import { offerCurationCluster } from '@myco-server-worker/db/spores/curation-discovery.js';
 import { publishFixture, turnOnGatedCapabilities } from './helpers/fixtures.js';
 
 const NOW = 1_800_000_000_000;
 const ORIGIN = 'https://s';
+const CURATION_GROUP = 'curation-input';
 const OFFERED = [offeredHarness('claude-code')];
 
-async function rig() {
+async function rig(options: { curation?: boolean } = {}) {
   const e = sqliteEnv({ workerLogin: true });
   Object.assign(e.env, UNSIGNED_APP);
   turnOnGatedCapabilities(e.sqlite);
@@ -77,6 +80,14 @@ async function rig() {
   e.sqlite.run(`INSERT OR IGNORE INTO learning_sessions (project_id, session_id) VALUES ('proj_1', 's1')`);
   e.sqlite.run(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, records, input_hash, card, signal, created_at, carded_at)
     VALUES ('proj_1', 's1', 'p_s1', 'carded', '[["prompt","p_s1"]]', 'h_s1', 'asked: add a retry', 'low', ?, ?)`, [NOW, NOW]);
+  if (options.curation) {
+    const members = ['decision-seed', 'decision-peer'].map(id => ({ id, revision: 0, closeness: 1 }));
+    for (const { id } of members) await insertSpore(e.db, { projectId: 'proj_1' }, {
+      id, agentId: 'myco-agent', sessionId: null, observationType: 'decision', content: 'When delivery stalls, retain queued capture.',
+      agentLine: 'When delivery stalls, retain queued capture.', createdAt: NOW, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: null,
+    });
+    await offerCurationCluster(e.db, 'proj_1', CURATION_GROUP, members, NOW);
+  }
   return { e, queued, row, credentials, claim, endedSession };
 }
 
@@ -91,7 +102,7 @@ const servedOps = (task: string): Set<string> => {
   const allow = runAllowlist(taskTools(task), { dryRun: false });
   return new Set([...allow.entries()].flatMap(([tool, ops]) => [...ops].map((op) => `${tool} ${op}`)));
 };
-const PARAMS = { session_id: 's1', mode: 'claim' };
+const PARAMS = { session_id: 's1', mode: 'claim', group: CURATION_GROUP };
 
 describe('the instruction a titling run receives', () => {
   it('names the session, the mode, and the three calls in the words the run surface serves', async () => {
@@ -154,7 +165,7 @@ describe('the instruction a seeding run receives', () => {
 
 describe('every instruction the Deployment builds', () => {
   it('cites only tools the run\'s own MCP surface serves under that name, in the prompt and in the instructions file alike', async () => {
-    const r = await rig();
+    const r = await rig({ curation: true });
     for (const task of Object.keys(INPUT_BUILDERS)) {
       const built = await buildTaskInput(r.e.serverEnv, task, 'proj_1', NOW, { params: PARAMS });
       expect({ task, built: built !== null && !built.unchanged }).toEqual({ task, built: true });
@@ -172,13 +183,13 @@ describe('every instruction the Deployment builds', () => {
     }
   });
 
-  it('tells the run to close only with actions its task\'s close rule accepts, and names at least one', async () => {
-    const r = await rig();
+  it('tells reporting runs to close with an accepted action', async () => {
+    const r = await rig({ curation: true });
     for (const task of Object.keys(INPUT_BUILDERS)) {
       const built = await buildTaskInput(r.e.serverEnv, task, 'proj_1', NOW, { params: PARAMS });
       if (built === null || built.unchanged) throw new Error(`${task} built nothing`);
       const accepted = acceptedActions(task);
-      if (accepted === null) continue;
+      if (accepted === null || accepted.length === 0) continue;
       const actions = citedActions(built.input.instruction);
       // A run that closes with an action the rule does not accept is recorded as
       // having ended without its report, however faithfully it followed the prompt.
@@ -189,7 +200,7 @@ describe('every instruction the Deployment builds', () => {
   it('names the digest listing for exactly the tasks a worker writes one for (#1475)', async () => {
     // A worker writes the listing only for `REPOSITORY_DIGEST_TASKS`, and hashes a checkout for nothing else, so a
     // task whose instruction sends the run to the listing and is not in the set reads a file that is not there.
-    const r = await rig();
+    const r = await rig({ curation: true });
     const naming: string[] = [];
     for (const task of Object.keys(INPUT_BUILDERS)) {
       const built = await buildTaskInput(r.e.serverEnv, task, 'proj_1', NOW, { params: PARAMS });
@@ -199,9 +210,6 @@ describe('every instruction the Deployment builds', () => {
     expect(naming.sort()).toEqual([...REPOSITORY_DIGEST_TASKS].sort());
   });
 
-  it('is built for exactly the three outcomes', () => {
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual([...OUTCOME_TASKS].filter(task => !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task)).sort());
-  });
 });
 
 describe('a task the Deployment cannot instruct', () => {

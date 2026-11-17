@@ -140,7 +140,7 @@ function hitOf(doc: HydratedDocument, input: PageInput, release: ReleaseAnnotati
     ...(doc.prompt_id === null ? {} : { prompt_id: doc.prompt_id }),
     ...(type === 'card' ? { turn: doc.turn_id === null ? null : { prompt_id: doc.turn_id, preview: doc.turn_preview, text_chars: doc.turn_chars, stored: false } } : {}),
     ...searchPresentation({ type, id: doc.id, status: doc.status!, learnedAt: Number(doc.learned_at),
-      successorId: doc.successor_id, sessionId: doc.session_id, promptId: type === 'card' ? doc.turn_id : doc.prompt_id }),
+      successorId: type === 'spore' ? null : doc.successor_id, successorIds: type === 'spore' ? JSON.parse(doc.successor_id ?? '[]') as string[] : undefined, sessionId: doc.session_id, promptId: type === 'card' ? doc.turn_id : doc.prompt_id }),
     ...(release === undefined ? {} : { release }),
   };
 }

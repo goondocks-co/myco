@@ -31,6 +31,7 @@ export interface SporeFields {
   /** The one line written for agents, when the writer gave one. */
   agentLine: string | null;
   createdAt: number;
+  observedAt?: number | null;
   updatedAt: number | null;
 }
 

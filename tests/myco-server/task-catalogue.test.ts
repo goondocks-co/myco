@@ -145,7 +145,7 @@ describe('the four run outcomes', () => {
   it('are exactly the worker-served tasks, each with a prompt the Deployment builds', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed.map(String)).toEqual([...OUTCOME_TASKS].sort());
-    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task)).sort());
+    expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task) && (!PULLED_ONLY_TASKS.includes(task) || task === CURATION_TASK)).sort());
     expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK, PLAN_CURATION_TASK].sort());
   });
 
@@ -172,7 +172,7 @@ describe('the four run outcomes', () => {
 describe('the tasks a run checks a repository out for', () => {
   it('contains only live catalogue tasks that read repository source', () => {
     // The server holds a run of one of these until the project has a repository, and checks it out for the worker.
-    expect([...REPOSITORY_TASKS].sort()).toEqual(['canopy-map', 'curate-spores', 'extract-curate', 'vault-seed']);
+    expect([...REPOSITORY_TASKS].sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
     expect(REPOSITORY_TASKS.filter((task) => !(RETAINED_TASKS as readonly string[]).includes(task))).toEqual([]);
     expect(REPOSITORY_TASKS).toContain(MAP_TASK);
     expect(REPOSITORY_TASKS).toContain(SEEDING_TASK);
