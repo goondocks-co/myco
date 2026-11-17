@@ -137,7 +137,19 @@ An already configured `myco server github-app --target local|cloudflare --url <a
 
 Cloudflare stores `GITHUB_APP_PRIVATE_KEY` as a Worker secret, installed through the existing secret-bulk stdin route. Native stores the same single-line base64 PKCS#8 value in owner-only `server/local/secrets.env`; its private `.bak` can retain the prior key after rotation. An interrupted command holds the key only in its protected pending journal (0600 inside the target’s 0700 directory). No key is stored in the database or sent to members or runners. A native runner sharing the server’s OS user can read that user’s secret files; use separate OS users when that boundary is needed.
 
-The App key is replaceable, not recovery material: backups do not require it, and restore ignores it if present in `--secrets-from`. After restore, generate a new key in GitHub and run the import again. Sign-in works without the key. Existing Project repository tokens and release reads continue working independently during this preparation step.
+The App key is replaceable, not recovery material: backups do not require it, and restore ignores it if present in `--secrets-from`. After restore, generate a new key in GitHub and run the import again. Sign-in, capture and everything that does not read a repository work without the key; code tasks and release checks wait, and the dashboard names the command that sets it up.
+
+### Connect a Project's repository
+
+Myco reads Project repositories only through this Deployment's App. Nothing else gives it repository access: there is no per-Project token and no other Git host.
+
+1. Install the App on the account that owns the repository: open `https://github.com/apps/<app-slug>/installations/new` (the slug is shown under Settings → Sign-in and access → GitHub App after **Check again**), choose the account, choose **Only select repositories**, select the repositories code tasks should read, and install. An organization owner may need to approve the installation.
+2. In the dashboard, open the Project's **Settings → Repository** and press **Connect repository**. The dialog lists every installation of the App. The App is public so anyone can sign in with it, which also means anyone can install it: an installation by an account this server has not approved is shown as "Installed by an account this server has not approved", with its login and whether it is an organization or a personal account, and an **Approve** action. Approve only accounts you own or trust.
+3. Choose an approved account, then one of the repositories its installation selected, and the branch. **Save repository**. The server confirms the choice with GitHub before storing it, by GitHub's numeric repository and installation ids.
+
+Settings → Sign-in and access → GitHub App lists the approved accounts after **Check again**; **Remove approval** stops new tokens for that account's installations. Release tracking reads the same connected repository; it has no repository or token of its own.
+
+Each code task's runner receives a one-hour token that can read only the connected repository's contents, and revokes it as soon as its checkout finishes. A release check mints its own token for contents and pull requests, and revokes it when the check ends. Tokens are never stored or shown. Whether a task can start is decided from what the server has stored (a connection and the App key); GitHub is asked only when source is prepared, when a release check runs, and when an admin refreshes installations.
 
 ## Back up and restore
 
@@ -150,7 +162,7 @@ myco server backup --target cloudflare --to <backup-directory>
 
 The command snapshots the database, copies its blobs and verifies every blob. Repeat the same command to resume an interrupted backup. Until it completes, the source retains objects the snapshot needs, so storage can grow. **Settings** → **Backups** also controls automatic backups.
 
-To retain stored provider keys and repository tokens on restore, keep the original wrapping key separately from the backup. Native Deployments hold it in `<MYCO_HOME>/server/local/secrets.env`; new hosted Deployments write it to `<MYCO_HOME>/server/cloudflare/secrets.env` with owner-only permissions before sending it to Secrets Store. Never publish this file. Hosted Deployments created before this change have no wrapping key the operator can hold and restore with `--new-credentials`. The backup data itself remains restorable without that key.
+To retain stored provider keys on restore, keep the original wrapping key separately from the backup. Native Deployments hold it in `<MYCO_HOME>/server/local/secrets.env`; new hosted Deployments write it to `<MYCO_HOME>/server/cloudflare/secrets.env` with owner-only permissions before sending it to Secrets Store. Never publish this file. Hosted Deployments created before this change have no wrapping key the operator can hold and restore with `--new-credentials`. The backup data itself remains restorable without that key.
 
 Restore into a fresh Myco home and fresh resources. To replace a retired source, set `MYCO_HOME` to a new directory, then run the appropriate command:
 

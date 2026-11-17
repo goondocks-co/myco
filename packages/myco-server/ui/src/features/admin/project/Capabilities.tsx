@@ -41,7 +41,7 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, a
   const allNeedRepository = allTasksRequireRepository(capabilityTasks.map((task) => task.task));
   const needsSetup = repository != null && !appConfigured;
   const repositoryAction = needsSetup ? 'set up repository access on this server' : 'connect the repository';
-  const missingNote = needsSetup ? `${allNeedRepository ? 'Code tasks' : repositoryTasks.map((task) => task.name).join(', ')} wait until the server operator sets up repository access: \`myco server github-app\`.`
+  const missingNote = needsSetup ? `${allNeedRepository ? 'Code tasks' : repositoryTasks.map((task) => task.name).join(', ')} wait until the server operator sets up repository access with myco server github-app.`
     : allNeedRepository ? 'Needs this project’s repository to read its code.'
     : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; ${repositoryAction} to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
   const missingStatus = needsSetup ? (allNeedRepository ? 'On · Code tasks need repository access set up' : 'On · Some tasks need repository access set up')
