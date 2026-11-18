@@ -17,7 +17,7 @@ export const sameSporeStateSql = (expected: string, actual: string): string => `
   SELECT 1 FROM json_each(${expected}) held WHERE json_type(${actual},'$."'||held.key||'"') IS NULL
     OR json_extract(${actual},'$."'||held.key||'"') IS NOT held.value) AND NOT EXISTS (
   SELECT 1 FROM json_each(${actual}) current WHERE json_type(${expected},'$."'||current.key||'"') IS NULL))`;
-export const KNOWLEDGE_FIELDS = ['content','observationType','agentLine','context','tags','importance','filePath','properties','contentHash','status'] as const;
+const KNOWLEDGE_FIELDS = ['content','observationType','agentLine','context','tags','importance','filePath','properties','contentHash','status'] as const;
 export const sporeKnowledgeSql = (row:string,status:string=`${row}.status`):string => `json_object(${STATE_FIELDS.filter(([key])=>KNOWLEDGE_FIELDS.some(held=>held===key)).flatMap(([key,column])=>[`'${key}'`,key==='status'?status:`${row}.${column}`]).join(',')})`;
 export const knowledgeStateSql = (snapshot: string): string => `json_object(${KNOWLEDGE_FIELDS.flatMap(key=>[`'${key}'`,`json_extract(${snapshot},'$.${key}')`]).join(',')})`;
 export const completeKnowledgeSql = (snapshot: string): string => `(${KNOWLEDGE_FIELDS.map(key=>`json_type(${snapshot},'$.${key}') IS NOT NULL`).join(' AND ')})`;
