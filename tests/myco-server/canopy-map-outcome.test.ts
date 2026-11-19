@@ -19,13 +19,12 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { capturedSinceMap, mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
 import { MAP_RULES } from '@myco-server-worker/core/canopy-input.js';
 import { claimNextRun, dispatchTask, endLeasedRun, prepareDispatch } from '@myco-server-worker/core/harness.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { connectRepository, githubFixture, SOURCE_URL, UNSIGNED_APP, withApp } from './helpers/github-app.js';
 import { RUN_CLOSE_ARTIFACT_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { mapSourcePinOfRun } from '@myco-server-worker/db/runs/preparation.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { OUTCOME_TASKS, taskTools } from '@myco-server-worker/core/task-catalogue.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { MAP_SOURCE_UNPINNED } from '@myco-server-worker/mcp/tools/run-map.js';
 import { NO_MAP_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
@@ -37,7 +36,7 @@ import { todayMarks } from '@myco-server-worker/db/meta/marks.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
 const ORIGIN = 'https://s';
-const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
+const SOURCE = { url: SOURCE_URL, branch: 'main' };
 const OFFERED = [offeredHarness('claude-code')];
 const COMMIT_A = 'a'.repeat(40);
 const COMMIT_B = 'b'.repeat(40);
@@ -62,7 +61,8 @@ async function rig() {
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
   e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [now]);
   e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'canopy', 1, ?, 'test')`, [now]);
-  const repositories = projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey));
+  const github = githubFixture();
+  const app = () => withApp(e.serverEnv, github);
 
   /** One tool call over a credential, as a harness child or a member makes it. */
   const call = async (token: string, name: string, input: Record<string, unknown>) => {
@@ -78,33 +78,34 @@ async function rig() {
   /** Dispatch a map run and have the worker claim it. */
   const claimMap = async () => {
     now += 10;
-    expect(await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, now))
+    expect(await dispatchTask(app(), MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, now))
       .toMatchObject({ dispatched: true, queued: true });
-    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
+    const claimed = await claimNextRun(app(), { principal: legacyWorker(workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities: WORKER_CAPABILITIES, now: now + 1 });
     if (!claimed.claimed) throw new Error(`the map run was not claimed: ${claimed.reason}`);
     return claimed.run;
   };
   /** The worker's repository step, pinning the checkout to a commit. */
   const pinCommit = (runId: string, commit: string) =>
-    prepareWorkerRepository(e.serverEnv, { worker: legacyWorker(workerCredential.tokenId, 'm1'), clock }, { projectId: 'proj_1', runId, body: { ...SOURCE, commit } });
-  const end = (runId: string) => endLeasedRun(e.serverEnv, { principal: legacyWorker(workerCredential.tokenId, 'm1'), now: clock() }, { projectId: 'proj_1', runId, status: 'completed' });
-  return { e, repositories, workerCredential, call, claimMap, pinCommit, end, advance: (ms: number) => { now += ms; }, clock };
+    prepareWorkerRepository(app(), { worker: legacyWorker(workerCredential.tokenId, 'm1'), clock }, { projectId: 'proj_1', runId, body: { ...SOURCE, commit } });
+  const end = (runId: string) => endLeasedRun(app(), { principal: legacyWorker(workerCredential.tokenId, 'm1'), now: clock() }, { projectId: 'proj_1', runId, status: 'completed' });
+  const connect = () => connectRepository(app(), 'proj_1', { actor: 'mem_worker', now });
+  return { e, app, connect, workerCredential, call, claimMap, pinCommit, end, advance: (ms: number) => { now += ms; }, clock };
 }
 
 describe('a map run a worker claimed', () => {
   it('is refused before any row exists while the Project has no repository, and queued for a worker once it has one', async () => {
     const r = await rig();
-    expect(await prepareDispatch(r.e.serverEnv, MAP_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
-    expect(await prepareDispatch(r.e.serverEnv, MAP_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
+    expect(await prepareDispatch(r.app(), MAP_TASK, 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
+    await r.connect();
+    expect(await prepareDispatch(r.app(), MAP_TASK, 'proj_1')).toMatchObject({ ok: true, prepared: { servedBy: 'worker' } });
   });
 
   it('goes only to a worker that writes the digest listing its instructions read, never to one built before it (#1462)', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     r.advance(10);
-    expect(await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock())).toMatchObject({ dispatched: true, queued: true });
-    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+    expect(await dispatchTask(r.app(), MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock())).toMatchObject({ dispatched: true, queued: true });
+    const claim = (capabilities: readonly string[]) => claimNextRun(r.app(), { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
     // A worker that checks source out but writes no listing: the run would report the listing absent and write nothing.
     expect(capabilitiesRequiredBy(MAP_TASK)).toEqual([REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY]);
     expect(await claim([REPOSITORY_CHECKOUT_CAPABILITY])).toEqual({ claimed: false, reason: 'no_work' });
@@ -119,12 +120,12 @@ describe('a map run a worker claimed', () => {
 
   it('names the capability a map run waits for while no worker heard from lately reports it, and waits for a worker again once one does (#1475)', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     r.advance(10);
-    const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
+    const dispatched = await dispatchTask(r.app(), MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
     if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
     const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
-    const claim = (capabilities: readonly string[]) => claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+    const claim = (capabilities: readonly string[]) => claimNextRun(r.app(), { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
     expect(holder()).toBe('worker');
 
     // A worker built before the listing asks, and no worker that writes one has been heard from.
@@ -154,14 +155,14 @@ describe('a map run a worker claimed', () => {
 
   it('names the same capability whichever worker of a mixed fleet asks, and rewrites no row a poll leaves as it was (#1481)', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     r.advance(10);
-    const dispatched = await dispatchTask(r.e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
+    const dispatched = await dispatchTask(r.app(), MAP_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, r.clock());
     if (!dispatched.dispatched) throw new Error('the map run was not dispatched');
     const holder = () => (r.e.sqlite.query(`SELECT held_by AS heldBy FROM agent_runs WHERE id = ?`).get(dispatched.runId) as { heldBy: string | null }).heldBy;
     const changes = () => (r.e.sqlite.query('SELECT total_changes() AS n').get() as { n: number }).n;
     const claim = (capabilities: readonly string[]) =>
-      claimNextRun(r.e.serverEnv, { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
+      claimNextRun(r.app(), { principal: legacyWorker(r.workerCredential.tokenId, 'm1'), harnesses: OFFERED, capabilities, now: r.clock() + 1 });
 
     // Two workers heard from lately: one checks source out but writes no listing, one checks nothing out.
     const older = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'm2' }, r.clock());
@@ -186,7 +187,7 @@ describe('a map run a worker claimed', () => {
 
   it('carries a Deployment-built prompt and a checkout, and pins its map input with its commit', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const run = await r.claimMap();
     expect(run.task).toBe(MAP_TASK);
     expect(run.repository).toMatchObject(SOURCE);
@@ -205,7 +206,7 @@ describe('a map run a worker claimed', () => {
 
   it('serves actionable private refusals and the same bounds in the schema and instructions', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const run = await r.claimMap();
     await r.pinCommit(run.id, COMMIT_A);
     const sentinel = 'private-submitted-content';
@@ -228,7 +229,7 @@ describe('a map run a worker claimed', () => {
 
   it('persists exact refusal indices in its report while masking actual array output', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const run = await r.claimMap();
     await r.pinCommit(run.id, COMMIT_A);
     const artifact = {
@@ -268,7 +269,7 @@ describe('a map run a worker claimed', () => {
 
   it('writes its map, closes completed on it, and is read back over myco_cortex', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const member = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'm1' }, r.clock());
     expect(await r.call(member.token, 'myco_cortex', { op: 'canopy_map' })).toEqual({ content: '', project_id: 'proj_1', is_empty: true, message: NO_MAP_MESSAGE });
 
@@ -294,7 +295,7 @@ describe('a map run a worker claimed', () => {
 
   it('closes a second pass over the same commit as unchanged, and holds an unchanged claim over a new commit to the map it owed', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const first = await r.claimMap();
     await r.pinCommit(first.id, COMMIT_A);
     await r.call(first.runToken, 'myco_run_map', { op: 'write', artifact: ARTIFACT });
@@ -317,7 +318,7 @@ describe('a map run a worker claimed', () => {
 
   it('is listed its map tool on a map run, reading and writing', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const run = await r.claimMap();
     const res = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
       method: 'POST', headers: memberHeaders(run.runToken, { [PROJECT_HEADER]: 'proj_1' }),
@@ -340,7 +341,7 @@ describe('a map run a worker claimed', () => {
 
   it('finds the retired container map route absent even while a worker leases its run', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const run = await r.claimMap();
     await r.pinCommit(run.id, COMMIT_A);
     for (const body of [{ op: 'prepare' }, { op: 'pin', source: { inputHash: 'e'.repeat(64), priorRevision: null } }, { op: 'write', artifact: ARTIFACT }]) {
@@ -357,7 +358,7 @@ describe('a map run a worker claimed', () => {
 describe('when the clock maps a Project', () => {
   it('re-arms on work captured after the last completed map run, whether it wrote a map or found it standing', async () => {
     const r = await rig();
-    await r.repositories.save('proj_1', { ...SOURCE, revision: null }, 'mem_worker', r.clock());
+    await r.connect();
     const capture = (id: string) => {
       r.advance(10);
       r.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?)`, [id, r.clock(), r.clock()]);

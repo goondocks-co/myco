@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { deploymentSecretStore, secretReadable, maskSecret, normalizeSecretValue, SecretValueError } from '@myco-server-worker/core/secrets.js';
+import { deploymentSecretStore, maskSecret, normalizeSecretValue, SecretValueError } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText, WRAPPING_KEY_BYTES, WrappingKeyUnavailableError } from '@myco-server-worker/platform/wrapping-key.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { migrateAndSeed } from './helpers/d1.js';
@@ -81,12 +81,12 @@ describe('deployment secrets', () => {
     // authenticate to one service using another service's credential.
     const r = rig();
     await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
-    await r.store.put('github', 'ghp_someothercredential_value', 'mem_1', 1_000);
+    await r.store.put('openrouter', 'sk-or-someothercredential-value', 'mem_1', 1_000);
 
     const anthropic = r.sqlite.query(`SELECT ciphertext, iv FROM deployment_secrets WHERE name='anthropic'`).get() as { ciphertext: string; iv: string };
-    r.sqlite.query(`UPDATE deployment_secrets SET ciphertext = ?, iv = ? WHERE name = 'github'`).run(anthropic.ciphertext, anthropic.iv);
+    r.sqlite.query(`UPDATE deployment_secrets SET ciphertext = ?, iv = ? WHERE name = 'openrouter'`).run(anthropic.ciphertext, anthropic.iv);
 
-    await expect(r.store.get('github')).rejects.toThrow();
+    await expect(r.store.get('openrouter')).rejects.toThrow();
   });
 
   it('describes without ever returning the value, and derives the mask rather than storing one', async () => {
@@ -156,13 +156,13 @@ describe('deployment secrets', () => {
     // is the page they need most at that moment.
     const r = rig();
     await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
-    await r.store.put('github', 'ghp_aaaaaaaaaaaaaaaaaaaaaaaa', 'mem_1', 1_000);
+    await r.store.put('openrouter', 'sk-or-aaaaaaaaaaaaaaaaaaaaaaaa', 'mem_1', 1_000);
     r.sqlite.query(`UPDATE deployment_secrets SET iv = ? WHERE name = 'anthropic'`).run(btoa('123456789012'));
 
     expect(await r.store.describe('anthropic')).toMatchObject({ configured: true, readable: false, maskedValue: null });
-    expect(await r.store.describe('github')).toMatchObject({ configured: true, readable: true });
+    expect(await r.store.describe('openrouter')).toMatchObject({ configured: true, readable: true });
     const listed = await r.store.list();
-    expect(listed.map((s) => [s.name, s.readable])).toEqual([['anthropic', false], ['github', true]]);
+    expect(listed.map((s) => [s.name, s.readable])).toEqual([['anthropic', false], ['openrouter', true]]);
   });
 
   it('deletes, and reports whether anything was there', async () => {
@@ -176,9 +176,9 @@ describe('deployment secrets', () => {
   it('lists every secret as a description, never as values', async () => {
     const r = rig();
     await r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000);
-    await r.store.put('github', 'ghp_aaaaaaaaaaaaaaaaaaaa', 'mem_2', 2_000);
+    await r.store.put('openrouter', 'sk-or-aaaaaaaaaaaaaaaaaaaa', 'mem_2', 2_000);
     const listed = await r.store.list();
-    expect(listed.map((s) => s.name)).toEqual(['anthropic', 'github']);
+    expect(listed.map((s) => s.name)).toEqual(['anthropic', 'openrouter']);
     expect(JSON.stringify(listed)).not.toContain(ANTHROPIC);
   });
 });
@@ -202,15 +202,4 @@ describe('the wrapping key', () => {
     const r = rig('not-valid-base64!!!');
     await expect(r.store.put('anthropic', ANTHROPIC, 'mem_1', 1_000)).rejects.toThrow(/not base64/);
   });
-});
-
-it('answers secret usability without returning a credential or a preview', async () => {
-  const r=rig();
-  const key=wrappingKeyFromText(async()=>KEY,'TEST_KEY'),wrong=wrappingKeyFromText(async()=>OTHER_KEY,'TEST_KEY');
-  try {
-    expect(await secretReadable(r.db,key,'repository')).toBe(false);
-    await r.store.put('repository','synthetic-repository-token','owner',1);
-    expect(await secretReadable(r.db,key,'repository')).toBe(true);
-    expect(await secretReadable(r.db,wrong,'repository')).toBe(false);
-  } finally {r.sqlite.close();}
 });

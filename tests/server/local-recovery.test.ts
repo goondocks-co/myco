@@ -1,6 +1,6 @@
 import { prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { run as serverCommand } from '@myco/cli/server.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { storedConnection } from '../myco-server/helpers/github-app.js';
 import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { providerCredentialReady, openHarnessCredential, openCompletionCredential } from '@myco-server-worker/core/provider-credentials.js';
 import { harnessCredentialAvailable } from '@myco-server-worker/core/secrets.js';
@@ -150,11 +150,9 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   if (credentialConsumers) {
     const store = deploymentSecretStore(source.db, key);
     for (const name of ['openai', 'anthropic', 'single-turn']) await store.put(name, 'synthetic-credential', 'fixture', 1);
-    await projectRepositories(source.db, store).save('proj_1', { url: 'https://github.com/example/repo.git', branch: 'main', revision: null,
-      credential: { username: 'reader', token: 'synthetic-token' } }, 'fixture', 1);
-    await releaseProvenance(source.db, store).save('proj_1', { revision: null, enabled: true, githubRepo: 'example/repo',
-      productionRefs: ['refs/tags/v*'], integrationRefs: ['origin/main'], packageMap: [], includeUnknown: true, maxLookups: 50,
-      credential: { token: 'synthetic-release-token' } }, 'fixture', 1);
+    source.sqlite.run(...storedConnection('proj_1'));
+    await releaseProvenance(source.db).save('proj_1', { revision: null, enabled: true,
+      productionRefs: ['refs/tags/v*'], integrationRefs: ['origin/main'], packageMap: [], includeUnknown: true, maxLookups: 50 }, 'fixture', 1);
   }
   source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES ('proj_1','memory','user','A durable architecture decision','decision',1)");
   // A switch building to a paid model, and a source embedding passes over, as the source Deployment held them.
@@ -524,19 +522,15 @@ it('restores without held wrapping material, starts the server and names each cr
       const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
       const store = deploymentSecretStore(server.env.db, key);
       expect(await store.list()).toEqual([]);
-      expect(await prepareDispatch(server.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
-      expect((await projectRepositories(server.env.db, store).describe('proj_1'))?.credential).toMatchObject({ configured: false });
-      await expect(projectRepositories(server.env.db, store).access('proj_1')).rejects.toThrow('Enter it again');
-      expect((await releaseProvenance(server.env.db, store).describe('proj_1')).credential.configured).toBe(false);
+      // The connection is kept as configuration; reading it waits for the App key, which is generated again and imported.
+      expect(await prepareDispatch(server.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_unavailable' });
+      expect((await releaseProvenance(server.env.db).describe('proj_1')).repository).toEqual({ url: 'https://github.com/example/source', branch: 'main' });
       expect(await providerCredentialReady(server.env.db, key, 'openai')).toBe(false);
       expect(await openHarnessCredential(server.env.db, key, 'anthropic')).toBeNull();
       expect(await harnessCredentialAvailable(server.env.db, key, 'claude-code')).toBe(false);
       expect(await openCompletionCredential(server.env.db, key)).toBeNull();
-      expect(lines.join('\n')).toContain('Repository token for a: Project Settings → Repository');
-      expect(lines.join('\n')).toContain('Release tracking token for a: Project Settings → Release tracking');
       expect(lines.join('\n')).toContain('OpenAI: Settings → Models and keys');
       expect(lines.join('\n')).not.toMatch(/repository:|release-provenance:|proj_1/);
-      expect(lines.join('\n')).toContain('Project Settings → Release tracking');
       expect(lines.join('\n')).toContain('Settings → Models and keys');
       expect(lines.join('\n').includes(secrets.SECRET_WRAP_KEY!)).toBe(false);
     } finally { await server.stop(); }

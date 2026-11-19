@@ -42,7 +42,7 @@ const journalSchema = z.object({
   versionId: z.string().optional(), deployedAt: z.string().datetime().optional(),
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   newSignIn: z.boolean().default(false),
-  newCredentials: z.boolean().default(false), discardedCredentials: z.array(z.union([z.string(), z.object({ name: z.string(), repositoryProject: z.string().nullable(), releaseProject: z.string().nullable() })])).default([]),
+  newCredentials: z.boolean().default(false), discardedCredentials: z.array(z.union([z.string(), z.object({ name: z.string() })])).default([]),
   tenantMode: z.enum(['replacement', 'fork']).default('replacement'),
   vectorProvisioned: z.boolean().default(false),
   schemaUpdates: z.array(cloudflareSchemaUpdateSchema).optional(),

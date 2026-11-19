@@ -2,21 +2,22 @@ import { legacyWorker } from './helpers/worker-principal.js';
 import { expect, it } from 'bun:test';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import worker from '@myco-server-worker/entry/cloudflare.js';
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { memberWriteStore } from '@myco-server-worker/auth/member-write-store.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { dispatchTask, claimNextRun } from '@myco-server-worker/core/harness.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { renewRunLease } from '@myco-server-worker/db/runs/leases.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { changingAt, changingAtStatement, observing, storingCall } from './helpers/store-faults.js';
+import { APP_SECRETS, connectRepository, githubFixture, SOURCE_URL, withApp } from './helpers/github-app.js';
 
-const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
+const SOURCE = { url: SOURCE_URL, branch: 'main' };
 const COMMIT = 'a'.repeat(40);
 const MEMBER = 'mem_worker';
 
@@ -28,17 +29,19 @@ async function rig() {
   const credential = await issueMemberToken(e.db, { memberId: MEMBER, machineId: 'm1' }, now);
   e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by)
     VALUES ('proj_1', 'canopy', 1, ?, 'test')`, [now]);
-  const repositories = projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey));
-  await repositories.save('proj_1', { ...SOURCE, revision: null, credential: { username: 'reader', token: 'synthetic-source-secret' } }, MEMBER, now);
-  const dispatch = await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: 'https://s', actor: MEMBER }, now);
+  const github = githubFixture();
+  const appEnv = () => withApp(e.serverEnv, github);
+  await connectRepository(appEnv(), 'proj_1', { actor: MEMBER, now });
+  const dispatch = await dispatchTask(appEnv(), MAP_TASK, 'proj_1', { serverUrl: 'https://s', actor: MEMBER }, now);
   if (!dispatch.dispatched) throw new Error('fixture map run was not dispatched');
   const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(credential.tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
   if (!claimed.claimed) throw new Error('fixture map run was not claimed');
-  const request = (body: Record<string, unknown>) => worker.fetch(new Request('https://s/worker/repository', {
+  const server = createServer({ now: Date.now, sourceOf: cloudflareSourceOf, fetchImpl: github.fetchImpl });
+  const request = (body: Record<string, unknown>) => server.handleRequest(new Request('https://s/worker/repository', {
     method: 'POST', headers: memberHeaders(credential.token), body: JSON.stringify({ projectId: 'proj_1', runId: claimed.run.id, ...body }),
-  }), e.env);
+  }), { ...serverEnvFromBindings({ ...e.env, ...APP_SECRETS } as never), outbound: github.fetchImpl });
   const state = () => e.sqlite.query('SELECT run_context AS context, lease_expires_at AS lease FROM agent_runs WHERE id = ?').get(claimed.run.id) as { context: string; lease: number };
-  return { e, request, state, credential, runId: claimed.run.id };
+  return { e, appEnv, github, request, state, credential, runId: claimed.run.id };
 }
 
 type Rig = Awaited<ReturnType<typeof rig>>;
@@ -102,7 +105,7 @@ for (const task of ['map', 'repository', 'credential'] as const) {
       const stale = Date.now() - 60_000;
       const body = task === 'credential' ? {} : { ...SOURCE, commit: COMMIT };
       const prepare = (store: RelationalStore) => prepareWorkerRepository(
-        { ...r.e.serverEnv, db: memberWriteStore(store, MEMBER, 'admin') },
+        { ...r.appEnv(), db: memberWriteStore(store, MEMBER, 'admin') },
         { worker: legacyWorker(r.credential.tokenId, 'm1'), clock: () => stale },
         { projectId: 'proj_1', runId: r.runId, body },
       );
@@ -139,6 +142,7 @@ it('withholds a repository credential when revocation precedes its final authori
     expect(raced.landed()).toBe(true);
     expect(await response.json()).toMatchObject({ persisted: false, code: 'not_admin' });
     expect(r.state()).toEqual(before);
+    expect(r.github.state.revoked).toContain(r.github.state.issued.at(-1)!.token);
   } finally { r.e.sqlite.close(); }
 });
 

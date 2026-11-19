@@ -115,7 +115,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'invite-expiry',
     runsThrough: 'sleep',
-    converges: 'expired undecided device requests are reclaimed; finished enrollment and identity link authorities, link receipts and decided requests obey retention; decision audits and live authorities remain',
+    converges: 'expired undecided device requests are reclaimed; finished enrollment and identity link authorities, link receipts and decided requests obey retention; no sealed credential is kept under a name no slot admits; decision audits and live authorities remain',
   },
   { name: 'publication-dependency-inspection', runsThrough: 'idle', onWorkWake: true, converges: 'every queued publication prompt dependency is inspected for a cycle through bounded checkpointed walks; a cycle reports and frees its child, and a long graph stays pending rather than silently complete' },
   // #1147 — transcript-first ingest

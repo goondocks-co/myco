@@ -10,6 +10,7 @@
  * keeps the file a test Bun collects.
  */
 import { describe, expect, it } from 'bun:test';
+import type { InstallationsPage, RepositoryChoice } from '@myco-server-worker/core/github-app.js';
 import type * as Settings from '../../packages/myco-server/ui/src/features/admin/settings/wire.ts';
 import type * as Project from '../../packages/myco-server/ui/src/features/admin/project/wire.ts';
 import type { SecretDescription } from '../../packages/myco-server/src/core/secrets.ts';
@@ -28,12 +29,12 @@ type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 /** `GET /api/settings`: one leaf as `deploymentSettings` builds it. */
 type ServerLeaf = SettingsLeafRow;
 /** `GET /api/secrets`: each slot named and described, as `handleSecrets` answers. */
-type ServerSecret = { name: string; retired: boolean } & SecretDescription;
+type ServerSecret = { name: string } & SecretDescription;
 
 const SAME: [
   Same<Settings.LeafRow, ServerLeaf>,
   Same<Settings.TaskTierRow, TaskTierRow>,
-  Same<Omit<Settings.SecretRow, 'name' | 'retired'>, SecretDescription>,
+  Same<Omit<Settings.SecretRow, 'name'>, SecretDescription>,
   Same<Project.KeyDescription, SecretDescription>,
   Same<Project.ReleaseCheck, ReleaseCheck>,
 ] = [true, true, true, true, true];
@@ -44,10 +45,12 @@ const READS: [
   Reads<TitlingBackfillProgress, Settings.TitlingBackfillProgress>,
   Reads<Awaited<ReturnType<typeof projectSettingsEditor>>, Project.CapabilitiesAnswer>,
   Reads<RepositoryConnection, Project.RepositoryRow>,
-  Reads<{ repository: RepositoryConnection | null }, Project.RepositoryAnswer>,
+  Reads<{ repository: RepositoryConnection | null; appConfigured: boolean }, Project.RepositoryAnswer>,
+  Reads<InstallationsPage, Project.InstallationsAnswer>,
+  Reads<{ repositories: RepositoryChoice[]; more: boolean }, Project.RepositoryChoicesAnswer>,
   Reads<ReleaseProvenanceView, Project.ReleaseProvenanceRow>,
   Reads<{ releaseProvenance: ReleaseProvenanceView }, Project.ReleaseProvenanceAnswer>,
-] = [true, true, true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true, true, true, true];
 
 describe("Settings' and project settings' wire shapes", () => {
   it('are held to the server declarations by the tests typecheck', () => {

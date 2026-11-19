@@ -1,4 +1,5 @@
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
+import { UNSIGNED_APP } from './github-app.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { type CardFields } from '@goondocks/myco-shared/turn-card';
@@ -128,7 +129,7 @@ export interface MaterialAnswer { revision: string; page: number; next_page?: nu
 
 /** A card worker with calls through the real `/mcp` route. */
 export async function cardWorker(db: RelationalStore) {
-  const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+  const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter(), ...UNSIGNED_APP };
   const env = serverEnvFromBindings(bindings as never, recordingDeferred());
   await db.prepare(enable).run();
   await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
@@ -217,13 +218,13 @@ export async function learningRun(db: RelationalStore, turns: readonly Turn[], s
   await callAs(carding.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded', audit: RUN_AUDIT });
   await endLeasedRun(env, { principal, now: NOW + DAY + 1 }, { projectId: 'project', runId: carding.claimed.run.id, attemptId: carding.claimed.run.attemptId, status: 'completed' });
   if (handoff !== null) await db.prepare(`UPDATE learning_sessions SET handoff = ?`).bind(handoff).run();
-  if (connected) await db.prepare(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-    VALUES('project','connection','https://example.test/team/repo','main',1,'test')`).run();
+  if (connected) await db.prepare(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+    VALUES('project','connection','https://github.com/example/source','main',1296269,41,1,'test')`).run();
   const harness=execution.harness ?? 'claude-code';
   if (harness === 'codex') await settingsWriter(db).setLeaf('agent.tasks',{'extract-curate':{harness,model:'gpt-6',reasoningLevel:'default'}},'member',NOW+DAY+2);
-  if (execution.unreadable) await db.prepare("UPDATE project_repositories SET username='reader',secret_slot='missing' WHERE project_id='project'").run();
   if (execution.queued) expect(await dispatchTask(env,'extract-curate','project',{serverUrl:'https://myco.test',actor:'member',params:{session_id:'long'}},NOW+DAY+2)).toMatchObject({dispatched:true});
-  const learn = await claimNextRun(env, { principal, harnesses: [offeredHarness(harness)], capabilities: execution.capabilities ?? WORKER_CAPABILITIES, now: NOW + DAY + 2 });
+  // Without an App key, the stored connection cannot be read, so the run is knowledge-only.
+  const learn = await claimNextRun(execution.unreadable ? { ...env, secrets: {} } : env, { principal, harnesses: [offeredHarness(harness)], capabilities: execution.capabilities ?? WORKER_CAPABILITIES, now: NOW + DAY + 2 });
   if (!learn.claimed) throw new Error(`no learning run: ${learn.reason}`);
   expect(learn.run.task).toBe('extract-curate');
   const raw = (name: string, input: Record<string, unknown>) => callAs(learn.run.runToken, name, input);

@@ -23,15 +23,15 @@ export type WorkerClaim = { worker: WorkerPrincipal; leaseExpiresAt: number; har
 type ClaimResult = {row:ClaimedRunRow;issued:Awaited<ReturnType<typeof mintWrite>>['issued'];input?:ClaimedInput} | null;
 
 /** Move one queued row to `running` through the claim capability. */
-export const claimQueuedRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, candidate: ClaimCandidate, claim: WorkerClaim): Promise<ClaimResult> =>
+export const claimQueuedRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'|'secrets'>, candidate: ClaimCandidate, claim: WorkerClaim): Promise<ClaimResult> =>
   claimWorkerRun(env, { kind: 'queued', candidate }, claim);
 
 /** Create one pulled run, already `running`, through the claim capability. */
-export const claimPulledRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, pull: PulledCandidate, claim: Omit<WorkerClaim,'input'>): Promise<ClaimResult> =>
+export const claimPulledRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'|'secrets'>, pull: PulledCandidate, claim: Omit<WorkerClaim,'input'>): Promise<ClaimResult> =>
   claimWorkerRun(env, { kind: 'pulled', pull }, { ...claim, input: pull.input });
 
 /** Admission, named stage assertions, credentials, heads and lease companions settle in one atomic batch. */
-async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, form: ClaimForm, claim: WorkerClaim): Promise<ClaimResult> {
+async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'|'secrets'>, form: ClaimForm, claim: WorkerClaim): Promise<ClaimResult> {
   const {db}=env;
   if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
   const candidate: ClaimCandidate = form.kind === 'queued' ? form.candidate

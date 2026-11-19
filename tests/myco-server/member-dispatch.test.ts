@@ -1,4 +1,5 @@
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
+import { UNSIGNED_APP } from './helpers/github-app.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 /**
@@ -49,11 +50,12 @@ function slowed(d1: any): any {
 
 function harness(settings: Record<string, unknown> = {}, opts: { slow?: boolean } = {}) {
   const fixture = sqliteEnv({ workerLogin: true });
+  Object.assign(fixture.env, UNSIGNED_APP);
   const env = { ...fixture.env, ...OWNER_ENV, ...(opts.slow === true ? { MYCO_DB: slowed(fixture.env.MYCO_DB) } : {}) };
   seedMemberRoleAccount(fixture.sqlite);
   turnOnGatedCapabilities(fixture.sqlite);
-  for(const project of ['proj_1','proj_2']) fixture.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-    VALUES(?,'fixture','https://example.test/repo','main',1,'test')`,[project]);
+  for(const project of ['proj_1','proj_2']) fixture.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+    VALUES(?,'fixture','https://example.test/repo','main',1296269,41,1,'test')`,[project]);
 
   for (const [leaf, value] of Object.entries(settings)) {
     fixture.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'test')`).run(leaf, JSON.stringify(value));

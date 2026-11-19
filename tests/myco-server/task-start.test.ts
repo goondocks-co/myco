@@ -1,5 +1,4 @@
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { connectRepository, githubFixture, UNSIGNED_APP, withApp } from './helpers/github-app.js';
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 /**
  * `GET /api/tasks/start`: what starting a task by hand in one Project would do
@@ -36,8 +35,8 @@ async function rig(settings: Record<string, unknown> = {}) {
   for (const [leaf, value] of Object.entries(settings)) {
     f.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, 1, 'test')`).run(leaf, JSON.stringify(value));
   }
-  await projectRepositories(f.db,deploymentSecretStore(f.db,f.serverEnv.wrappingKey)).save('proj_1',{url:'https://example.test/repo',branch:'main',revision:null},'test',Date.now());
-  const env = { ...f.env, ...OWNER_ENV };
+  await connectRepository(withApp(f.serverEnv, githubFixture()), 'proj_1', { actor: 'test' });
+  const env = { ...f.env, ...OWNER_ENV, ...UNSIGNED_APP };
   const send = async (method: string, path: string, sub?: string, body?: unknown) => {
     const response = await worker.fetch(new Request(`https://s${path}`, {
       method,

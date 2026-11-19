@@ -10,10 +10,6 @@ release_provenance:
     - origin/main
   reconcile_interval_minutes: 15
   production_debug_include_unknown: true
-  github:
-    repo: goondocks-co/myco
-    token_env: GITHUB_TOKEN
-    max_lookups_per_run: 20
   package_map:
     - path_glob: packages/myco/
       tag_pattern: refs/tags/myco/v*

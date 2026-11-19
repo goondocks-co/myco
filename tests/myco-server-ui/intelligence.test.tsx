@@ -648,7 +648,7 @@ it('words a run whose agent could not use the chosen model from the reason it re
 });
 
 const REPOSITORY_FAILURE_CASES = [
-  ['fetch_failed', 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.'],
+  ['fetch_failed', 'Myco couldn’t read the repository. Check the branch, that the server’s GitHub App installation still includes this repository, and that its read permissions are approved in GitHub.'],
   ['submodules', 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.'],
   ['lfs', 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.'],
   ['too_large', 'The repository is too large for Myco to prepare. Choose a smaller source.'],
@@ -1029,6 +1029,7 @@ it('words every dispatch refusal and makes settled refusals final', () => {
   const expected: Record<DispatchRefusal, string> = {
     not_landed: 'This task is not available yet.',
     repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
+    repository_unavailable: 'Code tasks wait until the server operator sets up repository access with myco server github-app.',
     harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
     unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
     unknown_project: 'This project is no longer available here. Choose another project.',

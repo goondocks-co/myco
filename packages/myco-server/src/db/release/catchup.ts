@@ -95,7 +95,7 @@ const seedCheck = write<[keys: string, now: number]>({ name: 'releaseCatchup.see
    SELECT c.project_id,CASE WHEN c.check_requested_at>c.check_started_at THEN 0 ELSE COALESCE(c.check_started_at,0) END,c.revision,
      CASE WHEN c.check_run_id IS NOT NULL AND c.check_lease_until>?2 THEN c.check_run_id END,CASE WHEN c.check_run_id IS NOT NULL AND c.check_lease_until>?2 THEN c.check_lease_until END
    FROM (${jsonKeys(['project_id'])}) k JOIN project_release_provenance c ON c.project_id=k.project_id
-   WHERE c.enabled=1 AND c.github_repo IS NOT NULL ON CONFLICT(project_id) DO NOTHING` });
+   WHERE c.enabled=1 ON CONFLICT(project_id) DO NOTHING` });
 
 const STATES_FIRST = refusalCode('release_states_not_canonical');
 const statesCanonical = assertion<[]>({ name: 'releaseCatchup.statesCanonical', refusal: STATES_FIRST,

@@ -1,6 +1,6 @@
 import { commit, type Bound } from '../db/index.js';
 import { listSecrets, readSecret, type SecretRow } from '../db/settings/secret-rows.js';
-import { putSecret, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
+import { putSecret, removeRetiredSecrets, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
 import { emit } from '../telemetry.js';
@@ -91,8 +91,6 @@ export class SecretOpenError extends Error {
 }
 
 export interface SecretStore {
-  /** Seal a value without writing; compose the returned mutation into the owner's admitted commit. */
-  preparePut(name: string, value: string, actor: string, nowMs: number): Promise<Bound<never, 'write'>>;
   /** Seal `value` under the deployment's wrapping key and record who stored it, as `normalizeSecretValue` shapes it; throws `SecretValueError` for a value it refuses. */
   put(name: string, value: string, actor: string, nowMs: number): Promise<void>;
   /**
@@ -109,6 +107,8 @@ export interface SecretStore {
   list(): Promise<Array<SecretDescription & { name: string }>>;
   /** `deleted` is false when no row existed under `name`. */
   delete(name: string, actor: string, nowMs: number): Promise<{ deleted: boolean }>;
+  /** Removes rows under names no slot admits any more, in one bounded statement; answers the names removed. */
+  removeRetired(actor: string, nowMs: number): Promise<string[]>;
 }
 
 /**
@@ -204,14 +204,13 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     return { name: r.name, configured: true, readable, maskedValue, updatedAt: r.updated_at, updatedBy: r.updated_by };
   };
 
-  const preparePut: SecretStore['preparePut'] = async (name, raw, actor, nowMs) => {
+  const preparePut = async (name: string, raw: string, actor: string, nowMs: number): Promise<Bound<never, 'write'>> => {
     const checked = normalizeSecretValue(raw);
     if (!checked.ok) throw new SecretValueError(checked.reason);
     const { ciphertext, iv } = await seal(await key(), name, checked.value);
     return putSecret.bind(name, ciphertext, iv, await wrappingKey.version(), nowMs, actor);
   };
   return {
-    preparePut,
     async put(name, raw, actor, nowMs) {
       await commit(db, await preparePut(name, raw, actor, nowMs));
     },
@@ -240,6 +239,13 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
       // lives nowhere but this event.
       recordSecretDeletion(name, actor, nowMs, deleted);
       return { deleted };
+    },
+
+    async removeRetired(actor, nowMs) {
+      const [result] = await commit(db, removeRetiredSecrets.bind());
+      const names = result.results.map(row => row.name);
+      for (const name of names) recordSecretDeletion(name, actor, nowMs, true);
+      return names;
     },
   };
 }
@@ -271,11 +277,3 @@ export function harnessCredentialAvailable(db: RelationalStore, wrappingKey: Sec
   return harnessCredentialAvailability(db, wrappingKey)(harness);
 }
 
-/** Credential usability is a boolean; plaintext remains inside the secret owner. */
-export async function secretReadable(db: RelationalStore, wrappingKey: SecretWrappingKey, name: string): Promise<boolean> {
-  try { return await deploymentSecretStore(db,wrappingKey).get(name) !== null; }
-  catch (error) {
-    if (error instanceof SecretOpenError || error instanceof SecretValueError) return false;
-    throw error;
-  }
-}

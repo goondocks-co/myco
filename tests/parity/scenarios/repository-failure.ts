@@ -31,7 +31,7 @@ export const repositoryFailure: ParityScenario = {
     });
     expect(configured.status).toBe(200);
     expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
-    await repository(target, { url: 'https://github.com/example/source.git', branch: 'main' });
+    await repository(target, 'example/source');
 
     const cases = [
       { suffix: 'reason', reason: { code: 'fetch_failed', summary: 'fatal: unable to access https://reader:synthetic-secret-999@github.com/example/source.git' } },

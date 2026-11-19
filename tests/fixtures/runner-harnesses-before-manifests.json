@@ -77,11 +77,6 @@
       "name": "single-turn",
       "label": "Single-turn endpoint",
       "alsoUsedFor": "direct single-turn model calls to the configured base URL"
-    },
-    {
-      "name": "github",
-      "label": "GitHub",
-      "alsoUsedFor": null
     }
   ],
   "SECRET_SLOT_NAMES": [
@@ -90,8 +85,7 @@
     "cursor",
     "openai",
     "openrouter",
-    "single-turn",
-    "github"
+    "single-turn"
   ],
   "PROFILE_HARNESSES": {
     "claude-code": {

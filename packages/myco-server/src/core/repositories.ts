@@ -1,27 +1,27 @@
 import { repositoryConnection, saveRepository, removeRepository, type ConnectionRow } from '../db/storage/repository-connection.js';
-import { repositoryUrl, repositoryBranch, RepositoryInputError, type RepositoryAccess } from '@goondocks/myco-shared/repository';
-import type { RelationalStore } from './adapters.js';
-import type { SecretDescription, SecretStore } from './secrets.js';
+import { repositoryBranch, RepositoryInputError } from '@goondocks/myco-shared/repository';
+import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
+import { githubAppConfigured, githubAppProjects } from './github-app.js';
 
-/** Configured source identity without any credential metadata. */
-export async function repositoryIdentity(db: RelationalStore, scope: ReadScope, usableSecret?: (slot: string) => Promise<boolean>): Promise<{ url: string; branch: string } | null> {
+/** Configured source identity, read from storage alone. */
+export async function repositoryIdentity(db: RelationalStore, scope: ReadScope): Promise<{ url: string; branch: string } | null> {
   const row = await repositoryConnection(db, scope.projectId);
-  if (row === null || row.secretSlot !== null && usableSecret !== undefined && !await usableSecret(row.secretSlot)) return null;
-  return {url:row.url,branch:row.branch};
+  return row === null ? null : { url: row.url, branch: row.branch };
 }
 
-const MAX_CREDENTIAL_CHARS = 4096;
-
-export interface RepositoryConnection extends Omit<ConnectionRow, 'secretSlot'> {
-  credential: SecretDescription | null;
+/** Whether a source-reading task can be handed out: a connection is stored and the App key is configured. GitHub is not asked. */
+export async function repositoryReady(env: Pick<ServerEnv, 'db' | 'secrets'>, scope: ReadScope): Promise<'ready' | 'missing' | 'unconfigured'> {
+  if (await repositoryConnection(env.db, scope.projectId) === null) return 'missing';
+  return githubAppConfigured(env) ? 'ready' : 'unconfigured';
 }
+
+export type RepositoryConnection = ConnectionRow;
 
 export interface RepositoryConnectionWrite {
-  url: string;
+  installationId: number;
+  repositoryId: number;
   branch: string;
-  /** Omitted preserves access only for the same repository; null explicitly selects public access. */
-  credential?: { username: string; token: string } | null;
   revision: string | null;
 }
 
@@ -29,50 +29,29 @@ export class RepositoryConflictError extends Error {
   constructor() { super('The repository connection changed. Refresh before saving again.'); }
 }
 
-/** The single writer of project repository connections and their sealed credential references. */
-export function projectRepositories(db: RelationalStore, secrets: SecretStore) {
-  const row = (projectId: string) => repositoryConnection(db, projectId);
-  const describe = async (projectId: string): Promise<RepositoryConnection | null> => {
-    const current = await row(projectId);
-    if (current === null) return null;
-    const { secretSlot, ...metadata } = current;
-    return { ...metadata, credential: secretSlot === null ? null : await secrets.describe(secretSlot) };
-  };
+/** The single writer of Project repository connections. */
+export function projectRepositories(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbound'>) {
+  const describe = (projectId: string): Promise<RepositoryConnection | null> => repositoryConnection(env.db, projectId);
   return {
     describe,
+    /** Saves an admin's choice once GitHub confirms it through an approved installation; the canonical URL comes from GitHub. */
     async save(projectId: string, input: RepositoryConnectionWrite, actor: string, now: number): Promise<RepositoryConnection | null> {
-      const url = repositoryUrl(input.url);
+      if (!Number.isSafeInteger(input.installationId) || input.installationId <= 0 || !Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) {
+        throw new RepositoryInputError('Choose an installed repository: installationId and repositoryId are GitHub’s numeric ids.');
+      }
       const branch = repositoryBranch(input.branch);
-      const credential = input.credential;
-      if (credential != null && (typeof credential.username !== 'string' || !/^[A-Za-z0-9._@-]{1,192}$/.test(credential.username)
-        || typeof credential.token !== 'string' || !credential.token || credential.token.length > MAX_CREDENTIAL_CHARS)) {
-        throw new RepositoryInputError('Repository access needs a username and a token of at most 4096 characters.');
-      }
-      const previous = await row(projectId);
+      const previous = await describe(projectId);
       if ((previous?.revision ?? null) !== input.revision) throw new RepositoryConflictError();
-      const revision = crypto.randomUUID();
-      const preserve = credential === undefined && previous?.url === url;
-      const secretSlot = credential == null ? (preserve ? previous!.secretSlot : null) : `repository:${projectId}:${revision}`;
-      const username = credential == null ? (preserve ? previous!.username : null) : credential.username;
-      const sealed = credential == null ? null : await secrets.preparePut(secretSlot!, credential.token, actor, now);
-      if (!await saveRepository(db, projectId, previous, { revision, url, branch, username, secretSlot, updatedAt: now, updatedBy: actor }, sealed)) {
-        throw new RepositoryConflictError();
-      }
+      const repository = await githubAppProjects(env).verify(input.installationId, input.repositoryId);
+      const next: ConnectionRow = {
+        revision: crypto.randomUUID(), url: repository.url, branch, repositoryId: repository.id, installationId: input.installationId,
+        updatedAt: now, updatedBy: actor,
+      };
+      if (!await saveRepository(env.db, projectId, input.revision, next)) throw new RepositoryConflictError();
       return describe(projectId);
     },
-    async remove(projectId: string, revision: string, actor: string, now: number): Promise<void> {
-      const previous = await row(projectId);
-      if (previous === null || previous.revision !== revision) throw new RepositoryConflictError();
-      if (!await removeRepository(db, projectId, previous, actor, now)) throw new RepositoryConflictError();
-    },
-    /** Open access only for a held code task; callers must apply the run admission guard first. */
-    async access(projectId: string): Promise<RepositoryAccess | null> {
-      const current = await row(projectId);
-      if (current === null) return null;
-      if (current.secretSlot === null) return { url: current.url, branch: current.branch };
-      const token = await secrets.get(current.secretSlot);
-      if (token === null) throw new RepositoryInputError('Repository read token is missing. Enter it again in Project Settings → Repository.');
-      return { url: current.url, branch: current.branch, credential: { username: current.username!, token } };
+    async remove(projectId: string, revision: string): Promise<void> {
+      if (!await removeRepository(env.db, projectId, revision)) throw new RepositoryConflictError();
     },
   };
 }

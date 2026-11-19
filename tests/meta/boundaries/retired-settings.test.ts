@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS, executionProfileLeafDefault } from '@myco-server-worker/core/settings.js';
+import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, executionProfileLeafDefault } from '@myco-server-worker/core/settings.js';
 import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
 import { SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/myco-shared/secret-slots';
 
@@ -42,8 +42,7 @@ describe('settings retirement', () => {
     for (const leaf of V68_RETIRED_SETTINGS) expect(DEPLOYMENT_LEAVES).not.toContain(leaf);
   });
 
-  it('marks retired exactly the secret slots no server code and no harness run reads', () => {
-    const unread = SECRET_SLOT_NAMES.filter((slot) => !named(SERVER_TEXT, `'${slot}'`) && harnessesReading(slot).length === 0).sort();
-    expect([...RETIRED_SECRET_SLOTS].sort()).toEqual(unread);
+  it('offers no secret slot that no server code and no harness run reads', () => {
+    expect(SECRET_SLOT_NAMES.filter((slot) => !named(SERVER_TEXT, `'${slot}'`) && harnessesReading(slot).length === 0)).toEqual([]);
   });
 });

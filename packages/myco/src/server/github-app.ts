@@ -15,8 +15,10 @@ import { LOCAL_OWNER_NEXT } from '@goondocks/myco-shared/setup-guidance';
  *
  * The app is public. GitHub lets only members of the owning account authorize
  * a private app, and authorization is the sign-in flow — a private app would
- * sign in its owner and nobody else. Repository installations grant read access;
- * Deployment membership independently controls who may sign in.
+ * sign in its owner and nobody else. Because it is public, anyone can install
+ * it: the Deployment reads a repository only through an installation whose
+ * account an admin approved. Deployment membership independently controls who
+ * may sign in.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { GITHUB_APP_PERMISSIONS, type GitHubAppIdentity } from '@goondocks/myco-shared/github-app';

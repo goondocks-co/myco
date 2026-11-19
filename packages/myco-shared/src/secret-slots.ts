@@ -31,7 +31,6 @@ export const SECRET_SLOTS: readonly SecretSlot[] = [
   { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
   { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
   { name: 'single-turn', label: 'Single-turn endpoint', alsoUsedFor: 'direct single-turn model calls to the configured base URL' },
-  { name: 'github', label: 'GitHub', alsoUsedFor: null },
 ];
 
 export const SECRET_SLOT_NAMES: readonly SecretSlotName[] = SECRET_SLOTS.map((slot) => slot.name);

@@ -26,10 +26,16 @@ const removeDue = write<[project: string]>({ name: 'releaseDue.remove', sql: 'DE
 export const releaseDueAfterSave = (input: { projectId: string; revision: string; tracked: boolean }): Bound =>
   input.tracked ? upsertDue.bind(input.projectId, input.revision) : removeDue.bind(input.projectId);
 
+const reopenDue = write<[project: string]>({ name: 'releaseDue.reopen', sql:
+  'UPDATE release_check_due SET next_at=0,lease_id=NULL,lease_until=NULL WHERE project_id=?1' });
+
+/** A repository connection change ends any check in flight and asks for a new one, committed with the change. */
+export const releaseDueAfterConnectionChange = (projectId: string): Bound => reopenDue.bind(projectId);
+
 const claimDue = write<[project: string, lease: string, revision: string, until: number, now: number, countsFrom: number], { lease_id: string }>({ name: 'releaseDue.claim', sql:
   'UPDATE release_check_due SET lease_id=?2,lease_until=?4,next_at=?6 WHERE project_id=?1 AND revision=?3 AND (lease_id IS NULL OR lease_until<=?5) RETURNING lease_id' });
 const startCheck = write<[project: string, lease: string, revision: string, now: number], { generation: number }>({ name: 'releaseDue.start', sql:
-  `UPDATE project_release_provenance SET check_started_at=?4 WHERE project_id=?1 AND revision=?3 AND enabled=1 AND github_repo IS NOT NULL AND ${LEASE_HELD} RETURNING work_generation AS generation` });
+  `UPDATE project_release_provenance SET check_started_at=?4 WHERE project_id=?1 AND revision=?3 AND enabled=1 AND ${LEASE_HELD} RETURNING work_generation AS generation` });
 
 /** Takes the Project for one check. Answers the work generation it opened at, or null when another check holds it or the settings moved. */
 export async function claimReleaseCheck(db: RelationalStore, claim: ReleaseClaim, lease: { until: number; now: number; intervalMs: number }): Promise<number | null> {

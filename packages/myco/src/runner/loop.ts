@@ -1,5 +1,5 @@
 import { abortable } from '@myco/utils/abortable.js';
-import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
+import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS, type LateResult } from './request.js';
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
@@ -47,7 +47,7 @@ import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
-import { prepareWorkerCheckout, RepositoryAlreadyCurrent } from './repository.js';
+import { prepareWorkerCheckout, RepositoryAlreadyCurrent, revokeRepositoryToken } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
 import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
@@ -81,6 +81,8 @@ export interface WorkerOptions {
   reportHome?: string;
   /** Git executable override for a controlled checkout environment. */
   repositoryGitPath?: string;
+  /** GitHub API transport for ending a checkout's token, for a controlled environment; defaults to `fetch`. */
+  githubApi?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   /** Private persistent mirrors shared by this runner's attempts. */
   repositoryCacheRoot?: string;
   serverUrl: string;
@@ -195,13 +197,30 @@ class SerializedBody {
   constructor(readonly text: string) {}
 }
 
-async function post(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
+async function post(options: Requester, path: string, body: unknown, late?: LateResult<WorkerAnswer>): Promise<WorkerAnswer> {
   try {
-    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal);
+    return await runnerRequest(signal => postWithin({ ...options, signal }, path, body), options.signal, late);
   } catch (error) {
     return { kind: 'unreachable', detail: error instanceof Error ? error.message : String(error) };
   }
 }
+
+/**
+ * A repository preparation request. When the run stops waiting while the answer is still arriving, the read may finish
+ * within `REPOSITORY_ANSWER_LINGER_MS` for cleanup alone: a whole answer carrying a checkout token has that token
+ * revoked, on the revoke's own deadline. An answer that does not finish in that time, or cannot be shown whole, is not
+ * read as one; a token it held stays usable for at most the hour GitHub gives it, for reads of one repository.
+ */
+function postRepository(options: Requester & Pick<WorkerOptions, 'githubApi' | 'log'>, body: unknown): Promise<WorkerAnswer> {
+  return post(options, '/worker/repository', body, {
+    lingerMs: REPOSITORY_ANSWER_LINGER_MS,
+    discarded: async (late) => {
+      if (late.kind === 'answered') await revokeRepositoryToken(late.body, { fetchImpl: options.githubApi, log: options.log });
+    },
+  });
+}
+/** How long a repository answer still arriving may finish, for its cleanup, once the run stopped waiting for it. */
+const REPOSITORY_ANSWER_LINGER_MS = 10_000;
 
 async function postWithin(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
   await options.renew?.(false, options.signal);
@@ -577,16 +596,16 @@ async function drive(
       preparing = true;
       try {
         checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
-          const answer = await post({ ...options, signal }, '/worker/repository', { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
+          const answer = await postRepository({ ...options, signal }, { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
           if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
           if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
           if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
           return answer.body;
-        }, { task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories') });
+        }, { task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories'), log: options.log, fetchImpl: options.githubApi });
       } catch (error) {
         if (!KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) || lost || stopping.signal.aborted) throw error;
         const unavailable = error instanceof RepositoryCheckoutError ? {code:error.failure.code} : {code:'checkout_failed'};
-        const recorded = await post(options,'/worker/repository',{projectId:run.projectId,runId:run.id,attemptId:run.attemptId,unavailable});
+        const recorded = await postRepository(options,{projectId:run.projectId,runId:run.id,attemptId:run.attemptId,unavailable});
         if (recorded.kind !== 'answered') throw new Error('Could not record unavailable repository preparation.');
         if (recorded.body.held !== true) { lost=true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
         repositoryUnavailable = true;

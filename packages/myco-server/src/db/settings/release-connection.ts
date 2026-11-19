@@ -1,48 +1,45 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { assertion, refusalCode, refused, write, type BindValue, type Bound } from '../index.js';
-import { commitSecretChange } from './secret-writes.js';
+import { assertion, commit, refusalCode, refused, write, type Bound } from '../index.js';
 const RELEASE_REVISION_CONFLICT = refusalCode('release_revision_conflict');
-const unchanged = assertion<[string, string | null]>({
+const unchanged = assertion<[project: string, revision: string | null]>({
   name: 'settings.releaseUnchanged',
   refusal: RELEASE_REVISION_CONFLICT, when: `(SELECT revision FROM project_release_provenance WHERE project_id=?1) IS ?2`,
 });
-const insert = write<BindValue[], { revision: string }>({
+
+/** The settings one save writes, in column order. */
+export type ReleaseSettingsValues = [revision: string, enabled: number, productionRefs: string, integrationRefs: string,
+  packageMap: string, includeUnknown: number, maxLookups: number, updatedAt: number, updatedBy: string];
+
+const insert = write<[...ReleaseSettingsValues, requestedAt: number, project: string], { revision: string }>({
   name: 'settings.insertReleaseSettings',
-  sql: `INSERT INTO project_release_provenance (revision, enabled, github_repo, production_refs, integration_refs,
-            package_map, include_unknown, max_lookups, secret_slot, updated_at, updated_by, check_requested_at, project_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING revision`,
+  sql: `INSERT INTO project_release_provenance (revision, enabled, production_refs, integration_refs,
+            package_map, include_unknown, max_lookups, updated_at, updated_by, check_requested_at, project_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) RETURNING revision`,
 });
-const update = write<BindValue[], { revision: string }>({
+const update = write<[...ReleaseSettingsValues, requestedAt: number, project: string, previous: string], { revision: string }>({
   name: 'settings.updateReleaseSettings',
-  sql: `UPDATE project_release_provenance SET revision = ?, enabled = ?, github_repo = ?, production_refs = ?, integration_refs = ?,
-            package_map = ?, include_unknown = ?, max_lookups = ?, secret_slot = ?, updated_at = ?, updated_by = ?,
-            work_generation = work_generation + 1, check_requested_at = ?
-            WHERE project_id = ? AND revision = ? RETURNING revision`,
+  sql: `UPDATE project_release_provenance SET revision = ?1, enabled = ?2, production_refs = ?3, integration_refs = ?4,
+            package_map = ?5, include_unknown = ?6, max_lookups = ?7, updated_at = ?8, updated_by = ?9,
+            work_generation = work_generation + 1, check_requested_at = ?10
+            WHERE project_id = ?11 AND revision = ?12 RETURNING revision`,
 });
 export interface ReleaseSettingsSave {
   project: string;
-  previous: { revision: string; secretSlot: string | null } | null;
-  values: BindValue[];
-  slot: string | null;
-  sealed: Bound | null;
+  previous: string | null;
+  values: ReleaseSettingsValues;
   now: number;
-  actor: string;
   /** The Project's due row after this save, committed with it. */
   due: Bound;
 }
 
 export async function saveReleaseSettings(db: RelationalStore, save: ReleaseSettingsSave): Promise<boolean> {
-  const { project, previous, values, slot, sealed, now, actor, due } = save;
+  const { project, previous, values, now, due } = save;
   try {
-    await commitSecretChange(
+    await commit(
       db,
-      unchanged.bind(project, previous?.revision ?? null),
-      [
-        ...(sealed === null ? [] : [sealed]),
-        previous === null ? insert.bind(...values, now, project) : update.bind(...values, now, project, previous.revision),
-        due,
-      ],
-      previous?.secretSlot != null && previous.secretSlot !== slot ? { name: previous.secretSlot, actor, now } : null,
+      unchanged.bind(project, previous),
+      previous === null ? insert.bind(...values, now, project) : update.bind(...values, now, project, previous),
+      due,
     );
     return true;
   } catch (error) {

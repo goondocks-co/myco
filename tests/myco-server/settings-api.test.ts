@@ -1,4 +1,6 @@
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { inviteExpiry } from '@myco-server-worker/core/jobs-run.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
@@ -12,7 +14,7 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { changingAtStatement } from './helpers/store-faults.js';
+import { changingAtStatement, failingStatement } from './helpers/store-faults.js';
 import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS, TASK_WORDS, type RetainedTask } from '@myco-server-worker/core/task-catalogue.js';
@@ -360,19 +362,41 @@ describe('provider credentials through the surface', () => {
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
     const secrets = (JSON.parse(text) as { secrets: Array<Record<string, unknown>> }).secrets;
-    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'single-turn', 'github']);
+    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'single-turn']);
     expect(secrets.find((s) => s.name === 'openai')).toMatchObject({ configured: false, maskedValue: null });
   });
 
-  it('deletes a credential, and reports a slot it does not define as absent', async () => {
+  it('deletes a credential, and reports a slot it does not define, the retired GitHub slot among them, as absent', async () => {
     const e = env();
-    await worker.fetch(await put(e.db, '/api/secrets/github', { value: 'ghp_aaaaaaaaaaaaaaaaaaaa' }), e.all);
-    expect(await json(await worker.fetch(new Request('https://s/api/secrets/github', {
-      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost(e.db, '/api/secrets/github')).headers) },
+    await worker.fetch(await put(e.db, '/api/secrets/openai', { value: 'sk-aaaaaaaaaaaaaaaaaaaa' }), e.all);
+    expect(await json(await worker.fetch(new Request('https://s/api/secrets/openai', {
+      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost(e.db, '/api/secrets/openai')).headers) },
     }), e.all))).toEqual({ deleted: true });
 
-    const unknown = await worker.fetch(await put(e.db, '/api/secrets/not_a_provider', { value: 'x' }), e.all);
-    expect(unknown.status).toBe(404);
+    for (const name of ['not_a_provider', 'github']) expect((await worker.fetch(await put(e.db, `/api/secrets/${name}`, { value: 'x' }), e.all)).status).toBe(404);
+  });
+
+  it('removes rows a previous release wrote under retired names on the housekeeping schedule, keeps every provider key, never makes the read depend on it, and still removes them when the job\u2019s other work fails', async () => {
+    const e = env();
+    await worker.fetch(await put(e.db, '/api/secrets/openai', { value: 'sk-aaaaaaaaaaaaaaaaaaaa' }), e.all);
+    for (const name of ['github', 'repository:proj_1:rev', 'release-provenance:proj_1:rev']) {
+      e.sqlite.run("INSERT INTO deployment_secrets(name,ciphertext,iv,key_version,updated_at,updated_by) SELECT ?,ciphertext,iv,key_version,updated_at,updated_by FROM deployment_secrets WHERE name='openai'", [name]);
+    }
+    const names = () => e.sqlite.query('SELECT name FROM deployment_secrets ORDER BY name').all();
+    const read = async () => (await worker.fetch(await asOwner(e.db, '/api/secrets'), e.all)).status;
+    const housekeeping = () => inviteExpiry(serverEnvFromBindings(e.all as never), Date.now());
+    expect(await read()).toBe(200);
+    expect(names()).toHaveLength(4);
+    e.sqlite.run("CREATE TRIGGER refuse_secret_delete BEFORE DELETE ON deployment_secrets BEGIN SELECT RAISE(ABORT, 'housekeeping refused'); END");
+    await expect(housekeeping()).rejects.toThrow('housekeeping refused');
+    expect(await read()).toBe(200);
+    e.sqlite.run('DROP TRIGGER refuse_secret_delete');
+    await housekeeping();
+    expect(names()).toEqual([{ name: 'openai' }]);
+    e.sqlite.run("INSERT INTO deployment_secrets(name,ciphertext,iv,key_version,updated_at,updated_by) SELECT 'github',ciphertext,iv,key_version,updated_at,updated_by FROM deployment_secrets WHERE name='openai'");
+    const reclaim = failingStatement(e.db, 'identity.reclaimEnrollment');
+    await expect(inviteExpiry({ ...serverEnvFromBindings(e.all as never), db: reclaim.store }, Date.now())).rejects.toThrow();
+    expect(names()).toEqual([{ name: 'openai' }]);
   });
 
   it('refuses an empty value rather than storing one nothing can authenticate with', async () => {

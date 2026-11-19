@@ -13,7 +13,7 @@ import { NOW, DAY, capture, EMPTY_CARD, cardRun, learningRun, plainTurns } from 
 it('learning receives and pins the optional repository before validating new knowledge against code', async () => {
   await withDocumentStores(async db => {
     const run = await learningRun(db, plainTurns(1), 'low', undefined, null, true);
-    expect(run.claimed.repository).toEqual({url:'https://example.test/team/repo',branch:'main',historyDepth:1});
+    expect(run.claimed.repository).toEqual({url:'https://github.com/example/source',branch:'main',historyDepth:1});
     expect(run.claimed.instruction).toContain('Check claims against this code before saving');
     expect(run.claimed.instructions).toContain('validate new guidance against the code now');
     expect(run.claimed.instructions).toContain('Obsolete an existing spore the code contradicts');
@@ -24,7 +24,7 @@ it('learning receives and pins the optional repository before validating new kno
     expect(cursor.instruction).toContain('No usable repository checkout is available');
     expect(await prepareWorkerRepository(run.env,{worker:run.principal,clock:()=>NOW+DAY+2},{
       projectId:'project',runId:run.claimed.id,attemptId:run.claimed.attemptId,
-      body:{url:'https://example.test/team/repo',branch:'main',commit:'b'.repeat(40)},
+      body:{url:'https://github.com/example/source',branch:'main',commit:'b'.repeat(40)},
     })).toMatchObject({held:true,pin:{commit:'b'.repeat(40)}});
     await run.readAll();
     const saved=await run.save('Shared counters: increment atomically.') as {id:string};

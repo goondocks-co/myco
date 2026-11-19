@@ -247,8 +247,8 @@ it('includes missing code repositories for admins and redacts them for members',
   expect((await read()).repositoriesNeeded).toEqual([{ projectId: 'proj_1' }]);
   expect((await read('mem_machine_1')).repositoriesNeeded).toEqual([]);
   sql("UPDATE projects SET archived_at=1 WHERE project_id='proj_2'");
-  sql(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-    VALUES ('proj_1','r1','https://example.test/code.git','main',1,'fixture')`);
+  sql(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+    VALUES ('proj_1','r1','https://example.test/code.git','main',1296269,41,1,'fixture')`);
   expect((await read()).repositoriesNeeded).toEqual([]);
 });
 

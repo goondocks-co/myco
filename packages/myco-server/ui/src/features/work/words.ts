@@ -380,7 +380,7 @@ export const SESSION_ENDING_FIELD_LABELS: Readonly<Record<string, string>> = {
 };
 
 const REPOSITORY_FAILURE_WORDS = {
-  fetch_failed: 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.',
+  fetch_failed: 'Myco couldn’t read the repository. Check the branch, that the server’s GitHub App installation still includes this repository, and that its read permissions are approved in GitHub.',
   submodules: 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.',
   lfs: 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.',
   too_large: 'The repository is too large for Myco to prepare. Choose a smaller source.',

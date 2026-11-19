@@ -14,7 +14,7 @@ export const REPOSITORY_TASKS: readonly string[] = [...REQUIRED_REPOSITORY_TASKS
 export const allTasksRequireRepository = (tasks: readonly string[]): boolean =>
   tasks.length > 0 && tasks.every(task => REQUIRED_REPOSITORY_TASKS.includes(task));
 
-/** HTTPS source with credentials supplied independently of the remote URL. */
+/** The HTTPS address a runner fetches from, with credentials supplied independently of it. A Deployment only ever sends the address GitHub names. */
 export function repositoryUrl(raw: string): string {
   let url: URL;
   try { url = new URL(raw); } catch { throw new RepositoryInputError('Repository URL is invalid.'); }
@@ -36,10 +36,19 @@ export function repositoryBranch(raw: string): string {
 
 export interface RepositoryIdentity { url: string; branch: string }
 export interface RepositoryPin extends RepositoryIdentity { commit: string }
+/**
+ * A leased run's source: its identity, the address GitHub names the repository by now, and an installation token for
+ * that one repository alone. The runner revokes the token once its checkout no longer needs it.
+ */
 export interface RepositoryAccess extends RepositoryIdentity {
-  credential?: { username: string; token: string };
+  remote: string;
+  credential: { username: string; token: string };
+  /** When the token lapses, in epoch milliseconds. */
+  expiresAt: number;
   commit?: string;
 }
+/** A token handed to a runner must outlast the preparation allowance by a clock margin. */
+export const REPOSITORY_TOKEN_MIN_LIFETIME_MS = REPOSITORY_PREPARATION_TIMEOUT_MS + 60_000;
 
 /** Worker support for preparing source before starting a harness. */
 export const REPOSITORY_CHECKOUT_CAPABILITY = 'repository-checkout';

@@ -7,16 +7,19 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
+import type { OutboundFetch } from '@myco-server-worker/core/adapters.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { withLeasedRun } from '@myco-server-worker/core/worker-run.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { APP_SECRETS, connectRepository, githubFixture, SOURCE as GITHUB_SOURCE, SOURCE_URL, withApp } from './helpers/github-app.js';
 
-const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
-const CREDENTIAL = { username: 'reader', token: 'synthetic-source-read-credential' };
+const SOURCE = { url: SOURCE_URL, branch: 'main' };
 const CAPABILITIES = [REPOSITORY_CHECKOUT_CAPABILITY];
 const OFFERED = [offeredHarness('claude-code')];
 const cleanups: Array<() => void> = [];
@@ -32,16 +35,23 @@ async function rig() {
   await ensureMember(e.db, 'mem_other', now, 'admin', 'other worker');
   const owner = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
   const other = await issueMemberToken(e.db, { memberId: 'mem_other', machineId: 'm2' }, now);
-  const repositories = projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey));
-  await repositories.save('proj_1', { ...SOURCE, revision: null, credential: CREDENTIAL }, 'mem_worker', now);
+  const github = githubFixture();
+  let outbound: OutboundFetch = github.fetchImpl;
+  const env = () => ({ ...withApp(e.serverEnv, github), outbound: (input: RequestInfo | URL, init?: RequestInit) => outbound(input, init) });
+  const repositories = projectRepositories(env());
+  await connectRepository(env(), 'proj_1', { actor: 'mem_worker', now });
   e.sqlite.run(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
   e.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
     VALUES ('proj_1','run_seed','myco-agent','vault-seed','queued',?,'worker',?,'{}')`, [now, JSON.stringify({ serverUrl: 'https://s', actor: 'mem_worker' })]);
   const claim = (tokenId = owner.tokenId, at = now, capabilities: readonly string[] = CAPABILITIES) =>
     claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, 'm1'), now: at, harnesses: OFFERED, capabilities });
   const prepare = (body: Record<string, unknown> = {}, tokenId = owner.tokenId, at = now) =>
-    prepareWorkerRepository(e.serverEnv, { worker: legacyWorker(tokenId, 'm1'), clock: () => at }, { projectId: 'proj_1', runId: 'run_seed', body });
-  return { e, now, owner, other, repositories, claim, prepare };
+    prepareWorkerRepository(env(), { worker: legacyWorker(tokenId, 'm1'), clock: () => at }, { projectId: 'proj_1', runId: 'run_seed', body });
+  const server = createServer({ now: Date.now, sourceOf: cloudflareSourceOf, fetchImpl: github.fetchImpl });
+  const serve = (request: Request) => server.handleRequest(request, { ...serverEnvFromBindings({ ...e.env, ...APP_SECRETS } as never), outbound: github.fetchImpl });
+  /** Runs every GitHub request through `after`, once it has its answer. */
+  const intercept = (after: (path: string) => void) => { outbound = async (input, init) => { const answer = await github.fetchImpl(input, init); after(new URL(new Request(input).url).pathname); return answer; }; };
+  return { e, env, now, owner, other, repositories, claim, prepare, github, serve, intercept };
 }
 
 describe('a worker preparing its claimed source', () => {
@@ -53,7 +63,7 @@ describe('a worker preparing its claimed source', () => {
       const prepare = withLeasedRun(async () => {
         if (fault === 'expired') now += WORKER_LEASE_MS + 1;
         else r.e.sqlite.run(`UPDATE agent_runs SET dispatched_by=? WHERE id='run_seed'`, [r.other.tokenId]);
-        return { credential: CREDENTIAL };
+        return { credential: { username: 'x-access-token', token: 'never-delivered' } };
       });
       expect(await prepare(r.e.serverEnv, { worker: legacyWorker(r.owner.tokenId, 'm1'), clock: () => now }, { projectId: 'proj_1', runId: 'run_seed' }))
         .toEqual({ held: false, reason: 'the lease is no longer held' });
@@ -66,16 +76,20 @@ describe('a worker preparing its claimed source', () => {
     const result = await r.claim();
     if (!result.claimed) throw new Error('not claimed');
     expect(result.run.repository).toEqual({ ...SOURCE, historyDepth: MAX_REPOSITORY_HISTORY_DEPTH });
-    expect(JSON.stringify(result)).not.toContain(CREDENTIAL.token);
+    expect(JSON.stringify(result)).not.toContain('ghs_');
     expect(result.run.instruction).toContain(SOURCE.url);
     const context = r.e.sqlite.query(`SELECT run_context AS context FROM agent_runs WHERE id='run_seed'`).get() as { context: string };
     expect(JSON.parse(context.context).checkout).toEqual(result.run.repository);
-    expect(context.context).not.toContain(CREDENTIAL.token);
-    const response = await worker.fetch(new Request('https://s/worker/repository', {
+    const response = await r.serve(new Request('https://s/worker/repository', {
       method: 'POST', headers: memberHeaders(r.owner.token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_seed' }),
-    }), r.e.env);
+    }));
     expect(response.headers.get('cache-control')).toBe('no-store');
-    expect(await jsonBody(response)).toEqual({ persisted: true, held: true, repository: { ...SOURCE, credential: CREDENTIAL } });
+    const issued = r.github.state.issued.at(-1)!;
+    // The runner's token reads contents of the one connected repository and nothing else.
+    expect(issued.body).toEqual({ permissions: { contents: 'read', metadata: 'read' }, repository_ids: [GITHUB_SOURCE.id] });
+    expect(await jsonBody(response)).toEqual({ persisted: true, held: true, repository: { ...SOURCE, remote: SOURCE_URL, expiresAt: expect.any(Number),
+      credential: { username: 'x-access-token', token: issued.token } } });
+    expect(JSON.stringify(r.e.sqlite.query('SELECT * FROM agent_runs').all())).not.toContain(issued.token);
     const denied = await worker.fetch(new Request('https://s/worker/repository', {
       method: 'POST', headers: memberHeaders(result.run.runToken), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_seed' }),
     }), r.e.env);
@@ -95,8 +109,34 @@ describe('a worker preparing its claimed source', () => {
     expect(await r.prepare({ ...SOURCE, commit: 'b'.repeat(40) })).toEqual({ persisted: true, held: true, pin: first });
     expect(await r.prepare()).toMatchObject({ repository: { ...SOURCE, commit: first.commit } });
     const connection = await r.repositories.describe('proj_1');
-    await r.repositories.save('proj_1', { ...SOURCE, url: 'https://example.test/team/other', revision: connection!.revision, credential: null }, 'mem_worker', r.now + 1);
+    await r.repositories.save('proj_1', { installationId: connection!.installationId, repositoryId: connection!.repositoryId, branch: 'release', revision: connection!.revision }, 'mem_worker', r.now + 1);
     expect(await r.prepare()).toEqual({ persisted: true, held: true, error: 'Repository connection changed. Start a new run.' });
+  });
+
+  it('revokes a token it cannot hand out: the lease lapsed or the connection changed while GitHub answered', async () => {
+    const r = await rig();
+    await r.claim();
+    let at = r.now;
+    r.intercept(path => { if (path.endsWith('/access_tokens')) at += WORKER_LEASE_MS + 1; });
+    expect(await prepareWorkerRepository(r.env(), { worker: legacyWorker(r.owner.tokenId, 'm1'), clock: () => at }, { projectId: 'proj_1', runId: 'run_seed', body: {} }))
+      .toEqual({ held: false, reason: 'the lease is no longer held' });
+    const fresh = await rig();
+    await fresh.claim();
+    fresh.intercept(path => { if (path.endsWith('/access_tokens')) fresh.e.sqlite.run(`UPDATE project_repositories SET revision='moved' WHERE project_id='proj_1'`); });
+    expect(await fresh.prepare()).toEqual({ persisted: true, held: true, error: 'Repository connection changed. Retry preparation.' });
+    for (const github of [r.github, fresh.github]) expect(github.state.revoked).toContain(github.state.issued.at(-1)!.token);
+  });
+
+  it('revokes a token GitHub issued when the answer fails before it is complete: a later read fails, or the expiry is unreadable', async () => {
+    const failing = await rig();
+    await failing.claim();
+    failing.intercept(path => { if (path.endsWith('/access_tokens')) failing.e.sqlite.run('DROP TABLE project_repositories'); });
+    await expect(failing.prepare()).rejects.toThrow(/project_repositories/);
+    const unreadable = await rig();
+    await unreadable.claim();
+    unreadable.github.state.expiresAt = 'not a time';
+    expect(await unreadable.prepare()).toMatchObject({ held: true, error: expect.stringContaining('GitHub did not answer as expected') });
+    for (const github of [failing.github, unreadable.github]) expect(github.state.revoked).toContain(github.state.issued.at(-1)!.token);
   });
 
   it('refuses other workers, other projects and expired leases before opening credentials', async () => {
