@@ -1,3 +1,6 @@
+import { discoverCurationPreview } from '@myco-server-worker/core/curation-preview.js';
+import { curationFixture } from './helpers/curation.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CURATION_CLUSTER_CAP, CURATION_NEW_NOTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { undoSporeCuration,sporeCurationUndo } from '@myco-server-worker/core/spore-curation-undo.js';
 import { consolidateSpores,resolveSpore } from '@myco-server-worker/db/spores/lifecycle.js';
@@ -15,6 +18,7 @@ async function setup(db: RelationalStore): Promise<void> {
   await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_a','A',1)").run();
   await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('curator','Curator','built-in',1,1)").run();
   await db.prepare("INSERT INTO members(id,label,role,created_at) VALUES('admin','Ada','admin',1)").run();
+  await settingsWriter(db).setCapability(project, 'spore_curation', true, 'admin', 1);
   await db.prepare("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES(?1,'User','built-in',1,1)").bind(USER_AGENT_ID).run();
   for (const key of ['0','1']) {
     await db.prepare("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('proj_a',?1,'curator','curate-spores','running',1)").bind(key).run();
@@ -40,6 +44,12 @@ const grow = async(db: RelationalStore, from: number, to: number) => {await each
   await eachUnit(db,from,to,"INSERT INTO spore_curation_unit_members(project_id,unit_id,spore_id,role,after_json) SELECT 'proj_a','noise-'||i,'noise-'||i,'output','{}' FROM n");
 };
 const cases: CostCase[] = [
+  {name:'a full preview page budget',run:async db=>{
+    const f = await curationFixture();
+    try { expect(await discoverCurationPreview({ ...f.env, db }, { projectId: project, now: f.now,
+      continuation: { version: 1, projectId: project, position: { after_at: 10, after_id: '', priority_at: 0, history_at: 0, history_id: '' } },
+    })).toMatchObject({ outcome: 'vectors_pending', continuation: { projectId: project } }); } finally { f.sqlite.close(); }
+  }},
   {name:'undo of the largest answer',extra:1,run:async(db,{scale})=>expect(await undoSporeCuration(db,{projectId:project,unitId:'largest-'+scale,actor:'admin',now:3})).toMatchObject({ok:true})},
   {name:'incoming dependency preview',run:async(db,{scale})=>expect(await sporeCurationUndo(db,{projectId:project},'incoming-'+scale)).toMatchObject({blocker:{code:'incoming_resolution'}})},
   {name:'one-source operation undo',run:async(db,{scale})=>expect(await undoSporeCuration(db,{projectId:project,unitId:'resolve-'+scale,actor:'admin',now:4})).toMatchObject({ok:true})},

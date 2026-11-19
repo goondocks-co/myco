@@ -23,7 +23,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { MOVING_MS } from '../../packages/myco-server/ui/src/lib/live';
-import { dailyLimitWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { dailyLimitWords, runLineWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -811,6 +811,12 @@ describe('stored run audit evidence', () => {
     fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain('Worker exceeded the execution budget.');
     expect(open.querySelector('[data-run-report]')!.textContent).toContain('Updated the map.');
+  });
+  it('labels a preview from its stored flag in the run row and page', async () => {
+    const answer = audit(); answer.run.dryRun = true; answer.run.result = 'unchanged';
+    expect(runLineWords('map', answer.run, { spores: 0, sessions: 0, readsRecorded: false })).toBe('Preview: nothing was changed');
+    const open = await openAudit(answer);
+    expect(open.querySelector('[data-run-headline]')!.textContent).toBe('Preview: nothing was changed');
   });
   for (const task of ['canopy-map', 'title-summary']) {
     it(`${task} with no write says checked and changed nothing`, async () => {

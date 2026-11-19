@@ -53,6 +53,7 @@ export type RunOutcome = typeof RUN_OUTCOMES[number];
 export interface EndedRunFilters { task?: string; runnerId?: string; harness?: string; errorCode?: string; outcome?: RunOutcome }
 export interface EndedRunCursor { completedAt: number; projectId: string; runId: string }
 export interface EndedRunRow {
+  dry_run: number;
   project_id: string; project_name: string | null; id: string; task: string; result: RunResult; error_code: string;
   harness: string; model: string | null; runner_id: string; runner_name: string | null; queued_at: number | null; started_at: number | null; completed_at: number;
 }
@@ -76,7 +77,7 @@ const endedSql = (all: boolean, lead: Lead, keyed: boolean) => `WITH c AS (SELEC
     ORDER BY f.at DESC,f.project_id DESC,f.run_id DESC LIMIT ?9)
   SELECT x.*,CASE WHEN x.matched=1 THEN (SELECT p.name FROM projects p WHERE p.project_id=x.project_id) END AS project_name,
     CASE WHEN x.matched=1 THEN (SELECT n.name FROM runners n WHERE n.id=x.runner_id) END AS runner_name
-  FROM (SELECT c.project_id,c.run_id AS id,c.task,c.result,c.error_code,c.harness,c.runner_id,c.at AS completed_at,r.model,r.queued_at,r.started_at,
+  FROM (SELECT c.project_id,c.run_id AS id,c.task,c.result,c.error_code,c.harness,c.runner_id,c.at AS completed_at,r.dry_run,r.model,r.queued_at,r.started_at,
       CASE WHEN r.id IS NOT NULL AND ${visible(all, 'c.project_id')} AND ${RESIDUAL} AND ${runNotRetiring('c.project_id', 'c.run_id')} THEN 1 ELSE 0 END AS matched
     FROM c LEFT JOIN agent_runs r ON r.project_id=c.project_id AND r.id=c.run_id) x
   ORDER BY x.completed_at DESC,x.project_id DESC,x.id DESC`;

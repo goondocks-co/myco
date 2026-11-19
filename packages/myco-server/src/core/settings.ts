@@ -11,7 +11,7 @@ import type { RelationalStore } from './adapters.js';
 import { folderRule, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { TASK_EXECUTION_PROFILES, admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
+import { TASK_EXECUTION_PROFILES, admissionForTask, isCurationPreview, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
 import { TASK_SCHEDULE } from './jobs.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { EMBEDDING_CATALOGUE, isEmbeddingProvider, type DeploymentTarget } from '@goondocks/myco-shared/settings-contract';
@@ -768,7 +768,8 @@ export async function writeSwitchedEmbedding(
 }
 
 /** Current task capabilities and live-project admission for the retained run protocol. */
-export async function taskWorkEnabled(db: RelationalStore, projectId: string, task: string | null): Promise<boolean> {
+export async function taskWorkEnabled(db: RelationalStore, projectId: string, task: string | null, options: { dryRun?: boolean } = {}): Promise<boolean> {
+  if (isCurationPreview(task, options)) return projectWorkEnabled(db, projectId);
   const gate = task === null ? null : admissionForTask(task);
   return gate?.kind === 'capability'
     ? settingsWriter(db).capabilityEnabled(projectId, gate.capability)

@@ -38,6 +38,7 @@ export interface RunWorker {
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */
 export interface RunFields {
+  dryRun?: boolean;
   fleetWait?: { reason: import('@goondocks/myco-shared/runner-fleet').QueueReason; observedAt: number };
   requested: ExecutionProfile | null;
   result: 'produced' | 'unchanged' | 'failed' | 'failed_with_output' | null;

@@ -168,7 +168,8 @@ export function isCarriedMap(kind: OutcomeKind | null, run: Pick<RunFields, 'sta
 }
 
 /** What one run came to, in a few words, for a line in a list. */
-export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode' | 'targetSessionId'> & { result?: RunFields['result'] }, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
+export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode' | 'targetSessionId'> & { result?: RunFields['result']; dryRun?: boolean }, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
+  if (run.dryRun) return 'Preview: nothing was changed';
   if (isCarriedMap(kind, run)) return 'The code map was already current';
   if (run.status === 'skipped') return `Held off: ${skipWords(run.skipReasonCode ?? run.skipReason)}`;
   if (run.status === 'queued') return 'Waiting to start';

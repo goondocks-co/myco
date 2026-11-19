@@ -204,9 +204,19 @@ describe('Myco’s work now', () => {
       why: 'agent_line was 171 characters; the limit is 158.', at: NOW, runId: 'cur_fail', retryAt: NOW + 2 * HOUR,
     }]);
     expect(answer.waiting.filter((item) => item.what === 'Curation')).toEqual([]);
+
     h.sqlite.run("UPDATE spore_curation_work SET due_at = NULL, decision = 'keep', reason = 'kept apart', decided_at = ? WHERE cluster_key = 'k1'", [NOW]);
     h.run('proj_1', 'cur_ok', 'curate-spores', 'completed', NOW - MINUTE);
     expect((await h.read({ all: true })).needsYou).toEqual([]);
+  });
+
+  it('keeps scheduled curation failures unresolved across completed and failed previews', async () => {
+    const h = harness();
+    h.run('proj_1', 'scheduled_failed', 'curate-spores', 'failed', NOW - HOUR);
+    h.run('proj_1', 'preview_ok', 'curate-spores', 'completed', NOW - MINUTE);
+    h.run('proj_1', 'preview_failed', 'curate-spores', 'failed', NOW);
+    h.sqlite.run("UPDATE agent_runs SET dry_run=1 WHERE id IN ('preview_ok','preview_failed')");
+    expect((await h.read()).needsYou.map(item => item.runId)).toEqual(['scheduled_failed']);
   });
 
   it('moves its runs mark when a run starts or ends, and answers a member over the route', async () => {
