@@ -1,24 +1,26 @@
 /**
  * The session list across Projects, what a Project holds, and the repositories machines could not capture: paging that
  * never skips or repeats a row, counters that agree with the rows they summarise, `building` instead of a false zero,
- * and reads that do not grow with the sessions a Deployment holds.
+ * and the live state every list reads. What these reads cost as history grows is `polled-reads-cost.test.ts`.
  */
 import { describe, expect, it } from 'bun:test';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import { decodeUncapturedCursor, getUncaptured, listUncaptured } from '@myco-server-worker/db/sessions/uncaptured-roots.js';
 import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
+import { sessionQuietBefore } from '@myco-server-worker/core/session-quiet.js';
 import {
+  sessions_getSession as getSession,
   sessions_listSessionSummaries as listSessionSummaries,
   sessions_listSessionSummariesAcross as listAcross,
 } from '@myco-server-worker/read/catalog/sessions.js';
-import { measuredStore } from './helpers/read-budget.js';
+import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/constants.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
+const MINUTE = 60_000;
 
 function rig() {
   const e = sqliteEnv();
@@ -86,6 +88,22 @@ describe('the session list across Projects', () => {
     expect(ids((await listAcross(r.db, { all: true }, {}, NOW)).rows)).toEqual(['live', 'imported']);
     expect(ids((await listAcross(r.db, { all: false, projectIds: ['proj_1', 'proj_2'] }, {}, NOW)).rows).sort()).toEqual(['archived', 'imported', 'live']);
     expect(ids((await listSessionSummaries(r.db, { projectId: 'proj_1' }, {}, NOW)).rows)).toEqual(['live', 'imported']);
+  });
+
+  it('reads a session as live while heard from within the idle close or resumed after its end, as ended once quiet past it with no end sent, alike in every list', async () => {
+    const r = rig();
+    const quietBefore = await sessionQuietBefore(r.serverEnv, NOW);
+    r.session('proj_1', 'talking', { at: NOW - MINUTE, endedAt: null });
+    r.session('proj_1', 'ended', { at: NOW - MINUTE });
+    r.session('proj_1', 'quiet', { at: quietBefore, endedAt: null });
+    r.session('proj_1', 'resumed', { at: NOW - 2 * MINUTE, endedAt: NOW - DAY });
+    r.sqlite.run(`UPDATE sessions SET started_at = ?, working_since = ? WHERE session_id = 'resumed'`, [NOW - 2 * DAY, NOW - 4 * 60 * MINUTE]);
+    const read = async (state?: 'open' | 'ended') => (await listSessionSummaries(r.db, { projectId: 'proj_1' }, { state, quietBefore }, NOW)).rows.map(row => [row.sessionId, row.live, row.liveUntil]);
+    const open = [['talking', true, 2 * NOW - MINUTE - quietBefore], ['resumed', true, 2 * NOW - 2 * MINUTE - quietBefore]], ended = [['ended', false, null], ['quiet', false, null]];
+    expect({ all: await read(), open: await read('open'), ended: await read('ended') }).toEqual({ all: [open[0], ended[0], ended[1], open[1]], open, ended });
+    const across = async (filters: { state?: 'open'; since?: number }) => (await listAcross(r.db, { all: true }, { ...filters, window: 'activity', quietBefore }, NOW)).rows.map(row => row.sessionId);
+    expect({ liveNow: await across({ state: 'open' }), today: await across({ since: NOW - 60 * MINUTE }) }).toEqual({ liveNow: ['talking', 'resumed'], today: ['talking', 'ended', 'resumed'] });
+    expect(await getSession(r.db, { projectId: 'proj_1' }, 'quiet', NOW, quietBefore)).toMatchObject({ endedAt: null, live: false, liveUntil: null });
   });
 });
 
@@ -159,46 +177,22 @@ describe('what a Project holds', () => {
     await catchUp(r.db);
     expect(await projectStatistics(r.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', sessions: 121, openSessions: 4, prompts: 130, toolCalls: 260, attachments: 1 });
   });
-
-  it('reads the same rows for one Project however many sessions it holds, on the store the Deployment runs on', async () => {
-    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
-    try {
-      const d1 = await mf.getD1Database('DB');
-      const seed = async (project: string, size: number, at: number) => {
-        await d1.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
-        const ids = JSON.stringify(Array.from({ length: size }, (_, n) => n));
-        await d1.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,ended_at)
-          SELECT ?1,'s'||value,'m1','tok_1',?2,?2,'claude-code',?2 FROM json_each(?3)`).bind(project, at, ids).run();
-        await d1.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,user_prompts,prompts,tool_calls,updated_at) SELECT ?1,'s'||value,'live',1,1,1,1,1 FROM json_each(?2)`).bind(project, ids).run();
-      };
-      const measured = measuredStore(d1);
-      const cost = async (read: () => Promise<unknown>) => { measured.reset(); await read(); return measured.reads(); };
-      const stats = (project: string) => cost(() => projectStatistics(measured.db, project, NOW));
-      const page = (project: string) => cost(() => listSessionSummaries(measured.db, { projectId: project }, { limit: 50 }, NOW));
-      const across = () => cost(() => listAcross(measured.db, { all: true }, { limit: 50 }, NOW));
-      await seed('proj_small', 100, NOW);
-      await seed('proj_zzz', 1, NOW);
-      const acrossBefore = await across();
-      await seed('proj_large', 3000, NOW - DAY);
-      expect(await stats('proj_large')).toBe(await stats('proj_small'));
-      expect(await page('proj_large')).toBe(await page('proj_small'));
-      expect(await across()).toBe(acrossBefore);
-    } finally { await mf.dispose(); }
-  }, 120_000);
 });
 
 describe('the repositories machines could not capture', () => {
-  it('pages ties by machine and root without skipping or repeating one, for an administrator and for a member', async () => {
+  it('pages ties by machine and root without skipping or repeating one, for an administrator and for a member, from machines in contact alone', async () => {
     const r = rig();
     for (const id of ['mem_a', 'mem_b']) r.sqlite.run(`INSERT INTO members (id, role, created_at) VALUES (?, 'member', 1)`, [id]);
+    for (const machineId of ['m1', 'm2']) await issueMemberToken(r.db, { memberId: 'mem_a', machineId }, NOW);
+    await issueMemberToken(r.db, { memberId: 'mem_a', machineId: 'm_former' }, NOW - MEMBER_TOKEN_TTL_MS);
     const root = (machine: string, key: string, member: string, seen: number) => r.sqlite.run(`INSERT INTO uncaptured_roots
       (machine_id, root_key, member_id, label, remote, reason, misses, held, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'repo', NULL, 'no_remote', 1, 'held', 1, ?)`, [machine, key, member, seen]);
-    root('m2', 'k1', 'mem_a', 100); root('m1', 'k2', 'mem_a', 100); root('m1', 'k1', 'mem_a', 100); root('m1', 'k3', 'mem_b', 50);
+    root('m2', 'k1', 'mem_a', 100); root('m1', 'k2', 'mem_a', 100); root('m1', 'k1', 'mem_a', 100); root('m1', 'k3', 'mem_b', 50); root('m_former', 'k4', 'mem_a', 200);
     const walk = async (scope: Parameters<typeof listUncaptured>[1]) => {
       const seen: string[] = [];
       let cursor: string | undefined;
       do {
-        const page = await listUncaptured(r.db, scope, cursor === undefined ? {} : { cursor });
+        const page = await listUncaptured(r.db, scope, NOW, cursor === undefined ? {} : { cursor });
         seen.push(...page.rows.map(row => `${row.machineId}/${row.rootKey}`));
         cursor = page.cursor ?? undefined;
       } while (cursor !== undefined);
@@ -206,6 +200,8 @@ describe('the repositories machines could not capture', () => {
     };
     expect(await walk({ all: true })).toEqual(['m2/k1', 'm1/k2', 'm1/k1', 'm1/k3']);
     expect(await walk({ all: false, memberId: 'mem_a' })).toEqual(['m2/k1', 'm1/k2', 'm1/k1']);
+    await issueMemberToken(r.db, { memberId: 'mem_a', machineId: 'm_former' }, NOW);
+    expect(await walk({ all: false, memberId: 'mem_a' })).toEqual(['m_former/k4', 'm2/k1', 'm1/k2', 'm1/k1']);
     expect(await getUncaptured(r.db, 'm1', 'k3')).toMatchObject({ machineId: 'm1', rootKey: 'k3', lastSeenAt: 50 });
     expect(await getUncaptured(r.db, 'm1', 'absent')).toBeNull();
   });

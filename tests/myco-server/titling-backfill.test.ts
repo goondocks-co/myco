@@ -15,10 +15,10 @@ import {
   titleSession,
   titlingBackfillPolicy,
   titlingBackfillProgress,
-  titlingIdleCloseMinutes,
   TITLING_BACKFILL_ACTOR,
   TITLING_BACKFILL_BATCH,
 } from '@myco-server-worker/core/titling.js';
+import { titlingIdleCloseMinutes } from '@myco-server-worker/core/session-quiet.js';
 import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { deploymentTaskCeilingWindow } from '@myco-server-worker/db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';

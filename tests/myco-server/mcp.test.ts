@@ -364,8 +364,10 @@ describe('POST /mcp', () => {
   it('lists and reads sessions in the member-side shape, filtered in the query', async () => {
     const { call, sqlite, t1 } = await setup();
     const insert = sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at) VALUES ('proj_1', ?, 'machine_1', ?, ?, ?, 'claude-code', ?, ?, ?)`);
-    insert.run('s_open', t1.tokenId, 1_000, 1_000, 'main', 1_000, null);
+    insert.run('s_open', t1.tokenId, 1_000, Date.now(), 'main', 1_000, null);
     insert.run('s_done', t1.tokenId, 2_000, 2_000, 'feature', 2_000, 3_000);
+    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, tool_calls, updated_at)
+      VALUES ('proj_1', 's_open', 'live', 1, 1, 1, 0, 1), ('proj_1', 's_done', 'live', 1, 2, 2, 1, 1)`);
     sqlite.query(`UPDATE sessions SET title = 'Fixed the parser', summary = 'What happened.', titled_at = 4000 WHERE session_id = 's_done'`).run();
     const all = (await call(t1.token, 'myco_sessions')).result;
     expect(all.sessions.map((s: any) => [s.id, s.status, s.user, s.title, s.summary])).toEqual([['s_done', 'completed', 'machine_1', 'Fixed the parser', 'What happened.'], ['s_open', 'active', 'machine_1', null, '']]);
@@ -377,7 +379,7 @@ describe('POST /mcp', () => {
     const next = (await call(t1.token, 'myco_sessions', { limit: 1, cursor: first.cursor })).result;
     expect([first.sessions[0].id, next.sessions[0].id, next.cursor]).toEqual(['s_done', 's_open', null]);
     const got = (await call(t1.token, 'myco_sessions', { op: 'get', id: 's_done' })).result;
-    expect({ id: got.id, ended_at: got.ended_at, prompts: got.prompt_count, counts: got.counts }).toEqual({ id: 's_done', ended_at: 3_000, prompts: 0, counts: { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 } });
+    expect({ id: got.id, ended_at: got.ended_at, prompts: got.prompt_count, counts: got.counts }).toEqual({ id: 's_done', ended_at: 3_000, prompts: 2, counts: { prompts: 2, toolCalls: 1, responses: 0, plans: 0, attachments: 0 } });
     expect((await call(t1.token, 'myco_sessions', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Session not found' });
   });
 

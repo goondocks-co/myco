@@ -215,3 +215,22 @@ for (const failedChunk of [0, 1]) {
     } finally { release(); sqlite.close(); }
   });
 }
+
+test('a session found by meaning reads live or ended by the same quiet instant as browsing, not by its stored end', async () => {
+  const sqlite = seededSqlite();
+  try {
+    const db = sqliteD1(sqlite);
+    const matches = await seed(db);
+    await db.prepare("UPDATE sessions SET ended_at=NULL,last_received_at=1000 WHERE project_id='proj_1' AND session_id='session'").run();
+    await db.prepare(`UPDATE embedding_receipts SET revision=(SELECT v.revision FROM embedding_versions v WHERE v.project_id='proj_1' AND v.type='session' AND v.record_id='session')
+      WHERE project_id='proj_1' AND type='session' AND record_id='session'`).run();
+    const found = async (status: string | undefined, quietBefore: number | null) => (await semanticSearch(db, SCOPE, semantic(matches), ['session'],
+      { query: 'fixture prompt', ...(status === undefined ? {} : { status }) }, 10, quietBefore)).hits.map((hit) => [hit.id, hit.status]);
+    expect(await found(undefined, 500)).toEqual([['session', 'active']]);
+    expect(await found('active', 500)).toEqual([['session', 'active']]);
+    expect(await found('completed', 500)).toEqual([]);
+    expect(await found(undefined, 2_000)).toEqual([['session', 'completed']]);
+    expect(await found('active', 2_000)).toEqual([]);
+    expect(await found('completed', 2_000)).toEqual([['session', 'completed']]);
+  } finally { sqlite.close(); }
+});
