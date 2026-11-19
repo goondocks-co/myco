@@ -3,7 +3,6 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
 import type { ResumeCommand, SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
-import { LIVE_WITHIN_MS } from '../features/today/timeline';
 import { live } from '../lib/live';
 
 export interface SessionRow {
@@ -18,6 +17,8 @@ export interface SessionRow {
   branch: string | null;
   startedAt: number | null;
   endedAt: number | null;
+  /** When the session stops being live unless it sends more: the server's idle close past its last receipt. Null when it is not live. */
+  liveUntil: number | null;
   /** The member whose End session applied the standing end; null for an end the agent or an import applied. */
   endedBy: string | null;
   endedByLabel: string | null;
@@ -353,8 +354,10 @@ export const processedBodyUrl = (projectId: string, ref: ProcessedBodyRef) => `$
 export interface SessionListFilters {
   /** One Project, or null for every Project. */
   projectId: string | null;
-  /** `open` is a session with no end recorded; `ended` one with an end. */
+  /** `open` is a live session: heard from within the server's idle close, with no end recorded. `ended` is every other. */
   state?: 'open' | 'ended';
+  /** The sessions live now: open, read from the instant the server's idle close opens. */
+  live?: true;
   /** One agent, exactly as the session records it. */
   agent?: string;
   /** A member's label, as the server matches it. */
@@ -375,7 +378,10 @@ export function sessionListPath(filters: SessionListFilters): string {
   if (filters.agent !== undefined && filters.agent !== '') params.set('agent', filters.agent);
   if (filters.member !== undefined && filters.member !== '') params.set('member', filters.member);
   if (filters.branch !== undefined && filters.branch !== '') params.set('branch', filters.branch);
-  if (filters.active !== undefined) {
+  if (filters.live === true) {
+    params.set('state', 'open');
+    params.set('window', 'activity');
+  } else if (filters.active !== undefined) {
     params.set('window', 'activity');
     params.set('since', String(filters.active.since));
     if (filters.active.until !== undefined) params.set('until', String(filters.active.until));
@@ -393,23 +399,23 @@ export function useSessionList(filters: SessionListFilters) {
   });
 }
 
-/** When the first of the live group falls quiet past the live span, so the group is read again then, captured or not. */
+/** When the first of the live group falls quiet past the server's idle close, so the group is read again then, captured or not. */
 export function liveUntil(page: SessionListPage | undefined): number | null {
-  const ends = (page?.rows ?? []).map((row) => row.lastReceivedAt + LIVE_WITHIN_MS);
+  const ends = (page?.rows ?? []).flatMap((row) => (row.liveUntil === null ? [] : [row.liveUntil]));
   return ends.length === 0 ? null : Math.min(...ends);
 }
 
 /**
- * The sessions live now under the table's filters: open, and heard from within
- * the live span, read as one page, and read again whenever capture arrives
- * and when its first session falls quiet; the span is taken at each read.
+ * The sessions live now under the table's filters, as the server judges them,
+ * read as one page, and read again whenever capture arrives and when its first
+ * session falls quiet.
  */
-export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'active'>, enabled: boolean) {
-  const scope = sessionListPath({ ...filters, state: 'open' });
+export function useLiveSessions(filters: Omit<SessionListFilters, 'state' | 'active' | 'live'>, enabled: boolean) {
+  const path = sessionListPath({ ...filters, live: true });
   return useQuery({
-    queryKey: ['sessions', 'live', filters.projectId ?? 'all', scope],
+    queryKey: ['sessions', 'live', filters.projectId ?? 'all', path],
     enabled,
-    queryFn: ({ signal }) => fetchJson<SessionListPage>(sessionListPath({ ...filters, state: 'open', active: { since: Date.now() - LIVE_WITHIN_MS } }), signal),
+    queryFn: ({ signal }) => fetchJson<SessionListPage>(path, signal),
     ...live<SessionListPage>({ follows: ['sessions'], until: liveUntil }),
   });
 }

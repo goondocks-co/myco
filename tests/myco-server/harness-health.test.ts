@@ -5,7 +5,7 @@ import { NEXT_ATTENTION } from '@myco-server-worker/db/schema-vNEXT-attention.js
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
-import { SERVER_FEATURES } from '@myco-server-worker/constants.js';
+import { MEMBER_TOKEN_TTL_MS, SERVER_FEATURES } from '@myco-server-worker/constants.js';
 import {
   HARNESS_HEALTH_FEATURE,
   HARNESS_HELD_ELSEWHERE_FEATURE,
@@ -37,6 +37,8 @@ async function rig(onSql?: (sql: string) => void) {
   fixture.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at, label) VALUES ('machine_1', 'mem_machine_1', ?, 'Ada laptop'), ('machine_2', 'mem_machine_2', ?, 'Lin laptop')`, [NOW, NOW]);
   const token1 = (await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
   const token2 = (await issueMemberToken(fixture.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, Date.now())).token;
+  // Each machine refreshed its credential at NOW too, so it is in contact when attention is read then.
+  for (const n of [1, 2]) await issueMemberToken(fixture.db, { memberId: `mem_machine_${n}`, machineId: `machine_${n}` }, NOW);
   const post = async (token: string, body: unknown) => {
     const res = await worker.fetch(memberPost(token, body, PATH), fixture.env);
     return { status: res.status, body: await res.json() as Record<string, unknown>, features: res.headers.get('x-myco-features') };
@@ -57,10 +59,13 @@ function upgradeFixture() {
   sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('p','Project',1)");
   sqlite.run("INSERT INTO members(id,label,created_at) VALUES('member','Reader',1)");
   sqlite.run("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)");
-  const upgrade = sqlite.transaction(() => {
+  const steps = sqlite.transaction(() => {
     for (const step of SCHEMA_STEPS.filter(step => step.version >= NEXT_ATTENTION)) for (const sql of step.statements) sqlite.exec(sql);
   });
-  return { sqlite, db: sqliteD1(sqlite), upgrade };
+  const db = sqliteD1(sqlite);
+  // The machine is in contact with the upgraded Deployment: it holds a credential live at the instants the tests read.
+  const upgrade = async () => { steps(); await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, NOW); };
+  return { sqlite, db, upgrade };
 }
 
 describe('provisioned harness health', () => {
@@ -107,6 +112,16 @@ describe('provisioned harness health', () => {
     r.session('machine_1', 'later', 'codex', NOW - 2 * HOUR);
     expect(await r.attention()).toEqual([]);
     expect(await r.attention(NOW + 31 * 24 * HOUR)).toEqual([]);
+  });
+
+  it('needs nobody for a former machine whose credentials lapsed, until it is in contact again', async () => {
+    const r = await rig();
+    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Approve Codex in system settings.')] }, NOW);
+    expect((await r.attention()).map((item) => item.machineId)).toEqual(['machine_1']);
+    const lapsed = NOW + MEMBER_TOKEN_TTL_MS;
+    expect(await r.attention(lapsed)).toEqual([]);
+    await issueMemberToken(r.fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, lapsed);
+    expect(await r.attention(lapsed)).toEqual([expect.objectContaining({ kind: 'harness_needs_repair', machineId: 'machine_1', state: 'trust_required' })]);
   });
 
   for (const settled of [
@@ -346,7 +361,7 @@ it('an upgrade retains live trust evidence when an imported session owns the new
     sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
       VALUES('p','live-start','live','token','session.start','cli','{}','hash',200000,250000),
       ('p','imported-start','imported','token','session.start','import','{}','hash',300000,300000)`);
-    upgrade();
+    await upgrade();
     expect(await provisionedHarnessAttention(db, 300_000)).toEqual([]);
     expect(await latestHarnessCapture(db)).toEqual([{ machine_id: 'machine', agent: 'codex', at: 250_000 }]);
   } finally { sqlite.close(); }
@@ -361,7 +376,7 @@ it('an upgrade keeps a non-head start confirmed through receipt replacement whil
     sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
       VALUES('p','a-start','a','token','session.start','cli','{}','hash',?1,?1),('p','b-start','b','token','session.start','cli','{}','hash',?2,?2)`, [NOW + 1_000, NOW + 3_000]);
     expect(sqlite.query('SELECT session_id FROM machine_capture_heads').get()).toEqual({ session_id: 'a' });
-    upgrade();
+    await upgrade();
     expect(await provisionedHarnessAttention(db, NOW + 4_000)).toEqual([]);
     expect(sqlite.query('SELECT session_id,last_trust_start_at FROM sessions ORDER BY session_id').all())
       .toEqual([{ session_id: 'a', last_trust_start_at: null }, { session_id: 'b', last_trust_start_at: null }]);
@@ -381,7 +396,7 @@ it('an upgrade cannot let a future client clock confirm a later repair epoch', a
       VALUES('p','skewed','machine','token','codex',?1,?1,?1)`, [NOW + 10_000]);
     sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
       VALUES('p','skewed-start','skewed','token','session.start','cli','{}','hash',?1,?2)`, [NOW + 4 * MINUTE, NOW + 10_000]);
-    upgrade();
+    await upgrade();
     expect(await provisionedHarnessAttention(db, NOW + 30_000)).toEqual([]);
     await recordProvisionedHarnessReport(db, 'machine', { harnesses: [{ ...fact('codex', 'trust_required', 'Trust Codex.'), hookRepairAt: NOW + MINUTE }] }, NOW + MINUTE);
     expect(await provisionedHarnessAttention(db, NOW + 90_000)).toEqual([expect.objectContaining({ kind: 'harness_needs_repair', harness: 'codex' })]);

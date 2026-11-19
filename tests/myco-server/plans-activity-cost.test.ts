@@ -65,6 +65,9 @@ async function grow(db: RelationalStore, from: number, to: number): Promise<void
   // History sessions have parents of their own: other sessions' lineage grows, the target's does not.
   await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id,parent_session_id)
     SELECT 'proj_a','history-'||i,'machine','credential',?3-i,?3-i,'history-'||(i/10),'history-'||(i/7) FROM n`, NOW - 1_000);
+  // Every session holds a prompt, as every listed session does.
+  await db.prepare(`INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,prompts,user_prompts,updated_at)
+    SELECT project_id,session_id,'live',1,1,1,1 FROM sessions`).run();
   await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at,completed_at)
     SELECT 'proj_a','run-'||i,'agent','extract-curate','completed',?3-i,?3-i,?3-i FROM n`, NOW - 1_000);
   await eachUnit(db, from, to, `INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at)

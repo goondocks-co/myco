@@ -128,9 +128,9 @@ export type HarnessAttentionFact =
   | { kind: 'harness_needs_repair'; machineId: string; machineName: string | null; harness: string; state: Exclude<ProvisionedHarnessFact['state'], 'ready' | 'held_elsewhere'>; action: string; since: number }
   | { kind: 'harness_capture_silent'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
 
-/** Combine the member's current provisioned state with Deployment-owned capture and contact times. */
+/** Combine the current provisioned state of machines in contact with this Deployment with Deployment-owned capture and contact times. */
 export async function provisionedHarnessAttention(db: RelationalStore, now: number): Promise<HarnessAttentionFact[]> {
-  const [rawReports, rawSessions, machineSessions, contacts, claims] = await harnessAttentionRows(db, now - MACHINE_ACTIVE_MS);
+  const [rawReports, rawSessions, machineSessions, contacts, claims] = await harnessAttentionRows(db, now - MACHINE_ACTIVE_MS, now);
   const reports = factsByMachine(rawReports);
   const sessions = rawSessions.filter((row): row is typeof row & { at: number } => row.at !== null);
   const machineNames = new Map(claims.map((row) => [row.machine_id, row.label]));

@@ -198,7 +198,7 @@ const SESSION_TITLE_BATCH = 20;
  * arriving (`SESSION_END_SETTLE_MS`).
  */
 export async function titleReadySessions(env: ServerEnv, now: number): Promise<number> {
-  const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
+  const idleBefore = await sessionQuietBefore(env, now);
   const requests = await takeTitleRequests(env.db, { now, idleBefore }, SESSION_TITLE_BATCH);
   if (requests.length === 0) return 0;
   if (env.origin === undefined && (await env.completionProvider?.() ?? null) === null) throw new Error('Deferred titling requires the Deployment origin to be configured.');
@@ -228,6 +228,14 @@ const IDLE_CLOSE_LEAF = 'agent.titling_idle_close_minutes';
 export async function titlingIdleCloseMinutes(env: ServerEnv): Promise<number> {
   const held = (await storedSettings(env.db, [IDLE_CLOSE_LEAF])).get(IDLE_CLOSE_LEAF);
   return held !== undefined && held.violation === null ? held.value as number : TITLING_IDLE_CLOSE_MINUTES_DEFAULT;
+}
+
+/**
+ * The instant a session with no end must have been heard from after to be live at `now`: one quiet since then has gone
+ * idle for `agent.titling_idle_close_minutes`, counts as ended for titling, and reads as live nowhere.
+ */
+export async function sessionQuietBefore(env: ServerEnv, now: number): Promise<number> {
+  return now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
 }
 
 /** The daily runs held back from older backlog so a fresh session is titled the day it goes quiet. */
@@ -369,7 +377,7 @@ export async function backfillTitles(env: ServerEnv, now: number, state: PowerSt
     freshCeiling = ceilingOf(policy.runsPerDay);
     backlogCeiling = ceilingOf(backlogShare(policy.runsPerDay)!);
   }
-  const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
+  const idleBefore = await sessionQuietBefore(env, now);
   const candidates = await takeTitleCandidates(env.db, titleWindow(now, idleBefore, policy.enabled), page);
   const share = backlogShare(policy.runsPerDay);
   const sharedRows = [...candidates.freshRefreshes, ...candidates.backlogClaims];
@@ -463,7 +471,7 @@ export async function titlingBackfillProgress(env: ServerEnv, now: number): Prom
 
 /** Direct calls retain the capture cohorts and freshness windows; runner rationing applies only to runner work. */
 async function backfillDirectTitles(env: ServerEnv, now: number, policy: TitlingBackfillPolicy): Promise<number> {
-  const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
+  const idleBefore = await sessionQuietBefore(env, now);
   const candidates = await takeTitleCandidates(env.db, titleWindow(now, idleBefore, policy.enabled), TITLING_BACKFILL_BATCH);
   let dispatched = 0;
   for (const target of [...candidates.freshClaims, ...candidates.freshRefreshes, ...candidates.backlogClaims].slice(0, TITLING_BACKFILL_BATCH)) {

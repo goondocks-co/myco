@@ -9,16 +9,21 @@ import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.j
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import { decodeUncapturedCursor, getUncaptured, listUncaptured } from '@myco-server-worker/db/sessions/uncaptured-roots.js';
 import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
+import { sessionQuietBefore } from '@myco-server-worker/core/titling.js';
 import {
+  sessions_getSession as getSession,
   sessions_listSessionSummaries as listSessionSummaries,
   sessions_listSessionSummariesAcross as listAcross,
 } from '@myco-server-worker/read/catalog/sessions.js';
+import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/constants.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
+const MINUTE = 60_000;
 
 function rig() {
   const e = sqliteEnv();
@@ -35,7 +40,9 @@ function rig() {
     e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content, content_hash, status, created_at, updated_at, token_id, received_at) VALUES (?, ?, ?, 'ep', 'm1', '- [ ] a', 'h', 'active', 1, 1, 't', 1)`, [project, key, session]);
   const tombstone = (project: string, session: string) =>
     e.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'mem_1')`, [project, session, NOW]);
-  return { ...e, session, document, attachment, plan, tombstone };
+  /** A session whose document holds a prompt: one the session list shows. */
+  const held = (project: string, id: string, over: Parameters<typeof session>[2] = {}) => { session(project, id, over); document(project, id, 1, 0); };
+  return { ...e, session, held, document, attachment, plan, tombstone };
 }
 
 async function catchUp(db: Parameters<typeof catchUpProjections>[0]): Promise<void> {
@@ -45,8 +52,8 @@ async function catchUp(db: Parameters<typeof catchUpProjections>[0]): Promise<vo
 describe('the session list across Projects', () => {
   it('orders by the instant, the Project and the id, and pages one row at a time without skipping or repeating a tie', async () => {
     const r = rig();
-    for (const project of ['proj_1', 'proj_2']) for (const id of ['a', 'b']) r.session(project, id);
-    r.session('proj_1', 'older', { at: NOW - 10 });
+    for (const project of ['proj_1', 'proj_2']) for (const id of ['a', 'b']) r.held(project, id);
+    r.held('proj_1', 'older', { at: NOW - 10 });
     const seen: string[] = [];
     let cursor: string | undefined;
     do {
@@ -59,10 +66,10 @@ describe('the session list across Projects', () => {
 
   it('never skips or repeats a row when sessions arrive between two pages', async () => {
     const r = rig();
-    for (const id of ['a', 'b', 'c']) r.session('proj_1', id, { at: NOW - 100 });
+    for (const id of ['a', 'b', 'c']) r.held('proj_1', id, { at: NOW - 100 });
     const first = await listAcross(r.db, { all: true }, { limit: 2 }, NOW);
-    r.session('proj_2', 'newer', { at: NOW });
-    r.session('proj_2', 'same-instant', { at: NOW - 100 });
+    r.held('proj_2', 'newer', { at: NOW });
+    r.held('proj_2', 'same-instant', { at: NOW - 100 });
     const rest = await listAcross(r.db, { all: true }, { limit: 50, cursor: first.cursor! }, NOW);
     expect(first.rows.map(row => row.sessionId)).toEqual(['c', 'b']);
     expect(rest.rows.map(row => row.sessionId)).toEqual(['a']);
@@ -70,22 +77,37 @@ describe('the session list across Projects', () => {
 
   it('reads nothing for a cursor from before the list ordered by the Project first', async () => {
     const r = rig();
-    r.session('proj_1', 'a');
+    r.held('proj_1', 'a');
     expect(await listAcross(r.db, { all: true }, { cursor: `p1:${NOW}:proj_1:a` }, NOW)).toEqual({ rows: [], cursor: null });
   });
 
   it('keeps what each view always showed: no deleted session, archived Projects out of the all-Projects view, imported sessions in, a named Project in', async () => {
     const r = rig();
-    r.session('proj_1', 'live');
-    r.session('proj_1', 'deleted');
+    r.held('proj_1', 'live');
+    r.held('proj_1', 'deleted');
     r.tombstone('proj_1', 'deleted');
-    r.session('proj_1', 'imported', { occurredAt: NOW - DAY });
-    r.session('proj_2', 'archived');
+    r.held('proj_1', 'imported', { occurredAt: NOW - DAY });
+    r.held('proj_2', 'archived');
     await archiveProject(r.db, 'proj_2', 'mem_1', NOW);
     const ids = (rows: readonly { sessionId: string }[]) => rows.map(row => row.sessionId);
     expect(ids((await listAcross(r.db, { all: true }, {}, NOW)).rows)).toEqual(['live', 'imported']);
     expect(ids((await listAcross(r.db, { all: false, projectIds: ['proj_1', 'proj_2'] }, {}, NOW)).rows).sort()).toEqual(['archived', 'imported', 'live']);
     expect(ids((await listSessionSummaries(r.db, { projectId: 'proj_1' }, {}, NOW)).rows)).toEqual(['live', 'imported']);
+  });
+
+  it('reads a session as live while heard from within the idle close, as ended once quiet past it with no end sent, and lists none holding no prompt or tool call', async () => {
+    const r = rig();
+    const quietBefore = await sessionQuietBefore(r.serverEnv, NOW);
+    r.held('proj_1', 'talking', { at: NOW - MINUTE, endedAt: null });
+    r.held('proj_1', 'ended', { at: NOW - MINUTE });
+    r.held('proj_1', 'quiet', { at: quietBefore, endedAt: null });
+    for (const id of ['refused', 'empty']) r.session('proj_1', id, { at: NOW - MINUTE, endedAt: null });
+    r.document('proj_1', 'empty', 0, 0);
+    const read = async (state?: 'open' | 'ended') => (await listSessionSummaries(r.db, { projectId: 'proj_1' }, { state, quietBefore }, NOW)).rows.map(row => [row.sessionId, row.live, row.liveUntil]);
+    const talking = ['talking', true, NOW - MINUTE + (NOW - quietBefore)], ended = [['ended', false, null], ['quiet', false, null]];
+    expect({ all: await read(), open: await read('open'), ended: await read('ended') }).toEqual({ all: [talking, ...ended], open: [talking], ended });
+    expect((await listAcross(r.db, { all: true }, { state: 'open', window: 'activity', quietBefore }, NOW)).rows.map(row => row.sessionId)).toEqual(['talking']);
+    expect(await getSession(r.db, { projectId: 'proj_1' }, 'quiet', NOW, quietBefore)).toMatchObject({ endedAt: null, live: false, liveUntil: null });
   });
 });
 
@@ -188,17 +210,19 @@ describe('what a Project holds', () => {
 });
 
 describe('the repositories machines could not capture', () => {
-  it('pages ties by machine and root without skipping or repeating one, for an administrator and for a member', async () => {
+  it('pages ties by machine and root without skipping or repeating one, for an administrator and for a member, from machines in contact alone', async () => {
     const r = rig();
     for (const id of ['mem_a', 'mem_b']) r.sqlite.run(`INSERT INTO members (id, role, created_at) VALUES (?, 'member', 1)`, [id]);
+    for (const machineId of ['m1', 'm2']) await issueMemberToken(r.db, { memberId: 'mem_a', machineId }, NOW);
+    await issueMemberToken(r.db, { memberId: 'mem_a', machineId: 'm_former' }, NOW - MEMBER_TOKEN_TTL_MS);
     const root = (machine: string, key: string, member: string, seen: number) => r.sqlite.run(`INSERT INTO uncaptured_roots
       (machine_id, root_key, member_id, label, remote, reason, misses, held, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'repo', NULL, 'no_remote', 1, 'held', 1, ?)`, [machine, key, member, seen]);
-    root('m2', 'k1', 'mem_a', 100); root('m1', 'k2', 'mem_a', 100); root('m1', 'k1', 'mem_a', 100); root('m1', 'k3', 'mem_b', 50);
+    root('m2', 'k1', 'mem_a', 100); root('m1', 'k2', 'mem_a', 100); root('m1', 'k1', 'mem_a', 100); root('m1', 'k3', 'mem_b', 50); root('m_former', 'k4', 'mem_a', 200);
     const walk = async (scope: Parameters<typeof listUncaptured>[1]) => {
       const seen: string[] = [];
       let cursor: string | undefined;
       do {
-        const page = await listUncaptured(r.db, scope, cursor === undefined ? {} : { cursor });
+        const page = await listUncaptured(r.db, scope, NOW, cursor === undefined ? {} : { cursor });
         seen.push(...page.rows.map(row => `${row.machineId}/${row.rootKey}`));
         cursor = page.cursor ?? undefined;
       } while (cursor !== undefined);
@@ -206,6 +230,8 @@ describe('the repositories machines could not capture', () => {
     };
     expect(await walk({ all: true })).toEqual(['m2/k1', 'm1/k2', 'm1/k1', 'm1/k3']);
     expect(await walk({ all: false, memberId: 'mem_a' })).toEqual(['m2/k1', 'm1/k2', 'm1/k1']);
+    await issueMemberToken(r.db, { memberId: 'mem_a', machineId: 'm_former' }, NOW);
+    expect(await walk({ all: false, memberId: 'mem_a' })).toEqual(['m_former/k4', 'm2/k1', 'm1/k2', 'm1/k1']);
     expect(await getUncaptured(r.db, 'm1', 'k3')).toMatchObject({ machineId: 'm1', rootKey: 'k3', lastSeenAt: 50 });
     expect(await getUncaptured(r.db, 'm1', 'absent')).toBeNull();
   });

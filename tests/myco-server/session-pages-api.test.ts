@@ -22,9 +22,11 @@ async function harness() {
   const env = { ...fixture.env, ...OWNER_ENV };
   const sqlite = fixture.sqlite;
   sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, ?)`, [NOW]);
-  const session = (project: string, id: string, at: number, over: { agent?: string; branch?: string; endedAt?: number } = {}) =>
+  const session = (project: string, id: string, at: number, over: { agent?: string; branch?: string; endedAt?: number } = {}) => {
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, started_at, ended_at)
                 VALUES (?, ?, 'm1', 'tok_1', ?, ?, ?, ?, ?, ?)`, [project, id, at, at, over.agent ?? null, over.branch ?? null, at, over.endedAt ?? null]);
+    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, tool_calls, updated_at) VALUES (?, ?, 'live', 1, 1, ?)`, [project, id, at]);
+  };
   const run = (project: string, id: string, at: number | null, task: string | null, status = 'completed') =>
     sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES (?, ?, 'agent_1', ?, ?, ?)`, [project, id, task, status, at]);
   const spore = (project: string, id: string, at: number, status: string) =>
@@ -98,6 +100,7 @@ describe('the session pages', () => {
     sqlite.run(`INSERT INTO member_credentials (id, member_id, token_hash, machine_id, runtime_label, runtime_kind, issued_at, expires_at, lineage_root, lineage_started_at)
                 VALUES ('tok_1', 'mem_a', 'h', 'm1', 'laptop', 'host', 1, 99, 'tok_1', 1), ('tok_own', 'mem_machine_1', 'h2', 'm_own', 'studio-host', 'host', 1, ?, 'tok_own', 1)`, [NOW * 2]);
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at) VALUES ('proj_1', 's_own', 'm_own', 'tok_own', ?, ?, ?)`, [NOW - 1, NOW - 1, NOW - 1]);
+    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, tool_calls, updated_at) VALUES ('proj_1', 's_own', 'live', 1, 1, ?)`, [NOW - 1]);
     const list = (await get('/api/projects/proj_1/sessions')).body.rows as Record<string, unknown>[];
     const across = (await get('/api/sessions')).body.rows as Record<string, unknown>[];
     const detail = (await get('/api/projects/proj_1/sessions/s1')).body.session as Record<string, unknown>;
@@ -185,8 +188,7 @@ describe('a project\'s name', () => {
     sqlite.run(`UPDATE sessions SET launch_parent_session_id = 's_t' WHERE session_id = 'abcdef12-unnamed'`);
     session('proj_1', 's_p', NOW + 2, { agent: 'codex' });
     sqlite.run(`UPDATE sessions SET title = 'Titled by the model' WHERE session_id = 's_t'`);
-    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, first_prompt, updated_at)
-                VALUES ('proj_1','s_p','live',1,'Fix the flaky test',?)`, [NOW + 2]);
+    sqlite.run(`UPDATE session_documents SET first_prompt = 'Fix the flaky test' WHERE project_id = 'proj_1' AND session_id = 's_p'`);
     const feed = (await get('/api/projects/proj_1/activity')).body.items as { id: string; summary: string }[];
     const rows = (await get('/api/projects/proj_1/sessions')).body.rows as { sessionId: string; label: string }[];
     const labels = Object.fromEntries(rows.map((r) => [r.sessionId, r.label]));

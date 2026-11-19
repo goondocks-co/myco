@@ -135,6 +135,8 @@ test('late session pages seek past the newer prefix including timestamp ties', a
       )
       .bind(size)
       .run();
+    await measured.db.prepare(`${seq} INSERT OR IGNORE INTO session_documents(project_id,session_id,state,generation,prompts,user_prompts,updated_at)
+      SELECT 'sessions',printf('s-%06d',x),'live',1,1,1,1 FROM n`).bind(size).run();
     measured.reset();
     const result = await listSessions(measured.db, { projectId: 'sessions' }, { cursor: '20:s-000062', fidelity: 'any' });
     sample('sessions', size);

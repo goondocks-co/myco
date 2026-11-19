@@ -18,6 +18,7 @@ export const today: ParityScenario = {
     const read = (path: string) => owner({ ...target, ownerHeaders: () => joined.headers }, path);
     const stamp = Date.now(), sessionId = `today-${crypto.randomUUID()}`;
     await event(member, sessionId, 'session.start', { agent: 'claude-code', startedAt: stamp });
+    await event(member, sessionId, 'prompt', { promptId: crypto.randomUUID(), text: 'plan the day', origin: 'user' });
     expect((await read(`/api/sessions?since=${stamp}&agent=claude-code`)).body.rows.find((row: any) => row.sessionId === sessionId)).toMatchObject({ projectId: target.projectId, agent: 'claude-code' });
     await ageRows(target, { table: 'sessions', column: 'started_at', byMs: 2 * DAY_MS, match: { project_id: target.projectId, session_id: sessionId } });
     const since = stamp - 60_000, until = Date.now() + 60_000;

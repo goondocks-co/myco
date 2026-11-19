@@ -69,6 +69,10 @@ interface sessions_SessionRow {
    * sending anything. False for a read given no instant to judge by.
    */
   working: boolean;
+  /** Whether the session is live: heard from within the idle close with no end recorded (`sessionLiveSql`). False for a read given no quiet instant. */
+  live: boolean;
+  /** When a live session stops being live unless it sends more; null when it is not live. */
+  liveUntil: number | null;
   /** The title written on the Deployment after the session ended; null until then. */
   title: string | null;
   summary: string | null;
@@ -115,8 +119,9 @@ const sessions_text = (value: unknown): string | null => (value as string | null
 
 const sessions_num = (value: unknown): number | null => (value as number | null) ?? null;
 
-function sessions_toSession(row: Record<string, unknown>, nowMs?: number): sessions_SessionRow {
+function sessions_toSession(row: Record<string, unknown>, nowMs?: number, quietBefore?: number): sessions_SessionRow {
   const open = sessions_num(row.working_since);
+  const live = Number(row.live) === 1 && nowMs !== undefined && quietBefore !== undefined;
   const workingSince = open !== null && (row.ended_at == null || open > (row.ended_at as number)) ? open : null;
   return {
     sessionId: row.session_id as string,
@@ -139,6 +144,8 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number): sessi
     runtimeLabel: null,
     workingSince,
     working: nowMs !== undefined && workingSince !== null && workingSince > nowMs - sessions_WORKING_CAP_MS,
+    live,
+    liveUntil: live ? (row.last_received_at as number) + nowMs! - quietBefore! : null,
     runtimeKind: sessions_text(row.runtime_kind),
     title: sessions_text(row.title),
     summary: sessions_text(row.summary),
@@ -175,8 +182,13 @@ interface sessions_SessionFilters {
    * live now is in today's window and in yesterday's. An activity window needs its start instant.
    */
   window?: 'start' | 'activity';
-  /** `open` is a session with no end recorded; `ended` one with an end. */
+  /** `open` is a live session and `ended` one that is not, given `quietBefore`; without it, `open` is a session with no end recorded and `ended` one with an end. */
   state?: 'open' | 'ended';
+  /**
+   * The instant `sessionQuietBefore` answers for `now`. A read given both marks each session live or not, and an activity
+   * window over open sessions needs no start instant: it opens at this one.
+   */
+  quietBefore?: number;
   /**
    * The instant working is judged against. A read given it marks each session working or not, and under an activity
    * window also lists every session working now, whatever its last receipt: a long turn sends nothing until it ends.
@@ -242,6 +254,12 @@ function sessions_activityWindow(opts: sessions_SessionFilters): boolean {
   return true;
 }
 
+/** An activity window over open sessions opens no earlier than the quiet instant: a session quiet before it is not open. */
+function sessions_openWindow<T extends sessions_SessionFilters>(opts: T): T {
+  if (opts.window !== 'activity' || opts.state !== 'open' || opts.quietBefore === undefined) return opts;
+  return { ...opts, since: Math.max(opts.since ?? opts.quietBefore + 1, opts.quietBefore + 1) };
+}
+
 /**
  * The one session page: the stored rows `readSessionPage` answers for the scope and filters, merged and presented, and
  * the cursor of the next page. A cursor this list did not issue reads nothing.
@@ -249,15 +267,16 @@ function sessions_activityWindow(opts: sessions_SessionFilters): boolean {
 async function sessions_selectSessions(
   db: sessions_import_RelationalStore,
   scope: { projectId: string } | sessions_import_ProjectSet,
-  opts: { limit?: number; cursor?: string } & sessions_SessionFilters,
+  requested: { limit?: number; cursor?: string } & sessions_SessionFilters,
 ): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
+  const opts = sessions_openWindow(requested);
   const active = sessions_activityWindow(opts);
   const across = !('projectId' in scope);
   const limit = sessions_import_clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : across ? sessions_import_decodeAcrossCursor(opts.cursor) : sessions_import_decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
   const { received, working } = await sessions_import_readSessionPage(db, { scope, filters: opts, active, after, limit });
-  const rows = sessions_mergeSessionPages(received, working).map((row) => ({ ...sessions_toSession(row, opts.now), projectId: row.project_id as string }));
+  const rows = sessions_mergeSessionPages(received, working).map((row) => ({ ...sessions_toSession(row, opts.now, opts.quietBefore), projectId: row.project_id as string }));
   // The cursor carries the same value the sort ordered by. Both columns are
   // already on the row, so this is the SQL COALESCE read back rather than a
   // second definition of it.
@@ -426,10 +445,10 @@ async function sessions_sessionsWithImportedPrompts(db: sessions_import_Relation
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
-/** One session; given `nowMs`, marked working or not. */
- async function sessions_getSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, nowMs?: number): Promise<(sessions_SessionRow & { publishedRevision: number }) | null> {
-  const row = await readSessionDetail(db, scope.projectId, sessionId);
-  return row === null ? null : { ...sessions_toSession(row, nowMs), publishedRevision: row.published_revision };
+/** One session; given `nowMs`, marked working or not, and given its quiet instant too, live or not. */
+ async function sessions_getSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, nowMs?: number, quietBefore?: number): Promise<(sessions_SessionRow & { publishedRevision: number }) | null> {
+  const row = await readSessionDetail(db, scope.projectId, sessionId, quietBefore ?? null);
+  return row === null ? null : { ...sessions_toSession(row, nowMs, quietBefore), publishedRevision: row.published_revision };
 }
 
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */

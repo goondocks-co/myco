@@ -24,6 +24,7 @@ function seedSessions(sqlite: import('bun:sqlite').Database) {
               VALUES ('proj_1','s1','m1','tok_1',1,10), ('proj_1','s2','m1','tok_2',2,30), ('proj_1','s3','m2','tok_1',3,20),
                      ('proj_2','other','m9','tok_9',5,99)`);
   sqlite.run(`UPDATE sessions SET agent = 'claude-code', branch = 'main', started_at = first_received_at, origin_path = '/repo' WHERE project_id = 'proj_1'`);
+  sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) SELECT project_id, session_id, 'live', 1, 1, 1, 1 FROM sessions`);
 }
 
 describe('read/sessions', () => {
@@ -35,7 +36,7 @@ describe('read/sessions', () => {
     expect(rows[0]).toEqual({
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
       agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null,
-      memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null, workingSince: null, working: false,
+      memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null, workingSince: null, working: false, live: false, liveUntil: null,
       title: null, summary: null, titledAt: null, endedBy: null, endedByLabel: null, label: 'claude-code',
     });
     expect(cursor).toBeNull();
@@ -266,6 +267,7 @@ describe('paging is stable under live capture', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
                   VALUES ('proj_1','s${i}','m','t',${i},${i})`);
     }
+    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) SELECT project_id, session_id, 'live', 1, 1, 1, 1 FROM sessions`);
     const first = await listSessions(db, { projectId: 'proj_1' }, { limit: 3 });
     // The oldest-started session becomes the most recently active mid-page, the way a live
     // capture rewrites last_received_at while an owner is paging.

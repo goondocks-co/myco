@@ -16,7 +16,6 @@ import { useAttention } from '../../packages/myco-server/ui/src/hooks/use-attent
 import { attentionWords } from '../../packages/myco-server/ui/src/features/today/words';
 import { AUTOMATIC_HEADER, live, PRESENCE_MS, PRESENCE_PATH, RUNNING_TICK_MS, TICK_MS, watchPresence } from '../../packages/myco-server/ui/src/lib/live';
 import { liveUntil } from '../../packages/myco-server/ui/src/hooks/use-sessions';
-import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { fetchJson } from '../../packages/myco-server/ui/src/lib/api';
 
 const NOW = Date.now();
@@ -159,12 +158,12 @@ describe('the shared live refresh', () => {
   });
 
   it('reads a live group again when its first session falls quiet, though nothing was captured', () => {
-    const page = { rows: [{ lastReceivedAt: NOW - 60_000 }, { lastReceivedAt: NOW - 600_000 }], cursor: null } as unknown as Parameters<typeof liveUntil>[0];
-    expect(liveUntil(page)).toBe(NOW - 600_000 + LIVE_WITHIN_MS);
+    const page = { rows: [{ liveUntil: NOW + 600_000 }, { liveUntil: NOW + 60_000 }, { liveUntil: null }], cursor: null } as unknown as Parameters<typeof liveUntil>[0];
+    expect(liveUntil(page)).toBe(NOW + 60_000);
     expect(liveUntil({ rows: [], cursor: null } as unknown as Parameters<typeof liveUntil>[0])).toBeNull();
     const options = live<typeof page>({ follows: ['sessions'], until: liveUntil }) as { refetchInterval: (q: unknown) => number | false; refetchIntervalInBackground: boolean; meta: unknown };
     const wait = options.refetchInterval({ state: { data: page } });
-    expect(typeof wait === 'number' && wait > 0 && wait <= LIVE_WITHIN_MS).toBe(true);
+    expect(typeof wait === 'number' && wait > 0 && wait <= 60_000).toBe(true);
     expect(options.refetchInterval({ state: { data: { rows: [], cursor: null } } })).toBe(false);
     expect(options.refetchIntervalInBackground).toBe(false);
     expect(options.meta).toEqual({ follows: ['sessions'] });

@@ -36,6 +36,7 @@ async function grow(db: RelationalStore, from: number, to: number) {
     SELECT 'proj_'||(i%2),'event-'||i,'s-'||i,'mt_0','notification','cli','{}','hash',1,1,'nonce-'||i FROM n`);
   await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,branch,started_at,ended_at,title)
     SELECT 'proj_'||(i%2),'s-'||i,'m_'||(i%4),'mt_'||(i%8),?3-(i+1)*?4,?3-(i+1)*?4,'claude-code','main',?3-(i+1)*?4,?3-(i+1)*?4+1,'title '||i FROM n`, NOW, MINUTE);
+  await eachUnit(db, from, to, `INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) SELECT 'proj_'||(i%2),'s-'||i,'live',1,1,1,1 FROM n`);
   await eachUnit(db, from, to, `INSERT INTO session_artifacts(project_id,id,session_id,kind,artifact_id,url,author,reported_at)
     SELECT 'proj_0','artifact-'||i,CASE WHEN i%2=0 THEN 'reported' ELSE 's-'||i END,'pr','pr-'||i,'https://example.test/pr/'||i,'mem_1',i FROM n`);
 }
