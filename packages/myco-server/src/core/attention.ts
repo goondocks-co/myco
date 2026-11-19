@@ -70,7 +70,7 @@ export type AttentionItem =
   | ({ kind: 'repository_preparation_failed'; tone: 'warn' } & RepositoryFailureStreak)
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
-  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; interruptionMachine?: string | null }
+  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; interruptionMachine?: string | null; interruptionCode?: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number>; latestDiagnostic?: import('../ingest/parse.js').ParseDiagnostic }
@@ -144,7 +144,7 @@ const RULES: readonly Rule[] = [
       return failures.map(f => {
         const ending = interrupted.find(end => end.runId === f.latestRunId && end.projectId === f.projectId);
         return {
-          ...(ending === undefined ? {} : { interruptionMachine: ending.machine }),
+          ...(ending === undefined ? {} : { interruptionMachine: ending.machine, interruptionCode: ending.code }),
           kind: 'outcome_failed', tone: 'bad', projectId: f.projectId, outcome: f.kind, task: f.task,
           failures: f.failures, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
         };

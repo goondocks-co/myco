@@ -64,11 +64,36 @@ describe('the Runs page', () => {
     expect((await f.get('/api/runs/finished?window=week&cause=machine_unresponsive')).rows.map((row: Answer) => row.runId)).toEqual(['stale_2', 'stale_1', 'earlier']);
   });
 
+  it('counts stopping attempts as failures and rebuilds every terminal kind identically after restore', async () => {
+    const f = fixture();
+    try {
+      f.run('retryable', NOW - 6 * HOUR, 'skipped', 'rn_mini', { code: 'run_interrupted' });
+      f.run('abandoned', NOW - 5 * HOUR, 'skipped', null, { code: 'execution_abandoned' });
+      f.run('stopped', NOW - 4 * HOUR, 'failed', 'rn_mini', { code: 'run_interrupted_repeated' });
+      f.run('title-stop', NOW - 3 * HOUR, 'failed', null, { code: 'title_interrupted_repeated' });
+      f.run('manual', NOW - 2 * HOUR, 'running', 'rn_mini', { code: 'run_interrupted' });
+      f.sqlite.run("UPDATE agent_runs SET status='failed',origin='manual',completed_at=? WHERE id='manual'", [NOW - HOUR]);
+      f.run('completed', NOW - HOUR, 'completed', 'rn_mini');
+      const before = await f.get('/api/runs/hours');
+      expect(before.totals).toMatchObject({ failed: 3, interrupted: 2, unchanged: 1 });
+      const failures = await f.get('/api/runs/finished?outcome=failed');
+      expect(failures.rows.map((row: Answer) => row.runId).sort()).toEqual(['manual','stopped','title-stop']);
+      expect(before.failures.cause.map((row: Answer) => row.key).sort()).toEqual(['run_interrupted','run_interrupted_repeated','title_interrupted_repeated']);
+      await resetProjectionCatchup(f.db);
+      while ((await catchUpProjections(f.db)).more);
+      const after = await f.get('/api/runs/hours');
+      expect(after.totals).toEqual(before.totals);
+      expect(after.failures).toEqual(before.failures);
+      expect((await f.get('/api/runs/finished?outcome=interrupted')).rows.map((row: Answer) => row.runId).sort()).toEqual(['abandoned','retryable']);
+    } finally { f.sqlite.close(); }
+  });
+
   it('counts each run once however its finish and catch-up pages meet, moves the runs mark as it counts, and the wake drops hours past the kept window', async () => {
     const f = fixture();
     const mark = () => (f.sqlite.query("SELECT revision FROM change_marks WHERE kind='runs'").get() as { revision: number }).revision;
     f.run('before_1', NOW - 3 * HOUR, 'completed', 'rn_mini');
     f.run('before_2', NOW - 2 * HOUR, 'failed', 'rn_vm', { code: 'lease_lapsed' });
+    f.run('before_interruption', NOW - 3 * HOUR, 'skipped', 'rn_mini', { code: 'run_interrupted' });
     const counted = (await f.get('/api/runs/hours')).totals;
     await resetProjectionCatchup(f.db);
     // A run finishing after the restart, at the same instant as an earlier one and sorting before it.

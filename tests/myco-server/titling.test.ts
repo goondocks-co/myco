@@ -487,7 +487,7 @@ describe('direct session titles', () => {
     down = false;
     for (let tick = 40; tick < 130; tick++) { await backfillTitles(h.env, NOW + 10 + MINUTE * tick, 'active'); await h.settle(); }
     expect(h.row('direct')).toMatchObject(answer);
-    expect(attempts()).toBe(1);
+    expect(attempts()).toBe(0);
     h.sqlite.close();
   });
 
@@ -538,6 +538,29 @@ describe('direct session titles', () => {
     expect(h.runRows()).toHaveLength(TITLING_MAX_ATTEMPTS);
     expect(h.runRows().filter(row => row.status === 'failed')).toHaveLength(1);
     expect((await work()).timeline).toMatchObject([{ status: 'failed', failure: { code: 'title_interrupted_repeated' } }]);
+    h.sqlite.close();
+  });
+
+  it('resets title attempts when a title is written and fails an abandoned owner ask independently of that bound', async () => {
+    const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }));
+    h.sqlite.run("UPDATE sessions SET titling_attempts=? WHERE session_id='direct'", [TITLING_MAX_ATTEMPTS - 1]);
+    h.env.afterResponse = () => {};
+    const lastAttempt = await h.title('direct');
+    await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
+    expect(h.runRow(lastAttempt.runId!)).toMatchObject({ status: 'failed', error: 'Myco stopped after three attempts at this title' });
+    const written = await h.ask('direct', NOW + OWNER_TITLING_WINDOW_MS + 1); await h.settle();
+    expect(h.runRow(written.runId!)).toMatchObject({ status: 'completed' });
+    expect(h.sqlite.query("SELECT titling_attempts FROM sessions WHERE session_id='direct'").get()).toEqual({ titling_attempts: 0 });
+    let answerLater!: (answer: { text: string; usage: null }) => void;
+    h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete: () => new Promise(resolve => { answerLater = resolve; }) });
+    const at = NOW + 2 * OWNER_TITLING_WINDOW_MS + 2;
+    const requesting = h.ask('direct', at);
+    while (answerLater === undefined) await new Promise(resolve => setImmediate(resolve));
+    const manual = h.runRows().find(row => row.status === 'running')!;
+    await runStaleSweep(h.env, at + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
+    expect(h.runRow(manual.id)).toMatchObject({ status: 'failed', error: 'The work was interrupted; start it again when you are ready' });
+    answerLater({ text: JSON.stringify(answer), usage: null });
+    await requesting;
     h.sqlite.close();
   });
 

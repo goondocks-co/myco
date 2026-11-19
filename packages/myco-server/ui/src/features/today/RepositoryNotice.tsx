@@ -15,6 +15,6 @@ export function RepositoryNotice({ projectId, projectName, now }: {
   if (items.length === 0) return null;
   return <Card data-repository-notice="">
     <h2 className="t-h2 text-ink">Needs you</h2>
-    <ul>{items.map(item => <NeedsYouItem key={projectId} tone={item.tone} words={attentionWords(item, now, projectName)} />)}</ul>
+    <ul>{items.map(item => <NeedsYouItem key={`${item.kind}:${projectId}`} tone={item.tone} words={attentionWords(item, now, projectName)} />)}</ul>
   </Card>;
 }

@@ -101,13 +101,13 @@ export const RUN_FAILURE_WORDS: Readonly<Record<string, string>> = {
 };
 
 /** Reader words for recorded interruptions, with machine identity only where the caller may name it. */
-export function interruptionWords(code: string | null | undefined, machine: string | null = null): string | null {
+export function interruptionWords(code: string | null | undefined, machine: string | null = null, status = 'failed'): string | null {
   const where = machine === null ? '' : ` on ${machine}`;
   switch (code) {
-    case 'run_interrupted': return `The work was interrupted${where}. Myco will try again.`;
+    case 'run_interrupted': return `The work was interrupted${where}. ${status === 'skipped' ? 'Myco will try again.' : 'Start it again when you are ready.'}`;
     case 'execution_abandoned': return 'The title was interrupted before a result was recorded. Myco will try again.';
     case 'run_interrupted_repeated': return `The work was interrupted three times${machine === null ? ' on a machine whose name is unavailable' : `, most recently on ${machine}`}. Automatic attempts have stopped.`;
-    case 'title_interrupted_repeated': return 'The title was interrupted three times. Automatic attempts have stopped.';
+    case 'title_interrupted_repeated': return 'Myco stopped after three attempts at this title.';
     default: return null;
   }
 }

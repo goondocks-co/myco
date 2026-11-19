@@ -240,7 +240,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     case 'outcome_failed':
       return {
         title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
-        detail: item.interruptionMachine !== undefined ? `${inProject(item.projectId)} ${interruptionWords('run_interrupted_repeated', item.interruptionMachine)}` : `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
+        detail: item.interruptionMachine !== undefined ? `${inProject(item.projectId)} ${interruptionWords(item.interruptionCode ?? 'run_interrupted_repeated', item.interruptionMachine)}` : `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
       };
     case 'runs_without_audit':

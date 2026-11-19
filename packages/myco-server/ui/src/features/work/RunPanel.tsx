@@ -83,7 +83,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const kind = kindOf(run.task);
   const name = useStarterNames();
   const admin = useIsAdmin();
-  const interrupted = interruptionWords(run.errorCode, ranOn(run.worker, name)?.machine ?? null);
+  const interrupted = interruptionWords(run.errorCode, ranOn(run.worker, name)?.machine ?? null, run.status);
   const failed = run.status === 'failed';
   const finished = run.status === 'completed' || failed;
   const live = runIsLive(run.status);
@@ -236,7 +236,7 @@ function WhatItRead({ answer, projectId, now, latest }: { answer: RunDetailAnswe
 /** The run's headline: what came of it, or where it stands while it has not finished. */
 function headlineOf({ run, read, produced }: RunDetailAnswer): string {
   if (run.dryRun) return 'Preview: nothing was changed';
-  if (interruptionWords(run.errorCode) !== null) return 'Interrupted';
+  if (run.status === 'skipped' && interruptionWords(run.errorCode, null, run.status) !== null) return 'Interrupted';
   if (run.errorCode === 'run_cancelled') return 'Cancelled';
   if (run.status === 'skipped') return 'Held off';
   if (run.status === 'queued') return 'Waiting to start';

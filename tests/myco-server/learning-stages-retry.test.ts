@@ -288,13 +288,27 @@ for (const kind of ['cards', 'learning'] as const) it(`bounds consecutive ${kind
     const poll = (now: number) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
     let claim = 'run' in prepared.claimed ? prepared.claimed.run : prepared.claimed;
     let at = NOW + DAY + 10;
+    let priorInterruption: string | null = null;
+    if (kind === 'cards') {
+      priorInterruption = claim.id;
+      await db.prepare('UPDATE agent_runs SET lease_expires_at=? WHERE id=?').bind(at, claim.id).run();
+      await expireLeases(env, at + 1);
+      at += HOUR;
+      const ordinary = await poll(at);
+      if (!ordinary.claimed) throw new Error('ordinary retry not claimed');
+      await endLeasedRun(env, { principal, now: at + 1 }, { projectId: 'project', runId: ordinary.run.id, attemptId: ordinary.run.attemptId, status: 'failed', error: 'the worker reported a failure' });
+      at += 6 * HOUR + 1;
+      const fresh = await poll(at);
+      if (!fresh.claimed) throw new Error('retry after ordinary failure not claimed');
+      claim = fresh.run;
+    }
     const ids: string[] = [];
     for (let attempt = 1; attempt <= 3; attempt++) {
       ids.push(claim.id);
       await db.prepare('UPDATE agent_runs SET lease_expires_at=? WHERE id=?').bind(at, claim.id).run();
       expect(await expireLeases(env, at + 1)).toBe(1);
       expect((await getRun(db, { projectId: 'project' }, claim.id))?.status).toBe(attempt < 3 ? 'skipped' : 'failed');
-      const notices = (await readAttention(env, at + 1)).items.filter(item => item.kind === 'outcome_failed');
+      const notices = (await readAttention(env, at + 1)).items.filter(item => item.kind === 'outcome_failed' && item.runId === claim.id);
       expect(notices).toMatchObject(attempt < 3 ? [] : [{ projectId: 'project', task: claim.task, interruptionMachine: 'Build Mac' }]);
       at += DAY;
       if (attempt < 3) { const next = await poll(at); if (!next.claimed) throw new Error('retry not claimed'); claim = next.run; }
@@ -305,8 +319,10 @@ for (const kind of ['cards', 'learning'] as const) it(`bounds consecutive ${kind
     expect((await readAttention(env, at)).items.filter(item => item.kind === 'outcome_failed')).toMatchObject([{ runId: claim.id }]);
 
     const finished = await readFinishedRuns(db, { all: false, projectIds: ['project'] }, { since: NOW, until: at, filters: { outcome: 'interrupted' }, limit: 20 });
-    expect(finished.rows.map(row => row.runId).sort()).toEqual(ids.sort());
+    expect(finished.rows.map(row => row.runId).sort()).toEqual([...(priorInterruption === null ? [] : [priorInterruption]), ...ids.slice(0, 2)].sort());
     expect(finished.rows.every(row => row.interruptionMachine === 'Build Mac')).toBe(true);
+    const stopped = await readFinishedRuns(db, { all: false, projectIds: ['project'] }, { since: NOW, until: at, filters: { outcome: 'failed', errorCode: 'run_interrupted_repeated' }, limit: 20 });
+    expect(stopped.rows.map(row => row.runId)).toEqual([ids.at(-1)!]);
     expect(await dispatchTask(env, 'extract-curate', 'project', { serverUrl: 'https://myco.test', actor: 'mem_worker', params: { session_id: 'long' } }, at)).toMatchObject({ dispatched: true });
     const manual = await poll(at + 1);
     if (!manual.claimed) throw new Error('manual recovery not claimed');
@@ -342,5 +358,29 @@ for (const kind of ['cards', 'learning'] as const) it(`bounds consecutive ${kind
     expect((await getRun(db, { projectId: 'project' }, active.id))?.status).toBe('skipped');
     expect((await readAttention(env, at + 7)).items.filter(item => item.kind === 'outcome_failed')).toEqual([]);
 
+  });
+});
+
+it('fails a manual subject interruption without promising or spending automatic retries', async () => {
+  await withDocumentStores(async db => {
+    const run = await learningRun(db, plainTurns(1), 'high', undefined, null, false, { queued: true });
+    let at = NOW + DAY + 10;
+    await settingsWriter(db).setLeaf('agent.scheduled_tasks_enabled', false, 'mem_worker', at);
+    await db.prepare('UPDATE agent_runs SET lease_expires_at=? WHERE id=?').bind(at, run.claimed.id).run();
+    await expireLeases(run.env, at + 1);
+    expect((await getRun(db, { projectId: 'project' }, run.claimed.id))?.status).toBe('failed');
+    const finished = await readFinishedRuns(db, { all: false, projectIds: ['project'] }, { since: NOW, until: at + 2, filters: { outcome: 'failed', errorCode: 'run_interrupted' }, limit: 20 });
+    expect(finished.rows.map(row => row.runId)).toEqual([run.claimed.id]);
+    const poll = (now: number) => claimNextRun(run.env, { principal: run.principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
+    expect(await poll(at + DAY)).toMatchObject({ claimed: false });
+    await settingsWriter(db).setLeaf('agent.scheduled_tasks_enabled', true, 'mem_worker', at + DAY);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      at += DAY;
+      const automatic = await poll(at);
+      if (!automatic.claimed) throw new Error('automatic retry not claimed');
+      await db.prepare('UPDATE agent_runs SET lease_expires_at=? WHERE id=?').bind(at + 1, automatic.run.id).run();
+      await expireLeases(run.env, at + 1);
+      expect((await getRun(db, { projectId: 'project' }, automatic.run.id))?.status).toBe('skipped');
+    }
   });
 });

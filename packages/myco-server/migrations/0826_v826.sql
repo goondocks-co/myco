@@ -3,10 +3,16 @@
 CREATE TABLE IF NOT EXISTS run_subject_interruptions(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')) REFERENCES projects(project_id) ON DELETE CASCADE,
       task TEXT NOT NULL,subject TEXT NOT NULL,interruptions INTEGER NOT NULL CHECK(interruptions>=0),PRIMARY KEY(project_id,task,subject));
 
-CREATE TRIGGER IF NOT EXISTS run_subject_interrupted AFTER UPDATE OF status ON agent_runs WHEN NEW.status IN ('skipped','failed') AND OLD.status='running' AND NEW.subject IS NOT NULL AND NEW.task IS NOT NULL AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated') BEGIN INSERT INTO run_subject_interruptions(project_id,task,subject,interruptions) VALUES(NEW.project_id,NEW.task,NEW.subject,1)
+CREATE TRIGGER IF NOT EXISTS run_subject_interrupted AFTER UPDATE OF status ON agent_runs WHEN NEW.status IN ('skipped','failed') AND OLD.status='running' AND NEW.origin<>'manual' AND NEW.subject IS NOT NULL AND NEW.task IS NOT NULL AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated') BEGIN INSERT INTO run_subject_interruptions(project_id,task,subject,interruptions) VALUES(NEW.project_id,NEW.task,NEW.subject,1)
         ON CONFLICT(project_id,task,subject) DO UPDATE SET interruptions=interruptions+1; END;
 
-CREATE TRIGGER IF NOT EXISTS run_subject_completed AFTER UPDATE OF status ON agent_runs WHEN NEW.status='completed' AND OLD.status='running' AND NEW.subject IS NOT NULL BEGIN DELETE FROM run_subject_interruptions WHERE project_id=NEW.project_id AND task=NEW.task AND subject=NEW.subject; END;
+CREATE TRIGGER IF NOT EXISTS run_subject_settled AFTER UPDATE OF status ON agent_runs WHEN OLD.status='running' AND NEW.subject IS NOT NULL AND (NEW.status='completed' OR (NEW.status='failed' AND COALESCE(NEW.error_code,'') NOT IN ('run_interrupted','run_interrupted_repeated'))) BEGIN DELETE FROM run_subject_interruptions WHERE project_id=NEW.project_id AND task=NEW.task AND subject=NEW.subject; END;
+
+CREATE TRIGGER IF NOT EXISTS run_subject_curation_insert AFTER INSERT ON spore_curation_work BEGIN DELETE FROM run_subject_interruptions WHERE project_id=NEW.project_id AND task='curate-spores' AND subject='curation:'||NEW.project_id||':'||NEW.cluster_key; END;
+
+CREATE TRIGGER IF NOT EXISTS run_subject_curation_update AFTER UPDATE OF decision ON spore_curation_work WHEN OLD.decision IS NOT NEW.decision BEGIN DELETE FROM run_subject_interruptions WHERE project_id=NEW.project_id AND task='curate-spores' AND subject='curation:'||NEW.project_id||':'||NEW.cluster_key; END;
+
+CREATE TRIGGER IF NOT EXISTS run_subject_curation_delete AFTER DELETE ON spore_curation_work BEGIN DELETE FROM run_subject_interruptions WHERE project_id=OLD.project_id AND task='curate-spores' AND subject='curation:'||OLD.project_id||':'||OLD.cluster_key; END;
 
 CREATE INDEX IF NOT EXISTS idx_run_subject_completed ON agent_runs(project_id,task,subject,started_at DESC) WHERE status='completed';
 
@@ -14,8 +20,8 @@ DROP TRIGGER IF EXISTS run_hour_finish;
 
 DROP TRIGGER IF EXISTS run_hour_insert;
 
-CREATE TRIGGER IF NOT EXISTS run_hour_finish AFTER UPDATE OF status ON agent_runs WHEN (NEW.status IN ('completed','failed') OR (NEW.status IN ('skipped','failed') AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated','execution_abandoned','title_interrupted_repeated'))) AND NEW.completed_at IS NOT NULL AND OLD.status NOT IN ('completed','failed','skipped') BEGIN INSERT INTO run_finished(project_id,run_id,at,hour,task,runner_id,harness,result,outcome,error_code,wait_ms) SELECT NEW.project_id,NEW.id,NEW.completed_at,CAST(NEW.completed_at/3600000 AS INTEGER)*3600000,COALESCE(NEW.task,''),COALESCE((SELECT a.runner_id FROM agent_run_attempts a
-  WHERE a.project_id=NEW.project_id AND a.run_id=NEW.id AND a.attempt_id=NEW.dispatched_by),NEW.leased_runner_id,''),COALESCE(NEW.harness,''),CASE WHEN NEW.status IN ('skipped','failed') AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated','execution_abandoned','title_interrupted_repeated') THEN 'interrupted' ELSE (CASE
+CREATE TRIGGER IF NOT EXISTS run_hour_finish AFTER UPDATE OF status ON agent_runs WHEN (NEW.status IN ('completed','failed') OR (NEW.status='skipped' AND NEW.error_code IN ('run_interrupted','execution_abandoned'))) AND NEW.completed_at IS NOT NULL AND OLD.status NOT IN ('completed','failed','skipped') BEGIN INSERT INTO run_finished(project_id,run_id,at,hour,task,runner_id,harness,result,outcome,error_code,wait_ms) SELECT NEW.project_id,NEW.id,NEW.completed_at,CAST(NEW.completed_at/3600000 AS INTEGER)*3600000,COALESCE(NEW.task,''),COALESCE((SELECT a.runner_id FROM agent_run_attempts a
+  WHERE a.project_id=NEW.project_id AND a.run_id=NEW.id AND a.attempt_id=NEW.dispatched_by),NEW.leased_runner_id,''),COALESCE(NEW.harness,''),CASE WHEN NEW.status='skipped' AND NEW.error_code IN ('run_interrupted','execution_abandoned') THEN 'interrupted' ELSE (CASE
   WHEN NEW.status = 'failed' THEN CASE WHEN (CASE WHEN NEW.dry_run = 1 THEN 0 ELSE CASE NEW.task
   WHEN 'extract-curate' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
   WHEN 'vault-seed' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
@@ -46,7 +52,7 @@ CREATE TRIGGER IF NOT EXISTS run_hour_finish AFTER UPDATE OF status ON agent_run
   WHEN 'embedding-reconcile' THEN EXISTS (SELECT 1 FROM agent_reports rp
   WHERE rp.project_id = NEW.project_id AND rp.run_id = NEW.id AND rp.action = 'embedding' AND json_valid(rp.details) AND json_extract(rp.details, '$.processed') > 0)
   ELSE 0 END END) THEN 'produced' ELSE 'unchanged' END
-  ELSE NULL END) END,CASE WHEN NEW.status IN ('skipped','failed') AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated','execution_abandoned','title_interrupted_repeated') THEN 'interrupted' ELSE CASE (CASE
+  ELSE NULL END) END,CASE WHEN NEW.status='skipped' AND NEW.error_code IN ('run_interrupted','execution_abandoned') THEN 'interrupted' ELSE CASE (CASE
   WHEN NEW.status = 'failed' THEN CASE WHEN (CASE WHEN NEW.dry_run = 1 THEN 0 ELSE CASE NEW.task
   WHEN 'extract-curate' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
   WHEN 'vault-seed' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
@@ -79,8 +85,8 @@ CREATE TRIGGER IF NOT EXISTS run_hour_finish AFTER UPDATE OF status ON agent_run
   ELSE 0 END END) THEN 'produced' ELSE 'unchanged' END
   ELSE NULL END) WHEN 'produced' THEN 'worked' WHEN 'unchanged' THEN 'unchanged' ELSE 'failed' END END,COALESCE(NEW.error_code,''),CASE WHEN NEW.queued_at IS NOT NULL AND NEW.started_at>NEW.queued_at THEN NEW.started_at-NEW.queued_at ELSE 0 END WHERE 1 ON CONFLICT(project_id,run_id) DO NOTHING; END;
 
-CREATE TRIGGER IF NOT EXISTS run_hour_insert AFTER INSERT ON agent_runs WHEN (NEW.status IN ('completed','failed') OR (NEW.status IN ('skipped','failed') AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated','execution_abandoned','title_interrupted_repeated'))) AND NEW.completed_at IS NOT NULL BEGIN INSERT INTO run_finished(project_id,run_id,at,hour,task,runner_id,harness,result,outcome,error_code,wait_ms) SELECT NEW.project_id,NEW.id,NEW.completed_at,CAST(NEW.completed_at/3600000 AS INTEGER)*3600000,COALESCE(NEW.task,''),COALESCE((SELECT a.runner_id FROM agent_run_attempts a
-  WHERE a.project_id=NEW.project_id AND a.run_id=NEW.id AND a.attempt_id=NEW.dispatched_by),NEW.leased_runner_id,''),COALESCE(NEW.harness,''),CASE WHEN NEW.status IN ('skipped','failed') AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated','execution_abandoned','title_interrupted_repeated') THEN 'interrupted' ELSE (CASE
+CREATE TRIGGER IF NOT EXISTS run_hour_insert AFTER INSERT ON agent_runs WHEN (NEW.status IN ('completed','failed') OR (NEW.status='skipped' AND NEW.error_code IN ('run_interrupted','execution_abandoned'))) AND NEW.completed_at IS NOT NULL BEGIN INSERT INTO run_finished(project_id,run_id,at,hour,task,runner_id,harness,result,outcome,error_code,wait_ms) SELECT NEW.project_id,NEW.id,NEW.completed_at,CAST(NEW.completed_at/3600000 AS INTEGER)*3600000,COALESCE(NEW.task,''),COALESCE((SELECT a.runner_id FROM agent_run_attempts a
+  WHERE a.project_id=NEW.project_id AND a.run_id=NEW.id AND a.attempt_id=NEW.dispatched_by),NEW.leased_runner_id,''),COALESCE(NEW.harness,''),CASE WHEN NEW.status='skipped' AND NEW.error_code IN ('run_interrupted','execution_abandoned') THEN 'interrupted' ELSE (CASE
   WHEN NEW.status = 'failed' THEN CASE WHEN (CASE WHEN NEW.dry_run = 1 THEN 0 ELSE CASE NEW.task
   WHEN 'extract-curate' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
   WHEN 'vault-seed' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
@@ -111,7 +117,7 @@ CREATE TRIGGER IF NOT EXISTS run_hour_insert AFTER INSERT ON agent_runs WHEN (NE
   WHEN 'embedding-reconcile' THEN EXISTS (SELECT 1 FROM agent_reports rp
   WHERE rp.project_id = NEW.project_id AND rp.run_id = NEW.id AND rp.action = 'embedding' AND json_valid(rp.details) AND json_extract(rp.details, '$.processed') > 0)
   ELSE 0 END END) THEN 'produced' ELSE 'unchanged' END
-  ELSE NULL END) END,CASE WHEN NEW.status IN ('skipped','failed') AND NEW.error_code IN ('run_interrupted','run_interrupted_repeated','execution_abandoned','title_interrupted_repeated') THEN 'interrupted' ELSE CASE (CASE
+  ELSE NULL END) END,CASE WHEN NEW.status='skipped' AND NEW.error_code IN ('run_interrupted','execution_abandoned') THEN 'interrupted' ELSE CASE (CASE
   WHEN NEW.status = 'failed' THEN CASE WHEN (CASE WHEN NEW.dry_run = 1 THEN 0 ELSE CASE NEW.task
   WHEN 'extract-curate' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)
   WHEN 'vault-seed' THEN EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = NEW.project_id AND sp.author = NEW.id)

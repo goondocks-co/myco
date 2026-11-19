@@ -161,6 +161,15 @@ describe('a worker reporting repository preparation failure', () => {
 
   });
 
+  it('accepts the failure even when the read credential can no longer open', async () => {
+    const r = await rig(); await r.claim();
+    r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('s'.repeat(32)) };
+    expect(await end(r, { repositoryFailure: { code: 'disk', summary: 'error: cannot create /Users/Jane Smith/private: Permission denied' } })).toMatchObject({ ended: true });
+    const stored = r.e.sqlite.query("SELECT status,run_context FROM agent_runs WHERE id='run_seed'").get() as any;
+    expect(stored.status).toBe('failed');
+    expect(stored.run_context).not.toContain('Jane');
+  });
+
   it('accepts an older end without metadata and ignores unknown reasons', async () => {
     for (const repositoryFailure of [undefined, { code: 'unknown_reason', summary: 'private detail' }]) {
       const r = await rig();

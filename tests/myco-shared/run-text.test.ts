@@ -363,9 +363,15 @@ it('retains all safe diagnostic fields from an older runner coded ending', () =>
 });
 
 it('masks absolute repository paths and retains a known code for older Deployments', () => {
-  const reason = parseRepositoryFailure({ code: 'disk', summary: "fatal: cannot open '/Users/example/checkout/.git/config' or /home/private/secret.txt" }, [], '/Users/example/checkout')!;
+  const reason = parseRepositoryFailure({ code: 'disk', summary: "fatal: cannot open /Users/example/checkout/a file: Permission denied at /home/private/secret.txt" }, [], '/Users/example/checkout')!;
   expect(reason.summary).toContain('<checkout>');
+  expect(reason.summary).not.toContain('a file');
   expect(reason.summary).toContain('<path>');
   expect(JSON.stringify(reason)).not.toContain('/Users');
   expect(JSON.stringify(reason)).not.toContain('/home');
+});
+
+it('masks an unquoted absolute path with spaces through the diagnostic delimiter', () => {
+  const reason = parseRepositoryFailure({ code: 'disk', summary: 'error: unable to create file /Users/Jane Smith/Projects/acme merger/file.txt: Permission denied' });
+  expect(reason?.summary).toBe('error: unable to create file <path>: Permission denied');
 });

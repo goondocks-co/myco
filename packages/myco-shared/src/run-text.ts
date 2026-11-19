@@ -539,9 +539,13 @@ export function parseRepositoryFailure(value: unknown, secrets: readonly string[
   let summary = !['submodules','lfs','too_large','commit_mismatch'].includes(code) && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
   summary = maskDiagnosticSecrets(summary, secrets).trim().split(/\r?\n/).at(-1) ?? '';
   summary = summary.replace(/https?:\/\/[^\s'"<>]+/g, '<url>');
-  if (checkoutRoot) summary = summary.split(checkoutRoot).join('<checkout>');
-  summary = summary.replace(/(['"])(?:[A-Za-z]:[\\/]|\/|\\\\).*?\1/g, '$1<path>$1');
-  summary = summary.replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s'"<>]+|(?<![\w:<>])\/(?!\/)[^\s'"<>]+/g, '<path>');
+  const placeholder = (path: string): string => {
+    const normalized = path.replaceAll('\\', '/');
+    const root = checkoutRoot?.replaceAll('\\', '/').replace(/\/+$/, '');
+    return root !== undefined && (normalized === root || normalized.startsWith(root + '/')) ? '<checkout>' : '<path>';
+  };
+  summary = summary.replace(/(['"])((?:[A-Za-z]:[\\/]|\/|\\\\).*?)\1/g, (_match, quote: string, path: string) => quote + placeholder(path) + quote);
+  summary = summary.replace(/(?:[A-Za-z]:[\\/]|\\\\|(?<![\w<>])\/(?!\/))(?:(?!: )[\s\S])*?(?=: |$)/g, path => placeholder(path));
   const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
   return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
 }

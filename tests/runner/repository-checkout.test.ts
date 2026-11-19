@@ -357,6 +357,6 @@ it('names a missing revision before exposing files', async () => {
 
 it('reports local Git permission failures as disk errors with private paths masked', async () => {
   const executable = join(home, 'git-local-permission');
-  await writeFile(executable, '#!/usr/bin/env node\n' + `process.stderr.write("fatal: could not lock config file '/Users/private/project/.git/config': Permission denied"); process.exit(128);`, { mode: 0o700 });
-  await expect(prepareRepositoryCheckout({ ...request(), gitPath: executable, pin: async commit => commit })).rejects.toMatchObject({ failure: { code: 'disk', summary: "fatal: could not lock config file '<path>': Permission denied" } });
+  await writeFile(executable, '#!/usr/bin/env node\n' + `process.stderr.write("error: unable to create file /Users/private/project with spaces/file.txt: Permission denied"); process.exit(128);`, { mode: 0o700 });
+  await expect(prepareRepositoryCheckout({ ...request(), gitPath: executable, pin: async commit => commit })).rejects.toMatchObject({ failure: { code: 'disk', summary: "error: unable to create file <path>: Permission denied" } });
 });

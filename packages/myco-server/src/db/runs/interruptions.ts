@@ -18,6 +18,12 @@ export function subjectInterruptionSchema(): string[] {
     `CREATE TABLE IF NOT EXISTS run_subject_interruptions(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id) ON DELETE CASCADE,
       task TEXT NOT NULL,subject TEXT NOT NULL,interruptions INTEGER NOT NULL CHECK(interruptions>=0),PRIMARY KEY(project_id,task,subject))`,
     ...subjectInterruptionTriggers().map(item => item.sql),
+    ...['INSERT','UPDATE OF decision','DELETE'].map(event => {
+      const row = event === 'DELETE' ? 'OLD' : 'NEW';
+      return trigger(`run_subject_curation_${event.split(' ')[0].toLowerCase()}`, 'spore_curation_work', event,
+        `DELETE FROM run_subject_interruptions WHERE project_id=${row}.project_id AND task='curate-spores' AND subject='curation:'||${row}.project_id||':'||${row}.cluster_key`,
+        event.startsWith('UPDATE') ? 'OLD.decision IS NOT NEW.decision' : undefined).sql;
+    }),
   ];
 }
 
@@ -26,14 +32,14 @@ function subjectInterruptionTriggers(): Trigger[] {
     trigger('run_subject_interrupted', 'agent_runs', 'UPDATE OF status', [
       `INSERT INTO run_subject_interruptions(project_id,task,subject,interruptions) VALUES(NEW.project_id,NEW.task,NEW.subject,1)
         ON CONFLICT(project_id,task,subject) DO UPDATE SET interruptions=interruptions+1`,
-    ], `NEW.status IN ('skipped','failed') AND OLD.status='running' AND NEW.subject IS NOT NULL AND NEW.task IS NOT NULL AND NEW.error_code IN ('${SUBJECT_INTERRUPTED}','${SUBJECT_INTERRUPTED_REPEATED}')`),
-    trigger('run_subject_completed', 'agent_runs', 'UPDATE OF status', [
+    ], `NEW.status IN ('skipped','failed') AND OLD.status='running' AND NEW.origin<>'manual' AND NEW.subject IS NOT NULL AND NEW.task IS NOT NULL AND NEW.error_code IN ('${SUBJECT_INTERRUPTED}','${SUBJECT_INTERRUPTED_REPEATED}')`),
+    trigger('run_subject_settled', 'agent_runs', 'UPDATE OF status', [
       'DELETE FROM run_subject_interruptions WHERE project_id=NEW.project_id AND task=NEW.task AND subject=NEW.subject',
-    ], "NEW.status='completed' AND OLD.status='running' AND NEW.subject IS NOT NULL"),
+    ], "OLD.status='running' AND NEW.subject IS NOT NULL AND (NEW.status='completed' OR (NEW.status='failed' AND COALESCE(NEW.error_code,'') NOT IN ('run_interrupted','run_interrupted_repeated')))"),
   ];
 }
 
-export const isInterruptedRunSql = (row: string): string => `${row}.status IN ('skipped','failed') AND ${row}.error_code IN (${codes})`;
+export const isInterruptedRunSql = (row: string): string => `${row}.status='skipped' AND ${row}.error_code IN ('run_interrupted','execution_abandoned')`;
 
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, rows } from '../index.js';
@@ -46,7 +52,7 @@ const endings = read<[keys: string], { projectId: string; runId: string; code: s
     WHERE r.error_code IN (${codes})`,
 });
 
-/** Admin reads name the machine that held the interrupted attempt. */
+/** Run reads name the machine that held the interrupted attempt. */
 export async function interruptedEndings(db: RelationalStore, keys: readonly { projectId: string; runId: string }[]) {
   return keys.length === 0 ? [] : rows(db, endings.bind(JSON.stringify(keys)));
 }

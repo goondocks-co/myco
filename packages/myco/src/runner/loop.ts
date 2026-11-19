@@ -46,7 +46,7 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
-import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout, RepositoryAlreadyCurrent } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
@@ -1137,6 +1137,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         options.log('the Deployment answered a claim naming no run');
         return { driven, refused: 'malformed_answer' };
       }
+      if (answer.repositoryFailure !== 2) run.preparationTimeoutMs = LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS;
       options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
       // The cadence and the lease are the Deployment's, carried on the claim it answered.
       requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);

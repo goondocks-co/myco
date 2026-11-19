@@ -15,6 +15,6 @@ export const RUN_INTERRUPTION_STEPS: readonly SchemaStep[] = [{
   ],
   retires: retiring('trigger', ['run_hour_finish','run_hour_insert'], 'Run hours include interrupted work separately from failures.'),
   reaches: [
-    ...reaching(['agent_runs'], 'Subject completion resolves interrupted work and guards its automatic retry bound.'),
+    ...reaching(['agent_runs','spore_curation_work'], 'Subject completion resolves interrupted work and guards its automatic retry bound.'),
   ],
 }];

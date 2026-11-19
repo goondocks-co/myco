@@ -91,9 +91,9 @@ const abandonedGuard = assertion<[project: string, run: string, context: string 
 const titleAttempts = `(SELECT titling_attempts FROM sessions WHERE project_id=agent_runs.project_id
   AND session_id=CASE WHEN json_valid(agent_runs.run_context) THEN json_extract(agent_runs.run_context,'$.session_id') END)`;
 const abandoned = write<[project: string, run: string, context: string | null, started: number, now: number], { id: string }>({
-  name: 'directTitle.abandon', sql: `UPDATE agent_runs SET status=CASE WHEN ${titleAttempts} IS NULL THEN 'failed' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'failed' ELSE 'skipped' END,completed_at=?5,
-    error_code=CASE WHEN ${titleAttempts} IS NULL THEN 'run_failed' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'title_interrupted_repeated' ELSE '${INTERRUPTED_CODE}' END,
-    error=CASE WHEN ${titleAttempts} IS NULL THEN 'The direct title claim is incomplete' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'The title was interrupted three times; automatic attempts have stopped'
+  name: 'directTitle.abandon', sql: `UPDATE agent_runs SET status=CASE WHEN origin='manual' OR ${titleAttempts} IS NULL THEN 'failed' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'failed' ELSE 'skipped' END,completed_at=?5,
+    error_code=CASE WHEN ${titleAttempts} IS NULL THEN 'run_failed' WHEN origin='manual' THEN 'run_interrupted' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'title_interrupted_repeated' ELSE '${INTERRUPTED_CODE}' END,
+    error=CASE WHEN ${titleAttempts} IS NULL THEN 'The direct title claim is incomplete' WHEN origin='manual' THEN 'The work was interrupted; start it again when you are ready' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'Myco stopped after three attempts at this title'
       ELSE 'The direct model call ended without recording a result; the work stays due' END
     WHERE ${abandonmentOwner} RETURNING id`,
 });

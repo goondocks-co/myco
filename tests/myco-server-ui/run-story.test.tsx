@@ -451,3 +451,16 @@ it('shows an abandoned direct title as stopped work without a failure', async ()
   expect(panel.textContent).toContain('The title was interrupted before a result was recorded. Myco will try again.');
   expect(panel.textContent).not.toContain('Nothing ran, and nothing was spent.');
 });
+
+it('shows manual and stopping interruptions as failures without promising a retry', async () => {
+  const row = runRow({ id: 'manual-interrupted', task: 'extract-curate', status: 'failed', result: 'failed', startedAt: NOW - MINUTE, completedAt: NOW,
+    errorCode: 'run_interrupted', worker: { credentialId: 'fixture', machineId: 'build', machineName: 'Build Mac', member: null, runner: { id: 'build', name: 'Build Mac' } } });
+  const manual = await open(row.id, runDetail(row));
+  expect(manual.querySelector('[data-run-headline]')?.textContent).toBe('This run failed');
+  expect(manual.textContent).toContain('The work was interrupted on Build Mac. Start it again when you are ready.');
+  expect(manual.textContent).not.toContain('Myco will try again');
+  cleanup();
+  const stopped = await open('title-stop', runDetail(runRow({ ...row, id: 'title-stop', task: 'title-summary', errorCode: 'title_interrupted_repeated' })));
+  expect(stopped.querySelector('[data-run-headline]')?.textContent).toBe('This run failed');
+  expect(stopped.textContent).toContain('Myco stopped after three attempts at this title.');
+});

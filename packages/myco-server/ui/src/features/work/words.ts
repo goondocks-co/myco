@@ -394,8 +394,8 @@ const REPOSITORY_FAILURE_WORDS = {
   checkout_failed: 'Myco couldn’t prepare the repository. Check its connection and try again.',
 } satisfies Readonly<Record<RepositoryFailure['code'], string>>;
 
-export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null, machine: string | null = null): string {
-  const interrupted = interruptionWords(code, machine);
+export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null, machine: string | null = null, status = 'failed'): string {
+  const interrupted = interruptionWords(code, machine, status);
   if (interrupted !== null) return interrupted;
 
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;

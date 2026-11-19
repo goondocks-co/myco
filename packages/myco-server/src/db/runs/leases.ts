@@ -70,15 +70,15 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
   return rows.map(({ leasedBy, leasedRunnerId, leasedRunnerCredentialId, ...row }) => ({ ...row, owner: leaseOwnerOf({ leasedBy, leasedRunnerId, leasedRunnerCredentialId }) }));
 }
 
-/** A run with a single-flight subject ends when its lease lapses: its work stays due and a later claim pulls it again. */
+/** Automatic subject work spends one interruption; a manual attempt ends without an automatic retry. */
 const interruptionNumber = `(${subjectInterruptions('agent_runs.project_id', 'agent_runs.task', 'agent_runs.subject')}+1)`;
 const interruptionLimit = `${interruptionNumber}>=${MAX_CONSECUTIVE_INTERRUPTION_ATTEMPTS}`;
 
-const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NULL THEN 'queued' WHEN ${interruptionLimit} THEN 'failed' ELSE 'skipped' END,
+const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NULL THEN 'queued' WHEN origin='manual' THEN 'failed' WHEN ${interruptionLimit} THEN 'failed' ELSE 'skipped' END,
     completed_at = CASE WHEN subject IS NOT NULL THEN ?1 ELSE completed_at END,
-    error_code = CASE WHEN subject IS NULL THEN error_code WHEN ${interruptionLimit} THEN '${SUBJECT_INTERRUPTED_REPEATED}' ELSE '${SUBJECT_INTERRUPTED}' END,
-    error = CASE WHEN subject IS NULL THEN error WHEN ${interruptionLimit} THEN 'The work was interrupted three times; automatic attempts have stopped' ELSE 'The work was interrupted; Myco will try again' END,
-    run_context = CASE WHEN subject IS NULL THEN run_context ELSE json_set(CASE WHEN json_valid(run_context) THEN run_context ELSE '{}' END,'$.interruptionCount',${interruptionNumber}) END,
+    error_code = CASE WHEN subject IS NULL THEN error_code WHEN origin='manual' THEN '${SUBJECT_INTERRUPTED}' WHEN ${interruptionLimit} THEN '${SUBJECT_INTERRUPTED_REPEATED}' ELSE '${SUBJECT_INTERRUPTED}' END,
+    error = CASE WHEN subject IS NULL THEN error WHEN origin='manual' THEN 'The work was interrupted; start it again when you are ready' WHEN ${interruptionLimit} THEN 'The work was interrupted three times; automatic attempts have stopped' ELSE 'The work was interrupted; Myco will try again' END,
+    run_context = CASE WHEN subject IS NULL OR origin='manual' THEN run_context ELSE json_set(CASE WHEN json_valid(run_context) THEN run_context ELSE '{}' END,'$.interruptionCount',${interruptionNumber}) END,
     dispatched_by = CASE WHEN subject IS NOT NULL THEN dispatched_by ELSE NULL END,
     started_at = CASE WHEN subject IS NOT NULL THEN started_at ELSE NULL END,
     held_by = CASE WHEN subject IS NOT NULL THEN NULL ELSE 'worker' END,

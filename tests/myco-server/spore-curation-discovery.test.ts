@@ -1,3 +1,5 @@
+import { offerCurationCluster } from '@myco-server-worker/db/spores/curation-discovery.js';
+import { readCurationWork, commitCurationClose } from '@myco-server-worker/db/spores/curation-work.js';
 import { readAttention } from '@myco-server-worker/core/attention.js';
 import { CURATION_PREVIEW_PAGES, discoverCurationPreview } from '@myco-server-worker/core/curation-preview.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
@@ -67,8 +69,20 @@ test('three interrupted attempts close a poison group and release seeds for a ne
       await discoverSporeClusters(f.env, now + 2);
     }
     expect(f.sqlite.query('SELECT decision,reason FROM spore_curation_work').get()).toEqual({ decision: 'failed', reason: 'Curation stopped after 3 attempts without a decision' });
+    const reopenedAt = f.now + 25 * 3_600_000;
+    f.sqlite.run("UPDATE spore_curation_work SET decision=NULL,final_members=NULL,failures=0,due_at=?,run_id=NULL", [reopenedAt]);
+    const opening = f.sqlite.query<{ cluster_key: string; members: string }, []>('SELECT cluster_key,members FROM spore_curation_work').get()!;
+    await offerCurationCluster(f.db, 'proj_1', opening.cluster_key, JSON.parse(opening.members), reopenedAt);
+    const reopened = await claimed(f, reopenedAt);
+    f.sqlite.run('UPDATE agent_runs SET lease_expires_at=? WHERE id=?', [reopenedAt + 1, reopened.id]);
+    await expireLeases(f.env, reopenedAt + 1);
+    expect((await getRun(f.db, scope, reopened.id))?.status).toBe('skipped');
+    await discoverSporeClusters(f.env, reopenedAt + 2);
+
+    const work = (await readCurationWork(f.db, 'proj_1', curationAssignment((await getRun(f.db, scope, reopened.id))!.runContext)!.key))!;
+    await commitCurationClose(f.db, { projectId: 'proj_1', work, decision: 'failed', reason: 'Closed assignment', now: reopenedAt + 2 });
     await f.add('c'); await f.discover();
-    expect((await claimed(f, f.now + 16 * 3_600_000 + 3)).members.sort()).toEqual(['a', 'b', 'c']);
+    expect((await claimed(f, reopenedAt + 3)).members.sort()).toEqual(['a','b','c']);
   } finally { f.sqlite.close(); }
 });
 

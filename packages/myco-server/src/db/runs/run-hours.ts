@@ -61,25 +61,25 @@ export function runHourTriggers(): Trigger[] {
   ];
 }
 
-/** Interrupted endings have their own finished result and outcome. */
+/** The terminal facts shared by live endings and restore catch-up. */
+const eligibleFact = (r: string) => `(${r}.${FINISHED_RUN_STATUSES} OR (${isInterruptedRunSql(r)})) AND ${r}.completed_at IS NOT NULL`;
+const terminalFact = (r: string) => {
+  const interrupted = isInterruptedRunSql(r);
+  const result = `CASE WHEN ${interrupted} THEN 'interrupted' ELSE ${runResultSql(r)} END`;
+  const values = factOf(r, result);
+  values[8] = `CASE WHEN ${interrupted} THEN 'interrupted' ELSE ${outcomeOf(runResultSql(r))} END`;
+  return values;
+};
 export function interruptedRunHourTriggers(): Trigger[] {
-  const eligible = (r: string) => `(${r}.${FINISHED_RUN_STATUSES} OR (${isInterruptedRunSql(r)})) AND ${r}.completed_at IS NOT NULL`;
-  const fact = (r: string) => {
-    const interrupted = isInterruptedRunSql(r);
-    const result = `CASE WHEN ${interrupted} THEN 'interrupted' ELSE ${runResultSql(r)} END`;
-    const values = factOf(r, result);
-    values[8] = `CASE WHEN ${interrupted} THEN 'interrupted' ELSE ${outcomeOf(runResultSql(r))} END`;
-    return values;
-  };
   return [
-    trigger('run_hour_finish', 'agent_runs', 'UPDATE OF status', [insertFacts(`SELECT ${fact('NEW').join(',')} WHERE 1`)], `${eligible('NEW')} AND OLD.status NOT IN ('completed','failed','skipped')`),
-    trigger('run_hour_insert', 'agent_runs', 'INSERT', [insertFacts(`SELECT ${fact('NEW').join(',')} WHERE 1`)], eligible('NEW')),
+    trigger('run_hour_finish', 'agent_runs', 'UPDATE OF status', [insertFacts(`SELECT ${terminalFact('NEW').join(',')} WHERE 1`)], `${eligibleFact('NEW')} AND OLD.status NOT IN ('completed','failed','skipped')`),
+    trigger('run_hour_insert', 'agent_runs', 'INSERT', [insertFacts(`SELECT ${terminalFact('NEW').join(',')} WHERE 1`)], eligibleFact('NEW')),
   ];
 }
 
 const PAGE_KEYS = jsonKeys(['project_id', 'id']);
-const catchupFacts = write<[keys: string, keptFrom: number]>({ name: 'runHours.catchupFacts', sql: insertFacts(`SELECT ${factOf('r').join(',')}
-  FROM (${PAGE_KEYS}) k JOIN agent_runs r ON r.project_id=k.project_id AND r.id=k.id WHERE r.${FINISHED_RUN_STATUSES} AND r.completed_at>=?2`) });
+const catchupFacts = write<[keys: string, keptFrom: number]>({ name: 'runHours.catchupFacts', sql: insertFacts(`SELECT ${terminalFact('r').join(',')}
+  FROM (${PAGE_KEYS}) k JOIN agent_runs r ON r.project_id=k.project_id AND r.id=k.id WHERE ${eligibleFact('r')} AND r.completed_at>=?2`) });
 /** Each catch-up page moves the runs mark in its own commit, so a page following the counts reads them again. */
 const catchupMark = write<[keys: string]>({ name: 'runHours.catchupMark', sql: `${MARK_RUNS} AND EXISTS(SELECT 1 FROM json_each(?1))` });
 const clearHours = write<[]>({ name: 'runHours.clearHours', sql: 'DELETE FROM run_hour' });
@@ -90,7 +90,7 @@ export const RUN_HOUR_CATCHUP = {
   reset: () => [clearHours.bind(), clearFacts.bind()],
   phases: {
     [RUN_HOUR_PHASE]: {
-      source: { table: 'agent_runs', columns: ['project_id', 'id'], where: `${FINISHED_RUN_STATUSES} AND completed_at IS NOT NULL`, unique: true },
+      source: { table: 'agent_runs', columns: ['project_id', 'id'], where: eligibleFact('agent_runs'), unique: true },
       reconcile: [{ bindAt: (keys: string, now: number) => catchupFacts.bind(keys, now - RUN_HOUR_RETENTION_MS) }, catchupMark],
     },
   },

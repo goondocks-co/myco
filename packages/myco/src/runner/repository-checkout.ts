@@ -136,7 +136,7 @@ async function git(
 
 /** Git's transport and filesystem errors become a closed preparation reason. */
 function gitFailureCode(words: string): RepositoryFailureCode {
-  if (/no space left|disk quota|file too large|read-only file system|unable to write|cannot create.*(?:directory|file)|(?:work tree|config file|config lock|object file|\.git[\/]).*permission denied/i.test(words)) return 'disk';
+  if (/no space left|disk quota|file too large|read-only file system|unable to write|insufficient permission for adding an object|unable to create file|cannot create.*(?:directory|file)|(?:work tree|config file|config lock|object file|\.git[\/]).*permission denied/i.test(words)) return 'disk';
   if (/authentication failed|access denied|returned error: (?:401|403)|could not read (?:Username|Password)/i.test(words)) return 'access_refused';
   if (/repository .*not found|repository not found/i.test(words)) return 'access_refused';
   if (/returned error: 404|does not appear to be a git repository/i.test(words)) return 'not_found';
