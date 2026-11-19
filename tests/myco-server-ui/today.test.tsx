@@ -62,7 +62,7 @@ const SESSIONS = [
 ];
 
 const run = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
-  requested: null, queuedAt: null, startedAt: null, completedAt: null,
+  dryRun: false, requested: null, queuedAt: null, startedAt: null, completedAt: null,
   identity: { status: 'not_recorded' }, costProvenance: null, harness: null, model: null, provider: null,
   projectId: P_MYCO, status: 'completed', result: 'produced', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 0 },
   sessionId: null, failure: null, tokens: 1000, costUsd: 0.1, ...over,

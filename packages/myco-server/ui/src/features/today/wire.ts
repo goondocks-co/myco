@@ -56,6 +56,7 @@ export type RunResult = 'produced' | 'unchanged' | 'failed' | 'failed_with_outpu
 
 /** One run the timeline lists: one that produced something, or one that failed. */
 export interface WorkRun {
+  dryRun: boolean;
   requested: ExecutionProfile | null;
   queuedAt: number | null;
   startedAt: number | null;

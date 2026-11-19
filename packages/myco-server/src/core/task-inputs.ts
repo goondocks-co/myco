@@ -1,4 +1,5 @@
-import { CURATION_STAGE, buildCurationInput, buildCurationPreview, curationPrompt } from './spore-curation.js';
+import { buildStoredCurationPreview, discoverCurationPreview } from './curation-preview.js';
+import { CURATION_STAGE, buildCurationInput, curationPrompt } from './spore-curation.js';
 /**
  * The tasks whose prompt the server builds: the four run outcomes.
  *
@@ -80,7 +81,9 @@ interface TaskInputBuilder {
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [CURATION_TASK]: {
     build: async (env, projectId, now, options) => {
-      if (options.dryRun) return buildCurationPreview(env, projectId, now, typeof options.params?.group === 'string' ? options.params.group : undefined);
+      if (options.dryRun) return options.runId === undefined
+        ? (await discoverCurationPreview(env, { projectId, now, group: typeof options.params?.group === 'string' ? options.params.group : undefined })).input
+        : buildStoredCurationPreview(env, { projectId, now, runId: options.runId, group: typeof options.params?.group === 'string' ? options.params.group : undefined });
       const key = typeof options.params?.group === 'string' ? options.params.group : (await CURATION_STAGE.head(env.db, projectId, now))?.key;
       return key === undefined ? null : buildCurationInput(env, projectId, key);
     },

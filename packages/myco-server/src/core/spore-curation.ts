@@ -26,7 +26,7 @@ import { recordCurationConsidered } from '../db/spores/curation-answer.js';
 import { commitCurationClose, readCurationWork, type CurationClose, type CurationMember as Member, type CurationSeedMember as SeedMember, type CurationWork as Cluster } from '../db/spores/curation-work.js';
 import {
   CURATION_GATE_NEIGHBORS, advanceCurationClock, beginCurationPass, clearCurationDirty, commitCurationProgress, offerCurationCluster, readCurationClock, readCurationNeighbours, readCurationProjectState,
-  readCurationPassStart, readCurationSeedStates, readCurationSeeds, readCurationVectorReceipts,
+  readCurationSeedStates, readCurationSeeds, readCurationVectorReceipts,
 } from '../db/spores/curation-discovery.js';
 import { readCurationDueHead } from '../db/spores/curation-run.js';
 
@@ -47,7 +47,7 @@ const membersOf = (row: Pick<Cluster, 'members'>): SeedMember[] => JSON.parse(ro
 const curationSubject = (projectId: string, key: string): string => `curation:${projectId}:${key}`;
 
 /** Original ids and revisions identify a seed assignment independently of vector order. */
-async function curationClusterKey(members: readonly Member[]): Promise<string> {
+export async function curationClusterKey(members: readonly Member[]): Promise<string> {
   return sha256Hex(JSON.stringify([...members].sort((a, b) => a.id < b.id ? -1 : 1).map(({id,revision})=>({id,revision}))));
 }
 
@@ -64,20 +64,24 @@ async function currentNeighbours(db: RelationalStore, projectId: string, hits: r
 }
 
 /** Scheduled discovery and previews share the bounded seed and neighbour selection. */
-async function selectCurationGroup(env: ServerEnv, { projectId: id, now, semantic, cursor, seeds, consider, offer }: {
+export async function selectCurationGroup(env: ServerEnv, { projectId: id, now, semantic, cursor, seeds, consider, offer, pending = 'defer' }: {
     projectId: string; now: number; semantic: NonNullable<Awaited<ReturnType<typeof resolveSemanticSearch>>>;
     cursor: Parameters<typeof readCurationSeeds>[2]; seeds: Awaited<ReturnType<typeof readCurationSeeds>>;
     consider: (options: Parameters<typeof recordCurationConsidered>[1]) => Promise<unknown>;
     offer: (members: SeedMember[]) => Promise<boolean>;
+    pending?: 'defer' | 'skip';
   }) {
   const { db } = env;
   const seedStates = await readCurationSeedStates(db, id, semantic.provider.modelKey, seeds.map(seed => seed.id));
   let last = { stamp: cursor.after_at, id: cursor.after_id }, found: SeedMember[] | null = null, deferredAt: number | null = null;
+  let visited = 0, pendingSeeds = 0;
   for (const seed of seeds) {
+    visited++;
     last = seed;
     const held = seedStates.get(seed.id);
     if (held?.acked === seed.revision) continue;
     if (held === undefined || held.receipt_id === null || held.neighbor_mean === null || held.neighbor_std === null) {
+      pendingSeeds++;
       await consider({ project: id, members: [seed], outcome: 'vector_unavailable', at: now });
       continue;
     }
@@ -85,9 +89,10 @@ async function selectCurationGroup(env: ServerEnv, { projectId: id, now, semanti
     const partition = { projectId: id, modelKey: semantic.provider.modelKey };
     const [vector] = await semantic.vectors.get(partition, [held.receipt_id]);
     if (vector === undefined) {
-      const pending = now-held.updated_at! < VECTOR_LOST_MS;
-      await consider({ project: id, members: [seed], outcome: pending ? 'vector_pending' : 'vector_missing', at: now });
-      if (pending) { deferredAt = seed.stamp; break; }
+      const applying = now-held.updated_at! < VECTOR_LOST_MS;
+      if (applying) pendingSeeds++;
+      await consider({ project: id, members: [seed], outcome: applying ? 'vector_pending' : 'vector_missing', at: now });
+      if (applying && pending === 'defer') { deferredAt = seed.stamp; break; }
       continue;
     }
     const graded=(hits:GateHit[],minimum:number)=>hits.flatMap(hit=>{
@@ -113,7 +118,7 @@ async function selectCurationGroup(env: ServerEnv, { projectId: id, now, semanti
     const members: SeedMember[]=[{id:seed.id,revision:seed.revision,closeness:closest.closeness},closest,...candidates.slice(0,CURATION_SEED_CAP-2)].map(({id,revision,closeness})=>({id,revision,closeness}));
     if(await offer(members)) {found=members;break;}
   }
-  return { found, last, deferredAt };
+  return { found, last, deferredAt, visited, pendingSeeds };
 }
 
 /** One Project and at most eight indexed seeds per wake; a settled pass rests until its source/vector frontier changes. */
@@ -136,7 +141,7 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
   const semantic = await resolveSemanticSearch(env);
   if (semantic === null) return 0;
   const { frontier, floor } = state;
-  if (floor === null) return 0;
+  if (floor === null || frontier === null) return 0;
   let cursor = state.cursor;
   if (cursor?.active !== 1) {
     cursor = await beginCurationPass(db, id, Math.max(floor, frontier.pending_at ?? floor), frontier.revision);
@@ -166,7 +171,7 @@ export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: 
   return null;
 }
 
-async function curationMaterial(env: Pick<ServerEnv, 'db'>, { projectId, key, seeds, preview = false }: {
+export async function curationMaterial(env: Pick<ServerEnv, 'db'>, { projectId, key, seeds, preview = false }: {
   projectId: string; key: string; seeds: SeedMember[]; preview?: boolean;
 }): Promise<{ input: TaskInput } | { reason: 'changed' | 'oversized' }> {
   const held = await sporesWithSourceById(env.db, { projectId }, seeds.map(member => member.id));
@@ -192,30 +197,6 @@ async function curationMaterial(env: Pick<ServerEnv, 'db'>, { projectId, key, se
   const members=kept.map(({member:{id,revision}})=>({id,revision}));
   const assignment:CurationAssignment={kind:'curation',key,members,...(preview ? {preview:true as const} : {})};
   return { input: {instruction:curationPrompt(material),inputHash:key,counts:{spores:members.length,material_bytes:materialBytes},context:{curation:assignment},subject:curationSubject(projectId,key)} };
-}
-
-/** A preview reads one discovery page without advancing or reserving Project work. */
-export async function buildCurationPreview(env: ServerEnv, projectId: string, now: number, group?: string): Promise<TaskInput | null> {
-  const state = await readCurationProjectState(env.db, projectId, now);
-  const existing = group === undefined ? state.open : await readCurationWork(env.db, projectId, group);
-  let seeds: SeedMember[] | null = existing?.decision === null ? membersOf(existing) : null;
-  if (seeds === null && group === undefined) {
-    const semantic = await resolveSemanticSearch(env);
-    if (semantic === null) return null;
-    const start = Math.max(0, state.frontier.pending_at ?? 0);
-    const cursor = state.cursor?.active === 1 ? state.cursor : await readCurationPassStart(env.db, {
-      project: projectId, start, revision: state.frontier.revision,
-    });
-    if (cursor === null) return null;
-    const page = await readCurationSeeds(env.db, projectId, cursor, CURATION_SEEDS_PER_TICK);
-    seeds = (await selectCurationGroup(env, { projectId, now, semantic, cursor, seeds: page,
-      consider: async () => {}, offer: async () => true,
-    })).found;
-  }
-  if (seeds === null) return null;
-  const key = await curationClusterKey(seeds);
-  const built = await curationMaterial(env, { projectId, key, seeds, preview: true });
-  return 'input' in built ? built.input : null;
 }
 
 /** One group is the entire evidence available to this task. */

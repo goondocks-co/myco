@@ -38,7 +38,7 @@ export const outcome = (over: Partial<WorkOutcome> & Pick<WorkOutcome, 'kind' | 
 });
 
 export const workRun = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
-  requested: null,
+  dryRun: false, requested: null,
   identity: { status: 'not_recorded' }, costProvenance: null, harness: null, model: null, provider: null,
   queuedAt: null, startedAt: null, completedAt: null,
   projectId: P, status: 'completed', result: 'produced', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 0 },

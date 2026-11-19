@@ -92,7 +92,7 @@ export async function workSummary(db: RelationalStore, set: ProjectSet, window: 
 
 const SCOPE_PAGE = 201;
 const timelineRow = `c.project_id,c.run_id AS id,c.task,c.status,c.at,c.tokens AS tokens_used,c.cost AS cost_usd,c.produced,c.spores,c.sessions AS spore_sessions,c.title_session AS titled_session,
-  r.queued_at,r.started_at,r.completed_at,${requestedProfileValue('r.')} AS requested_profile,r.harness,r.model,r.provider,r.usage_data,${costProvenanceValue('r.')} AS cost_provenance,
+  r.dry_run,r.queued_at,r.started_at,r.completed_at,${requestedProfileValue('r.')} AS requested_profile,r.harness,r.model,r.provider,r.usage_data,${costProvenanceValue('r.')} AS cost_provenance,
   CASE WHEN c.status='failed' THEN r.error END AS error,CASE WHEN c.status='failed' THEN r.error_code END AS error_code,
   CASE WHEN c.status='failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
   CASE WHEN c.status='failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
@@ -165,7 +165,7 @@ const failing = read<[string, number], Row>({ name: 'runs.failingOutcomes', sql:
     (SELECT l.id FROM (${failedSince('l', { from: '', where: 'l.project_id=r.project_id AND l.task=r.task' })}) l WHERE NOT ${producedSql('l')}
       ORDER BY COALESCE(l.started_at,l.queued_at,l.completed_at) DESC,l.id DESC LIMIT 1) AS latest_run
   FROM (${failedSince('r', VISIBLE_TASKS)}) r
-  WHERE ${FAILING_AT}>COALESCE((SELECT MAX(s.started_at) FROM agent_runs s INDEXED BY idx_agent_runs_task WHERE s.project_id=r.project_id AND s.task=r.task AND s.status='completed'),-1)
+  WHERE r.dry_run=0 AND ${FAILING_AT}>${failureThreshold('r.project_id','r.task')}
     AND NOT ${producedSql('r')}
   GROUP BY r.project_id,r.task ORDER BY latest_at DESC` });
 export const failingRows = async (db: RelationalStore, tasks: readonly string[], lookbackFrom: number): Promise<Row[]> => (await readSet(db, failing.bind(JSON.stringify(tasks), lookbackFrom)))[0];

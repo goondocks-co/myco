@@ -1,3 +1,6 @@
+import { CURATION_PREVIEW_PAGES, discoverCurationPreview } from '@myco-server-worker/core/curation-preview.js';
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { expect, test } from 'bun:test';
 import { curationFixture as fixture, keepAnswer, note, scope } from './helpers/curation.js';
 import { discoverSporeClusters, CURATION_SEEDS_PER_TICK, CURATION_SEED_CAP, curationAssignment } from '@myco-server-worker/core/spore-curation.js';
@@ -163,5 +166,37 @@ test('applying an older split does not rewind the discovery frontier across unre
     expect(await f.call(run.runToken, 'myco_run_curation', { ...keepAnswer(['a', 'b']), notes: [note(['c'], 'Situation one.'), note(['c'], 'Situation two.')] })).toMatchObject({ completed: true });
     await endLeasedRun(f.env, { principal: f.principal, now: f.now + 1 }, { ...scope, runId: run.id, attemptId: run.attemptId, status: 'completed' });
     f.visits.length = 0; await f.discover(); expect(f.visits.filter(id => seeds.includes(id))).toEqual([]);
+  } finally { f.sqlite.close(); }
+});
+
+test('preview discovery walks a fixed page budget, validates and resumes Project continuations without saving progress', async () => {
+  const f = await fixture();
+  try {
+    const budget = CURATION_PREVIEW_PAGES * CURATION_SEEDS_PER_TICK;
+    for (let i = 0; i < budget; i++) await f.add('noise-' + String(i).padStart(3, '0'), [0, 1], i + 1, 'Unrelated situation.', { mean: 0, std: 1 });
+    await f.add('pair-a', [1, 0], budget + 1); await f.add('pair-b', [1, 0], budget + 2);
+    const server = createServer({ now: () => f.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
+    const start = async (continuation?: unknown) => {
+      const response = await server.handleRequest(await asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1', dryRun: true, continuation }), { ...f.env, secrets: OWNER_ENV });
+      return { status: response.status, body: await response.json() as { outcome: string; continuation: { projectId: string } } };
+    };
+    const first = await start(); expect(first).toMatchObject({ status: 200, body: { outcome: 'no_qualifying_group', continuation: { projectId: 'proj_1' } } });
+    expect(await start({ ...first.body.continuation, projectId: 'proj_2' })).toMatchObject({ status: 400, body: { error: 'invalid_curation_continuation' } });
+    expect(await start({ version: 1 })).toMatchObject({ status: 400, body: { error: 'invalid_curation_continuation' } });
+    expect(await start(first.body.continuation)).toMatchObject({ status: 200, body: { outcome: 'group_found', continuation: { projectId: 'proj_1' } } });
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('continued preview not claimed');
+    expect(curationAssignment((await getRun(f.db, scope, claim.run.id))!.runContext)!.members.map(member => member.id)).toEqual(['pair-a', 'pair-b']);
+  } finally { f.sqlite.close(); }
+});
+
+test('preview discovery names all-pending material and skips a pending seed when later seeds are ready', async () => {
+  const f = await fixture(true);
+  try {
+    await f.add('pending', [0, 1], 1); await f.add('pair-a', [1, 0], 2); await f.add('pair-b', [1, 0], 3);
+    expect(await discoverCurationPreview(f.env, { projectId: 'proj_1', now: f.now })).toMatchObject({ outcome: 'vectors_pending', input: null, continuation: null });
+    f.applyVectors();
+    const get = f.env.vectors.get.bind(f.env.vectors);
+    f.env.vectors.get = async (...args) => (await get(...args)).filter(vector => vector.metadata.record_id !== 'pending');
+    expect(await discoverCurationPreview(f.env, { projectId: 'proj_1', now: f.now })).toMatchObject({ outcome: 'group_found', input: { counts: { spores: 2 } } });
   } finally { f.sqlite.close(); }
 });

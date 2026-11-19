@@ -4,9 +4,9 @@ import { asOwner, asOwnerPost, OWNER_ENV, ownerCookie, MEMBER_SUB, seedMemberRol
 import { issueMemberToken } from './helpers/member-token.js';
 import { searchDeployment } from '@myco-server-worker/core/search.js';
 import { expect, test } from 'bun:test';
-import { endLeasedRun, dispatchTask } from '@myco-server-worker/core/harness.js';
+import { endLeasedRun, dispatchTask, prepareDispatch, enqueueDispatch } from '@myco-server-worker/core/harness.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
-import { curationAssignment } from '@myco-server-worker/core/spore-curation.js';
+import { answerSporeCuration, curationAssignment } from '@myco-server-worker/core/spore-curation.js';
 import { runCloseRefusal } from '@myco-server-worker/core/run-postconditions.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { getSpore } from '@myco-server-worker/db/spores/records.js';
@@ -237,13 +237,40 @@ test('curation off refuses apply and non-admin previews, and an empty preview ha
     const request = () => asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1', dryRun: true });
     const apply = await serve(await asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1' }));
     expect(apply.status).toBe(409); expect(await apply.json()).toMatchObject({ error: 'capability_off', capability: 'spore_curation' });
+    const untouched = await serve(await request());
+    expect(await untouched.json()).toMatchObject({ outcome: 'no_qualifying_group', continuation: null });
     seedMemberRoleAccount(f.sqlite);
     const member = await request(); member.headers.set('cookie', await ownerCookie(f.db, f.now, MEMBER_SUB));
     const denied = await serve(member); expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({ error: 'curation_preview_needs_admin' });
-    await f.add('decision-alone');
+    const memberApply = await asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1' });
+    memberApply.headers.set('cookie', await ownerCookie(f.db, f.now, MEMBER_SUB));
+    expect(await (await serve(memberApply)).json()).toMatchObject({ error: 'curation_hand_start_needs_admin' });
+    await f.add('decision-alone'); await f.add('gotcha-pair');
+    f.sqlite.run("DELETE FROM spore_curation_changes WHERE project_id='proj_1'");
     const empty = await serve(await request()); expect(empty.status).toBe(200);
     expect(await empty.json()).toMatchObject({ outcome: 'no_qualifying_group', message: expect.stringContaining('no preview run was started') });
     expect(await f.poll()).toMatchObject({ claimed: false });
+  } finally { f.sqlite.close(); }
+});
+
+test('the answer commit and queue insertion refuse member or applied work while curation is off', async () => {
+  const f = await fixture();
+  try {
+    await f.enable(); await f.add('decision-a'); await f.add('gotcha-b'); await f.discover();
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('scheduled group not claimed');
+    const run = (await getRun(f.db, scope, claim.run.id))!;
+    await settingsWriter(f.db).setCapability('proj_1', 'spore_curation', false, 'test', f.now);
+    expect(await answerSporeCuration({ ...keepAnswer([]), notes: [note(['decision-a', 'gotcha-b'])] }, {
+      db: f.db, projectId: 'proj_1', runId: run.id, agentId: run.agentId, runContext: run.runContext, now: f.now,
+    })).toMatchObject({ ok: false, code: 'material_changed' });
+    expect((await getSpore(f.db, scope, 'decision-a'))!.status).toBe('active');
+    seedMemberRoleAccount(f.sqlite);
+    const actor = { memberId: 'mem_machine_2', authority: 'member' as const };
+    const spec = { serverUrl: 'https://fixture.test', actor: actor.memberId, options: { dryRun: true } };
+    expect(await dispatchTask(f.env, 'curate-spores', 'proj_1', spec, f.now, { actor })).toMatchObject({ dispatched: false, refusal: 'capability_off' });
+    const prepared = await prepareDispatch(f.env, 'curate-spores', 'proj_1', { curationPreview: true });
+    if (!prepared.ok) throw new Error('preview not prepared');
+    await expect(enqueueDispatch(f.env, prepared.prepared, spec, 'worker', f.now, { actor })).rejects.toMatchObject({ refusal: 'capability_off' });
   } finally { f.sqlite.close(); }
 });

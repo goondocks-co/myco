@@ -35,7 +35,7 @@ const cursorRow = read<[project: string], CurationCursor>({ name: 'curationDisco
 interface CurationProjectState {
   enabled: boolean;
   open: OpenWork | null;
-  frontier: { revision: number; pending_at: number | null };
+  frontier: { revision: number; pending_at: number | null } | null;
   cursor: CurationCursor | null;
   floor: number | null;
 }
@@ -43,10 +43,10 @@ interface CurationProjectState {
 /** Everything one discovery pass decides from, read in one batch. */
 export async function readCurationProjectState(db: RelationalStore, project: string, now: number): Promise<CurationProjectState> {
   const [enabled, open, frontier, cursor, floor] = await readSet(db, enabledRow.bind(project), openWork.bind(project, now, CURATION_MAX_FAILURES), frontierRow.bind(project), cursorRow.bind(project), floorRow.bind(project));
-  const held = cursor[0] ?? null;
+  const held = cursor[0] ?? null, seen = frontier[0] ?? null;
   const changedDuringHistory = held?.active === 1 && held.after_at < held.priority_at
-    && frontier[0]!.pending_at !== null && frontier[0]!.revision > held.pass_revision;
-  return { enabled: enabled[0]!.enabled === 1, open: open[0] ?? null, frontier: frontier[0]!, cursor: changedDuringHistory ? null : held, floor: floor[0]!.floor };
+    && seen !== null && seen.pending_at !== null && seen.revision > held.pass_revision;
+  return { enabled: enabled[0]!.enabled === 1, open: open[0] ?? null, frontier: seen, cursor: changedDuringHistory ? null : held, floor: floor[0]!.floor };
 }
 
 const passStartSql = (admission = '1'): string => `SELECT
