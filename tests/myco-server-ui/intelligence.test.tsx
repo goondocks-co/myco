@@ -648,8 +648,8 @@ it('words a run whose agent could not use the chosen model from the reason it re
 });
 
 const REPOSITORY_FAILURE_CASES = [
-  ['not_found', 'Myco couldn’t find the repository. Check the repository URL and that the read credential can see it.'],
-  ['access_refused', 'The repository refused access. Update its read credential and check organization approval.'],
+  ['not_found', 'Myco couldn’t find the repository. Check the repository URL and that the access token can read it.'],
+  ['access_refused', 'The repository refused access. Update its access token and check organization approval.'],
   ['revision_missing', 'The repository branch or commit is missing. Check the connected branch, then start a new run.'],
   ['timed_out', 'Repository preparation timed out. Check the runner’s network connection, then try again.'],
   ['disk', 'The runner couldn’t write the repository. Free disk space and check the runner’s directory permissions.'],

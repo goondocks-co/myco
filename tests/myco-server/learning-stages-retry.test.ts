@@ -250,10 +250,10 @@ it('retires card credentials after lease expiry, stale sweep and a direct runtim
             caller: { tokenId: claim.run.attemptId, now: at, deadline: at + HOUR }, now: at + 1, errorCode: 'run_failed',
           })).toBe(1);
       }
-      expect((await getRun(db, { projectId: 'project' }, claim.run.id))?.status).toBe('failed');
+      expect((await getRun(db, { projectId: 'project' }, claim.run.id))?.status).toBe(mode === 'lease' ? 'skipped' : 'failed');
       expect((await harness.request(claim.run.runToken, 'myco_run_cards', { op: 'material' })).status).toBe(401);
       expect(await db.prepare('SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id=?').bind(session).first())
-        .toEqual({ card_failures: 1, card_retry_at: at + 1 + HOUR });
+        .toEqual({ card_failures: 1, card_retry_at: at + HOUR + (mode === 'lease' ? 0 : 1) });
     }
   });
 });

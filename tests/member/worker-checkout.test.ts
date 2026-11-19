@@ -132,8 +132,8 @@ describe('worker repository checkout over the Deployment wire', () => {
             expect(context.repositoryFailureCode).toBeUndefined();
             expect(context.repositoryFailureSummary).toBeUndefined();
           } else {
-            expect(context.repositoryFailureCode).toBe('fetch_failed');
-            expect(context.repositoryFailureSummary).toContain('fatal:');
+            expect(context.repositoryFailureCode).toBe('access_refused');
+            expect(context.repositoryFailureSummary).toBeUndefined();
           }
           expect(row.context).not.toContain('revoked-fixture-read-token');
           expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 0 });

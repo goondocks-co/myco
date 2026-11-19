@@ -144,8 +144,7 @@ function gitFailureCode(words: string): RepositoryFailureCode {
 
 /** Prepare committed files in an isolated workspace; no repository hooks or filters execute. */
 export async function prepareRepositoryCheckout(request: RepositoryCheckoutRequest): Promise<RepositoryCheckout> {
-  const deadline = AbortSignal.timeout(CHECKOUT_TIMEOUT_MS);
-  const signal = AbortSignal.any([request.signal, deadline]);
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
   const url = repositoryUrl(request.url);
   repositoryBranch(request.branch);
   if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new RepositoryCheckoutError('commit_mismatch', 'Invalid repository commit.');
@@ -267,7 +266,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
   } catch (error) {
     await dispose();
     if (error instanceof RepositoryCheckoutError) throw error;
-    if (deadline.aborted) {
+    if (signal.aborted && !request.signal.aborted) {
       throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${CHECKOUT_TIMEOUT_MS / 1000} seconds.`);
     }
     if (request.signal.aborted || typeof (error as NodeJS.ErrnoException)?.code !== 'string') throw error;

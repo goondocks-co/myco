@@ -29,7 +29,7 @@ test.describe('repository fetch failure in a run panel', () => {
         await page.reload();
         const panel = page.getByTestId('run-panel');
         const failure = panel.locator('[data-run-failure]');
-        await expect(failure).toContainText('The repository refused access. Update its read credential and check organization approval.');
+        await expect(failure).toContainText('The repository refused access. Update its access token and check organization approval.');
         await expect(failure.getByRole('link', { name: 'Check repository settings' })).toHaveAttribute('href', `/p/${project.projectId}/settings?connect=repository#repository`);
         await expect(failure).not.toContainText('Raw worker diagnostic');
         await expectFits(page, viewport);

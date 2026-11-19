@@ -20,8 +20,7 @@ export async function prepareWorkerCheckout(
   spec: RepositoryCheckoutSpec, scratchDir: string, signal: AbortSignal,
   request: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>, options: WorkerCheckoutOptions = {},
 ): Promise<RepositoryCheckout> {
-  const deadline = AbortSignal.timeout(CHECKOUT_TIMEOUT_MS);
-  const checkoutSignal = AbortSignal.any([signal, deadline]);
+  const checkoutSignal = AbortSignal.any([signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
   try {
     const answer = await request({}, checkoutSignal);
     const repository = answer.repository as RepositoryAccess | null | undefined;
@@ -61,7 +60,7 @@ export async function prepareWorkerCheckout(
     }
     return checkout;
   } catch (error) {
-    if (deadline.aborted) throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${CHECKOUT_TIMEOUT_MS / 1000} seconds.`);
+    if (checkoutSignal.aborted && !signal.aborted) throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${CHECKOUT_TIMEOUT_MS / 1000} seconds.`);
     throw error;
   }
 }
