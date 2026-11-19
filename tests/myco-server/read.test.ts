@@ -35,7 +35,7 @@ describe('read/sessions', () => {
     expect(rows[0]).toEqual({
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
       agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null,
-      memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null, workingSince: null, working: false,
+      memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null, workingSince: null, working: false, live: false, liveUntil: null,
       title: null, summary: null, titledAt: null, endedBy: null, endedByLabel: null, label: 'claude-code',
     });
     expect(cursor).toBeNull();

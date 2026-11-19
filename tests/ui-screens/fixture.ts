@@ -559,7 +559,7 @@ function seedEmbeddingSwitch(databasePath: string, now: number): void {
  * The seed posts two days of capture in a few seconds, so every row's receipt
  * time is the seed's own moment. This sets each receipt to the time its event
  * says it happened, so recency reads as it would after two real days, and
- * leaves the live session's last receipt a minute ago.
+ * leaves the live session's last receipt a minute before the server's own clock.
  */
 function settleReceiptTimes(databasePath: string, liveSessionId: string, now: number): void {
   const sqlite = new Database(databasePath);
@@ -573,7 +573,8 @@ function settleReceiptTimes(databasePath: string, liveSessionId: string, now: nu
     sqlite.exec(`UPDATE sessions SET
       first_received_at = COALESCE((SELECT MIN(e.created_at) FROM events e WHERE e.project_id = sessions.project_id AND e.session_id = sessions.session_id), first_received_at),
       last_received_at = COALESCE((SELECT MAX(e.created_at) FROM events e WHERE e.project_id = sessions.project_id AND e.session_id = sessions.session_id), last_received_at)`);
-    sqlite.query('UPDATE sessions SET last_received_at = ? WHERE session_id = ?').run(now - MINUTE, liveSessionId);
+    // The server judges live by its own clock, which can run up to a day ahead of the fixture's now.
+    sqlite.query('UPDATE sessions SET last_received_at = ? WHERE session_id = ?').run(Math.max(now, Date.now()) - MINUTE, liveSessionId);
   } finally {
     sqlite.close();
   }

@@ -2,7 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { sessionMaterialReadySql } from './material.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
-import { occurredAt, presentedEndedAt, presentedStartedAt } from '../session-dates.js';
+import { occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
 /** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
@@ -62,6 +62,8 @@ interface SessionBrowseFilters {
   agent?: string;
   window?: 'start' | 'activity';
   now?: number;
+  /** The instant `sessionQuietBefore` answers for `now`: given it, each row says whether it is live (`presentedLive`), and `open` and `ended` mean live and not. */
+  quietBefore?: number;
   state?: 'open' | 'ended';
   memberLabel?: string;
   sessionId?: string;
@@ -116,18 +118,19 @@ function variantSql(shape: Shape): string {
     '({branch} IS NULL OR s.branch = {branch})',
     '({agent} IS NULL OR s.agent = {agent})',
     '({member} IS NULL OR m.label = {member})',
-    // Open and ended as the page shows them, each session under one. A session working again after its recorded end is
-    // open while it works: the working read lists it as open, and a read of ended sessions judged at an instant leaves it
-    // out.
-    `({state} IS NULL OR ({state} = 'open' AND ${window === 'working' ? '1' : `${ENDED} IS NULL`})
+    // Open and ended as the page shows them, each session under one. Given the quiet instant, open is live and ended is
+    // not. Without it, open is no end recorded, and a session working again after its recorded end is open while it
+    // works: the working read lists it as open, and a read of ended sessions judged at an instant leaves it out.
+    `({state} IS NULL OR CASE WHEN {quiet} IS NOT NULL THEN ({state} = 'open') = ${presentedLive('{quiet}', 's.')}
+      ELSE ({state} = 'open' AND ${window === 'working' ? '1' : `${ENDED} IS NULL`})
       OR ({state} = 'ended' AND ${ENDED} IS NOT NULL AND ({endedAfter} IS NULL
-        OR COALESCE(s.working_since <= ${ENDED} OR s.working_since <= {endedAfter}, 1))))`,
+        OR COALESCE(s.working_since <= ${ENDED} OR s.working_since <= {endedAfter}, 1))) END)`,
     session ? 's.session_id = {session}' : across ? '({session} IS NULL OR s.session_id = {session})' : '1',
   ];
   // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
   if (window === 'working') conditions.push('s.working_since IS NOT NULL', 's.working_since > {workingAfter}', `(${ENDED} IS NULL OR ${ENDED} < s.working_since)`);
-  // Active in the window: a receipt at or after its start, and no end recorded before it.
-  if (window === 'activity') conditions.push('s.last_received_at >= {since}', `(${ENDED} IS NULL OR ${ENDED} >= {since})`);
+  // Active in the window: a receipt at or after its start, and open (`presentedOpen`) or ended no earlier than it.
+  if (window === 'activity') conditions.push('s.last_received_at >= {since}', `(${ENDED} >= {since} OR ${presentedOpen('s.')})`);
   // A window of starts bounds the instant the page is ordered by, so the filter admits what the order shows.
   if (window === 'start' && since) conditions.push(`${O} >= {since}`);
   if (until) conditions.push(`${O} < {until}`);
@@ -135,7 +138,7 @@ function variantSql(shape: Shape): string {
     ? `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND (s.project_id < {afterProject} OR (s.project_id = {afterProject} AND s.session_id < {afterId}))))`
     : `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND s.session_id < {afterId}))`);
   const index = window === 'activity' ? SESSIONS_ACTIVE_INDEX : window === 'working' ? SESSIONS_WORKING_INDEX : across ? SESSIONS_ACROSS_INDEX : '';
-  return `SELECT s.project_id, ${SESSION_COLUMNS} ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
+  return `SELECT s.project_id, ${SESSION_COLUMNS}, ${presentedLive('{quiet}', 's.')} AS live ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
     ORDER BY ${O} DESC${across ? ', s.project_id DESC' : ''}, s.session_id DESC LIMIT {limit}`;
 }
 
@@ -172,7 +175,7 @@ export async function readSessionPage(db: RelationalStore, request: SessionPageR
     projects: kind === 'named' && !('projectId' in scope) && !scope.all ? `,${scope.projectIds.join(',')},` : null,
     fidelity: (filters.fidelity ?? 'full') === 'full' ? 1 : 0,
     branch: filters.branch ?? null, agent: filters.agent ?? null, member: filters.memberLabel ?? null,
-    state: filters.state ?? null, endedAfter: filters.state === 'ended' && filters.now !== undefined ? filters.now - WORKING_CAP_MS : null,
+    state: filters.state ?? null, quiet: filters.quietBefore ?? null, endedAfter: filters.state === 'ended' && filters.now !== undefined ? filters.now - WORKING_CAP_MS : null,
     session: filters.sessionId ?? null, since: filters.since ?? null, until: filters.until ?? null,
     workingAfter: filters.now === undefined ? null : filters.now - WORKING_CAP_MS,
     at: after?.createdAt ?? null, afterProject: after?.projectId ?? null, afterId: after?.id ?? null, limit: limit + 1,

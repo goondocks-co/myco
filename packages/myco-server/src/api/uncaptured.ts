@@ -59,7 +59,7 @@ export interface UncapturedAnswer {
 export async function handleListUncaptured(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const cursor = ctx.url.searchParams.get('cursor') ?? undefined;
   if (cursor !== undefined && decodeUncapturedCursor(cursor) === null) return badRequest(UNCAPTURED_CURSOR_REFUSAL);
-  const { rows, cursor: next } = await listUncaptured(env.db, isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id }, { cursor });
+  const { rows, cursor: next } = await listUncaptured(env.db, isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id }, ctx.now, { cursor });
   const names = await ownMachineNames(env.db, ctx.member.id, ctx.now, [...new Set(rows.map(row => row.machineId))]);
   const items = rows.map((row): UncapturedRootItem => ({
     machineId: row.machineId, machineName: names.get(row.machineId) ?? null, member: row.member, rootKey: row.rootKey, label: row.label,

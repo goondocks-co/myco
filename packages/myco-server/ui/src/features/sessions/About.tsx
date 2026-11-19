@@ -89,7 +89,7 @@ function Facts({ answer, projectId, projectName, now, live }: { answer: SessionR
       <FactRow term="Started">{dateTimeWords(session.startedAt ?? session.firstReceivedAt, now)}</FactRow>
       {session.endedAt !== null
         ? <FactRow term="Ended">{dateTimeWords(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
-        : <FactRow term={live ? 'Live' : 'Open'}>Last heard {agoWords(session.lastReceivedAt, now)}</FactRow>}
+        : <FactRow term={live ? 'Live' : 'Went quiet'}>Last heard {agoWords(session.lastReceivedAt, now)}</FactRow>}
       <FactRow term={session.endedAt === null ? 'Time observed' : 'Wall time'}>{answer.metrics?.durationMs === null ? 'Not recorded' : formatElapsed(answer.metrics?.durationMs ?? Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
       <FactRow term="Tools">{answer.metrics !== undefined && answer.metrics.tools.length > 0 ? <ToolUsageLine tools={answer.metrics.tools} /> : `${count(counts.toolCalls, 'tool call')}${counts.failedTools > 0 ? ` · ${counts.failedTools} failed` : ''}`}</FactRow>
       <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>

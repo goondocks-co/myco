@@ -3,7 +3,7 @@ import { SPORE_SUCCESSOR_LIMIT } from '../spores/lineage-limit.js';
 import { sporeLearnedAtSql } from './spore-dates.js';
 import { SEARCH_CURRENT_STATUSES } from '@goondocks/myco-shared/search-types';
 import type { RelationalStore } from '../../core/adapters.js';
-import { occurredAt, presentedStatus } from '../session-dates.js';
+import { occurredAt, presentedLiveStatus } from '../session-dates.js';
 import { read, readSet } from '../index.js';
 import { planOutcomeLineSql, planResolvedSql } from '../plans/resolution.js';
 
@@ -20,6 +20,8 @@ export interface HydrationFilters {
   agent?: string; branch?: string; status?: string; session?: string;
   /** Epoch milliseconds, inclusive. */
   sinceMs?: number; untilMs?: number;
+  /** The instant `sessionQuietBefore` answers for the search: a session's `status` is `presentedLiveStatus` at it, as browsing shows it. */
+  quietBefore: number;
 }
 
 /** How much of a record's text to read, and the word to read it around; no text when `chars` is 0. */
@@ -54,6 +56,8 @@ export interface HydratedDocument {
 
 type Slots = [ids: string, projects: string, agent: string | null, branch: string | null, status: string | null, session: string | null,
   since: number | null, until: number | null, chars: number, word: string | null, anyStatus: number];
+/** A session's read also takes the quiet instant its state is judged at. */
+type SessionSlots = [...Slots, quiet: number];
 
 const IDS = 'json_each(?1) j CROSS JOIN search_documents d ON d.doc_id = j.value';
 const sessionOf = (session: string) => `LEFT JOIN sessions se ON se.project_id = d.project_id AND se.session_id = ${session}`;
@@ -77,12 +81,13 @@ const NO_TURN = 'NULL AS turn_id, NULL AS turn_preview, NULL AS turn_chars';
 /** A past plan's outcome as its hit reads: how and when it was resolved, then its resolution note. */
 const PLAN_LINE = `CASE WHEN ${planResolvedSql('p')} THEN ${planOutcomeLineSql('p')} END AS line`;
 
-const HYDRATE = [
-  read<Slots, HydratedDocument>({ name: 'searchHydration.sessions', sql:
+const HYDRATE_SESSIONS = read<SessionSlots, HydratedDocument>({ name: 'searchHydration.sessions', sql:
     `SELECT d.doc_id, 'session' AS kind, d.project_id, s.session_id AS id, NULL AS plan, s.title, NULL AS line, ${textOf('s.summary')},
-      ${presentedStatus('s.')} AS status, NULL AS observation_type, s.session_id, NULL AS prompt_id, ${occurredAt('s.')} AS created_at, s.agent, ${occurredAt('s.')} AS learned_at, NULL AS successor_id, ${NO_TURN}
+      ${presentedLiveStatus('?12', 's.')} AS status, NULL AS observation_type, s.session_id, NULL AS prompt_id, ${occurredAt('s.')} AS created_at, s.agent, ${occurredAt('s.')} AS learned_at, NULL AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN sessions s ON s.project_id = d.project_id AND s.session_id = d.source_key
-    WHERE d.kind = 'session' AND ${admitted({ agent: 's.agent', branch: 's.branch', status: presentedStatus('s.'), session: 's.session_id', created: occurredAt('s.'), liveSession: 's.session_id' })}` }),
+    WHERE d.kind = 'session' AND ${admitted({ agent: 's.agent', branch: 's.branch', status: presentedLiveStatus('?12', 's.'), session: 's.session_id', created: occurredAt('s.'), liveSession: 's.session_id' })}` });
+
+const HYDRATE = [
   read<Slots, HydratedDocument>({ name: 'searchHydration.spores', sql:
     `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, COALESCE(NULLIF(s.agent_line, ''), s.observation_type) AS title, s.agent_line AS line, ${textOf('s.content')},
       s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, ${sporeLearnedAtSql('s', 'se')} AS learned_at,
@@ -121,7 +126,7 @@ export async function hydrateDocuments(db: RelationalStore, ids: readonly number
   if (ids.length === 0) return found;
   const slots: Slots = [JSON.stringify(ids), JSON.stringify(filters.projects), filters.agent ?? null, filters.branch ?? null, filters.status === 'all' ? null : filters.status ?? null,
     filters.session ?? null, filters.sinceMs ?? null, filters.untilMs ?? null, text.chars, text.word, filters.status === 'all' ? 1 : 0];
-  const rows = await readSet(db, ...HYDRATE.map((statement) => statement.bind(...slots)));
+  const rows = await readSet(db, HYDRATE_SESSIONS.bind(...slots, filters.quietBefore), ...HYDRATE.map((statement) => statement.bind(...slots)));
   for (const row of rows.flat()) {
     const id = Number(row.doc_id);
     found.set(id, [...(found.get(id) ?? []), { ...row, doc_id: id, created_at: Number(row.created_at) }]);

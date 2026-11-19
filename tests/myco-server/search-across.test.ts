@@ -65,6 +65,15 @@ describe('search across Projects', () => {
     expect(body.hits.find((r: any) => r.id === 'sp_b')).toMatchObject({ projectId: 'proj_2', type: 'spore', retrieve: { tool: 'myco_spores', input: { op: 'get', id: 'sp_b' } } });
   });
 
+  it('reads a session\'s state as the session list does: quiet past the idle close with no end is ended in both, heard from now is active in both', async () => {
+    const h = harness();
+    h.session('proj_1', 's_quiet', 'cobalt quiet');
+    h.session('proj_1', 's_now', 'cobalt now');
+    h.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id = 's_now'`, [Date.now()]);
+    const listed = async (state: string) => ((await h.get(`/api/sessions?project=proj_1&state=${state}`)).body.rows as Array<{ sessionId: string }>).map((r) => `proj_1/session/${r.sessionId}`);
+    for (const [state, status, id] of [['open', 'active', 's_now'], ['ended', 'completed', 's_quiet']]) expect([await listed(state!), await h.hits(`/api/search?q=cobalt&type=session&status=${status}`)]).toEqual([[`proj_1/session/${id}`], [`proj_1/session/${id}`]]);
+  });
+
   it('covers exactly the Projects named, archived or not, and answers 404 for a name that is not a Project', async () => {
     const h = harness();
     h.spore('proj_1', 'sp_a', 'cobalt in one');

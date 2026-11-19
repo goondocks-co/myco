@@ -9,12 +9,6 @@
  */
 import type { OutcomeKind, TodaySession, TodaySpore, WorkRun } from './wire';
 
-/**
- * How recently a session must have sent something to count as live. An open
- * session (no end recorded) is not live on its own: a runtime that died never
- * ends its session, so liveness is read from the last receipt alone.
- */
-export const LIVE_WITHIN_MS = 15 * 60_000;
 /** How close together a project's title runs must land to read as one item. */
 export const TITLE_FOLD_MS = 60 * 60_000;
 
@@ -44,8 +38,12 @@ export interface WorkEntry {
 
 export type TimelineEntry = SessionEntry | WorkEntry;
 
-export function isLive(session: Pick<TodaySession, 'endedAt' | 'lastReceivedAt'>, now: number): boolean {
-  return session.endedAt === null && now - session.lastReceivedAt <= LIVE_WITHIN_MS;
+/**
+ * Whether a session is live at `now`: the server says until when, from its idle close. A session with no end recorded
+ * is not live on its own: a harness that never sends an end, or a runtime that died, leaves its session quiet.
+ */
+export function isLive(session: Pick<TodaySession, 'liveUntil'>, now: number): boolean {
+  return session.liveUntil !== null && now < session.liveUntil;
 }
 
 /** When a session happened: its start where it has one, else when it first arrived. */

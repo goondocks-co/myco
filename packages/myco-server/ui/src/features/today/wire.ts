@@ -207,6 +207,8 @@ export interface TodaySession {
   firstReceivedAt: number;
   lastReceivedAt: number;
   endedAt: number | null;
+  /** When the session stops being live unless it sends more: the server's idle close past its last receipt. Null when it is not live. */
+  liveUntil: number | null;
   memberId: string | null;
   memberLabel: string | null;
   runtimeLabel: string | null;

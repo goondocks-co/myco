@@ -12,6 +12,7 @@ import { listCatalogTurns } from '../../read/document-catalog.js';
 import { decodeCursor } from '../../read/scope.js';
 import { PROMPT_ORIGINS } from '../../ingest/kinds.js';
 import { getReleaseStatus } from '../../core/provenance.js';
+import { sessionQuietBefore } from '../../core/session-quiet.js';
 import { plans_getPlan as getPlan } from '../../read/catalog/plans.js';
 import {
   sessions_getSession as getSession,
@@ -48,7 +49,7 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }
     branch: row.branch,
     started_at: row.startedAt,
     ended_at: row.endedAt,
-    status: row.endedAt === null ? 'active' : 'completed',
+    status: row.live ? 'active' : 'completed',
     title: row.title,
     summary: row.summary ?? '',
     prompt_count: counts.prompts,
@@ -74,7 +75,7 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   if (op === 'get') {
     const id = str(input.id);
     if (id === undefined) return failure('id is required for op: get');
-    const row = await getSession(db, scope, id);
+    const row = await getSession(db, scope, id, ctx.now, await sessionQuietBefore(ctx.env, ctx.now));
     if (row === null) return failure('Session not found');
     const promptId = str(input.prompt_id);
     if (promptId === undefined && str(input.collection) !== undefined) return failure('collection requires prompt_id; call myco_sessions with op get and id to list its turns first.');
@@ -121,6 +122,7 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     state,
     memberLabel: str(input.user),
     sessionId,
+    quietBefore: await sessionQuietBefore(ctx.env, ctx.now),
   }, ctx.now);
   return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount })), cursor: page.cursor };
 }
