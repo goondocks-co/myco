@@ -47,7 +47,7 @@ export async function searchDeployment(env: ServerEnv, scope: ReadScope, options
       if (semantic !== null) {
         try {
           const semanticAnswer = await semanticSearch(env.db, scope, semantic, documentKinds(request).filter(kind => kind !== 'chunk'),
-            { ...request.filters, query: options.query }, request.limit);
+            { ...request.filters, query: options.query }, request.limit, await sessionQuietBefore(env, now));
           const { hits } = semanticAnswer;
           if (!semanticAnswer.filtered && hits.length > 0) return { hits, mode: 'semantic', provider_unavailable: false, coverage, partial: false, asOf: now, nextCursor: null };
           fallback = semanticAnswer.filtered ? 'filtered' : 'empty_semantic';

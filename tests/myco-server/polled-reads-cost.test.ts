@@ -14,7 +14,7 @@ const NOW = 1_790_000_000_000, MINUTE = 60_000, DAY = 24 * 60 * MINUTE;
 const LIVE = ['live-a', 'live-b', 'live-c'];
 
 async function setup(db: RelationalStore) {
-  await db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)`).run();
+  await db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1),('proj_2','q',1)`).run();
   await db.prepare(`INSERT INTO members(id,label,created_at) VALUES('mem_a','Ada',1)`).run();
   await db.prepare(`INSERT INTO machine_claims(machine_id,member_id,claimed_at,label) VALUES('m_live','mem_a',1,'studio'),('m_former','mem_a',1,'old laptop')`).run();
   await issueMemberToken(db, { memberId: 'mem_a', machineId: 'm_live' }, NOW - MINUTE);
@@ -26,12 +26,14 @@ async function setup(db: RelationalStore) {
     VALUES('proj_1',?1,'m_live','mt_0',?2,?3,?2)`).bind(id, NOW - (i + 1) * 60 * MINUTE, NOW - (i + 1) * MINUTE).run();
 }
 
-/** Each unit is an expired credential of the former machine and a session of the Project that ended long ago. */
+/** Each unit is an expired credential of the former machine, and a session that ended long ago in the Project and in another one. */
 async function grow(db: RelationalStore, from: number, to: number) {
   await eachUnit(db, from, to, `INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
     SELECT 'old-'||i,'mem_a','m_former','hash-'||i,?3-i,?3-i+?4,'old-'||i,?3-i FROM n`, NOW - 30 * DAY, MEMBER_TOKEN_TTL_MS);
   await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
     SELECT 'proj_1','old-'||i,'m_live','mt_0',?3-i*?4,?3-i*?4,?3-i*?4,?3-i*?4+1 FROM n`, NOW - 30 * DAY, MINUTE);
+  await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
+    SELECT 'proj_2','older-'||i,'m_live','mt_0',?3-i*?4,?3-i*?4,?3-i*?4,?3-i*?4+1 FROM n`, NOW - 90 * DAY, MINUTE);
 }
 
 const ids = (page: { rows: readonly { sessionId: string }[] }) => page.rows.map((row) => row.sessionId);
@@ -43,9 +45,11 @@ it('Needs you, the session list, its Open filter, Live now and Today cost D1 the
       expect((await listUncaptured(db, { all: true }, NOW)).rows.map((row) => row.machineId)).toEqual(['m_live']);
     } },
     { name: 'project statistics', run: async (db) => expect(await projectStatistics(db, 'proj_1', NOW)).toMatchObject({ state: 'ready', openSessions: LIVE.length }) },
-    { name: 'session lists first page', run: async (db) => {
-      const quietBefore = await sessionQuietBefore({ db }, NOW);
-      for (const page of [await list(db, { projectId: 'proj_1' }, { quietBefore }, NOW), await across(db, { all: true }, { quietBefore }, NOW)]) expect(ids(page).slice(0, 3)).toEqual(LIVE);
+    { name: 'a Project session list first page', run: async (db) => {
+      expect(ids(await list(db, { projectId: 'proj_1' }, { quietBefore: await sessionQuietBefore({ db }, NOW) }, NOW)).slice(0, 3)).toEqual(LIVE);
+    } },
+    { name: 'the across-Project session list first page, behind another Project of older history', run: async (db) => {
+      expect(ids(await across(db, { all: true }, { quietBefore: await sessionQuietBefore({ db }, NOW) }, NOW)).slice(0, 3)).toEqual(LIVE);
     } },
     { name: 'open sessions, live now and today', run: async (db) => {
       const quietBefore = await sessionQuietBefore({ db }, NOW);
