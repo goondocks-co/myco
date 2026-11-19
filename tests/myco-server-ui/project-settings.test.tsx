@@ -112,6 +112,39 @@ describe('a project\'s settings', () => {
     await waitFor(()=>expect((screen.getByRole('button',{name:'Save limit'}) as HTMLButtonElement).disabled).toBe(true));
   });
 
+  it('lets an admin preview curation while it is off, reading each outcome and refusal and continuing from where the last answer left off', async () => {
+    const first = { version: 1, projectId: P, position: { after_at: 1 } };
+    const further = { version: 1, projectId: P, position: { after_at: 2 } };
+    const answers: Array<() => Response> = [
+      () => Response.json({ outcome: 'group_found', runId: 'run_preview01', projectId: P, queued: true, continuation: first }),
+      () => Response.json({ error: 'invalid_curation_continuation', message: 'Invalid curation continuation.' }, { status: 400 }),
+      () => Response.json({ outcome: 'no_qualifying_group', continuation: further, message: 'none' }),
+      () => Response.json({ outcome: 'vectors_pending', continuation: null, message: 'pending' }),
+      () => Response.json({ error: 'daily_limit', task: 'curate-spores', perDay: 5, resetsAt: null, message: 'spent' }, { status: 429 }),
+      () => Response.json({ error: 'curation_preview_held', message: 'Previews are paused while a restore runs.' }, { status: 409 }),
+    ];
+    const { sent } = server(base({
+      [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, capabilities: { cortex: true, spore_curation: false }, settings: { 'agent.spore_curation.daily_runs': 5 } }),
+      'POST /api/harness/dispatch': () => answers.shift()!(),
+    }));
+    mount(`/p/${P}/settings`);
+    const row = (await screen.findByRole('button', { name: 'Preview a group' })).closest<HTMLElement>('[data-setting="curation.preview"]')!;
+    expect(row.textContent).toContain('A preview changes nothing');
+    const press = async (name: string, shows: string) => {
+      fireEvent.click(within(row).getByRole('button', { name }));
+      await waitFor(() => expect(row.textContent).toContain(shows));
+    };
+    await press('Preview a group', 'Preview queued. It starts when a machine is free.');
+    expect(within(row).getByRole('link', { name: /Open the preview/ }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_preview01`);
+    await press('Preview the next group', 'The place to look further from is no longer valid. Preview again to start from the beginning.');
+    await press('Preview a group', 'No group in this stretch of spores needs curation. Look further to check the next stretch.');
+    await press('Look further', 'The spores checked aren’t searchable for similarity yet, so no group could be found.');
+    await press('Preview a group', 'Your previews in this Project are used up (5 in 24 hours). You can preview again once an earlier preview is a day old.');
+    await press('Preview a group', 'Previews are paused while a restore runs.');
+    const body = { projectId: P, task: 'curate-spores', dryRun: true };
+    expect(sent.map((request) => request.body)).toEqual([body, { ...body, continuation: first }, body, { ...body, continuation: further }, body, body]);
+  });
+
   it('holds what Myco does there, the repository, the access keys and release tracking, in that order, naming the project and never an id', async () => {
     server(base());
     mount(`/p/${P}/settings`);
@@ -353,6 +386,7 @@ describe('a project\'s settings', () => {
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(asked.filter((line) => line.includes(`${api}/`))).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Preview a group' })).toBeNull();
   });
 
   it('leads the project\'s old access address to its access keys', async () => {

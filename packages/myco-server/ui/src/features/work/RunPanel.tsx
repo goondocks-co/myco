@@ -15,6 +15,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import { AskedVersusDid, SourceMark, Tries, WhatHappened } from './RunStory';
+import { CurationDecision } from './CurationDecision';
 import { inferredEnd, recordedOutputWords, runStory, SOURCE_WORDS, type Source } from './story';
 import { stepsKnown } from './activity';
 import {
@@ -149,6 +150,8 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
             : <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>}
         </div>
       )}
+
+      {admin && run.task === 'curate-spores' && <CurationDecision projectId={projectId} runId={run.id} preview={run.dryRun === true} finished={finished} />}
 
       <Tries answer={answer} projectId={projectId} now={now} />
       <WhatHappened answer={answer} story={story} />

@@ -7,6 +7,8 @@ import { ActionLink, Button, Input, Disclosure, ErrorState, LoadingState, Switch
 import { isSettingsConflict, settingsRefusalText, useCapabilities, useRepository, useSettingsActions } from '../../../hooks/use-settings';
 import { PROJECT_SETTINGS_ANCHORS, projectRepositoryPath } from '../../../routes/nav';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
+import { useIsAdmin } from '../../../hooks/use-me';
+import { CurationPreview } from './CurationPreview';
 import type { RepositoryRow } from './wire';
 import type { TaskDescription } from '../../tasks/wire';
 
@@ -115,6 +117,7 @@ export function Capabilities({ projectId }: { projectId: string }) {
   const tasks = useTaskDescriptions(projectId);
   const repository = useRepository(projectId);
   const projects = useProjects();
+  const admin = useIsAdmin();
   const archived = projects.data?.projects.find((project) => project.projectId === projectId)?.archivedAt != null;
   return (
     <AdminSection id={PROJECT_SETTINGS_ANCHORS.capabilities} title="What Myco does here" description={archived ? undefined : "Each switch saves as you flip it."}>
@@ -134,6 +137,7 @@ export function Capabilities({ projectId }: { projectId: string }) {
                 />
               ))}
               <CurationLimit key={projectId} projectId={projectId} value={caps.data.settings[CURATION_LIMIT.leaf]!} revision={caps.data.revisions[CURATION_LIMIT.leaf] ?? 0} />
+              {admin && Object.hasOwn(caps.data.capabilities, 'spore_curation') && <CurationPreview key={`preview-${projectId}`} projectId={projectId} />}
             </RowCard>
 
             {Object.keys(caps.data.retiredCapabilities ?? {}).length > 0 && (

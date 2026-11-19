@@ -208,8 +208,11 @@ test('an admin previews with curation off without changing later discovery, with
     expect(claim.run.profile).toMatchObject({ model: 'sonnet', effort: 'medium' });
     const answer = { ...keepAnswer([]), notes: [note(['decision-a', 'gotcha-b'])] };
     expect(await f.call(claim.run.runToken, 'myco_run_curation', answer)).toMatchObject({ completed: true, applied: false });
-    const preview = await serve(await asOwner(f.db, '/api/projects/proj_1/curation/answers/' + claim.run.id));
-    expect(await preview.json()).toMatchObject({ applied: false, checked: { answer: { notes: answer.notes, keep: [], retire: [], reason: answer.reason } } });
+    const answerPath = '/api/projects/proj_1/curation/answers/' + claim.run.id;
+    const source = (id: string, revision = 0, content = `Whole content for ${id}`) => ({ id, revision: 0, current: { revision, status: 'active', content } });
+    const preview = await serve(await asOwner(f.db, answerPath));
+    expect(await preview.json()).toMatchObject({ applied: false, checked: { answer: { notes: answer.notes, keep: [], retire: [], reason: answer.reason } },
+      sources: [source('decision-a'), source('gotcha-b')] });
     const report = { action: 'preview', summary: 'Curation preview only: no notes changed.', details: JSON.stringify({ notes: answer.notes, keep: [], retire: [], reason: answer.reason }, null, 2) };
     const page = await serve(await asOwner(f.db, '/api/projects/proj_1/runs/' + claim.run.id));
     expect(page.status).toBe(200);
@@ -226,6 +229,12 @@ test('an admin previews with curation off without changing later discovery, with
     const run = (await getRun(f.db, scope, scheduled.run.id))!;
     expect(curationAssignment(run.runContext)!.members).toEqual(curationAssignment((await getRun(f.db, scope, claim.run.id))!.runContext)!.members);
     expect(run.dryRun).toBe(0);
+    f.sqlite.run("UPDATE spores SET content='Edited after the preview.',revision=revision+1 WHERE project_id='proj_1' AND id='gotcha-b'");
+    expect(await (await serve(await asOwner(f.db, answerPath))).json()).toMatchObject({ sources: [source('decision-a'), source('gotcha-b', 1, 'Edited after the preview.')] });
+    seedMemberRoleAccount(f.sqlite);
+    const memberRead = await asOwner(f.db, answerPath); memberRead.headers.set('cookie', await ownerCookie(f.db, f.now, MEMBER_SUB));
+    expect((await serve(memberRead)).status).toBe(403);
+    expect((await serve(await asOwner(f.db, '/api/projects/proj_1/curation/answers/run_unknown'))).status).toBe(404);
   } finally { f.sqlite.close(); }
 });
 

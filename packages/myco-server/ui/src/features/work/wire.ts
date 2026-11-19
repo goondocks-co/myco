@@ -276,3 +276,42 @@ export interface CapabilityOffRefusal {
 export interface FreshNeedsAdminRefusal {
   error: 'fresh_needs_admin';
 }
+
+/** A place in a Project's notes the server hands back to continue a curation preview from; sent back unread. */
+export type CurationContinuation = Record<string, unknown>;
+
+/** `POST /api/harness/dispatch` with `dryRun:true` for curation, answered 200: a preview started, or why none was. */
+export type CurationPreviewAnswer =
+  | { outcome: 'group_found'; runId: string; projectId: string; queued: boolean; continuation: CurationContinuation | null }
+  | { outcome: 'no_qualifying_group'; continuation: CurationContinuation | null; message: string }
+  | { outcome: 'vectors_pending'; continuation: null; message: string };
+
+/** One note a curation answer writes: the group members it comes from and its full text. */
+export interface CurationNote {
+  sources: string[];
+  observation_type: string;
+  agent_line: string;
+  content: string;
+}
+
+/** A curation run's checked decision for its group. */
+export interface CurationAnswer {
+  notes: CurationNote[];
+  keep: string[];
+  retire: { id: string; reason: string; made_unnecessary_by: string }[];
+  reason: string;
+}
+
+/** One group member as the run was offered it, and as it reads now; `current` is null once the Project no longer holds it. */
+export interface CurationSource {
+  id: string;
+  revision: number;
+  current: { revision: number; status: string; observationType: string; agentLine: string | null; content: string } | null;
+}
+
+/** `GET /api/projects/{p}/curation/answers/{r}` (admins only): a curation run's checked answer and its group's notes as they read now. */
+export interface CurationAnswerRead {
+  applied: boolean;
+  checked: { answer: CurationAnswer } | null;
+  sources: CurationSource[];
+}
