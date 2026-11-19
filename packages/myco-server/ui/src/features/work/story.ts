@@ -188,7 +188,7 @@ export function runStory({ answer, calls, callsComplete, steps, startedBy, cause
   const { run } = answer;
   if (run.provider === 'direct') return [
     ...(run.startedAt === null ? [] : [row({ key: 'direct-started', at: run.startedAt, words: 'Myco called the model directly', source: 'saw', note: run.model })]),
-    ...(run.completedAt === null ? [] : [row({ key: 'direct-ended', at: run.completedAt, words: run.status === 'completed' ? 'Wrote the session title and summary' : 'The direct model call failed', source: 'saw', tone: run.status === 'completed' ? 'good' : 'bad' })]),
+    ...(run.completedAt === null ? [] : [row({ key: 'direct-ended', at: run.completedAt, words: run.status === 'completed' ? 'Wrote the session title and summary' : run.status === 'skipped' ? 'Work stopped before a result was saved' : 'The direct model call failed', source: 'saw', tone: run.status === 'completed' ? 'good' : run.status === 'skipped' ? null : 'bad' })]),
   ];
   const timed: StoryRow[] = [];
   if (run.queuedAt !== null) timed.push(row({ key: 'queued', at: run.queuedAt, words: startedBy === null ? 'Queued' : `Queued, ${startedBy}`, source: 'saw' }));
@@ -377,7 +377,7 @@ export function askedRows(answer: RunDetailAnswer): AskedRow[] {
   const { run, read, outcomeEvidence } = answer;
   if (run.provider === 'direct') return [
     { key: 'model', label: 'Model', asked: run.model ?? 'Not configured', evidence: run.model ?? 'Not recorded', source: 'saw', tone: null },
-    { key: 'output', label: 'Output', asked: 'Session title and summary', evidence: run.result === 'produced' ? 'Stored the validated title and summary' : run.status === 'failed' ? 'No title saved' : 'In progress', source: 'saw', tone: run.status === 'failed' ? 'bad' : null },
+    { key: 'output', label: 'Output', asked: 'Session title and summary', evidence: run.result === 'produced' ? 'Stored the validated title and summary' : run.status === 'failed' || run.status === 'skipped' ? 'No title saved' : 'In progress', source: 'saw', tone: run.status === 'failed' ? 'bad' : null },
   ];
   const rows: AskedRow[] = [];
   const live = run.status === 'queued' || run.status === 'running' || run.status === 'claimed';

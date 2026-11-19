@@ -439,3 +439,12 @@ const HOUR_AGO = 60 * MINUTE;
 function evidence(over: Partial<RunCloseEvidence> = {}): RunCloseEvidence {
   return { hasReport: true, hasAudit: true, artifactPresent: true, skipSupported: null, targetSessionId: null, ...over };
 }
+
+it('shows an abandoned direct title as stopped work without a failure', async () => {
+  const detail = runDetail(runRow({id:'direct_interrupted',task:'title-summary',provider:'direct',harness:null,
+    status:'skipped',result:null,startedAt:NOW - MINUTE,completedAt:NOW,errorCode:'execution_abandoned'}));
+  const panel = await open('direct_interrupted', detail);
+  expect(story(panel).textContent).toContain('Work stopped before a result was saved');
+  expect(story(panel).textContent).not.toContain('The direct model call failed');
+  expect(panel.textContent).toContain('No title saved');
+});

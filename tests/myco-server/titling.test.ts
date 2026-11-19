@@ -1,3 +1,4 @@
+import { readWork } from '@myco-server-worker/read/work.js';
 import { backfillTitles } from '@myco-server-worker/core/titling.js';
 import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { dispatchLoad } from '@myco-server-worker/db/runs/live.js';
@@ -524,7 +525,13 @@ describe('direct session titles', () => {
     const run = await h.title('direct');
     expect(await dispatchLoad(h.env.db, TITLING_TASK, NOW)).toMatchObject({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
     await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
-    expect(h.runRow(run.runId!)).toMatchObject({ status: 'failed', error: 'The direct model call did not settle before its deadline' });
+    expect(h.runRow(run.runId!)).toMatchObject({ status: 'skipped', error: 'The direct model call ended without recording a result; the work stays due' });
+    expect(h.row('direct')).toEqual(untouched);
+    const work = () => readWork(h.env.db, {all:false,projectIds:['proj_1']}, NOW - 1, NOW + 86_400_000);
+    expect((await work()).timeline).toEqual([]);
+    h.sqlite.run("UPDATE agent_runs SET status='failed',error_code='run_failed',error='The direct model call did not settle before its deadline' WHERE id=?", [run.runId!]);
+    await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 2);
+    expect((await work()).timeline).toEqual([]);
     const retry = await titleSession(h.env, { projectId: 'proj_1', sessionId: 'direct', now: NOW + OWNER_TITLING_WINDOW_MS + 1, origin: ORIGIN }, { retry: true });
     expect(retry.outcome).toBe('dispatched');
     h.sqlite.close();

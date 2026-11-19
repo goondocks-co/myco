@@ -140,7 +140,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
       };
       const runId = crypto.randomUUID();
       try {
-        const admitted = await beginDirectTitle(env.db, { project: projectId, session: sessionId, run: runId, model: provider.model, now, mode, ...(opts.by === undefined ? {} : { by: opts.by }) });
+        const admitted = await beginDirectTitle(env.db, { project: projectId, session: sessionId, run: runId, model: provider.model, now, mode, previous, ...(opts.by === undefined ? {} : { by: opts.by }) });
         if (!admitted) {
           await releaseUnlaunched();
           return skipped('ceiling');

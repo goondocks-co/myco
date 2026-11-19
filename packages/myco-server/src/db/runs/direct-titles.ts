@@ -2,7 +2,10 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { TitleSnapshot } from '../documents/titling-material.js';
 import { DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS, completionAccounting, DIRECT_CALL_WINDOW_MS, DIRECT_CALLS_PER_MINUTE, COMPLETION_TIMEOUT_MS, COMPLETION_ATTEMPTS, PROVIDER_FAULTS } from '../../core/completion/provider.js';
-import { commit, rows, write } from '../index.js';
+import type { ReadScope } from '../../read/scope.js';
+import type { RunRow } from './lifecycle.js';
+import { staleAfter } from '../../core/run-deadline.js';
+import { assertion, commit, refusalCode, refused, rows, write } from '../index.js';
 import { storeSessionTitle, faultedTitleRelease, uncalledTitleRelease } from '../session-titles.js';
 import { ensureAgentWrite } from './claim.js';
 
@@ -19,10 +22,10 @@ const countAttempt = write<[project: string, session: string, run: string], neve
     AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=?1 AND id=?3 AND provider='direct' AND status='running' AND attempt_counted=1)` });
 
 /** Records direct work without a runner attempt, lease or harness credential. */
-export async function beginDirectTitle(db: RelationalStore, ask: { project: string; run: string; model: string; now: number; session: string; mode: string; by?: string }) {
-  const { project, run, model, now, session, mode, by } = ask;
+export async function beginDirectTitle(db: RelationalStore, ask: { project: string; run: string; model: string; now: number; session: string; mode: string; previous: number | null; by?: string }) {
+  const { project, run, model, now, session, mode, previous, by } = ask;
   const result = await commit(db, ensureAgentWrite(db, { id: AGENT, name: AGENT, provider: null, model: null, enabled: true }, now),
-    insert.bind(project, run, model, now, JSON.stringify({ session_id: session, mode, execution: 'direct', timeoutSeconds: (DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS) / 1000, actor: by ?? 'deployment' }), mode === 'owner' ? 'manual' : 'automatic', completionAccounting(model, null), JSON.stringify({ actor: by ?? 'deployment', execution: 'direct' })), countAttempt.bind(project, session, run));
+    insert.bind(project, run, model, now, JSON.stringify({ session_id: session, mode, previousTitledAt: previous, execution: 'direct', timeoutSeconds: (DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS) / 1000, actor: by ?? 'deployment' }), mode === 'owner' ? 'manual' : 'automatic', completionAccounting(model, null), JSON.stringify({ actor: by ?? 'deployment', execution: 'direct' })), countAttempt.bind(project, session, run));
   return result[1]!.results.length > 0;
 }
 
@@ -76,4 +79,50 @@ const reserveCall = write<[project: string, run: string, now: number], { id: num
 /** A provider request reserves its own slot in the same atomic write that counts the trailing minute. */
 export async function reserveDirectCall(db: RelationalStore, project: string, run: string, now: number): Promise<boolean> {
   return (await rows(db, reserveCall.bind(project, run, now))).length > 0;
+}
+
+const ABANDONED_ERROR = 'The direct model call did not settle before its deadline';
+const INTERRUPTED_CODE = 'execution_abandoned';
+const ABANDONED_CONFLICT = refusalCode('direct_title_ending_changed');
+const abandonmentOwner = "project_id=?1 AND id=?2 AND provider='direct' AND status='running' AND run_context IS ?3 AND started_at=?4";
+const abandonedGuard = assertion<[project: string, run: string, context: string | null, started: number]>({
+  name: 'directTitle.abandonGuard', refusal: ABANDONED_CONFLICT, when: `EXISTS(SELECT 1 FROM agent_runs WHERE ${abandonmentOwner})`,
+});
+const abandoned = write<[project: string, run: string, context: string | null, started: number, now: number], { id: string }>({
+  name: 'directTitle.abandon', sql: `UPDATE agent_runs SET status='skipped',completed_at=?5,error_code='${INTERRUPTED_CODE}',
+    error='The direct model call ended without recording a result; the work stays due'
+    WHERE ${abandonmentOwner} RETURNING id`,
+});
+
+/** An execution with no recorded result gives its session another attempt; a recorded provider failure remains failed. */
+export async function abandonDirectTitle(db: RelationalStore, scope: ReadScope, run: Pick<RunRow, 'id' | 'runContext' | 'startedAt'>, now: number): Promise<boolean> {
+  if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) return false;
+  const context = JSON.parse(run.runContext ?? '{}') as Record<string, unknown>;
+  if (typeof context.session_id !== 'string' || typeof context.mode !== 'string') throw new Error('Direct title claim is incomplete');
+  const previous = context.previousTitledAt;
+  const release = previous === null || typeof previous === 'number' ? faultedTitleRelease({
+    project: scope.projectId, session: context.session_id, run: run.id, stamp: run.startedAt, previous, mode: context.mode, now,
+  }) : [];
+  try {
+    const result = await commit(db, abandonedGuard.bind(scope.projectId, run.id, run.runContext, run.startedAt),
+      ...release, abandoned.bind(scope.projectId, run.id, run.runContext, run.startedAt, now));
+    return result.at(-1)!.results.length > 0;
+  } catch (error) {
+    if (refused(error, ABANDONED_CONFLICT)) return false;
+    throw error;
+  }
+}
+
+const retainedAbandoned = write<[limit: number], { id: string }>({ name: 'directTitle.retireAbandoned', sql:
+  `UPDATE agent_runs SET status='skipped',error_code='${INTERRUPTED_CODE}' WHERE (project_id,id) IN (
+    SELECT f.project_id,f.run_id FROM run_finished f INDEXED BY idx_run_finished_error_code
+    CROSS JOIN agent_runs r ON r.project_id=f.project_id AND r.id=f.run_id
+    WHERE f.error_code='run_failed' AND r.provider='direct' AND r.status='failed' AND r.error='${ABANDONED_ERROR}'
+    ORDER BY f.at LIMIT ?1)
+    AND status='failed' AND provider='direct' AND error_code='run_failed' AND error='${ABANDONED_ERROR}' RETURNING id` });
+
+/** Only a recorded abandoned execution is reclassified; settled provider outcomes retain their ending. */
+export async function retireAbandonedDirectTitles(db: RelationalStore, limit: number): Promise<number> {
+  const [changed] = await commit(db, retainedAbandoned.bind(limit));
+  return changed.results.length;
 }
