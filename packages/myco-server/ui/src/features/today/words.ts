@@ -4,6 +4,7 @@
  * as what it produced, a machine by its name, and the account Myco's own work
  * signs in as reads "Myco".
  */
+import { runErrorWords } from '../work/words';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
 import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
@@ -218,6 +219,12 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     return name === null ? 'In a project you can’t see here.' : `In ${name}.`;
   };
   switch (item.kind) {
+    case 'repository_preparation_failed':
+      return {
+        title: `Repository preparation keeps failing in ${projectName(item.projectId) ?? 'a project'}`,
+        detail: `${runErrorWords('repository_unprepared', null, item.failure)} Scheduled retries are slowed down.${item.retryAt > now ? ` Next retry ${when(item.retryAt, now)}.` : ' Another retry is due.'}`,
+        action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
+      };
     case 'repository_missing':
       return repositoryNeededWords(item.projectId, projectName(item.projectId), item.codeMap);
 
@@ -371,6 +378,7 @@ export function repositoryWords(item: UncapturedRootItem, now: number, viewerId:
 /** What each attention check reads, for the line naming the checks that could not be read. */
 export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   repository_missing: 'project repositories',
+  repository_preparation_failed: 'repository preparation',
   backup_overdue: 'backups',
   outcome_failed: 'Myco’s work',
   runs_without_audit: 'agents’ accounts of their work',

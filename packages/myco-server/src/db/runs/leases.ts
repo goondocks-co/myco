@@ -71,7 +71,7 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
 /** A run with a single-flight subject ends when its lease lapses: its work stays due and a later claim pulls it again. */
 const LEASE_LAPSED = 'lease_lapsed';
 
-const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NOT NULL THEN 'failed' ELSE 'queued' END,
+const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NOT NULL THEN 'skipped' ELSE 'queued' END,
     completed_at = CASE WHEN subject IS NOT NULL THEN ?1 ELSE completed_at END,
     error_code = CASE WHEN subject IS NOT NULL THEN '${LEASE_LAPSED}' ELSE error_code END,
     error = CASE WHEN subject IS NOT NULL THEN 'The lease lapsed; the work stays due and is pulled again' ELSE error END,
@@ -92,4 +92,18 @@ export async function settleLapsedLease(db: RelationalStore, scope: ReadScope, r
     : owner.kind === 'member' ? settleMember.bind(now, scope.projectId, runId, owner.leasedBy, attemptId, now)
       : settleRunner.bind(now, scope.projectId, runId, owner.runnerId, owner.credentialId, attemptId, now));
   return result.results.length === 1;
+}
+
+const interruptedFailures = write<[limit: number], { id: string }>({ name: 'runs.retireInterruptedFailures', sql:
+  `UPDATE agent_runs SET status='skipped' WHERE (project_id,id) IN (
+    SELECT f.project_id,f.run_id FROM run_finished f INDEXED BY idx_run_finished_error_code
+    CROSS JOIN agent_runs r ON r.project_id=f.project_id AND r.id=f.run_id
+    WHERE f.error_code='${LEASE_LAPSED}' AND r.status='failed' AND r.error_code='${LEASE_LAPSED}' AND r.subject IS NOT NULL
+    ORDER BY f.at LIMIT ?1)
+    AND status='failed' AND error_code='${LEASE_LAPSED}' AND subject IS NOT NULL RETURNING id` });
+
+/** A stored lapse ends as skipped; its history and hour projections move with the same write. */
+export async function retireInterruptedFailures(db: RelationalStore, limit: number): Promise<number> {
+  const [changed] = await commit(db, interruptedFailures.bind(limit));
+  return changed.results.length;
 }

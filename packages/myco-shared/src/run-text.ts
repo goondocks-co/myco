@@ -536,8 +536,8 @@ export function parseRepositoryFailure(value: unknown, secrets: readonly string[
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const code = Reflect.get(value, 'code');
   if (typeof code !== 'string' || !(REPOSITORY_FAILURE_CODES as readonly string[]).includes(code)) return null;
-  let summary = code === 'fetch_failed' && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
-  summary = maskDiagnosticSecrets(summary, secrets);
+  let summary = ['fetch_failed', 'other', 'timed_out'].includes(code) && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
+  summary = maskDiagnosticSecrets(summary, secrets).trim().split(/\r?\n/).at(-1) ?? '';
   const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
   return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
 }

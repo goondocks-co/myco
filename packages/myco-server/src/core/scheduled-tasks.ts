@@ -13,6 +13,7 @@
  * A dispatch limit and a per-day ceiling answer differently, and the difference
  * is the point: a limit QUEUES, a ceiling REFUSES (`ceilingSkipId`).
  */
+import { repositoryFailureRead, type RepositoryFailureStreak } from '../db/runs/repository-failures.js';
 import { RUN_ID_PREFIX } from '../constants.js';
 import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { projectRepositories } from './repositories.js';
@@ -49,7 +50,7 @@ const PERSISTENT_SKIPS = new Set<ScheduleSkip>(['repository_missing', 'repositor
 
 /** Persistent admission skips are emitted once per Project and task per day, or when the refusal changes. */
 async function emitScheduleSkip(env: ServerEnv, projectId: string, task: string, skip: ScheduleSkip, now: number): Promise<void> {
-  if (skip === 'not_yet' || skip === 'quiet') return;
+  if (skip === 'not_yet' || skip === 'quiet' || skip === 'repository_backoff') return;
   if (PERSISTENT_SKIPS.has(skip)) {
     type SkipState = { skip: string; at: number };
     const valid = (value: unknown): value is SkipState => typeof value === 'object' && value !== null && 'skip' in value && 'at' in value
@@ -98,7 +99,7 @@ async function recordClockSkip(env: ServerEnv, projectId: string, task: string, 
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
 export const CLOCK_ACTOR = 'clock';
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable';
+type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable' | 'repository_backoff';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
@@ -117,6 +118,7 @@ interface ScheduleFacts {
   runs: Map<string, TaskRunFacts>;
   /** `taskFactsKey(projectId, capability)` for every capability a Project has turned on. */
   capabilities: Set<string>;
+  repositoryFailures?: RepositoryFailureStreak[];
 }
 
 const NO_RUNS: TaskRunFacts = { live: false, lastEntryAt: null, entriesSince: 0 };
@@ -138,9 +140,11 @@ export async function readScheduleFacts(
     ),
   ];
   const runs = taskRunFacts(tasks, now - DAY_MS, CLOCK_ACTOR, projectId);
-  const [runRows, capabilityRows = []] = gated.length === 0 ? await readSet(env.db, runs.statement)
-    : await readSet(env.db, runs.statement, enabledCapabilitiesRead(gated, typeof projectId === 'string' ? projectId : undefined));
+  const repositories = repositoryFailureRead(projectId);
+  const [runRows, capabilityRows, repositoryRows] = await readSet(env.db, runs.statement,
+    enabledCapabilitiesRead(gated, typeof projectId === 'string' ? projectId : undefined), repositories.statement);
   return {
+    repositoryFailures: repositories.read(repositoryRows),
     runs: runs.read(runRows),
     capabilities: new Set(capabilityRows.map(({ projectId: held, capability }) => taskFactsKey(held, capability))),
   };
@@ -160,6 +164,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   const gate = admissionForTask(task);
   if (gate?.kind === 'capability' && !held.capabilities.has(taskFactsKey(projectId, gate.capability))) return 'capability_off';
   if (schedule.overlap === 'skip' && runs.live) return 'already_running';
+  if (REQUIRED_REPOSITORY_TASKS.includes(task) && held.repositoryFailures?.some(failure => failure.projectId === projectId && now < failure.retryAt)) return 'repository_backoff';
 
   const accelerator = schedule.accelerator === undefined ? undefined : declared(ACCELERATORS, schedule.accelerator.name);
   const count = schedule.accelerator !== undefined && accelerator !== undefined

@@ -324,6 +324,10 @@ it('admits only closed repository reasons and masks summaries before bounding th
   expect(JSON.stringify(reason)).not.toContain(btoa('user:' + token));
   expect(JSON.stringify(reason)).not.toContain('another-secret');
   expect(parseRepositoryFailure(reason)).toEqual(reason);
+  const last = parseRepositoryFailure({ code: 'other', summary: `progress\nfatal: failed https://user:${token}@example.test/repo?key=private token=${token}` }, [token])!;
+  expect(last.summary).toStartWith('fatal:');
+  expect(JSON.stringify(last)).not.toContain('private');
+  expect(JSON.stringify(last)).not.toContain(token);
   expect(parseRepositoryFailure({ code: 'submodules', summary: token })).toEqual({ code: 'submodules' });
   expect(parseRepositoryFailure({ code: 'unrecognized', summary: token })).toBeNull();
   expect(parseRepositoryFailure(null)).toBeNull();

@@ -86,7 +86,7 @@ import { emit } from '../telemetry.js';
 import { type ActorCeiling, type ClaimedRunRow } from './runs.js';
 import { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 import { deploymentTaskEntriesSince } from '../db/runs/claim.js';
-import { lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
+import { retireInterruptedFailures, lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
 import { runRemainingMs, getRun } from '../db/runs/lifecycle.js';
 import { applyRunUpdate, runUpdateStatement } from '../db/runs/change.js';
 import { ensureAgent } from '../db/runs/state.js';
@@ -1180,7 +1180,7 @@ export async function endLeasedRun(
 
 /** Settle expired attempts and retire their exact credentials, then prune inactive worker metadata. */
 export async function expireLeases(env: ServerEnv, now: number): Promise<number> {
-  let settled = 0;
+  let settled = await retireInterruptedFailures(env.db, DRAIN_BATCH);
   for (const lapsed of await lapsedLeases(env.db, now, DRAIN_BATCH)) {
     if (!(await settleLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.owner, lapsed.dispatchedBy, now))) continue;
     await retireDispatchCredential(env, lapsed.dispatchedBy, now);

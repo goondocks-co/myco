@@ -202,7 +202,7 @@ cp.execFileSync('git', process.argv.slice(2), { stdio: 'inherit' });
   let failure: RepositoryCheckoutError | undefined;
   try { await prepareRepositoryCheckout({ ...request(), credential, gitPath: executable, pin: async commit => commit }); }
   catch (error) { expect(error).toBeInstanceOf(RepositoryCheckoutError); failure = error as RepositoryCheckoutError; }
-  expect(failure?.failure.code).toBe('fetch_failed');
+  expect(failure?.failure.code).toBe('other');
   expect(failure?.failure.summary).toContain('fatal: Could not read source');
   expect(failure?.failure.summary!.length).toBeLessThanOrEqual(512);
   expect(JSON.stringify(failure?.failure)).not.toContain(credential.token);
@@ -301,10 +301,10 @@ process.exit(child.status??1);
     expect([second,third]).toContain(pins[0]!.split('/').at(-1)!);
     expect(JSON.parse(await readFile(counter,'utf8'))).toEqual({init:1,clone:3,remoteFetch:3,refspecs:Array(3).fill('+refs/heads/main:refs/heads/main')});
     await expect(prepareRepositoryCheckout({...request(),cacheRoot:join(home,'new-runner-cache'),commit:first,pin:async commit=>commit}))
-      .rejects.toMatchObject({failure:{code:'checkout_failed'}});
+      .rejects.toMatchObject({failure:{code:'revision_missing'}});
     expect(await readFile(join(a.root,'.git/config'),'utf8')).not.toContain(token);
     const denied=prepareRepositoryCheckout({...request(),cacheRoot,credential:{username:'reader',token:'revoked-fixture-token'},pin:async commit=>commit});
-    await expect(denied).rejects.toMatchObject({failure:{code:'fetch_failed'}});
+    await expect(denied).rejects.toMatchObject({failure:{code:'access_refused'}});
     expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
   } finally {
     await Promise.all(checkouts.map(checkout=>checkout.dispose()));
@@ -347,4 +347,10 @@ it('map and seed history reads need no repository access outside the run directo
       expect(existsSync(cacheRoot)).toBe(false);
     } finally {await checkout.dispose();discardRunDir(allocation.scratchDir);}
   }
+});
+
+it('names a missing revision before exposing files', async () => {
+  await expect(prepareRepositoryCheckout({...request(),branch:'absent-branch',pin:async commit => commit}))
+    .rejects.toMatchObject({failure:{code:'revision_missing'}});
+
 });

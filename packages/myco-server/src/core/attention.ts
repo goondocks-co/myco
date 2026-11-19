@@ -20,6 +20,7 @@
  * A rule whose read fails is named in `unavailable` and the others still answer, so one unreadable fact never hides
  * the rest, and an empty list with nothing unavailable means nothing needs anyone.
  */
+import { repositoryFailureStreaks, type RepositoryFailureStreak } from '../db/runs/repository-failures.js';
 import { repositoriesNeeded } from '../read/repository-requirements.js';
 import type { ServerEnv } from './adapters.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
@@ -62,6 +63,7 @@ const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(
 const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
+  | ({ kind: 'repository_preparation_failed'; tone: 'warn' } & RepositoryFailureStreak)
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
@@ -85,7 +87,7 @@ export interface AttentionAnswer {
   unavailable: AttentionKind[];
 }
 
-type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number, harnessFacts: () => Promise<HarnessAttentionFact[]>, metadata: () => Promise<StatusMetadata>) => Promise<AttentionItem[]> };
+type Rule = { kind: AttentionKind; read: (env: ServerEnv, now: number, harnessFacts: () => Promise<HarnessAttentionFact[]>, metadata: () => Promise<StatusMetadata>, repositoryFacts: () => Promise<RepositoryFailureStreak[]>) => Promise<AttentionItem[]> };
 
 /** The instant of the last backup, from the backup index and from the recovery producer's last complete attempt. */
 async function lastBackup(env: ServerEnv): Promise<number | null> {
@@ -98,6 +100,10 @@ async function lastBackup(env: ServerEnv): Promise<number | null> {
 }
 
 const RULES: readonly Rule[] = [
+  {
+    kind: 'repository_preparation_failed',
+    read: async (_env, _now, _harnessFacts, _metadata, repositoryFacts) => (await repositoryFacts()).map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak })),
+  },
   {
     kind: 'repository_missing',
     read: async (env) => {
@@ -126,10 +132,14 @@ const RULES: readonly Rule[] = [
   },
   {
     kind: 'outcome_failed',
-    read: async (env, now) => (await failingOutcomes(env.db, WATCHED_OUTCOME_TASKS, now - OUTCOME_LOOKBACK_MS)).map((f) => ({
-      kind: 'outcome_failed', tone: 'bad', projectId: f.projectId, outcome: f.kind, task: f.task,
-      failures: f.failures, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
-    })),
+    read: async (env, now, _harnessFacts, _metadata, repositoryFacts) => {
+      const held = new Set((await repositoryFacts()).map(row => row.projectId));
+      return (await failingOutcomes(env.db, WATCHED_OUTCOME_TASKS, now - OUTCOME_LOOKBACK_MS))
+        .filter(f => !held.has(f.projectId) || f.task !== MAP_TASK).map(f => ({
+          kind: 'outcome_failed', tone: 'bad', projectId: f.projectId, outcome: f.kind, task: f.task,
+          failures: f.failures, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
+        }));
+    },
   },
   {
     kind: 'runs_without_audit',
@@ -214,7 +224,9 @@ export async function readAttention(env: ServerEnv, now: number): Promise<Attent
   const harnessFacts = () => pendingHarnessFacts ??= provisionedHarnessAttention(env.db, now);
   let pendingMetadata: Promise<StatusMetadata> | undefined;
   const metadata = () => pendingMetadata ??= statusMetadata(env.db);
-  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts, metadata)));
+  let pendingRepositoryFacts: Promise<RepositoryFailureStreak[]> | undefined;
+  const repositoryFacts = () => pendingRepositoryFacts ??= repositoryFailureStreaks(env.db);
+  const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts, metadata, repositoryFacts)));
   const items: AttentionItem[] = [];
   const unavailable: AttentionKind[] = [];
   settled.forEach((outcome, i) => {

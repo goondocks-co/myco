@@ -22,14 +22,14 @@ test.describe('repository fetch failure in a run panel', () => {
               ...answer.run,
               errorCode: 'repository_unprepared',
               error: 'Raw worker diagnostic stays out of the panel',
-              repositoryFailure: { code: 'fetch_failed', summary: 'Git returned 403 while reading main' },
+              repositoryFailure: { code: 'access_refused', summary: 'Git returned 403 while reading main' },
             } },
           });
         });
         await page.reload();
         const panel = page.getByTestId('run-panel');
         const failure = panel.locator('[data-run-failure]');
-        await expect(failure).toContainText('Myco couldn’t read the repository.');
+        await expect(failure).toContainText('The repository refused access. Update its read credential and check organization approval.');
         await expect(failure.getByRole('link', { name: 'Check repository settings' })).toHaveAttribute('href', `/p/${project.projectId}/settings?connect=repository#repository`);
         await expect(failure).not.toContainText('Raw worker diagnostic');
         await expectFits(page, viewport);

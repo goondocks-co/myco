@@ -3,7 +3,7 @@ export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 export const MAX_REPOSITORY_REQUEST_BYTES = 16_384;
 /** Optional source preparation has its own allowance beside the harness budget. */
-export const REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000;
+export const REPOSITORY_PREPARATION_TIMEOUT_MS = 600_000;
 /** Tasks that require a connection rather than optionally validate knowledge against source. */
 export const REQUIRED_REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 /** Knowledge runs may inspect files, without shell or edit tools. */
@@ -96,7 +96,7 @@ export function parseRepositoryCheckoutSpec(value: unknown): RepositoryCheckoutS
 
 /** Structured repository checkout reasons supported by a Deployment's worker end reports. */
 export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
-export const REPOSITORY_FAILURE_CODES = ['fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
+export const REPOSITORY_FAILURE_CODES = ['not_found', 'access_refused', 'revision_missing', 'timed_out', 'disk', 'other', 'fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
 export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
 export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }
 export const MAX_REPOSITORY_FAILURE_SUMMARY_CHARS = 512;

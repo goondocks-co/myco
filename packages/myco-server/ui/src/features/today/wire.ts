@@ -109,6 +109,7 @@ export interface WorkAnswer {
 
 /** One thing an administrator should act on: a kind, a tone and the numbers its words need. */
 export type AttentionItem =
+  | { kind: 'repository_preparation_failed'; tone: 'warn'; projectId: string; runId: string; failure: RepositoryFailure; failures: number; retryAt: number }
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
   | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }

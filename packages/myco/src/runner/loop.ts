@@ -666,7 +666,7 @@ async function drive(
   } catch (error) {
     if (error instanceof RepositoryAlreadyCurrent) alreadyCurrent = true;
     else failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error),
-      ...(preparing ? { repositoryFailure: error instanceof RepositoryCheckoutError ? error.failure : { code: 'checkout_failed' } } : {}),
+      ...(preparing ? { repositoryFailure: error instanceof RepositoryCheckoutError ? error.failure : parseRepositoryFailure({ code: 'other', summary: error instanceof Error ? error.message : String(error) }, runDiagnosticSecrets(options, run))! } : {}),
     };
   } finally {
     clearTimeout(budget);
