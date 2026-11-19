@@ -1,3 +1,7 @@
+import { createServer } from '@myco-server-worker/pipeline.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { asOwner, asOwnerPost, OWNER_ENV, ownerCookie, MEMBER_SUB, seedMemberRoleAccount } from './helpers/owner.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { searchDeployment } from '@myco-server-worker/core/search.js';
 import { expect, test } from 'bun:test';
 import { endLeasedRun, dispatchTask } from '@myco-server-worker/core/harness.js';
@@ -61,7 +65,7 @@ test('one answer merges, splits, keeps and retires atomically with observed date
     f.sqlite.run("INSERT INTO resolution_events(id,project_id,agent_id,spore_id,new_spore_id,action,reason,created_at) VALUES('legacy-consolidation','proj_1','myco-agent','decision-origin','decision-a','consolidate','Merged the same situation.',?)", [f.now]);
     await f.discover();
     const claim = await f.poll(); if (!claim.claimed) throw new Error('group not claimed');
-    expect(claim.run.profile).toMatchObject({ model: 'sonnet', effort: 'low' });
+    expect(claim.run.profile).toMatchObject({ model: 'sonnet', effort: 'medium' });
     expect((await f.list(claim.run.runToken)).map(tool => tool.name)).toEqual(['myco_run_curation']);
     expect(claim.run).not.toHaveProperty('repository');
     const before = await getSpore(f.db, scope, 'gotcha-d');
@@ -182,4 +186,64 @@ test('a seed offered no group records consideration at its revision; later vecto
     expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:0,unevaluated:0});
     await f.add('gotcha-b'); await f.discover(); expect((await f.poll()).claimed).toBe(true);
   }finally{f.sqlite.close();}
+});
+
+test('an admin previews with curation off without changing later discovery, within a separate daily allowance', async () => {
+  const f = await fixture();
+  try {
+    await settingsWriter(f.db).setProjectLeaf('proj_1', 'agent.spore_curation.daily_runs', 1, 'test', f.now);
+    await f.add('decision-a'); await f.add('gotcha-b');
+    const server = createServer({ now: () => f.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
+    const serve = (request: Request) => server.handleRequest(request, { ...f.env, secrets: OWNER_ENV });
+    const start = () => asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1', dryRun: true }).then(serve);
+    const selectionState = () => ['spores', 'resolution_events', 'spore_curation_clock', 'spore_curation_changes',
+      'spore_curation_cursor', 'spore_curation_work', 'spore_curation_owners', 'spore_curation_receipts',
+      'spore_curation_considerations', 'spore_curation_coverage'].map(table => f.sqlite.query('SELECT * FROM ' + table).all());
+    const before = selectionState();
+    const admitted = await start(); expect(admitted.status).toBe(200);
+    const queued = await admitted.json() as { runId: string };
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('off preview not claimed');
+    expect(claim.run.id).toBe(queued.runId);
+    expect(f.sqlite.query<{ estimate_usd: number }, [string]>('SELECT estimate_usd FROM agent_run_attempts WHERE run_id=?').get(claim.run.id)!.estimate_usd).toBeGreaterThan(0);
+    expect(claim.run.profile).toMatchObject({ model: 'sonnet', effort: 'medium' });
+    const answer = { ...keepAnswer([]), notes: [note(['decision-a', 'gotcha-b'])] };
+    expect(await f.call(claim.run.runToken, 'myco_run_curation', answer)).toMatchObject({ completed: true, applied: false });
+    const preview = await serve(await asOwner(f.db, '/api/projects/proj_1/curation/answers/' + claim.run.id));
+    expect(await preview.json()).toMatchObject({ applied: false, checked: { answer: { notes: answer.notes, keep: [], retire: [], reason: answer.reason } } });
+    const report = { action: 'preview', summary: 'Curation preview only: no notes changed.', details: JSON.stringify({ notes: answer.notes, keep: [], retire: [], reason: answer.reason }, null, 2) };
+    const page = await serve(await asOwner(f.db, '/api/projects/proj_1/runs/' + claim.run.id));
+    expect(page.status).toBe(200);
+    expect(await page.json()).toMatchObject({ run: { dryRun: true }, reports: [report] });
+    const member = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'preview-reader' }, f.now);
+    expect(await f.call(member.token, 'myco_agent', { op: 'run', id: claim.run.id })).toMatchObject({ ok: true, data: { run: { dry_run: true }, reports: [report] } });
+    expect(await endLeasedRun(f.env, { principal: f.principal, now: f.now + 1 }, { ...scope, runId: claim.run.id, attemptId: claim.run.attemptId, status: 'completed' })).toMatchObject({ ended: true, status: 'completed' });
+    expect(selectionState()).toEqual(before);
+    const limited = await start(); expect(limited.status).toBe(429);
+    expect(await limited.json()).toMatchObject({ error: 'daily_limit', perDay: 1 });
+    expect(await f.poll()).toMatchObject({ claimed: false });
+    await f.enable(); await f.discover();
+    const scheduled = await f.poll(); if (!scheduled.claimed) throw new Error('scheduled allowance was consumed by a preview');
+    const run = (await getRun(f.db, scope, scheduled.run.id))!;
+    expect(curationAssignment(run.runContext)!.members).toEqual(curationAssignment((await getRun(f.db, scope, claim.run.id))!.runContext)!.members);
+    expect(run.dryRun).toBe(0);
+  } finally { f.sqlite.close(); }
+});
+
+test('curation off refuses apply and non-admin previews, and an empty preview has a named outcome', async () => {
+  const f = await fixture();
+  try {
+    const server = createServer({ now: () => f.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
+    const serve = (request: Request) => server.handleRequest(request, { ...f.env, secrets: OWNER_ENV });
+    const request = () => asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1', dryRun: true });
+    const apply = await serve(await asOwnerPost(f.db, '/api/harness/dispatch', { task: 'curate-spores', projectId: 'proj_1' }));
+    expect(apply.status).toBe(409); expect(await apply.json()).toMatchObject({ error: 'capability_off', capability: 'spore_curation' });
+    seedMemberRoleAccount(f.sqlite);
+    const member = await request(); member.headers.set('cookie', await ownerCookie(f.db, f.now, MEMBER_SUB));
+    const denied = await serve(member); expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ error: 'curation_preview_needs_admin' });
+    await f.add('decision-alone');
+    const empty = await serve(await request()); expect(empty.status).toBe(200);
+    expect(await empty.json()).toMatchObject({ outcome: 'no_qualifying_group', message: expect.stringContaining('no preview run was started') });
+    expect(await f.poll()).toMatchObject({ claimed: false });
+  } finally { f.sqlite.close(); }
 });

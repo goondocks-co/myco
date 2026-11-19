@@ -49,14 +49,28 @@ export async function readCurationProjectState(db: RelationalStore, project: str
   return { enabled: enabled[0]!.enabled === 1, open: open[0] ?? null, frontier: frontier[0]!, cursor: changedDuringHistory ? null : held, floor: floor[0]!.floor };
 }
 
+const passStartSql = (admission = '1'): string => `SELECT
+    CASE WHEN p.history_complete=1 THEN ?1 ELSE MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)) END AS after_at,
+    '' AS after_id,c.revision AS pass_revision,1 AS active,
+    CASE WHEN p.history_complete=1 THEN 0 ELSE MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)) END AS priority_at,
+    COALESCE(p.history_complete,0) AS history_complete,
+    MIN(?1,COALESCE(p.history_at,0)) AS history_at,
+    CASE WHEN ?1<=COALESCE(p.history_at,0) THEN '' ELSE COALESCE(p.history_id,'') END AS history_id
+  FROM spore_curation_changes c LEFT JOIN spore_curation_cursor p ON p.project_id=c.project_id
+  WHERE c.project_id=?2 AND c.revision=?3 AND (${admission})`;
+const passStart = read<[start: number, project: string, revision: number], CurationCursor>({
+  name: 'curationDiscovery.passStart', sql: passStartSql(),
+});
+/** The next scheduled cursor projected without advancing discovery state. */
+export const readCurationPassStart = (db: RelationalStore, options: { project: string; start: number; revision: number }) =>
+  first(db, passStart.bind(options.start, options.project, options.revision));
 const beginCursor = write<[start: number, project: string, revision: number], CurationCursor>({
   name: 'curationDiscovery.beginCursor',
-  sql: `INSERT INTO spore_curation_cursor(project_id,after_at,after_id,pass_revision,active,priority_at)
-    SELECT project_id,MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)),'',revision,1,MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)) FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND dirty=1
-    ON CONFLICT(project_id) DO UPDATE SET after_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN ?1 ELSE excluded.after_at END,after_id='',pass_revision=excluded.pass_revision,active=1,priority_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN 0 ELSE excluded.priority_at END,
-      history_at=CASE WHEN ?1<=spore_curation_cursor.history_at THEN ?1 ELSE spore_curation_cursor.history_at END,
-      history_id=CASE WHEN ?1<=spore_curation_cursor.history_at THEN '' ELSE spore_curation_cursor.history_id END
-    WHERE spore_curation_cursor.active=0 OR EXISTS (SELECT 1 FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND pending_at IS NOT NULL)
+  sql: `INSERT INTO spore_curation_cursor(project_id,after_at,after_id,pass_revision,active,priority_at,history_complete,history_at,history_id)
+    SELECT ?2,after_at,after_id,pass_revision,active,priority_at,history_complete,history_at,history_id
+    FROM (${passStartSql('c.dirty=1 AND (p.project_id IS NULL OR p.active=0 OR c.pending_at IS NOT NULL)')}) WHERE 1
+    ON CONFLICT(project_id) DO UPDATE SET after_at=excluded.after_at,after_id=excluded.after_id,pass_revision=excluded.pass_revision,
+      active=excluded.active,priority_at=excluded.priority_at,history_at=excluded.history_at,history_id=excluded.history_id
     RETURNING after_at,after_id,pass_revision,active,priority_at,history_complete,history_at,history_id`,
 });
 const clearPending = write<[project: string, revision: number, start: number]>({

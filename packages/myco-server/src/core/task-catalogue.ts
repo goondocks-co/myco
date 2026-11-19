@@ -55,7 +55,7 @@ export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/
 
 /** Tasks whose execution is fixed rather than selected through tier overrides. */
 export const TASK_EXECUTION_PROFILES: Readonly<Record<string, { model: string; effort: string }>> = {
-  [CURATION_TASK]: { model: 'sonnet', effort: 'low' },
+  [CURATION_TASK]: { model: 'sonnet', effort: 'medium' },
   [PLAN_CURATION_TASK]: { model: 'sonnet', effort: 'low' },
 };
 
@@ -157,3 +157,6 @@ export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; descripti
   [MAP_TASK]: { name: 'Keep the code map', description: 'Read the connected code to keep a grounded guide to its directories and key files.' },
   'embedding-reconcile': { name: 'Keep search current', description: 'Keep the search index for project memory current so similar knowledge can be found.' },
 };
+
+/** Curation previews carry no authority to apply Project changes. */
+export const isCurationPreview = (task: string | null, options: { dryRun?: boolean }): boolean => task === CURATION_TASK && options.dryRun === true;

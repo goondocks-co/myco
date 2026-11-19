@@ -217,7 +217,7 @@ function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
       opOf: (name, input) => runOpOf(name, input),
       allows: (name, op) => isRunCall(p.allow, name as AnyTool, op),
       admits: async (scope) => {
-        const enabled = scope.projectId !== null && await taskWorkEnabled(scope.env.db, scope.projectId, p.task);
+        const enabled = scope.projectId !== null && await taskWorkEnabled(scope.env.db, scope.projectId, p.task, { dryRun: p.dryRun });
         return (name, op) => enabled || (name === ALWAYS_ALLOWED.tool && op === ALWAYS_ALLOWED.op);
       },
       entryFor: runEntryFor,

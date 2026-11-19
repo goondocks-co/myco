@@ -112,7 +112,7 @@ import {
 } from './worker-selection.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from './run-deadline.js';
 
-import { PULLED_ONLY_TASKS, admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK } from './task-catalogue.js';
+import { PULLED_ONLY_TASKS, CURATION_TASK, isCurationPreview, admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
 /** The agent identity a dispatched runtime claims under when its task names none. */
@@ -189,6 +189,7 @@ export interface LaunchSpec {
   counts?: Readonly<Record<string, number | boolean>>;
   /** How this run differs from an ordinary one. */
   options?: DispatchOptions;
+  context?: Readonly<Record<string, unknown>>;
 }
 
 /** What a caller asks of one dispatch beyond the task and its parameters. */
@@ -243,6 +244,7 @@ interface StoredSpec {
 function runContextOf(spec: LaunchSpec, timeoutSeconds: number): string {
   return JSON.stringify({
     ...(spec.params ?? {}),
+    ...(spec.context ?? {}),
     timeoutSeconds,
     ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
     ...(spec.counts === undefined ? {} : { counts: spec.counts }),
@@ -303,10 +305,10 @@ export class DispatchAdmissionRefused extends Error {
 }
 
 /** A prepared dispatch's current Project admission, read after its atomic write refuses. */
-async function dispatchAdmissionRefusal(env: ServerEnv, prepared: PreparedDispatch): Promise<DispatchAdmissionRefused | null> {
+async function dispatchAdmissionRefusal(env: ServerEnv, prepared: PreparedDispatch, options: { curationPreview?: boolean } = {}): Promise<DispatchAdmissionRefused | null> {
   if (!(await projectWorkEnabled(env.db, prepared.projectId))) return new DispatchAdmissionRefused('unknown_project');
   const capability = capabilityOf(prepared.task);
-  return capability !== null && !(await capabilityOn(env.db, prepared.projectId, capability))
+  return !isCurationPreview(prepared.task, { dryRun: options.curationPreview }) && capability !== null && !(await capabilityOn(env.db, prepared.projectId, capability))
     ? new DispatchAdmissionRefused('capability_off', capability) : null;
 }
 
@@ -377,7 +379,7 @@ export async function enqueueDispatch(env: ServerEnv, prepared: PreparedDispatch
   const stored = storedSpecOf(spec);
   const scope = { projectId: prepared.projectId };
   if (!(await recordQueued(env.db, scope, { id: runId, agentId: HARNESS_AGENT_ID, task: prepared.task, instruction: spec.instruction ?? null, dryRun: spec.options?.dryRun === true, provider: prepared.providerType, model: prepared.model, heldBy: held, queuedAt: now, dispatchSpec: JSON.stringify(stored), runContext: runContextOf(spec, spec.timeoutSeconds ?? runTimeoutForTask(prepared.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS) }, { ...options, setup }))) {
-    const refusal = await dispatchAdmissionRefusal(env, prepared);
+    const refusal = await dispatchAdmissionRefusal(env, prepared, { curationPreview: isCurationPreview(prepared.task, spec.options ?? {}) && options.actor?.authority === 'admin' });
     if (refusal !== null) throw refusal;
     if ((await getRun(env.db, scope, runId)) === null) {
       if (await ceilingHolds(env.db, options.ceiling)) throw new CeilingReached();
@@ -459,7 +461,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
       await endQueuedRun(env, scope, queued, now, { failed: NO_LAUNCH_ERROR, errorCode: 'task_start_failed' });
       continue;
     }
-    const prepared = await prepareDispatch(env, queued.task, queued.projectId);
+    const prepared = await prepareDispatch(env, queued.task, queued.projectId, { curationPreview: queued.task === CURATION_TASK && (await getRun(env.db, scope, queued.id))?.dryRun === 1 });
     if (!prepared.ok) {
       if (prepared.refusal === 'harness_unavailable') return launched;
       await endQueuedRun(env, scope, queued, now, { failed: DISPATCH_REFUSAL_MESSAGE[prepared.refusal], errorCode: 'task_start_failed' });
@@ -537,12 +539,12 @@ export function hasTaskRuntime(env: ServerEnv, task: string): boolean {
  * Reads settings and, for a credentialed provider, opens the credential; writes
  * nothing and launches nothing.
  */
-export async function prepareDispatch(env: ServerEnv, task: string, projectId: string): Promise<PrepareOutcome> {
+export async function prepareDispatch(env: ServerEnv, task: string, projectId: string, options: { curationPreview?: boolean } = {}): Promise<PrepareOutcome> {
   const gate = admissionForTask(task);
   if (gate === null) return { ok: false, refusal: 'unknown_task' };
   if (!(await projectWorkEnabled(env.db, projectId))) return { ok: false, refusal: 'unknown_project' };
   const capability = capabilityOf(task);
-  if (capability !== null && !(await capabilityOn(env.db, projectId, capability))) return { ok: false, refusal: 'capability_off', capability };
+  if (!isCurationPreview(task, { dryRun: options.curationPreview }) && capability !== null && !(await capabilityOn(env.db, projectId, capability))) return { ok: false, refusal: 'capability_off', capability };
 
   // Unavailable tasks are refused before repository and provider requirements.
   if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
@@ -630,7 +632,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
     // No row names this credential: the write above changed nothing, and the
     // caller learns whether a limit or the row's own state refused it.
     await retireDispatchCredential(env, minted.tokenId, now);
-    const refusal = await dispatchAdmissionRefusal(env, prepared);
+    const refusal = await dispatchAdmissionRefusal(env, prepared, { curationPreview: isCurationPreview(prepared.task, spec.options ?? {}) && options.actor?.authority === 'admin' });
     if (refusal !== null) throw refusal;
     const existing = await getRun(env.db, scope, runId);
     if (spec.fromQueue === true) {
@@ -727,7 +729,7 @@ export async function launchDispatch(env: ServerEnv, prepared: PreparedDispatch,
 
 /** Prepare and launch in one call, for a caller with no claim of its own to make between them. */
 export async function dispatchTask(env: ServerEnv, task: string, projectId: string, spec: LaunchSpec, now: number, options: { ceiling?: ActorCeiling; actor?: MemberWriteActor } = {}): Promise<DispatchOutcome> {
-  const prepared = await prepareDispatch(env, task, projectId);
+  const prepared = await prepareDispatch(env, task, projectId, { curationPreview: spec.options?.dryRun === true && options.actor?.authority === 'admin' });
   if (!prepared.ok) return { dispatched: false, refusal: prepared.refusal, ...(prepared.providerType === undefined ? {} : { providerType: prepared.providerType }), ...(prepared.capability === undefined ? {} : { capability: prepared.capability }) };
   try {
     return { dispatched: true, ...(await dispatchPrepared(env, prepared.prepared, spec, now, options)) };
@@ -899,6 +901,7 @@ export async function claimNextRun(
   };
   const candidateRefusal = async (row: ClaimCandidate): Promise<string | null> => {
     if (!(await projectWorkEnabled(env.db, row.projectId))) return 'unknown_project';
+    if (row.task === CURATION_TASK && isCurationPreview(row.task, { dryRun: (await getRun(env.db, { projectId: row.projectId }, row.id))?.dryRun === 1 })) return null;
     const capability = capabilityOf(row.task);
     return capability !== null && !(await capabilityOn(env.db, row.projectId, capability)) ? CAPABILITY_OFF : null;
   };
@@ -973,7 +976,8 @@ export async function claimNextRun(
     await skipCandidate(candidate, skip);
     return claimNextRun(env, worker);
   };
-  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params });
+  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params, dryRun: candidate.task === CURATION_TASK && (await getRun(env.db, scope, candidate.id))?.dryRun === 1 });
+  if (built === null && candidate.task === CURATION_TASK && stored?.options?.dryRun === true) return skipRefused('no_qualifying_group');
   if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });

@@ -23,9 +23,11 @@ import {
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '../core/run-deadline.js';
 import { RUNTIME_SERVED_TASKS } from '../core/worker-selection.js';
 import { type ActorCeiling } from '../core/runs.js';
+import { curationPreviewWindow } from '../db/runs/curation-preview.js';
 import { deploymentTaskCeilingWindow } from '../db/runs/claim.js';
 import { memberRunsPerDay } from '../core/schedule-rules.js';
 import { isAdmin } from '../auth/roles.js';
+import { curationDailyLimit } from '../core/settings.js';
 import { emit } from '../telemetry.js';
 import { CURATION_TASK, runTimeoutForTask } from '../core/task-catalogue.js';
 import { buildTaskInput } from '../core/task-inputs.js';
@@ -37,9 +39,10 @@ const DAY_MS = 86_400_000;
 
 /**
  * The ceiling on a member who is not an admin: `memberRunsPerDay` runs of the task in a rolling day, across every
- * Project, counted by who started them. An admin starts runs uncapped.
+ * Project, counted by who started them. Curation previews have a separate per-admin, per-Project allowance.
  */
-async function memberCeiling(env: ServerEnv, ctx: OwnerContext, task: string): Promise<ActorCeiling | undefined> {
+async function memberCeiling(env: ServerEnv, ctx: OwnerContext, task: string, projectId?: string): Promise<ActorCeiling | undefined> {
+  if (task === CURATION_TASK) return { actor: ctx.member.id, task, projectId, perDay: await curationDailyLimit(env.db, projectId ?? ''), sinceMs: ctx.now - DAY_MS };
   if (isAdmin(ctx.member.role)) return undefined;
   return { actor: ctx.member.id, task, perDay: await memberRunsPerDay(env, task), sinceMs: ctx.now - DAY_MS };
 }
@@ -48,13 +51,15 @@ async function memberCeiling(env: ServerEnv, ctx: OwnerContext, task: string): P
 interface MemberAllowance { perDay: number; used: number; resetsAt: number | null }
 
 async function allowanceOf(env: ServerEnv, ceiling: ActorCeiling): Promise<MemberAllowance> {
-  const window = await deploymentTaskCeilingWindow(env.db, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.perDay);
+  const window = ceiling.task === CURATION_TASK && ceiling.projectId !== undefined
+    ? await curationPreviewWindow(env.db, { ...ceiling, projectId: ceiling.projectId })
+    : await deploymentTaskCeilingWindow(env.db, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.perDay);
   return { perDay: ceiling.perDay, used: window.used, resetsAt: window.pivotAt === null ? null : window.pivotAt + DAY_MS };
 }
 
-/** The caller's day of runs of `task`, as the dispatch would count it; null for an admin, who starts runs uncapped. */
+/** The caller's day of runs of `task`, as the dispatch would count it; null for an uncapped task. */
 export async function memberAllowance(env: ServerEnv, ctx: OwnerContext, task: string): Promise<MemberAllowance | null> {
-  const ceiling = await memberCeiling(env, ctx, task);
+  const ceiling = await memberCeiling(env, ctx, task, ctx.url.searchParams.get('project') ?? undefined);
   return ceiling === undefined ? null : allowanceOf(env, ceiling);
 }
 
@@ -90,22 +95,24 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   }
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
-  if (task === CURATION_TASK && (!dryRun || !isAdmin(ctx.member.role))) return badRequest('curate-spores hand starts require an administrator and dryRun:true; normal groups are pulled by runners');
+  if (task === CURATION_TASK && !isAdmin(ctx.member.role)) return Response.json({ error: 'curation_preview_needs_admin' }, { status: 403 });
   const params = task === CURATION_TASK && typeof body.group === 'string' ? { group: body.group } : undefined;
   // A fresh run is one over input that has not moved; only an admin spends on that.
   if (fresh && !isAdmin(ctx.member.role)) return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
-  const prepared = await prepareDispatch(env, task, projectId);
+  const prepared = await prepareDispatch(env, task, projectId, { curationPreview: dryRun && isAdmin(ctx.member.role) });
   if (!prepared.ok) return refuseAdmission(prepared.refusal, prepared.capability);
-  const ceiling = await memberCeiling(env, ctx, task);
+  if (task === CURATION_TASK && !dryRun) return badRequest('curate-spores hand starts require an administrator and dryRun:true; normal groups are pulled by runners');
+  const ceiling = await memberCeiling(env, ctx, task, projectId);
   // Unchanged input returns without dispatching a run.
-  const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh, params });
+  const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh, params, dryRun });
+  if (task === CURATION_TASK && dryRun && built === null) return ok({ outcome: 'no_qualifying_group', message: 'No qualifying curation group was found in the bounded discovery page; no preview run was started.' });
   if (built !== null && built.unchanged) {
     emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
     return ok({ outcome: 'unchanged' });
   }
   const input = built === null || built.unchanged
     ? {}
-    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
+    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts, context: built.input.context };
   try {
     return ok(await dispatchPrepared(env, prepared.prepared, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, params, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } }));
   } catch (error) {
