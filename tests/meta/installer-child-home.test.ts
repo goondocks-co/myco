@@ -34,7 +34,7 @@ describe('installer and provision child home guard', () => {
     const env = { ...sandboxChildEnv(root), [name]: sibling };
     const denied = spawnSync(process.execPath, [probe], { env });
     expect(denied.error?.message).toMatch(/TEST SAFETY: spawned child/);
-    expect(denied.pid).toBeUndefined();
+    expect(denied.pid ?? 0).toBe(0);
     await expect(new Promise((resolve, reject) => {
       try {
         const child = spawn(process.execPath, [probe], { env });
@@ -50,7 +50,7 @@ describe('installer and provision child home guard', () => {
   it('rejects a child HOME outside the entire test run without a fixture marker', () => {
     const denied = spawnSync(process.execPath, [probe], { env: { HOME: '/outside-test-run' } });
     expect(denied.error?.message).toMatch(/TEST SAFETY/);
-    expect(denied.pid).toBeUndefined();
+    expect(denied.pid ?? 0).toBe(0);
   });
 
   it.skipIf(process.platform === 'win32')('rejects a home symlink escaping its fixture', () => {
