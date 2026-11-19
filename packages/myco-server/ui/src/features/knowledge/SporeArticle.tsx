@@ -14,6 +14,7 @@ import { useMemberNames } from '../admin/members';
 import { RetiredNote, SporeStatusControl, useRestoredWords } from './SporeRetirement';
 import { dayHeading, DEFAULT_SPORE_STATUS, IMPORTED_AUTHOR_WORDS, RETIRED_SPORE_STATUS, sporeAuthor, sporeDate, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord } from './words';
 import { dateTimeWords, dayWords } from '@goondocks/myco-shared/time-words';
+import { CurationUndo } from './CurationUndo';
 
 /** The top of the importance scale a writer assigns on. */
 const MAX_IMPORTANCE = 10;
@@ -70,13 +71,14 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
               <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
               {!current && <StatusChip tone={sporeStatusTone(spore.status)} data-spore-status="">{sporeStatusWord(spore.status)}</StatusChip>}
               <span>{date.label} <time dateTime={new Date(date.at).toISOString()}>{dayHeading(date.at, now)}</time></span>
-              {admin && <span className="ml-auto"><SporeStatusControl projectId={projectId} answer={answer} /></span>}
+              {admin && <span className="ml-auto flex gap-s2"><CurationUndo projectId={projectId} sporeId={spore.id}/><SporeStatusControl projectId={projectId} answer={answer} /></span>}
             </p>
             <h1 className={cn('t-headline', headline.lined ? 'text-ink' : 'text-ink-2')} data-spore-title="">{headline.text}</h1>
           </header>
           <section aria-label="What it says" data-spore-body="">
             <Markdown content={spore.content} />
           </section>
+          {current&&resolution?.action==='restore'&&resolution.reason!==null&&<p role="note" className="t-small text-muted">{resolution.reason}</p>}
           {context !== '' && (
             <section aria-labelledby="spore-context" className="flex flex-col gap-s2 border-l-2 border-line-strong pl-s4" data-spore-context="">
               <h2 id="spore-context" className="t-h3 text-ink">Context</h2>

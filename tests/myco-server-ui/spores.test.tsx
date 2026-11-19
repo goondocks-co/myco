@@ -69,7 +69,7 @@ function server(routes: Routes): { requested: string[] } {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, 'https://s');
     requested.push(url.pathname + url.search);
-    return routes[url.pathname + url.search]?.() ?? routes[url.pathname]?.() ?? new Response(null, { status: 404 });
+    return routes[url.pathname + url.search]?.() ?? routes[url.pathname]?.() ?? (url.pathname.endsWith('/curation')?Response.json({curation:null}):new Response(null, { status: 404 }));
   }) as typeof fetch;
   return { requested };
 }
@@ -519,6 +519,57 @@ describe('a spore’s article', () => {
     mount(`/p/${MYCO}/spores/missing`);
     expect(await screen.findByText('Not found')).toBeTruthy();
   });
+it('an admin sees the whole undo plan on a source page and confirms once, then sees the restored reason',async()=>{
+  const path=`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
+  const view={unit:{id:'run_undo',kind:'answer',undoneAt:null as number|null,undoneBy:null,undoneLabel:null as string|null},restore:[{id:'gotcha-1a2b3c4d',label:'The original situation.'}],retire:[{id:'gotcha-output',label:'The combined situation.'}],blocker:null};
+  let undid=false;
+  const {requested}=server(base({
+    [path]:()=>article({status:undid?'active':'consolidated',sessionId:null},{supersededBy:undid?[]:['gotcha-output'],supersedes:[],resolution:undid?{action:'restore',author:ADMIN.member.id,authorKind:'member',reason:'Curation undone by Ada. Original notes restored.',createdAt:NOW,newSporeId:null}:null}),
+    [path+'/curation']:()=>Response.json({curation:{...view,unit:{...view.unit,undoneAt:undid?NOW:null,undoneLabel:undid?'Ada':null}}}),
+    [`/api/projects/${MYCO}/spores/gotcha-output`]:neighbour('gotcha-output','The combined situation.'),
+    [`/api/projects/${MYCO}/curation/run_undo/undo`]:()=>{undid=true;return Response.json({ok:true,curation:{...view,unit:{...view.unit,undoneAt:NOW,undoneLabel:'Ada'}}});},
+  }));
+  mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+  fireEvent.click(await screen.findByRole('button',{name:'Undo curation'}));
+  const dialog=await screen.findByRole('dialog');
+  expect(dialog.textContent).toContain('All changes happen together.');
+  expect(within(dialog).getByRole('link',{name:'The original situation.'}).getAttribute('href')).toBe(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+  expect(within(dialog).getByRole('link',{name:'The combined situation.'})).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole('button',{name:'Undo curation'}));
+  expect(await screen.findByText('This curation was undone by Ada.')).toBeTruthy();
+  expect(await screen.findByText('Curation undone by Ada. Original notes restored.')).toBeTruthy();
+  expect(requested.filter(path=>path.endsWith('/undo'))).toHaveLength(1);
+  expect(rawIdsInPage()).toEqual([]);
+});
+
+it.each([{kind:'merge',status:'obsolete',word:'Retired'},{kind:'resolution',status:'active',word:'Current'}])('leaves a $word target out of retirement for a $kind undo',async({kind,status,word})=>{
+  const path=`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
+  const label='The existing replacement guidance.';
+  server(base({
+    [path]:()=>article({status,sessionId:null},{supersededBy:[],supersedes:[]}),
+    [path+'/curation']:()=>Response.json({curation:{unit:{id:'one-operation',kind,undoneAt:null,undoneBy:null,undoneLabel:null},
+      restore:[{id:'original-note',label:'The original guidance.'}],retire:[],leave:[{id:'gotcha-1a2b3c4d',label,status}],blocker:null}}),
+  }));
+  mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);fireEvent.click(await screen.findByRole('button',{name:'Undo curation'}));
+  const dialog=await screen.findByRole('dialog');
+  expect(dialog.textContent).toContain('Retire only the notes listed for retirement. Other notes stay as they are.');
+  expect(within(dialog).queryByRole('heading',{name:'Notes to retire'})).toBeNull();
+  expect(within(dialog).getByRole('heading',{name:'Notes left as they are'})).toBeTruthy();
+  expect(within(dialog).getByRole('link',{name:label})).toBeTruthy();expect(dialog.textContent).toContain('— '+word);
+});
+
+it('a member sees lineage but no undo control or history request',async()=>{
+  const path=`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
+  const {requested}=server(base({
+    '/auth/me':()=>Response.json(dashboardMe({...ADMIN,member:{...ADMIN.member,role:'member'}})),
+    [path]:()=>article({sessionId:null},{supersededBy:[],supersedes:[]}),
+  }));
+  mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+  await screen.findByRole('heading',{level:1});
+  expect(screen.queryByRole('button',{name:'Undo curation'})).toBeNull();
+  expect(requested).not.toContain(path+'/curation');
+});
+
 });
 
 describe('the knowledge words', () => {

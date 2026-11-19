@@ -1,3 +1,4 @@
+import { latestSporeResolution } from '../../db/spores/resolutions.js';
 import { listSporePage, type SporeRow } from '../../core/spores.js';
 import { getSpore } from '../../db/spores/records.js';
 import { listSupersededSporeIds, listSupersedingSporeIds } from '../../db/spores/edges.js';
@@ -27,11 +28,12 @@ export async function handleSpores(input: ToolInput, ctx: ToolContext): Promise<
     if (id === undefined) return failure('id is required for op: get');
     const spore = await getSpore(db, scope, id);
     if (spore === null) return failure('Spore not found');
-    const [supersededBy, predecessors] = await Promise.all([
+    const [supersededBy, predecessors, resolution] = await Promise.all([
       listSupersedingSporeIds(db, scope, id),
       listSupersededSporeIds(db, scope, id),
+      latestSporeResolution(db,scope,id),
     ]);
-    return { ...visible(spore), superseded_by: supersededBy, predecessors };
+    return { ...visible(spore), superseded_by: supersededBy, predecessors, resolution: resolution===null?null:snake(resolution) };
   }
 
   const options = {

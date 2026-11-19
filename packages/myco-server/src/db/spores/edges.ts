@@ -1,3 +1,4 @@
+import { currentCurationEdgeSql } from './curation-history-sql.js';
 import { SPORE_SUCCESSOR_LIMIT } from './lineage-limit.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
@@ -33,7 +34,7 @@ const edgesReady = read<[], { done: number }>({ name: 'sporeEdges.ready', sql: `
 
 const successors = read<[project: string, source: string, limit: number], { id: string }>({
   name: 'sporeEdges.successors',
-  sql: `SELECT target_id AS id FROM spore_resolution_edges INDEXED BY idx_spore_edges_successors WHERE project_id=?1 AND source_id=?2 AND action IN ('supersede','consolidate') GROUP BY target_id ORDER BY MAX(last_event_at) DESC,MAX(last_event_id) DESC LIMIT ?3`,
+  sql: `SELECT target_id AS id FROM spore_resolution_edges INDEXED BY idx_spore_edges_successors WHERE project_id=?1 AND source_id=?2 AND action IN ('supersede','consolidate') AND ${currentCurationEdgeSql('spore_resolution_edges.project_id','spore_resolution_edges.source_id','spore_resolution_edges.last_event_id')} GROUP BY target_id ORDER BY MAX(last_event_at) DESC,MAX(last_event_id) DESC LIMIT ?3`,
 });
 const predecessors = read<[project: string, target: string, limit: number], { id: string }>({
   name: 'sporeEdges.predecessors',
@@ -42,7 +43,7 @@ const predecessors = read<[project: string, target: string, limit: number], { id
 });
 const eventSuccessors = read<[project: string, source: string, limit: number], { id: string }>({
   name: 'sporeEdges.eventSuccessors',
-  sql: `SELECT new_spore_id AS id FROM resolution_events WHERE project_id=?1 AND spore_id=?2 AND action IN ('supersede','consolidate') AND new_spore_id IS NOT NULL
+  sql: `SELECT new_spore_id AS id FROM resolution_events WHERE project_id=?1 AND spore_id=?2 AND action IN ('supersede','consolidate') AND new_spore_id IS NOT NULL AND ${currentCurationEdgeSql('resolution_events.project_id','resolution_events.spore_id','resolution_events.id')}
     GROUP BY new_spore_id ORDER BY MAX(created_at) DESC,MAX(id) DESC LIMIT ?3`,
 });
 const eventPredecessors = read<[project: string, target: string, limit: number], { id: string }>({
