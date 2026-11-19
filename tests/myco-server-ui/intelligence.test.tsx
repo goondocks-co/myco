@@ -818,6 +818,34 @@ describe('stored run audit evidence', () => {
     const open = await openAudit(answer);
     expect(open.querySelector('[data-run-headline]')!.textContent).toBe('Preview: nothing was changed');
   });
+  it('reads a curation preview to an admin as changes beside the spores they start from, and asks nothing for a member', async () => {
+    const answer = { reason: 'Two spores said the same thing about one situation.', keep: ['wisdom-c'],
+      notes: [{ sources: ['decision-a', 'gotcha-b'], observation_type: 'decision', agent_line: 'When delivery stalls, retain queued capture.', content: 'Retain queued capture until the destination acknowledges it.' }],
+      retire: [{ id: 'gotcha-d', reason: 'The merged spore already says this.', made_unnecessary_by: 'new:0' }] };
+    const source = (id: string, content: string, revision = 0) => ({ id, revision: 0, current: { revision, status: 'active', observationType: 'gotcha', agentLine: `When ${id} applies.`, content } });
+    const detail = (who: typeof ADMIN | typeof MEMBER) => server(routes({ who, detail: {
+      [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail({ ...mapRuns[1]!, task: 'curate-spores' }, { run: { dryRun: true, result: 'unchanged' } })),
+      [`/api/projects/${P}/curation/answers/run_c19f7a0e55`]: () => Response.json({ applied: false, checked: { answer },
+        sources: [source('decision-a', 'Body of a.'), source('gotcha-b', 'Edited body of b.', 1), source('wisdom-c', 'Body of c.'), { id: 'gotcha-d', revision: 0, current: null }] }),
+    } }));
+    detail(ADMIN);
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    const decision = await within(await panel()).findByRole('region', { name: 'What curation would do' });
+    expect(decision.querySelector('[data-curation-preview-mark]')!.textContent).toContain('Preview: nothing was changed.');
+    const change = decision.querySelector<HTMLElement>('[data-curation-change]')!;
+    expect(within(change).getByRole('heading', { name: 'Would merge 2 spores into one' })).toBeTruthy();
+    expect([...change.querySelectorAll('[data-curation-body]')].map((body) => body.textContent)).toEqual(['Body of a.', 'Edited body of b.', 'Retain queued capture until the destination acknowledges it.']);
+    expect(change.querySelector('[data-curation-source="changed"]')!.textContent).toContain('Changed since this preview; shown as it reads now.');
+    expect(decision.querySelector('[data-curation-retire]')!.textContent).toContain('Would retire this sporeThe merged spore already says this. Covered by the new spore “When delivery stalls, retain queued capture.”This spore is no longer held');
+    expect(decision.querySelector('[data-curation-keep]')!.textContent).toBe('Would keep this spore as it isGotchaWhen wisdom-c applies.Body of c.');
+    expect(decision.textContent).not.toContain('made_unnecessary_by');
+    cleanup();
+    const { asked } = detail(MEMBER);
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    await within(await panel()).findByRole('heading', { level: 2 });
+    expect(screen.queryByRole('region', { name: 'What curation would do' })).toBeNull();
+    expect(asked.some((url) => url.pathname.includes('/curation/'))).toBe(false);
+  });
   for (const task of ['canopy-map', 'title-summary']) {
     it(`${task} with no write says checked and changed nothing`, async () => {
       const answer = audit();
