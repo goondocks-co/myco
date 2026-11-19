@@ -26,20 +26,32 @@ export interface KeyDescription {
   updatedBy: string | null;
 }
 
-/** `GET /api/projects/{p}/repository`: the committed source Myco's code tasks read. */
+/** `GET /api/projects/{p}/repository`: the committed source Myco's code tasks read, through one GitHub App installation. */
 export interface RepositoryRow {
   revision: string;
   url: string;
   branch: string;
-  username: string | null;
-  credential: KeyDescription | null;
+  repositoryId: number;
+  installationId: number;
   updatedAt: number;
   updatedBy: string;
 }
 
 export interface RepositoryAnswer {
   repository: RepositoryRow | null;
+  /** Whether this server holds its GitHub App key, read from its configuration alone. */
+  appConfigured: boolean;
 }
+
+/** `GET /api/github-app/installations?page=`: one page of the server's App installations, and the accounts approved here. */
+export interface InstallationAccount { id: number; login: string; type: 'User' | 'Organization' }
+export interface InstallationRow { installationId: number; account: InstallationAccount; approved: boolean; suspended: boolean }
+export interface ApprovedAccountRow { accountId: number; login: string; type: 'User' | 'Organization'; approvedBy: string; approvedAt: number }
+export interface InstallationsAnswer { installations: InstallationRow[]; accounts: ApprovedAccountRow[]; page: number; more: boolean }
+
+/** `GET /api/github-app/installations/{id}/repositories?page=`: one page of an approved installation's repositories. */
+export interface RepositoryChoice { id: number; fullName: string; defaultBranch: string; private: boolean }
+export interface RepositoryChoicesAnswer { repositories: RepositoryChoice[]; more: boolean }
 
 export interface PackageTagMapping { pathGlob: string; tagPattern: string }
 
@@ -57,7 +69,6 @@ export interface ReleaseCheck {
 /** `GET /api/projects/{p}/release-provenance`: release tracking, as stored and as it last ran. */
 export interface ReleaseProvenanceRow {
   enabled: boolean;
-  githubRepo: string | null;
   productionRefs: string[];
   integrationRefs: string[];
   packageMap: PackageTagMapping[];
@@ -66,8 +77,8 @@ export interface ReleaseProvenanceRow {
   revision: string | null;
   updatedAt: number | null;
   updatedBy: string | null;
-  credential: { configured: boolean; purpose: string };
-  suggestedRepo: string | null;
+  /** The Project's connected repository, which every check reads. */
+  repository: { url: string; branch: string } | null;
   check: ReleaseCheck | null;
   problem: 'stored_settings_unreadable' | null;
   /** True while release history is still being prepared after an update: no check runs until it finishes. */

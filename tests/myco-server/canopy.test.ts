@@ -4,8 +4,7 @@ import { writeCanopyMap, canopyMapWrittenBy } from '@myco-server-worker/core/can
 import { readCanopyMap } from '@myco-server-worker/read/canopy.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { pinMapSourceForRun, pinRepositoryForRun } from '@myco-server-worker/db/runs/preparation.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { connectRepository, githubFixture, SOURCE_URL, UNSIGNED_APP, withApp } from './helpers/github-app.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';
 
@@ -14,14 +13,14 @@ const artifact = {
   directories: [{ path: 'src', annotation: 'Source.', groundedIn: [source] }],
   domains: [{ id: 'main', title: 'Main', files: [{ path: source.path, annotation: 'Starts the app.', groundedIn: [source] }] }],
 };
-const repository = { url: 'https://example.test/repo.git', branch: 'main', commit: 'b'.repeat(40) };
+const repository = { url: SOURCE_URL, branch: 'main', commit: 'b'.repeat(40) };
 const scope = { projectId: 'proj_1' };
 
 async function fixture() {
   const r = sqliteEnv();
   const tokenId = seedCredential(r.sqlite, { memberId: 'mem_harness', machineId: 'harness' });
   r.sqlite.query("INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco','Myco','built-in',1,0)").run();
-  await projectRepositories(r.db, deploymentSecretStore(r.db, r.serverEnv.wrappingKey)).save(scope.projectId, { ...repository, revision: null }, 'mem_machine_1', 0);
+  await connectRepository(withApp(r.serverEnv, githubFixture()), scope.projectId, { now: 0 });
   const run = async (id: string, priorRevision: string | null, inputHash = 'c'.repeat(64)) => {
     r.sqlite.query("INSERT INTO agent_runs (project_id,id,agent_id,task,status,started_at,dispatched_by,run_context) VALUES ('proj_1',?,'myco','canopy-map','running',0,?,'{}')").run(id, tokenId);
     const row = (await getRun(r.db, scope, id))!;

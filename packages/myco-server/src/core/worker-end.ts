@@ -1,6 +1,3 @@
-import { repositoryConnection } from '../db/storage/repository-connection.js';
-import { emit, classify } from '../telemetry.js';
-import { deploymentSecretStore } from './secrets.js';
 import { parseWorkerAccounting, type WorkerUsage, type ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
 import { MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { resolveWorkerCost } from './cost/worker.js';
@@ -70,17 +67,7 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const refused = run.refusal != null && status === 'failed' && unmet === null;
   const errorCode: RunErrorCode = refused ? 'model_not_applied' : unmet === null ? diagnosticErrorCode(reported) : closeErrorCode(unmet);
   const repositoryFailed = status === 'failed' && REPOSITORY_TASKS.includes(row.task ?? '') && parseRunError(reported ?? '')?.code === 'repository_unprepared';
-  let readSecrets: readonly string[] = [];
-  if (repositoryFailed && run.repositoryFailure != null) {
-    try {
-      const connection = await repositoryConnection(env.db, run.projectId);
-      if (connection?.secretSlot != null) {
-        const token = await deploymentSecretStore(env.db, env.wrappingKey).get(connection.secretSlot);
-        if (token !== null) readSecrets = [token, ...(connection.username ? [`${connection.username}:${token}`] : [])];
-      }
-    } catch (error) { emit({ kind: 'repository_failure_mask_unavailable', projectId: run.projectId, runId: run.runId, error_class: classify(error) }); }
-  }
-  const repositoryFailure = repositoryFailed ? parseRepositoryFailure(run.repositoryFailure, readSecrets) : null;
+  const repositoryFailure = repositoryFailed ? parseRepositoryFailure(run.repositoryFailure) : null;
   const context: Record<string, string> = {
     ...runEndingContext(endedNote, reported, run.harnessStop),
     ...(refused && run.refusal!.reason !== null ? { [FAILURE_REASON_KEY]: run.refusal!.reason } : {}),

@@ -1,15 +1,16 @@
 /**
- * A Project's release provenance: the one writer of its settings and
- * purpose-labelled credential, and the scheduled check that classifies
+ * A Project's release provenance: the one writer of its settings, and the
+ * scheduled check that reads the Project's connected repository and classifies
  * captured session commits against a modelled GitHub — changed, unchanged,
  * unknown and unavailable outcomes, preserved history, and bounded reads.
  */
 import { describe, expect, it } from 'bun:test';
 import {
   checkProject, reconcileReleaseProvenance, releaseProvenance, ReleaseProvenanceConflictError, ReleaseProvenanceInputError,
-  RELEASE_CREDENTIAL_PURPOSE, type ReleaseProvenanceWrite,
+  type ReleaseProvenanceWrite,
 } from '@myco-server-worker/core/release-provenance.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import type { OutboundFetch } from '@myco-server-worker/core/adapters.js';
 import { getReleaseState } from '@myco-server-worker/core/provenance.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -18,28 +19,34 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { memberHeaders } from './helpers/fixtures.js';
 import { A, B, C, D, M, MISSING, REPO, X, fakeGithub, type Repo } from './helpers/github-fake.js';
 import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';
+import { connectRepository, githubFixture, OPERATOR, SOURCE, SOURCE_URL, withReads } from './helpers/github-app.js';
 
-const TOKEN = 'fixture-release-token-with-no-real-permissions';
 const P = 'proj_1';
 const SCOPE = { projectId: P };
 const MIN = 60_000;
 
-function rig() {
+/**
+ * A Project connected to the fixture's repository through the App. `app(reads)` answers App requests from the
+ * fixture and repository reads from `reads`.
+ */
+async function rig() {
   const r = sqliteEnv();
-  r.env.SECRET_WRAP_KEY = { get: async () => btoa('a'.repeat(32)) };
-  const secrets = deploymentSecretStore(r.db, r.serverEnv.wrappingKey);
-  return { ...r, secrets, store: releaseProvenance(r.db, secrets) };
+  const github = githubFixture();
+  const app = (reads: OutboundFetch = fakeGithub(REPO)) => withReads(r.serverEnv, github, reads);
+  await connectRepository(app(), P);
+  return { ...r, github, app, store: releaseProvenance(r.db) };
 }
 
 const settings = (over: Partial<ReleaseProvenanceWrite> = {}): ReleaseProvenanceWrite => ({
-  revision: null, enabled: true, githubRepo: 'o/r',
+  revision: null, enabled: true,
   productionRefs: ['refs/tags/a/v*', 'refs/tags/b/v*'], integrationRefs: ['origin/main'],
   packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/a/v*' }, { pathGlob: 'packages/b/', tagPattern: 'refs/tags/b/v*' }],
-  includeUnknown: true, maxLookups: 50, credential: { token: TOKEN }, ...over,
+  includeUnknown: true, maxLookups: 50, ...over,
 });
 
 /** Records a tool call that touched `file` in the session's live document catalog: its path, and one more call. */
-function touch(r: ReturnType<typeof rig>, sessionId: string, file: string) {
+type Rig = Awaited<ReturnType<typeof rig>>;
+function touch(r: Rig, sessionId: string, file: string) {
   r.sqlite.query(`INSERT INTO session_documents (project_id, session_id, state, generation, updated_at) VALUES (?, ?, 'live', 1, 1)
     ON CONFLICT (project_id, session_id) DO NOTHING`).run(P, sessionId);
   r.sqlite.query(`INSERT INTO session_paths (project_id, session_id, generation, path, tool_calls, last_at) VALUES (?, ?, 1, ?, 1, 1)
@@ -47,7 +54,7 @@ function touch(r: ReturnType<typeof rig>, sessionId: string, file: string) {
   r.sqlite.query(`UPDATE session_documents SET tool_calls = tool_calls + 1 WHERE project_id = ? AND session_id = ?`).run(P, sessionId);
 }
 
-function seedSession(r: ReturnType<typeof rig>, sessionId: string, headSha: string, files: string[] = []) {
+function seedSession(r: Rig, sessionId: string, headSha: string, files: string[] = []) {
   r.sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
     VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`).run(P, sessionId);
   r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, status_hash, created_at)
@@ -55,55 +62,29 @@ function seedSession(r: ReturnType<typeof rig>, sessionId: string, headSha: stri
   for (const file of files) touch(r, sessionId, file);
 }
 
-const rows = (r: ReturnType<typeof rig>) => r.sqlite.query(
+const rows = (r: Rig) => r.sqlite.query(
   'SELECT namespace, record_id, state, basis_kind, checked_at, created_at, id FROM knowledge_release_state ORDER BY namespace, record_id',
 ).all() as Array<{ namespace: string; record_id: string; state: string; basis_kind: string; checked_at: number; created_at: number; id: string }>;
 
-const byRecord = (r: ReturnType<typeof rig>) => Object.fromEntries(rows(r).filter((x) => x.namespace === 'sessions').map((x) => [x.record_id, x.state]));
+const byRecord = (r: Rig) => Object.fromEntries(rows(r).filter((x) => x.namespace === 'sessions').map((x) => [x.record_id, x.state]));
 
 describe('release provenance settings', () => {
-  it('describes an unconfigured Project with its purpose and the connected repository as a suggestion only', async () => {
-    const r = rig();
-    r.sqlite.query(`INSERT INTO project_repositories (project_id, revision, url, branch, updated_at, updated_by)
-      VALUES (?, 'rev', 'https://github.com/goondocks-co/myco.git', 'main', 1, 'mem_1')`).run(P);
-    const view = await r.store.describe(P);
-    expect(view).toMatchObject({ enabled: false, githubRepo: null, revision: null, suggestedRepo: 'goondocks-co/myco', check: null,
-      credential: { configured: false, purpose: RELEASE_CREDENTIAL_PURPOSE } });
-  });
-
-  it('seals the credential in its own slot and never shows any of it', async () => {
-    const r = rig();
-    const view = await r.store.save(P, settings(), 'mem_1', 1);
-    expect(view.credential).toEqual({ configured: true, purpose: RELEASE_CREDENTIAL_PURPOSE });
-    expect(JSON.stringify(view)).not.toContain(TOKEN);
-    expect(JSON.stringify(view)).not.toContain(TOKEN.slice(0, 4));
-    const slot = (r.sqlite.query('SELECT secret_slot FROM project_release_provenance').get() as { secret_slot: string }).secret_slot;
-    expect(slot).toBe(`release-provenance:${P}:${view.revision}`);
-    expect(await r.secrets.get(slot)).toBe(TOKEN);
-    expect(r.sqlite.query('SELECT COUNT(*) AS n FROM project_repositories').get()).toEqual({ n: 0 });
+  it('describes an unconfigured Project with the connected repository every check would read', async () => {
+    const r = await rig();
+    expect(await r.store.describe(P)).toMatchObject({ enabled: false, revision: null, repository: { url: SOURCE_URL, branch: 'main' }, check: null });
   });
 
   it('refuses a stale revision and changes nothing', async () => {
-    const r = rig();
+    const r = await rig();
     const first = await r.store.save(P, settings(), 'mem_1', 1);
     await expect(r.store.save(P, settings({ revision: null }), 'mem_1', 2)).rejects.toBeInstanceOf(ReleaseProvenanceConflictError);
     expect((await r.store.describe(P)).revision).toBe(first.revision);
   });
 
-  it('keeps the credential for the same repository and drops it for another', async () => {
-    const r = rig();
-    const first = await r.store.save(P, settings(), 'mem_1', 1);
-    const same = await r.store.save(P, settings({ revision: first.revision, credential: undefined, maxLookups: 10 }), 'mem_1', 2);
-    expect(same.credential.configured).toBe(true);
-    const moved = await r.store.save(P, settings({ revision: same.revision, credential: undefined, githubRepo: 'o/other' }), 'mem_1', 3);
-    expect(moved.credential.configured).toBe(false);
-    expect((await r.secrets.list()).filter((s) => s.name.startsWith('release-provenance:'))).toEqual([]);
-  });
-
   it('refuses settings that could not be checked', async () => {
-    const r = rig();
+    const r = await rig();
     for (const bad of [
-      settings({ githubRepo: 'not a repo' }), settings({ githubRepo: null }), settings({ productionRefs: [], integrationRefs: [] }),
+      settings({ productionRefs: [], integrationRefs: [] }),
       settings({ productionRefs: ['refs/tags/../x'] }), settings({ maxLookups: 0 }), settings({ maxLookups: 1001 }),
       settings({ packageMap: [{ pathGlob: '', tagPattern: 'v*' }] }),
     ]) await expect(r.store.save(P, bad, 'mem_1', 1)).rejects.toBeInstanceOf(ReleaseProvenanceInputError);
@@ -112,16 +93,18 @@ describe('release provenance settings', () => {
 });
 
 describe('the scheduled release check', () => {
-  const env = (r: ReturnType<typeof rig>, repo: Repo = REPO, seen: string[] = [], auth: Array<string | null> = []) => {
+  const env = (r: Rig, repo: Repo = REPO, seen: string[] = [], auth: Array<string | null> = []) => {
     const fetcher = fakeGithub(repo, seen);
-    return { ...r.serverEnv, outbound: ((input: RequestInfo | URL, init?: RequestInit) => {
+    return r.app(((input: RequestInfo | URL, init?: RequestInit) => {
       auth.push(new Headers(init?.headers).get('authorization'));
       return fetcher(input, init);
-    }) as typeof fetch };
+    }) as OutboundFetch);
   };
+  const answering = (status: number, headers: Record<string, string> = {}, body = '{}') =>
+    (async () => new Response(body, { status, headers })) as unknown as OutboundFetch;
 
   async function configured(repo?: Repo) {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     seedSession(r, 's_released', A, ['/Users/dev/repo/packages/a/src/x.ts']);
     seedSession(r, 's_merged', B);
@@ -134,51 +117,51 @@ describe('the scheduled release check', () => {
     return { r, repo: repo ?? REPO };
   }
 
-  it('records whether a rate-limited check ran with a token, so the remedy follows the check and not a later setting', async () => {
-    const outbound = (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch;
-    const withToken = rig();
-    await withToken.store.save(P, settings(), 'mem_1', 1);
-    await reconcileReleaseProvenance({ ...withToken.serverEnv, outbound }, 100 * MIN);
-    expect((await withToken.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'rate_limited' });
-
-    const without = rig();
-    await without.store.save(P, settings({ credential: undefined }), 'mem_1', 1);
-    await reconcileReleaseProvenance({ ...without.serverEnv, outbound }, 100 * MIN);
-    const view = await without.store.describe(P);
-    expect(view.check).toMatchObject({ status: 'unavailable', failure: 'rate_limited_without_credential', lookups: 1 });
-    // Adding a token afterwards leaves the recorded check as it ran.
-    await without.store.save(P, settings({ revision: view.revision }), 'mem_1', 2);
-    expect((await without.store.describe(P)).check).toMatchObject({ failure: 'rate_limited_without_credential' });
-  });
-
-  it('records a refusal without a token as a rate limit when GitHub signals one, and never as a rejected credential', async () => {
-    const answering = (status: number, headers: Record<string, string> = {}, body = '{}') =>
-      (async () => new Response(body, { status, headers })) as unknown as typeof fetch;
+  it('names a refused read by GitHub’s signals: a rate limit, or a rejected App token', async () => {
     const secondary = JSON.stringify({ message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.' });
-    const cases: Array<[string, typeof fetch, boolean, string]> = [
-      ['secondary limit message', answering(403, {}, secondary), false, 'rate_limited_without_credential'],
-      ['retry-after', answering(403, { 'retry-after': '60' }), false, 'rate_limited_without_credential'],
-      ['bare 403', answering(403), false, 'forbidden_without_credential'],
-      ['bare 403 with a token', answering(403), true, 'credential_rejected'],
-      ['secondary limit message with a token', answering(403, {}, secondary), true, 'rate_limited'],
-    ];
-    for (const [name, outbound, withToken, failure] of cases) {
-      const r = rig();
-      await r.store.save(P, settings(withToken ? {} : { credential: undefined }), 'mem_1', 1);
-      await reconcileReleaseProvenance({ ...r.serverEnv, outbound }, 100 * MIN);
+    for (const [name, reads, failure] of [
+      ['429', answering(429), 'rate_limited'], ['secondary limit message', answering(403, {}, secondary), 'rate_limited'],
+      ['retry-after', answering(403, { 'retry-after': '60' }), 'rate_limited'], ['bare 403', answering(403), 'credential_rejected'],
+    ] as const) {
+      const r = await rig();
+      await r.store.save(P, settings(), 'mem_1', 1);
+      await reconcileReleaseProvenance(r.app(reads), 100 * MIN);
       expect({ name, check: (await r.store.describe(P)).check }).toMatchObject({ name, check: { status: 'unavailable', failure, lookups: 1 } });
     }
   });
 
-  it('stops a check without a token at the first refused comparison and records it as refused', async () => {
+  it('records why and reads nothing while the account is unapproved or no repository is connected', async () => {
+    const r = await rig();
+    await r.store.save(P, settings(), 'mem_1', 1);
+    const seen: string[] = [];
+    r.sqlite.run('DELETE FROM github_app_accounts');
+    await reconcileReleaseProvenance(env(r, REPO, seen), 100 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'account_not_approved', lookups: 0 });
+    const connection = (await projectRepositories(r.app()).describe(P))!;
+    await projectRepositories(r.app()).remove(P, connection.revision);
+    await r.store.requestCheck(P, 150 * MIN);
+    await reconcileReleaseProvenance(env(r, REPO, seen), 150 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'repository_not_connected', lookups: 0 });
+    expect(seen).toEqual([]);
+    expect(r.github.state.issued).toHaveLength(1);
+  });
+
+  it('publishes nothing from a check whose repository connection changed while it read', async () => {
     const { r } = await configured();
-    await r.store.save(P, settings({ revision: (await r.store.describe(P)).revision, credential: null }), 'mem_1', 2);
-    const github = fakeGithub(REPO, []);
-    const outbound = ((input: RequestInfo | URL, init?: RequestInit) => (String(input).includes('/compare/')
-      ? Promise.resolve(new Response('{}', { status: 403 })) : github(input, init))) as typeof fetch;
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound }, 100 * MIN);
-    expect((await r.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'forbidden_without_credential',
-      counts: { checked: 0, unavailable: 1, deferred: 4 } });
+    const reads = fakeGithub(REPO);
+    let moved = false;
+    await reconcileReleaseProvenance(r.app((async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!moved && String(input).includes('/compare/')) {
+        moved = true;
+        const current = (await projectRepositories(r.app()).describe(P))!;
+        await projectRepositories(r.app()).save(P, { installationId: OPERATOR.installationId, repositoryId: SOURCE.id, branch: 'release', revision: current.revision }, 'mem_1', 1);
+      }
+      return reads(input, init);
+    }) as OutboundFetch), 100 * MIN);
+    expect(moved).toBe(true);
+    expect(rows(r)).toEqual([]);
+    expect((await r.store.describe(P)).check).toMatchObject({ finishedAt: null });
+    expect([...r.github.state.revoked].sort()).toEqual(r.github.state.issued.map(entry => entry.token).sort());
   });
 
   it('classifies every captured commit, carries it to the session spores, and records a complete check', async () => {
@@ -190,8 +173,11 @@ describe('the scheduled release check', () => {
     expect(await getReleaseState(r.db, SCOPE, 'spore', 'sp_1')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
     const view = await r.store.describe(P);
     expect(view.check).toMatchObject({ status: 'complete', failure: null, counts: { checked: 5, changed: 5, unknown: 1, unavailable: 0, deferred: 0 }, lastCompleteAt: 100 * MIN });
-    expect(auth.every((a) => a === `Bearer ${TOKEN}`)).toBe(true);
-    expect(JSON.stringify(rows(r))).not.toContain(TOKEN);
+    const token = r.github.state.issued.at(-1)!;
+    expect(token.body).toEqual({ permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' }, repository_ids: [SOURCE.id] });
+    expect(auth.every((a) => a === `Bearer ${token.token}`)).toBe(true);
+    expect(r.github.state.revoked).toContain(token.token);
+    expect(JSON.stringify([rows(r), r.sqlite.query('SELECT * FROM project_release_provenance').all()])).not.toContain(token.token);
   });
 
   it('waits for the interval, runs on request, and skips commits already classified under unchanged refs', async () => {
@@ -219,11 +205,11 @@ describe('the scheduled release check', () => {
     expect(merged.created_at).toBe(100 * MIN);
   });
 
-  it('keeps every state and records why when GitHub refuses the credential', async () => {
+  it('keeps every state and records why when GitHub refuses the App token', async () => {
     const { r } = await configured();
     await reconcileReleaseProvenance(env(r), 100 * MIN);
     const before = rows(r);
-    const refused = { ...r.serverEnv, outbound: (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch };
+    const refused = r.app(answering(401));
     await r.store.requestCheck(P, 150 * MIN);
     expect((await reconcileReleaseProvenance(refused, 150 * MIN)).changed).toBe(0);
     expect(rows(r)).toEqual(before);
@@ -233,7 +219,7 @@ describe('the scheduled release check', () => {
   it('stops at the lookup budget, defers the rest, and leaves unchecked sessions as they were', async () => {
     const { r } = await configured();
     const view = await r.store.describe(P);
-    await r.store.save(P, settings({ revision: view.revision, credential: undefined, maxLookups: 12 }), 'mem_1', 2);
+    await r.store.save(P, settings({ revision: view.revision, maxLookups: 12 }), 'mem_1', 2);
     await reconcileReleaseProvenance(env(r), 100 * MIN);
     const check = (await r.store.describe(P)).check!;
     expect(check).toMatchObject({ status: 'partial', failure: 'budget_exhausted', lookups: 12, counts: { checked: 1, unavailable: 1, deferred: 3 } });
@@ -244,36 +230,38 @@ describe('the scheduled release check', () => {
   it('checks nothing for a Project with tracking off, and one due Project once under racing wakes', async () => {
     const { r } = await configured();
     const view = await r.store.describe(P);
-    await r.store.save(P, settings({ revision: view.revision, credential: undefined, enabled: false }), 'mem_1', 2);
+    await r.store.save(P, settings({ revision: view.revision, enabled: false }), 'mem_1', 2);
     const seen: string[] = [];
     expect((await reconcileReleaseProvenance(env(r, REPO, seen), 100 * MIN)).changed).toBe(0);
     expect(seen).toEqual([]);
 
     const again = await configured();
     const [first, second] = await Promise.all([
-      checkProject(again.r.db, again.r.secrets, env(again.r).outbound, P, 100 * MIN),
-      checkProject(again.r.db, again.r.secrets, env(again.r).outbound, P, 100 * MIN),
+      checkProject(env(again.r), P, 100 * MIN),
+      checkProject(env(again.r), P, 100 * MIN),
     ]);
     expect([first, second].sort()).toEqual([0, 5]);
   });
 });
 
 describe('release provenance routes', () => {
-  it('saves, reads and requests a check over the owner API without returning the credential', async () => {
-    const r = rig();
+  it('saves, reads and requests a check over the owner API, and refuses the fields it no longer stores by name', async () => {
+    const r = await rig();
     const env = { ...r.env, ...OWNER_ENV };
     const path = `/api/projects/${P}/release-provenance`;
     const refusedCheck = await worker.fetch(await asOwnerPost(r.db, `${path}/check`, {}), env);
     expect(refusedCheck.status).toBe(409);
     const saved = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings()), { method: 'PUT' }), env);
     expect(saved.status).toBe(200);
-    const text = await saved.text();
-    expect(text).not.toContain(TOKEN);
-    const read = await (await worker.fetch(await asOwner(r.db, path), env)).json() as { releaseProvenance: { revision: string; credential: unknown } };
-    expect(read.releaseProvenance.credential).toEqual({ configured: true, purpose: RELEASE_CREDENTIAL_PURPOSE });
+    const read = await (await worker.fetch(await asOwner(r.db, path), env)).json() as { releaseProvenance: { revision: string; repository: unknown } };
+    expect(read.releaseProvenance.repository).toEqual({ url: SOURCE_URL, branch: 'main' });
+    for (const field of ['githubRepo', 'credential']) {
+      const removed = await worker.fetch(new Request(await asOwnerPost(r.db, path, { ...settings({ revision: read.releaseProvenance.revision }), [field]: null }), { method: 'PUT' }), env);
+      expect(await removed.json()).toMatchObject({ reason: expect.stringContaining(`\`${field}\` is no longer accepted`) });
+    }
     const stale = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings()), { method: 'PUT' }), env);
     expect(stale.status).toBe(409);
-    const invalid = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings({ revision: read.releaseProvenance.revision, githubRepo: 'x' })), { method: 'PUT' }), env);
+    const invalid = await worker.fetch(new Request(await asOwnerPost(r.db, path, settings({ revision: read.releaseProvenance.revision, maxLookups: 0 })), { method: 'PUT' }), env);
     expect(invalid.status).toBe(400);
     const check = await worker.fetch(await asOwnerPost(r.db, `${path}/check`, {}), env);
     expect(await check.json()).toMatchObject({ requested: true, releaseProvenance: { check: { requestedAt: expect.any(Number) } } });
@@ -284,16 +272,15 @@ describe('release provenance routes', () => {
 
 describe('release state on every surface', () => {
   it('reads the same state, age and failed latest check over the owner API and MCP', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     seedSession(r, 's_merged', B);
     r.sqlite.query("INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco', 'Myco', 'built-in', 1, 1)").run();
     r.sqlite.query(`INSERT INTO spores (project_id, id, agent_id, observation_type, content, created_at, session_id)
       VALUES (?, 'sp_1', 'myco', 'decision', 'provenance agreement probe', 1, 's_merged')`).run(P);
-    const fetcher = fakeGithub(REPO);
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fetcher }, 100 * MIN);
+    await reconcileReleaseProvenance(r.app(), 100 * MIN);
     await r.store.requestCheck(P, 150 * MIN);
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: (async () => new Response('{}', { status: 429 })) as unknown as typeof fetch }, 150 * MIN);
+    await reconcileReleaseProvenance(r.app((async () => new Response('{}', { status: 429 })) as unknown as OutboundFetch), 150 * MIN);
 
     const expected = {
       state: 'merged_unreleased', confidence: 'medium', ref: 'main', checkedAt: 100 * MIN,
@@ -337,12 +324,12 @@ describe('one check at a time, for the settings it read', () => {
   }
 
   async function heldCheck() {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     seedSession(r, 's_merged', B);
     seedSession(r, 's_released', A);
     const github = heldGithub();
-    const running = checkProject(r.db, r.secrets, github.fetcher, P, 100 * MIN);
+    const running = checkProject(r.app(github.fetcher), P, 100 * MIN);
     await github.waiting;
     return { r, github, running };
   }
@@ -350,9 +337,9 @@ describe('one check at a time, for the settings it read', () => {
   it('refuses a second check while one holds the Project', async () => {
     const { r, github, running } = await heldCheck();
     const other: string[] = [];
-    expect(await checkProject(r.db, r.secrets, fakeGithub(REPO, other), P, 100 * MIN)).toBe(0);
+    expect(await checkProject(r.app(fakeGithub(REPO, other)), P, 100 * MIN)).toBe(0);
     await r.store.requestCheck(P, 101 * MIN);
-    expect((await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, other) }, 101 * MIN)).changed).toBe(0);
+    expect((await reconcileReleaseProvenance(r.app(fakeGithub(REPO, other)), 101 * MIN)).changed).toBe(0);
     expect(other).toEqual([]);
     github.release();
     expect(await running).toBe(2);
@@ -362,14 +349,14 @@ describe('one check at a time, for the settings it read', () => {
   it('publishes nothing from a check whose settings were saved while it waited on GitHub', async () => {
     const { r, github, running } = await heldCheck();
     const view = await r.store.describe(P);
-    await r.store.save(P, settings({ revision: view.revision, githubRepo: 'o/other', credential: undefined }), 'mem_1', 150 * MIN);
+    await r.store.save(P, settings({ revision: view.revision, maxLookups: 40 }), 'mem_1', 150 * MIN);
     github.release();
     expect(await running).toBe(0);
     expect(rows(r)).toEqual([]);
     expect((await r.store.describe(P)).check).toMatchObject({ status: null, finishedAt: null, requestedAt: 150 * MIN });
     // The new settings are checked on the next pass.
     const seen: string[] = [];
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 151 * MIN);
+    await reconcileReleaseProvenance(r.app(fakeGithub(REPO, seen)), 151 * MIN);
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', finishedAt: 151 * MIN });
   });
 
@@ -377,7 +364,7 @@ describe('one check at a time, for the settings it read', () => {
     const { r, github, running } = await heldCheck();
     r.sqlite.query('UPDATE release_check_due SET lease_until = 0, next_at = 0').run();
     const unmerged: Repo = { ...REPO, contains: { ...REPO.contains, main: [A, M] } };
-    await checkProject(r.db, r.secrets, fakeGithub(unmerged), P, 100 * MIN);
+    await checkProject(r.app(fakeGithub(unmerged)), P, 100 * MIN);
     const after = rows(r);
     github.release();
     // The held check is mid-way through s_merged (commit B); having lost its claim it reads nothing for s_released (commit A).
@@ -388,7 +375,7 @@ describe('one check at a time, for the settings it read', () => {
   it('lets a lapsed lease be taken over, and fences the check that lost it', async () => {
     const { r, github, running } = await heldCheck();
     r.sqlite.query('UPDATE release_check_due SET lease_until = 0, next_at = 0').run();
-    expect(await checkProject(r.db, r.secrets, fakeGithub(REPO), P, 300 * MIN)).toBe(2);
+    expect(await checkProject(r.app(fakeGithub(REPO)), P, 300 * MIN)).toBe(2);
     const after = rows(r);
     github.release();
     expect(await running).toBe(0);
@@ -398,19 +385,19 @@ describe('one check at a time, for the settings it read', () => {
 });
 
 describe('the source a session state is classified from', () => {
-  const addCommit = (r: ReturnType<typeof rig>, sessionId: string, point: 'session_start' | 'session_end', headSha: string, dirty = 0, at = 20, error: string | null = null) =>
+  const addCommit = (r: Rig, sessionId: string, point: 'session_start' | 'session_end', headSha: string, dirty = 0, at = 20, error: string | null = null) =>
     r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, is_dirty, error, status_hash, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?) ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error, captured_at = excluded.captured_at`)
       .run(P, `session:${sessionId}:${point}`, sessionId, point, at, headSha, dirty, error, at);
-  const newSession = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(`INSERT INTO sessions
+  const newSession = (r: Rig, sessionId: string) => r.sqlite.query(`INSERT INTO sessions
     (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`).run(P, sessionId);
-  const state = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(
+  const state = (r: Rig, sessionId: string) => r.sqlite.query(
     `SELECT state, basis_kind AS basisKind, json_extract(evidence_json, '$.source') AS source, json_extract(evidence_json, '$.previous') AS previous
      FROM knowledge_release_state WHERE record_id = ?`).get(sessionId) as { state: string; basisKind: string; source: string; previous: string | null };
-  const check = async (r: ReturnType<typeof rig>, at: number) => { await r.store.requestCheck(P, at); return (await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, at)).changed; };
+  const check = async (r: Rig, at: number) => { await r.store.requestCheck(P, at); return (await reconcileReleaseProvenance(r.app(fakeGithub(REPO)), at)).changed; };
 
   it('never presents a session standing on a released start commit as released, and classifies its end commit when captured under unchanged refs', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     newSession(r, 's_live');
     addCommit(r, 's_live', 'session_start', A);
@@ -424,7 +411,7 @@ describe('the source a session state is classified from', () => {
   });
 
   it('classifies a later end commit of a released session afresh and keeps the released state it replaced', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     newSession(r, 's_resumed');
     addCommit(r, 's_resumed', 'session_end', A, 0, 20);
@@ -438,7 +425,7 @@ describe('the source a session state is classified from', () => {
   });
 
   it('reads uncommitted changes at session end as unknown, and never rewrites a released row with no recorded source', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     newSession(r, 's_dirty');
     addCommit(r, 's_dirty', 'session_end', A, 1);
@@ -453,7 +440,7 @@ describe('the source a session state is classified from', () => {
   });
 
   it('reads an end whose cleanliness git could not read as unknown, replacing the clean end it followed and keeping the released state', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     newSession(r, 's_resumed');
     addCommit(r, 's_resumed', 'session_end', A, 0, 20);
@@ -467,7 +454,7 @@ describe('the source a session state is classified from', () => {
   });
 
   it('classifies a session again when its package mapping or its changed paths change, and not while they hold', async () => {
-    const r = rig();
+    const r = await rig();
     const saved = await r.store.save(P, settings({ packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/a/v*' }] }), 'mem_1', 1);
     newSession(r, 's_mapped');
     addCommit(r, 's_mapped', 'session_end', X);
@@ -483,7 +470,7 @@ describe('the source a session state is classified from', () => {
     expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['not_on_release_line', 'not_on_release_line']);
     expect((await r.store.describe(P)).check?.counts).toMatchObject({ checked: 1 });
 
-    await r.store.save(P, settings({ revision: saved.revision, credential: undefined, packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/b/v*' }] }), 'mem_1', 115 * MIN);
+    await r.store.save(P, settings({ revision: saved.revision, packageMap: [{ pathGlob: 'packages/a/', tagPattern: 'refs/tags/b/v*' }] }), 'mem_1', 115 * MIN);
     await check(r, 120 * MIN);
     expect([state(r, 's_mapped').state, state(r, 's_late_paths').state]).toEqual(['released', 'released']);
 
@@ -492,7 +479,7 @@ describe('the source a session state is classified from', () => {
   });
 
   it('gives a spore or plan recorded after its session was classified the session state, without reading GitHub', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     newSession(r, 's_done');
     addCommit(r, 's_done', 'session_end', A);
@@ -505,7 +492,7 @@ describe('the source a session state is classified from', () => {
       VALUES (?, 'plan_late', 's_done', 'ev_plan', 'machine_1', 'h', 'active', 200, 200, 'mt_1', 200)`).run(P);
     const seen: string[] = [];
     await r.store.requestCheck(P, 110 * MIN);
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 110 * MIN);
+    await reconcileReleaseProvenance(r.app(fakeGithub(REPO, seen)), 110 * MIN);
     expect(seen.filter((p) => p.startsWith('/compare') || p.startsWith('/commits'))).toEqual([]);
     expect(await getReleaseState(r.db, SCOPE, 'spore', 'sp_late')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
     expect(await getReleaseState(r.db, SCOPE, 'plan', 'plan_late')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
@@ -514,15 +501,15 @@ describe('the source a session state is classified from', () => {
 
 describe('stored data that cannot be read', () => {
   it('names unreadable settings, runs no check, and keeps every state', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     seedSession(r, 's_merged', B);
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, 100 * MIN);
+    await reconcileReleaseProvenance(r.app(fakeGithub(REPO)), 100 * MIN);
     const before = rows(r);
     r.sqlite.query("UPDATE project_release_provenance SET production_refs = 'not json', check_requested_at = ?").run(200 * MIN);
     expect((await r.store.describe(P)).problem).toBe('stored_settings_unreadable');
     const seen: string[] = [];
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, seen) }, 200 * MIN);
+    await reconcileReleaseProvenance(r.app(fakeGithub(REPO, seen)), 200 * MIN);
     expect(seen).toEqual([]);
     expect(rows(r)).toEqual(before);
     const status = r.sqlite.query('SELECT check_status AS status, check_failure AS failure FROM project_release_provenance').get();
@@ -530,12 +517,12 @@ describe('stored data that cannot be read', () => {
   });
 
   it('reads a session whose changed paths cannot be read yet as unknown rather than as a session that changed nothing', async () => {
-    const r = rig();
+    const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     seedSession(r, 's_paths', X, ['packages/b/y.ts']);
     // A restore set the session's document converting again: its paths are not in the catalog until it is live.
     r.sqlite.query("UPDATE session_documents SET state = 'convert', generation = NULL WHERE session_id = 's_paths'").run();
-    await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, 100 * MIN);
+    await reconcileReleaseProvenance(r.app(fakeGithub(REPO)), 100 * MIN);
     expect(byRecord(r).s_paths).toBe('unknown');
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'partial', failure: 'changed_paths_unreadable' });
   });

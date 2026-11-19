@@ -11,6 +11,7 @@ export interface WorkerRunIdentity { projectId: string; runId: string; attemptId
 function leasedRun<Input extends WorkerRunIdentity, Result>(
   operation: (env: ServerEnv, worker: WorkerLeaseOwner, input: Input, row: RunRow & { dispatchedBy: string }) => Promise<Result>,
   finish: 'verify' | 'renew' | 'committed',
+  undelivered: (env: ServerEnv, result: Result) => Promise<void> = async () => {},
 ): (env: ServerEnv, worker: WorkerLeaseOwner, input: Input) => Promise<Result | { held: false; reason: string }> {
   return async (env, worker, input) => {
     const scope = { projectId: input.projectId };
@@ -30,8 +31,13 @@ function leasedRun<Input extends WorkerRunIdentity, Result>(
     if (finish === 'committed') return result;
     if (finish === 'renew') {
       const now = worker.clock();
-      if (!(await renewRunLease(env.db, scope, input.runId, worker.worker, now + WORKER_LEASE_MS, now, dispatchedBy)))
+      let renewed: boolean;
+      try { renewed = await renewRunLease(env.db, scope, input.runId, worker.worker, now + WORKER_LEASE_MS, now, dispatchedBy); }
+      catch (error) { await undelivered(env, result); throw error; }
+      if (!renewed) {
+        await undelivered(env, result);
         return { held: false, reason: 'the lease is no longer held' };
+      }
     } else if ((await verify()) === null) return { held: false, reason: 'the lease is no longer held' };
     return result;
   };
@@ -42,10 +48,11 @@ export function withLeasedRun<Input extends WorkerRunIdentity, Result>(
   operation: (env: ServerEnv, worker: WorkerLeaseOwner, input: Input, row: RunRow & { dispatchedBy: string }) => Promise<Result>,
 ) { return leasedRun(operation, 'verify'); }
 
-/** Preparation that hands out a repository credential after a final live lease renewal. */
+/** Preparation that hands out a repository credential after a final live lease renewal; a credential it cannot deliver is ended by `undelivered`. */
 export function withLeasedRunSecret<Input extends WorkerRunIdentity, Result>(
   operation: (env: ServerEnv, worker: WorkerLeaseOwner, input: Input, row: RunRow & { dispatchedBy: string }) => Promise<Result>,
-) { return leasedRun(operation, 'renew'); }
+  undelivered: (env: ServerEnv, result: Result) => Promise<void>,
+) { return leasedRun(operation, 'renew', undelivered); }
 
 /** A commit operation guards its own write and has no later mutation. */
 export function withLeasedRunCommit<Input extends WorkerRunIdentity, Result>(

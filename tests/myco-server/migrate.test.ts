@@ -594,6 +594,7 @@ describe('versioned schema steps', () => {
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
     writerRows.set('session_title_work', { session_id: 'grammar-session', mode: 'claim' });
     writerRows.set('release_check_due', { next_at: 0, revision: 'r' });
+    writerRows.set('project_repositories', { revision: 'r', url: 'https://github.com/o/r', branch: 'main', github_repository_id: 1, github_installation_id: 1, updated_at: 0, updated_by: 'x' });
     writerRows.set('release_work_due', { session_id: 'grammar-session', point: 'session_end', head_sha: 'a', cleanliness: '0', captured_at: 0 });
     writerRows.set('release_propagation_due', { session_id: 'grammar-session', queued_at: 0 });
     writerRows.set('release_state_unresolved', { row_id: 'r', reason: 'duplicate', namespace: 'sessions', record_id: 'r', state: 'unknown', row_json: '{}', reported_at: 0 });

@@ -14,7 +14,7 @@ export const REPOSITORY_TASKS: readonly string[] = [...REQUIRED_REPOSITORY_TASKS
 export const allTasksRequireRepository = (tasks: readonly string[]): boolean =>
   tasks.length > 0 && tasks.every(task => REQUIRED_REPOSITORY_TASKS.includes(task));
 
-/** HTTPS source with credentials supplied independently of the remote URL. */
+/** The HTTPS address a runner fetches from, with credentials supplied independently of it. A Deployment only ever sends the address GitHub names. */
 export function repositoryUrl(raw: string): string {
   let url: URL;
   try { url = new URL(raw); } catch { throw new RepositoryInputError('Repository URL is invalid.'); }
@@ -36,10 +36,19 @@ export function repositoryBranch(raw: string): string {
 
 export interface RepositoryIdentity { url: string; branch: string }
 export interface RepositoryPin extends RepositoryIdentity { commit: string }
+/**
+ * A leased run's source: its identity, the address GitHub names the repository by now, and an installation token for
+ * that one repository alone. The runner revokes the token once its checkout no longer needs it.
+ */
 export interface RepositoryAccess extends RepositoryIdentity {
-  credential?: { username: string; token: string };
+  remote: string;
+  credential: { username: string; token: string };
+  /** When the token lapses, in epoch milliseconds. */
+  expiresAt: number;
   commit?: string;
 }
+/** A token handed to a runner must outlast the preparation allowance by a clock margin. */
+export const REPOSITORY_TOKEN_MIN_LIFETIME_MS = REPOSITORY_PREPARATION_TIMEOUT_MS + 60_000;
 
 /** Worker support for preparing source before starting a harness. */
 export const REPOSITORY_CHECKOUT_CAPABILITY = 'repository-checkout';
@@ -94,12 +103,25 @@ export function parseRepositoryCheckoutSpec(value: unknown): RepositoryCheckoutS
   return { url: repositoryUrl(url), branch: repositoryBranch(branch), historyDepth };
 }
 
+/** Why repository access is refused, each named in the reader's words. */
+export const GITHUB_ACCESS_FAILURES = {
+  app_not_configured: 'GitHub repository access needs setup. The server operator runs `myco server github-app` for this server.',
+  account_not_approved: 'This installation belongs to a GitHub account this server has not approved. An admin approves it in Project Settings → Repository.',
+  installation_unavailable: 'The App installation was removed or suspended in GitHub. Install the App again or unsuspend it, then connect the repository again.',
+  repository_not_granted: 'The App installation does not include this repository. Add the repository to the installation in GitHub, then check again.',
+  permissions_missing: 'The App installation has not granted the read access this needs. Approve the App’s requested permissions in GitHub, then check again.',
+  access_refused: 'GitHub refused access to this repository through the App installation. Check in GitHub that the installation includes it and its requested permissions are approved, then check again.',
+  rate_limited: 'GitHub’s rate limit for this App was reached. Check again after it resets.',
+  github_unavailable: 'GitHub did not answer as expected. Check again later.',
+} as const;
+export type GitHubAccessFailure = keyof typeof GITHUB_ACCESS_FAILURES;
+
 /** Structured repository checkout reasons supported by a Deployment's worker end reports. */
 export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v2';
 /** Preparation allowance understood by Deployments before repository-failure-v2. */
 export const LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000;
 export const LEGACY_REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
-export const REPOSITORY_FAILURE_CODES = ['not_found', 'access_refused', 'revision_missing', 'timed_out', 'disk', 'other', 'fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
+export const REPOSITORY_FAILURE_CODES = [...Object.keys(GITHUB_ACCESS_FAILURES) as GitHubAccessFailure[], 'not_found', 'revision_missing', 'timed_out', 'disk', 'other', 'fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
 export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
 export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }
 export const MAX_REPOSITORY_FAILURE_SUMMARY_CHARS = 512;

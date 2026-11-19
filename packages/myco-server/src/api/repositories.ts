@@ -1,29 +1,38 @@
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { deploymentSecretStore, SecretValueError } from '../core/secrets.js';
-import { projectRepositories, RepositoryConflictError, type RepositoryConnectionWrite } from '../core/repositories.js';
+import { githubAppConfigured } from '../core/github-app.js';
+import { projectRepositories, RepositoryConflictError } from '../core/repositories.js';
+import { githubRefusal } from './github-app.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 
-const capability = (env: ServerEnv) => projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey));
+/** Fields of the token-era connection body, each refused by name rather than ignored. */
+const REMOVED_FIELDS = ['url', 'username', 'credential'] as const;
+const CONFLICT = (reason: string) => Response.json({ error: 'conflict', reason }, { status: 409 });
 
+/** The stored connection and whether this server can use it, from storage alone. */
 export async function handleRepository(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (await resolveProjectScope(env.db, ctx.member, ctx.params.projectId) === null) return notFound();
-  return ok({ repository: await capability(env).describe(ctx.params.projectId) });
+  return ok({ repository: await projectRepositories(env).describe(ctx.params.projectId), appConfigured: githubAppConfigured(env) });
 }
 
 export async function handleSaveRepository(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (await resolveProjectScope(env.db, ctx.member, ctx.params.projectId) === null) return notFound();
   const body = await readJsonObject(ctx.request);
-  if (body === null || typeof body.url !== 'string' || typeof body.branch !== 'string'
-    || !(body.revision === null || typeof body.revision === 'string')) return badRequest('URL, branch and current revision are required.');
+  const removed = REMOVED_FIELDS.find(field => body !== null && field in body);
+  if (removed !== undefined) {
+    return badRequest(`Nothing was saved: \`${removed}\` is no longer accepted. Choose a repository the GitHub App can read and send PUT /api/projects/${ctx.params.projectId}/repository with { installationId, repositoryId, branch, revision }.`);
+  }
+  if (body === null || typeof body.installationId !== 'number' || typeof body.repositoryId !== 'number' || typeof body.branch !== 'string'
+    || !(body.revision === null || typeof body.revision === 'string')) return badRequest('installationId, repositoryId, branch and current revision are required.');
   try {
-    const repository = await capability(env).save(ctx.params.projectId, body as unknown as RepositoryConnectionWrite, ctx.member.id, ctx.now);
-    return ok({ repository });
+    const repository = await projectRepositories(env).save(ctx.params.projectId,
+      { installationId: body.installationId, repositoryId: body.repositoryId, branch: body.branch, revision: body.revision }, ctx.member.id, ctx.now);
+    return ok({ repository, appConfigured: true });
   } catch (error) {
-    if (error instanceof RepositoryInputError || error instanceof SecretValueError) return badRequest(error.message);
-    if (error instanceof RepositoryConflictError) return Response.json({ error: 'conflict', reason: error.message }, { status: 409 });
-    throw error;
+    if (error instanceof RepositoryInputError) return badRequest(error.message);
+    if (error instanceof RepositoryConflictError) return CONFLICT(error.message);
+    return githubRefusal(error);
   }
 }
 
@@ -32,10 +41,10 @@ export async function handleRemoveRepository(env: ServerEnv, ctx: OwnerContext):
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.revision !== 'string') return badRequest('Current revision is required.');
   try {
-    await capability(env).remove(ctx.params.projectId, body.revision, ctx.member.id, ctx.now);
+    await projectRepositories(env).remove(ctx.params.projectId, body.revision);
     return ok({ removed: true });
   } catch (error) {
-    if (error instanceof RepositoryConflictError) return Response.json({ error: 'conflict', reason: error.message }, { status: 409 });
+    if (error instanceof RepositoryConflictError) return CONFLICT(error.message);
     throw error;
   }
 }

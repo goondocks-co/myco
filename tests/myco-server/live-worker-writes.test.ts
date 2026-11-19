@@ -25,7 +25,7 @@ async function workerAt(path: string, change: Change) {
   const claimed = await claimNextRun(f.serverEnv, { principal: legacyWorker(issued.tokenId, 'worker-machine'), harnesses: [offeredHarness('claude-code')], now });
   if (!claimed.claimed) throw new Error('fixture run was not claimed');
   if (path === '/worker/repository') {
-    f.sqlite.run(`INSERT INTO project_repositories (project_id,revision,url,branch,updated_at,updated_by) VALUES ('proj_1','r1','https://example.test/source','main',?,'fixture')`, [now]);
+    f.sqlite.run(`INSERT INTO project_repositories (project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES ('proj_1','r1','https://example.test/source','main',1296269,41,?,'fixture')`, [now]);
     f.sqlite.run("UPDATE agent_runs SET task='vault-seed', run_context=? WHERE id='live-run'", [JSON.stringify({ timeoutSeconds: 300, checkout: { url: 'https://example.test/source', branch: 'main', historyDepth: 50 } })]);
   }
   if (change === 'claim demotion') f.sqlite.run("UPDATE agent_runs SET status='queued', dispatched_by=NULL, leased_by=NULL, lease_expires_at=NULL WHERE id='live-run'");

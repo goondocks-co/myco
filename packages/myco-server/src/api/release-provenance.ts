@@ -1,12 +1,13 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { deploymentSecretStore, SecretValueError } from '../core/secrets.js';
 import {
   releaseProvenance, ReleaseProvenanceConflictError, ReleaseProvenanceInputError, type ReleaseProvenanceWrite,
 } from '../core/release-provenance.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 
-const capability = (env: ServerEnv) => releaseProvenance(env.db, deploymentSecretStore(env.db, env.wrappingKey));
+const capability = (env: ServerEnv) => releaseProvenance(env.db);
+/** Fields release tracking no longer stores, each refused by name rather than ignored. */
+const REMOVED_FIELDS = ['credential', 'githubRepo'] as const;
 
 export async function handleReleaseProvenance(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   if (await resolveProjectScope(env.db, ctx.member, ctx.params.projectId) === null) return notFound();
@@ -17,13 +18,14 @@ export async function handleSaveReleaseProvenance(env: ServerEnv, ctx: OwnerCont
   if (await resolveProjectScope(env.db, ctx.member, ctx.params.projectId) === null) return notFound();
   const body = await readJsonObject(ctx.request);
   if (body === null || !(body.revision === null || typeof body.revision === 'string')) return badRequest('The current revision is required.');
-  if (body.credential !== undefined && body.credential !== null && typeof (body.credential as { token?: unknown }).token !== 'string') {
-    return badRequest('A release lookup key must be a token.');
+  const removed = REMOVED_FIELDS.find(field => field in body);
+  if (removed !== undefined) {
+    return badRequest(`Nothing was saved: \`${removed}\` is no longer accepted. Release tracking reads the Project’s connected repository; connect it with PUT /api/projects/${ctx.params.projectId}/repository, then save release tracking without \`${removed}\`.`);
   }
   try {
     return ok({ releaseProvenance: await capability(env).save(ctx.params.projectId, body as unknown as ReleaseProvenanceWrite, ctx.member.id, ctx.now) });
   } catch (error) {
-    if (error instanceof ReleaseProvenanceInputError || error instanceof SecretValueError) return badRequest(error.message);
+    if (error instanceof ReleaseProvenanceInputError) return badRequest(error.message);
     if (error instanceof ReleaseProvenanceConflictError) return Response.json({ error: 'conflict', reason: error.message }, { status: 409 });
     throw error;
   }

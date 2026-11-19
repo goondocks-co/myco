@@ -1,4 +1,4 @@
-import { saveReleaseSettings } from '../db/settings/release-connection.js';
+import { saveReleaseSettings, type ReleaseSettingsValues } from '../db/settings/release-connection.js';
 import { commitClassification, settleUnrecorded, type ClassificationOutcome } from '../db/release/classification.js';
 import { readReleaseConfig, requestReleaseCheck, unresolvedReleaseStates, type ReleaseConfigRow } from '../db/release/config.js';
 import { claimReleaseCheck, dueReleaseChecks, openReleaseGeneration, releaseDueAfterSave, settleReleaseCheck, type ReleaseClaim } from '../db/release/due.js';
@@ -8,18 +8,17 @@ import { RELEASE_PROJECTION } from '../db/release/schema.js';
 import { SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 import { projectionReadiness } from '../db/projections/catchup.js';
 /**
- * Release provenance for one Project: its configuration, its credential, and
- * the scheduled check that answers whether captured work shipped.
+ * Release provenance for one Project: its configuration and the scheduled
+ * check that answers whether captured work shipped.
  *
  * **One owner.** Every write of `project_release_provenance` and every
  * reconciler write of `knowledge_release_state` goes through this module.
  * Reads of release state stay in `provenance.ts`.
  *
- * **The credential has one purpose.** It is sealed under its own slot,
- * `release-provenance:{project}:{revision}`, and is used only to read release
- * tags and pull requests. It never falls back to the repository read
- * credential and is never read by anything else. A surface learns only
- * whether one is configured and what it is for.
+ * **The repository is the Project's connection.** A check reads the one
+ * repository the Project is connected to, addressed by GitHub's numeric id,
+ * with an App token minted for release reads (contents and pull requests,
+ * read-only) and revoked when the check ends. No token is stored.
  *
  * **The source is the session's latest captured commit.** A session's end
  * commit is classified when captured; with only its start commit, its own work
@@ -30,7 +29,7 @@ import { projectionReadiness } from '../db/projections/catchup.js';
  * **History is kept.** A `released` row is final for the source it was
  * checked from; a row without a recorded source is final outright. Every
  * change of state keeps the state it replaced in `evidence_json.previous`. A
- * check that cannot reach an answer — a rejected credential, a rate limit, a
+ * check that cannot reach an answer — refused access, a rate limit, a
  * spent budget, a timeout, unreadable stored data — writes no state: the
  * previous one stays with its own `checked_at`, and the Project's latest check
  * records what stopped it.
@@ -38,8 +37,9 @@ import { projectionReadiness } from '../db/projections/catchup.js';
  * **One check at a time, and only for the settings it read.** A check claims
  * the Project's due row with a lease under the revision it read. Every state it
  * writes and its outcome land only while that claim stands; a settings save
- * clears the claim, so a check still waiting on GitHub for the previous
- * repository publishes nothing, and a lease that lapses leaves the row due.
+ * or a repository connection change clears the claim, so a check still waiting
+ * on GitHub for the previous repository publishes nothing, and a lease that
+ * lapses leaves the row due.
  *
  * **Bounded, and only ever forward.** One check makes at most the Project's
  * configured number of GitHub reads and classifies at most `SESSIONS_PER_CHECK`
@@ -52,12 +52,12 @@ import { projectionReadiness } from '../db/projections/catchup.js';
  * bounded pages, without a GitHub read; a released row stays. While a record's
  * session state is still being carried, a read says so.
  */
-import type { ServerEnv, OutboundFetch, RelationalStore } from './adapters.js';
-import type { SecretStore } from './secrets.js';
-import { deploymentSecretStore } from './secrets.js';
+import type { ServerEnv, RelationalStore } from './adapters.js';
 import { settingTexts } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
-import { GITHUB_READ_TIMEOUT_MS, githubReads, isGithubRepo } from './github-refs.js';
+import { repositoryConnection } from '../db/storage/repository-connection.js';
+import { GitHubAccessRefused, githubAppProjects } from './github-app.js';
+import { GITHUB_READ_TIMEOUT_MS, githubReads } from './github-refs.js';
 import {
   classifyCommit, memoizedCompare, resolveRunRefs, type Classification, type PackageTagMapping,
 } from './release-classify.js';
@@ -75,11 +75,8 @@ const MAX_REF_CHARS = 200;
 const MAX_PACKAGE_MAPPINGS = 50;
 /** The report a surface states exactly up to; past it, "at least". */
 const UNRESOLVED_REPORT_CAP = 1000;
-const MAX_CREDENTIAL_CHARS = 4096;
 const REF_GRAMMAR = /^[A-Za-z0-9._/*?-]+$/;
-
-/** What the credential is for, in the words a settings surface shows. */
-export const RELEASE_CREDENTIAL_PURPOSE = 'Reads release tags and pull requests for this Project. It is not used for code tasks.';
+const REPOSITORY_NOT_CONNECTED = 'repository_not_connected';
 
 export class ReleaseProvenanceInputError extends Error {}
 /** Stored data that no longer parses as what it records. */
@@ -94,7 +91,6 @@ export class ReleaseProvenanceConflictError extends Error {
 
 interface ReleaseProvenanceSettings {
   enabled: boolean;
-  githubRepo: string | null;
   productionRefs: string[];
   integrationRefs: string[];
   packageMap: PackageTagMapping[];
@@ -128,9 +124,8 @@ export interface ReleaseProvenanceView extends ReleaseProvenanceSettings {
   revision: string | null;
   updatedAt: number | null;
   updatedBy: string | null;
-  credential: { configured: boolean; purpose: string };
-  /** The `owner/name` the connected repository names, when it is on GitHub: a default the owner may accept, never stored silently. */
-  suggestedRepo: string | null;
+  /** The Project's connected repository, which every check reads; null until an admin connects one. */
+  repository: { url: string; branch: string } | null;
   check: ReleaseCheck | null;
   /** Set when the stored settings cannot be read: the fields above are then not the Project's settings, and no check runs until they are saved again. */
   problem: typeof STORED_SETTINGS_UNREADABLE | null;
@@ -142,8 +137,6 @@ export interface ReleaseProvenanceView extends ReleaseProvenanceSettings {
 
 export interface ReleaseProvenanceWrite extends ReleaseProvenanceSettings {
   revision: string | null;
-  /** Omitted keeps the stored credential while the repository is unchanged; null removes it. */
-  credential?: { token: string } | null;
 }
 
 type Row = ReleaseConfigRow;
@@ -162,13 +155,12 @@ const isCounts = (v: unknown): v is ReleaseCheckCounts => typeof v === 'object' 
   && ['checked', 'changed', 'unchanged', 'unknown', 'unavailable', 'deferred'].every((k) => typeof (v as Record<string, unknown>)[k] === 'number');
 
 const DEFAULTS: ReleaseProvenanceSettings = {
-  enabled: false, githubRepo: null, productionRefs: [], integrationRefs: [], packageMap: [], includeUnknown: true, maxLookups: DEFAULT_MAX_LOOKUPS,
+  enabled: false, productionRefs: [], integrationRefs: [], packageMap: [], includeUnknown: true, maxLookups: DEFAULT_MAX_LOOKUPS,
 };
 
 function settingsOf(row: Row): ReleaseProvenanceSettings {
   return {
     enabled: row.enabled === 1,
-    githubRepo: row.githubRepo,
     productionRefs: parseStored(row.productionRefs, 'production refs', isStringList),
     integrationRefs: parseStored(row.integrationRefs, 'integration refs', isStringList),
     packageMap: parseStored(row.packageMap, 'package map', isMappingList),
@@ -191,14 +183,6 @@ function checkOf(row: Row): ReleaseCheck | null {
   };
 }
 
-/** `owner/name` from a GitHub HTTPS URL, or null for any other host. */
-function githubRepoOf(url: string | null | undefined): string | null {
-  if (!url) return null;
-  const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url.trim());
-  const repo = match ? `${match[1]}/${match[2]}` : null;
-  return isGithubRepo(repo) ? repo : null;
-}
-
 function refList(value: unknown, label: string): string[] {
   if (!Array.isArray(value) || value.length > MAX_REFS) throw new ReleaseProvenanceInputError(`${label} is a list of at most ${MAX_REFS} refs.`);
   const refs = value.map((ref) => (typeof ref === 'string' ? ref.trim() : ''));
@@ -212,8 +196,6 @@ function refList(value: unknown, label: string): string[] {
 
 /** The validated settings a write carries, or an input error naming the field. */
 function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSettings {
-  const githubRepo = input.githubRepo === null || input.githubRepo === '' ? null : input.githubRepo;
-  if (githubRepo !== null && !isGithubRepo(githubRepo)) throw new ReleaseProvenanceInputError('The GitHub repository is named owner/name.');
   if (typeof input.enabled !== 'boolean' || typeof input.includeUnknown !== 'boolean') throw new ReleaseProvenanceInputError('Tracking and unknown reporting are on or off.');
   const productionRefs = refList(input.productionRefs, 'Production refs');
   const integrationRefs = refList(input.integrationRefs, 'Integration refs');
@@ -231,22 +213,20 @@ function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSett
   if (typeof maxLookups !== 'number' || !Number.isInteger(maxLookups) || maxLookups < 1 || maxLookups > MAX_LOOKUPS_CEILING) {
     throw new ReleaseProvenanceInputError(`Lookups per check is a whole number from 1 to ${MAX_LOOKUPS_CEILING}.`);
   }
-  if (input.enabled === true && githubRepo === null) throw new ReleaseProvenanceInputError('Tracking needs a GitHub repository.');
   if (input.enabled === true && productionRefs.length === 0 && integrationRefs.length === 0) {
     throw new ReleaseProvenanceInputError('Tracking needs at least one production or integration ref.');
   }
-  return { enabled: input.enabled, githubRepo, productionRefs, integrationRefs, packageMap, includeUnknown: input.includeUnknown, maxLookups };
+  return { enabled: input.enabled, productionRefs, integrationRefs, packageMap, includeUnknown: input.includeUnknown, maxLookups };
 }
 
-/** The single writer of a Project's release provenance settings, its sealed credential and its check requests. */
-export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
+/** The single writer of a Project's release provenance settings and its check requests. */
+export function releaseProvenance(db: RelationalStore) {
   const row = (projectId: string) => readReleaseConfig(db, projectId);
 
   const describe = async (projectId: string): Promise<ReleaseProvenanceView> => {
     const [current, identity, readiness, unresolvedStates] = await Promise.all([
       row(projectId), repositoryIdentity(db, { projectId }), projectionReadiness(db, RELEASE_PROJECTION), unresolvedReleaseStates(db, projectId, UNRESOLVED_REPORT_CAP),
     ]);
-    const configured = current?.secretSlot ? (await secrets.describe(current.secretSlot)).configured : false;
     let settings = DEFAULTS;
     let check: ReleaseCheck | null = null;
     let problem: ReleaseProvenanceView['problem'] = null;
@@ -256,7 +236,7 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
         check = checkOf(current);
       } catch (error) {
         if (!(error instanceof StoredValueUnreadable)) throw error;
-        settings = { ...DEFAULTS, enabled: current.enabled === 1, githubRepo: current.githubRepo, maxLookups: current.maxLookups };
+        settings = { ...DEFAULTS, enabled: current.enabled === 1, maxLookups: current.maxLookups };
         problem = STORED_SETTINGS_UNREADABLE;
       }
     }
@@ -265,8 +245,7 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
       revision: current?.revision ?? null,
       updatedAt: current?.updatedAt ?? null,
       updatedBy: current?.updatedBy ?? null,
-      credential: { configured, purpose: RELEASE_CREDENTIAL_PURPOSE },
-      suggestedRepo: githubRepoOf(identity?.url),
+      repository: identity,
       check,
       problem,
       building: readiness === 'building',
@@ -278,24 +257,16 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
     describe,
     async save(projectId: string, input: ReleaseProvenanceWrite, actor: string, now: number): Promise<ReleaseProvenanceView> {
       const settings = validateSettings(input as unknown as Record<string, unknown>);
-      const credential = input.credential;
-      if (credential != null && (typeof credential.token !== 'string' || !credential.token.trim() || credential.token.length > MAX_CREDENTIAL_CHARS)) {
-        throw new ReleaseProvenanceInputError(`A release lookup token is at most ${MAX_CREDENTIAL_CHARS} characters.`);
-      }
       const previous = await row(projectId);
       if ((previous?.revision ?? null) !== input.revision) throw new ReleaseProvenanceConflictError();
       const revision = crypto.randomUUID();
-      // A token saved for one repository is never carried to another.
-      const preserve = credential === undefined && previous?.githubRepo === settings.githubRepo;
-      const secretSlot = credential == null ? (preserve ? previous?.secretSlot ?? null : null) : `release-provenance:${projectId}:${revision}`;
-      const sealed = credential == null ? null : await secrets.preparePut(secretSlot!, credential.token, actor, now);
-      const values = [
-        revision, settings.enabled ? 1 : 0, settings.githubRepo, JSON.stringify(settings.productionRefs),
+      const values: ReleaseSettingsValues = [
+        revision, settings.enabled ? 1 : 0, JSON.stringify(settings.productionRefs),
         JSON.stringify(settings.integrationRefs), JSON.stringify(settings.packageMap), settings.includeUnknown ? 1 : 0,
-        settings.maxLookups, secretSlot, now, actor,
+        settings.maxLookups, now, actor,
       ];
-      const due = releaseDueAfterSave({ projectId, revision, tracked: settings.enabled && settings.githubRepo !== null });
-      if (!await saveReleaseSettings(db, { project: projectId, previous, values, slot: secretSlot, sealed, now, actor, due })) throw new ReleaseProvenanceConflictError();
+      const due = releaseDueAfterSave({ projectId, revision, tracked: settings.enabled });
+      if (!await saveReleaseSettings(db, { project: projectId, previous: previous?.revision ?? null, values, now, due })) throw new ReleaseProvenanceConflictError();
       return describe(projectId);
     },
     /** Asks the next tick to check this Project now; answers false when tracking is off. */
@@ -348,10 +319,11 @@ function writeClassification(db: RelationalStore, claim: ReleaseClaim, work: Rel
  * every other until it finishes or the lease lapses.
  */
 export async function checkProject(
-  db: RelationalStore, secrets: SecretStore, outbound: OutboundFetch, projectId: string, now: number,
+  env: Pick<ServerEnv, 'db' | 'secrets' | 'outbound'>, projectId: string, now: number,
 ): Promise<number> {
+  const { db } = env;
   const current = await readReleaseConfig(db, projectId);
-  if (current === null || current.enabled !== 1 || current.githubRepo === null) return 0;
+  if (current === null || current.enabled !== 1) return 0;
   const claim: ReleaseClaim = { projectId, leaseId: crypto.randomUUID(), revision: current.revision };
   const intervalMs = (await reconcileIntervalMinutes(db)) * 60_000;
   const opened = await claimReleaseCheck(db, claim, { until: now + leaseMs(current.maxLookups), now, intervalMs });
@@ -367,15 +339,20 @@ export async function checkProject(
     failure = STORED_SETTINGS_UNREADABLE;
   }
 
-  if (settings !== null) {
-    const token = current.secretSlot === null ? null : await secrets.get(current.secretSlot);
-    const reads = githubReads({ repo: current.githubRepo, token, maxLookups: settings.maxLookups, fetcher: outbound });
-    const outcome = await classifyProject(db, reads, { claim, settings, counts, hasToken: token !== null, now });
-    lookups = reads.lookupsUsed();
-    if (outcome === null) superseded = true;
-    else failure = outcome.failure;
-    // What the check ran with, not the setting read later: a limit or refusal met without a token says so.
-    if (!token && (failure === 'rate_limited' || failure === 'forbidden')) failure += '_without_credential';
+  const connection = settings === null ? null : await repositoryConnection(db, projectId);
+  if (settings !== null && connection === null) failure = REPOSITORY_NOT_CONNECTED;
+  if (settings !== null && connection !== null) {
+    const { maxLookups } = settings;
+    try {
+      await githubAppProjects(env, () => now).withToken(connection, 'release', async ({ token }) => {
+        const reads = githubReads({ repositoryId: connection.repositoryId, token, maxLookups, fetcher: env.outbound });
+        try {
+          const outcome = await classifyProject(db, reads, { claim, settings: settings!, counts, repositoryId: connection.repositoryId, now });
+          if (outcome === null) superseded = true;
+          else failure = outcome.failure;
+        } finally { lookups = reads.lookupsUsed(); }
+      });
+    } catch (error) { if (!(error instanceof GitHubAccessRefused)) throw error; failure = error.failure; }
   }
 
   const status: ReleaseCheckStatus = failure === null
@@ -394,16 +371,13 @@ export async function checkProject(
  */
 async function classifyProject(
   db: RelationalStore, reads: ReturnType<typeof githubReads>,
-  { claim, settings, counts, hasToken, now }: { claim: ReleaseClaim; settings: ReleaseProvenanceSettings; counts: ReleaseCheckCounts; hasToken: boolean; now: number },
+  { claim, settings, counts, repositoryId, now }: { claim: ReleaseClaim; settings: ReleaseProvenanceSettings; counts: ReleaseCheckCounts; repositoryId: number; now: number },
 ): Promise<{ failure: string | null } | null> {
   const { projectId } = claim;
   const repository = await reads.repository();
-  if (!repository.ok) {
-    const notFound = hasToken ? 'repository_not_found' : 'repository_not_found_without_credential';
-    return { failure: repository.failure === 'not_found' ? notFound : repository.failure };
-  }
+  if (!repository.ok) return { failure: repository.failure === 'not_found' ? 'repository_not_found' : repository.failure };
   const run = await resolveRunRefs(reads, settings);
-  const fingerprint = run.fingerprint === null ? null : `repo=${settings.githubRepo}\n${run.fingerprint}`;
+  const fingerprint = run.fingerprint === null ? null : `repository=${repositoryId}\n${run.fingerprint}`;
   const generation = await openReleaseGeneration(db, claim, fingerprint);
   if (generation === null) return null;
   const candidates = await openReleaseWork(db, projectId, generation, SESSIONS_PER_CHECK + 1);
@@ -474,9 +448,8 @@ export async function reconcileReleaseProvenance(env: ServerEnv, now: number): P
   if (await projectionReadiness(env.db, RELEASE_PROJECTION) === 'building') return { changed: 0, more: false };
   const intervalMs = (await reconcileIntervalMinutes(env.db)) * 60_000;
   const due = await dueReleaseChecks(env.db, { countedBefore: now - intervalMs, now, limit: PROJECTS_PER_PASS });
-  const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   let changed = 0;
-  for (const projectId of due) changed += await checkProject(env.db, secrets, env.outbound, projectId, now);
+  for (const projectId of due) changed += await checkProject(env, projectId, now);
   const carried = await drainReleasePropagation(env.db, now);
   return { changed, more: carried.more };
 }

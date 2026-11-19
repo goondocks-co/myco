@@ -6,7 +6,7 @@ import { SCHEDULE_ACTOR_SQL, SCHEDULE_ENTRY_SQL } from '../schedule-entry.js';
 
 const STREAK_LIMIT = 8;
 const RETRY_BASE_MS = 6 * 60 * 60 * 1000;
-const SETTINGS_FAILURES = new Set(['not_found', 'access_refused', 'revision_missing']);
+const SETTINGS_FAILURES = new Set(['not_found', 'access_refused', 'revision_missing', 'app_not_configured', 'account_not_approved', 'installation_unavailable', 'repository_not_granted', 'permissions_missing']);
 const RETRY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 interface Evidence { projectId: string; attempts: string; successAt: number | null; settingsAt: number }
 interface Attempt { id: string; status: string; error: string | null; code: string | null; summary: string | null; task: string; at: number }

@@ -7,8 +7,7 @@ import { dispatchTask, claimNextRun } from '@myco-server-worker/core/harness.js'
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
 import { MAX_MAP_CONTENT_AGE_MS } from '@myco-server-worker/core/canopy-carry-forward.js';
 import { writeCanopyMap } from '@myco-server-worker/core/canopy.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { connectRepository, githubFixture, SOURCE_URL, UNSIGNED_APP, withApp } from './helpers/github-app.js';
 import { applyRunUpdate } from '@myco-server-worker/db/runs/change.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
@@ -18,7 +17,7 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 
-const SOURCE = { url: 'https://example.test/map.git', branch: 'main' };
+const SOURCE = { url: SOURCE_URL, branch: 'main' };
 const OLD = 'a'.repeat(40), HEAD = 'b'.repeat(40);
 const SCOPE = { projectId: 'proj_1' };
 const file = { path: 'src/main.ts', sha256: 'c'.repeat(64) };
@@ -38,14 +37,15 @@ async function fixture({ contentAgeMs = 0 }: { contentAgeMs?: number } = {}) {
   await ensureMember(e.db, 'mem_worker', now, 'admin', 'worker');
   const credential = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
   const principal = legacyWorker(credential.tokenId, 'm1');
-  await projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey))
-    .save(SCOPE.projectId, { ...SOURCE, revision: null }, 'mem_worker', now);
+  const github = githubFixture();
+  const app = () => withApp(e.serverEnv, github);
+  await connectRepository(app(), SCOPE.projectId, { actor: 'mem_worker', now });
   const start = async (actor: string, commit: string) => {
-    const dispatch = await dispatchTask(e.serverEnv, MAP_TASK, SCOPE.projectId, { serverUrl: 'https://s', actor }, now);
+    const dispatch = await dispatchTask(app(), MAP_TASK, SCOPE.projectId, { serverUrl: 'https://s', actor }, now);
     if (!dispatch.dispatched) throw new Error('map not dispatched');
-    const claim = await claimNextRun(e.serverEnv, { principal, now, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES });
+    const claim = await claimNextRun(app(), { principal, now, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES });
     if (!claim.claimed) throw new Error('map not claimed');
-    const prepare = (body: Record<string, unknown>) => prepareWorkerRepository(e.serverEnv,
+    const prepare = (body: Record<string, unknown>) => prepareWorkerRepository(app(),
       { worker: principal, clock: () => now }, { ...SCOPE, runId: claim.run.id, body });
     const access = await prepare({});
     await prepare({ ...SOURCE, commit });

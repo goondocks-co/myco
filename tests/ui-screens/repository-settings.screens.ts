@@ -17,9 +17,9 @@ test.describe('repository requirements in Project settings', () => {
           await request.fulfill({
             status: 200,
             contentType: 'application/json',
-            body: JSON.stringify({ repository: connected ? {
-              revision: 'rev_fixture', url: 'https://github.com/goondocks-co/myco.git', branch: 'main',
-              username: null, credential: null, updatedAt: Number(screensEnv('now')) - 3_600_000, updatedBy: 'system',
+            body: JSON.stringify({ appConfigured: true, repository: connected ? {
+              revision: 'rev_fixture', url: 'https://github.com/goondocks-co/myco', branch: 'main', repositoryId: 1296269, installationId: 41,
+              updatedAt: Number(screensEnv('now')) - 3_600_000, updatedBy: 'system',
             } : null }),
           });
         });

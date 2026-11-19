@@ -360,8 +360,8 @@ it('surfaces enabled code work with no repository and clears as soon as source i
   expect((await read()).items).toEqual([]);
   sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','canopy',1,1,'fixture')");
   expect((await read()).items).toEqual([{ kind: 'repository_missing', tone: 'warn', projectId: 'proj_1' }]);
-  sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-    VALUES ('proj_1','r1','https://example.test/source.git','main',1,'fixture')`);
+  sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+    VALUES ('proj_1','r1','https://example.test/source.git','main',1296269,41,1,'fixture')`);
   expect((await read()).items).toEqual([]);
   sqlite.run("DELETE FROM project_repositories WHERE project_id = 'proj_1'");
   sqlite.run("INSERT INTO project_capabilities VALUES ('proj_2','vault_evolution',1,1,'fixture')");
@@ -406,7 +406,7 @@ it('serves one project independently of global overflow and protects the scoped 
     headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4' },
   }), env);
   expect(await (await get('?project=code_100')).json() as Record<string, unknown>).toEqual({ items: [{ kind: 'repository_missing', tone: 'warn', projectId: 'code_100' }], unavailable: [] });
-  sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES ('code_100','r','https://example.test/source','main',1,'fixture')");
+  sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES ('code_100','r','https://example.test/source','main',1296269,41,1,'fixture')");
   expect(await (await get('?project=code_100')).json() as Record<string, unknown>).toEqual({ items: [], unavailable: [] });
   expect((await get('?project=absent')).status).toBe(404);
   expect((await get('?project=code_100', MEMBER_SUB)).status).toBe(403);

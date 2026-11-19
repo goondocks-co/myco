@@ -36,14 +36,22 @@ const grant = (over: Record<string, unknown> = {}) => ({
   lastUsedAt: NOW - 2 * HOUR, revokedAt: null, revokedBy: null, rotatedTo: null, ...over,
 });
 const REPOSITORY = {
-  revision: 'rev_7', url: 'https://github.com/goondocks-co/myco.git', branch: 'main', username: 'x-access-token',
-  credential: { configured: true, readable: true, maskedValue: 'g…x', updatedAt: NOW, updatedBy: ADA }, updatedAt: NOW - HOUR, updatedBy: ADA,
+  revision: 'rev_7', url: 'https://github.com/goondocks-co/myco', branch: 'main', repositoryId: 1296269, installationId: 41, updatedAt: NOW - HOUR, updatedBy: ADA,
 };
 const RELEASES = {
-  enabled: false, githubRepo: null, productionRefs: [], integrationRefs: [], packageMap: [], includeUnknown: false, maxLookups: 50,
-  revision: null, updatedAt: null, updatedBy: null, credential: { configured: false, purpose: 'Reads release tags for this project.' },
-  suggestedRepo: 'goondocks-co/myco', check: null, problem: null, building: false, unresolvedStates: 0,
+  enabled: false, productionRefs: [], integrationRefs: [], packageMap: [], includeUnknown: false, maxLookups: 50,
+  revision: null, updatedAt: null, updatedBy: null, repository: { url: REPOSITORY.url, branch: 'main' }, check: null, problem: null, building: false, unresolvedStates: 0,
 };
+/** The server's App installed by the operator's organization, approved here, and by a look-alike account never approved. */
+const INSTALLATIONS = {
+  installations: [
+    { installationId: 41, account: { id: 9001, login: 'goondocks-co', type: 'Organization' }, approved: true, suspended: false },
+    { installationId: 666, account: { id: 6660, login: 'go0ndocks-co', type: 'Organization' }, approved: false, suspended: false },
+  ],
+  accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW - HOUR }],
+  page: 1, more: true,
+};
+const CHOICES = { repositories: [{ id: 1296269, fullName: 'goondocks-co/myco', defaultBranch: 'main', private: true }], more: false };
 
 interface Sent { method: string; path: string; body: unknown }
 const originalFetch = globalThis.fetch;
@@ -71,7 +79,9 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/api/status': () => Response.json({ target: 'bun' }),
   '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS }),
   [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy: false, skills: false, vault_evolution: true } }),
-  [`${api}/repository`]: () => Response.json({ repository: REPOSITORY }),
+  [`${api}/repository`]: () => Response.json({ repository: REPOSITORY, appConfigured: true }),
+  '/api/github-app/installations': () => Response.json(INSTALLATIONS),
+  '/api/github-app/installations/41/repositories': () => Response.json(CHOICES),
   [`${api}/grants`]: () => Response.json({ grants: [grant(), grant({ id: 'eg_old', label: 'old bot', revokedAt: NOW - HOUR, revokedBy: ADA, rotatedTo: 'eg_live1' })] }),
   [`${api}/release-provenance`]: () => Response.json({ releaseProvenance: RELEASES }),
   ...extra,
@@ -159,7 +169,7 @@ describe('a project\'s settings', () => {
     expect(headings).toEqual(['What Myco does here', 'Repository', 'Access keys', 'Release tracking']);
     expect(['capabilities', 'repository', 'access-keys', 'release-tracking'].every((id) => sectionOf(id) !== null)).toBe(true);
     await screen.findByText('review bot');
-    await screen.findByText('https://github.com/goondocks-co/myco.git');
+    await within(sectionOf('repository')).findByText('https://github.com/goondocks-co/myco');
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
@@ -266,7 +276,7 @@ describe('a project\'s settings', () => {
     let canopy = false;
     const { sent } = server(base({
       [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy, vault_evolution: true } }),
-      [`${api}/repository`]: () => Response.json({ repository: null }),
+      [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }),
       [`PUT ${api}/capabilities/canopy`]: () => { canopy = true; return Response.json({ applied: true }); },
     }));
     mount(`/p/${P}/settings`);
@@ -299,7 +309,7 @@ describe('a project\'s settings', () => {
   it('keeps session learning conditional when Learning is off without a repository', async () => {
     server(base({
       [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: { 'agent.spore_curation.daily_runs': 5 }, capabilities: { cortex: true, canopy: false, vault_evolution: false } }),
-      [`${api}/repository`]: () => Response.json({ repository: null }),
+      [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }),
     }));
     mount(`/p/${P}/settings`);
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
@@ -311,7 +321,7 @@ describe('a project\'s settings', () => {
   it('derives fully blocked copy from the capability’s own task subset', async () => {
     server(base({
       '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'extract-curate' ? { ...task, capability: null } : task) }),
-      [`${api}/repository`]: () => Response.json({ repository: null }),
+      [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }),
     }));
     mount(`/p/${P}/settings`);
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
@@ -323,7 +333,7 @@ describe('a project\'s settings', () => {
   it('names the available work and every repository-dependent task for another mixed subset', async () => {
     server(base({
       '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'canopy-map' ? { ...task, capability: 'vault_evolution' } : task) }),
-      [`${api}/repository`]: () => Response.json({ repository: null }),
+      [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }),
     }));
     mount(`/p/${P}/settings`);
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
@@ -350,7 +360,7 @@ describe('a project\'s settings', () => {
       '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'canopy-map'
         ? { ...task, capability: 'cortex' }
         : task.task === 'vault-seed' ? { ...task, capability: null } : task) }),
-      [`${api}/repository`]: () => Response.json({ repository: null }),
+      [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }),
     }));
     mount(`/p/${P}/settings`);
     const context = (await screen.findByRole('switch', { name: 'Context for sessions' })).closest('[data-setting="capability.cortex"]') as HTMLElement;
@@ -397,55 +407,42 @@ describe('a project\'s settings', () => {
 });
 
 describe('the repository', () => {
-  it('asks for a missing repository token and does not offer to keep it', async () => {
-    server(base({ [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: {}, capabilities: { canopy: true } }), [`${api}/repository`]: () => Response.json({ repository: { ...REPOSITORY,
-      credential: { configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null } } }) }));
+  it('says repository access needs the operator’s setup when the server holds no App key, and offers no connection', async () => {
+    server(base({ [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: {}, capabilities: { canopy: true } }),
+      [`${api}/repository`]: () => Response.json({ repository: REPOSITORY, appConfigured: false }) }));
     mount(`/p/${P}/settings`);
-    expect(await screen.findByText('Its token is missing; enter it again')).toBeTruthy();
+    expect((await screen.findByTestId('repository-setup')).textContent).toContain('myco server github-app');
     const row = (await screen.findByRole('switch', { name: 'Code map' })).closest('[data-setting="capability.canopy"]') as HTMLElement;
-    await waitFor(() => expect(row.textContent).toContain('Needs this project’s repository token'));
-    expect(row.textContent).not.toContain('Reads goondocks-co/myco');
-    expect(within(row).getByRole('link', { name: 'Enter repository token' }).getAttribute('href')).toBe(`/p/${P}/settings#repository`);
-    fireEvent.click(screen.getByRole('button', { name: 'Edit repository' }));
-    const dialog = await screen.findByRole('dialog');
-    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).placeholder).toBe('');
-    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).required).toBe(true);
+    await waitFor(() => expect(row.textContent).toContain('On · Code tasks need repository access set up'));
+    expect(within(row).queryByRole('link')).toBeNull();
+    expect(within(sectionOf('repository')).queryByRole('button', { name: 'Change repository' })).toBeNull();
   });
 
-  it('shows what is connected and how, never the credential, and edits it with the credential kept', async () => {
-    const { sent } = server(base({ [`PUT ${api}/repository`]: () => Response.json({ repository: REPOSITORY }) }));
-    mount(`/p/${P}/settings`);
-    const section = await waitFor(() => { const s = sectionOf('repository'); expect(s.textContent).toContain('main'); return s; });
-    expect(section.textContent).toContain('With a read-only token');
-    expect(section.textContent).toContain('1 h ago by Ada');
-    expect(section.textContent).not.toContain('g…x');
-    fireEvent.click(within(section).getByRole('button', { name: 'Edit repository' }));
-    const dialog = await screen.findByRole('dialog');
-    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).placeholder).toBe('Leave blank to keep the current token');
-    expect(within(dialog).getByText('For a private GitHub repository, use a fine-grained token limited to this repository with Contents: Read-only')).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toEqual({ method: 'PUT', path: `${api}/repository`, body: { url: REPOSITORY.url, branch: 'main', revision: 'rev_7' } });
-  });
-
-  it('connects a public repository with no credential', async () => {
+  it('shows what is connected, offers only approved installations, and approves an account by its installation', async () => {
     const { sent } = server(base({
-      [`GET ${api}/repository`]: () => Response.json({ repository: null }),
-      [`PUT ${api}/repository`]: () => Response.json({ repository: REPOSITORY }),
+      [`PUT ${api}/repository`]: () => Response.json({ repository: REPOSITORY, appConfigured: true }),
+      'POST /api/github-app/accounts': () => Response.json({ account: INSTALLATIONS.accounts[0] }),
     }));
     mount(`/p/${P}/settings`);
-    await waitFor(() => expect(sectionOf('repository').textContent).toContain('No repository connected'));
-    fireEvent.click(within(sectionOf('repository')).getByRole('button', { name: 'Connect repository' }));
+    const section = await waitFor(() => { const s = sectionOf('repository'); expect(s.textContent).toContain('goondocks-co/myco'); return s; });
+    expect(section.textContent).toContain('1 h ago by Ada');
+    fireEvent.click(within(section).getByRole('button', { name: 'Change repository' }));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.change(within(dialog).getByLabelText('HTTPS repository address'), { target: { value: 'https://github.com/example/app.git' } });
-    expect(within(dialog).getByRole('switch', { name: 'Use without a token' }).getAttribute('aria-checked')).toBe('true');
+    const stranger = await within(dialog).findByText('Installed by an account this server has not approved: go0ndocks-co (an organization)');
+    fireEvent.click(within(stranger.parentElement as HTMLElement).getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/github-app/accounts', body: { installationId: 666 } }]));
+    expect(within(dialog).getByRole('button', { name: 'Show the next accounts' })).toBeTruthy();
+    fireEvent.click(await within(dialog).findByLabelText(/^Account(?::|$)/));
+    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['goondocks-co']);
+    fireEvent.click(await screen.findByRole('option', { name: 'goondocks-co' }));
+    await within(dialog).findByLabelText(/^Repository(?::|$)/);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]!.body).toEqual({ url: 'https://github.com/example/app.git', branch: 'main', revision: null, credential: null });
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toEqual({ method: 'PUT', path: `${api}/repository`, body: { installationId: 41, repositoryId: 1296269, branch: 'main', revision: 'rev_7' } });
   });
 
   it('opens the connection form from a repository deep link and closes it without leaving the request in the URL', async () => {
-    server(base({ [`${api}/repository`]: () => Response.json({ repository: null }) }));
+    server(base({ [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }) }));
     mount(`/p/${P}/settings?connect=repository#repository`);
     const dialog = await screen.findByRole('dialog', { name: 'Connect a repository' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));

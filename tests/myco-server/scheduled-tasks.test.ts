@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { readAttention } from '@myco-server-worker/core/attention.js';
+import { UNSIGNED_APP } from './helpers/github-app.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { changingAtStatement } from './helpers/store-faults.js';
@@ -60,13 +61,14 @@ async function decideTask(...args: Parameters<typeof decide>) {
 
 function fixture(opts: { bound?: boolean } = {}) {
   const e = sqliteEnv({ workerLogin: true });
+  Object.assign(e.env, UNSIGNED_APP);
   const launches: Array<{ runId: string; envVars: Record<string, string> }> = [];
   const base = opts.bound === false ? e.serverEnv : withHarness(() => e.serverEnv, { launch: async (spec) => { launches.push(spec); } });
   const env: ServerEnv = { ...base, wake: async () => {} };
   const setting = (leaf: string, value: unknown) => e.sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (?, ?, ?, 'mem_1')`, [leaf, JSON.stringify(value), NOW]);
   const token = seedCredential(e.sqlite, { id: 'mt_seed', expiresAt: NOW + 100 * DAY });
-  for (const project of ['proj_1','proj_2']) e.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-    VALUES(?,'fixture','https://example.test/repo','main',1,'fixture')`, [project]);
+  for (const project of ['proj_1','proj_2']) e.sqlite.run(`INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by)
+    VALUES(?,'fixture','https://example.test/repo','main',1296269,41,1,'fixture')`, [project]);
   e.sqlite.run(`INSERT INTO worker_contacts(credential_id,machine_id,offers,capabilities,last_seen_at,updated_at)
     VALUES(?,'machine_1',?,?,?,?)`, [token,JSON.stringify([offeredHarness('claude-code')]),JSON.stringify(capabilitiesRequiredBy('canopy-map')),NOW,NOW]);
   e.sqlite.run("UPDATE members SET role='admin' WHERE id=(SELECT member_id FROM member_credentials WHERE id=?)", [token]);

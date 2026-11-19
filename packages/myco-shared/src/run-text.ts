@@ -538,6 +538,8 @@ export function parseRepositoryFailure(value: unknown, secrets: readonly string[
   if (typeof code !== 'string' || !(REPOSITORY_FAILURE_CODES as readonly string[]).includes(code)) return null;
   let summary = !['submodules','lfs','too_large','commit_mismatch'].includes(code) && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
   summary = maskDiagnosticSecrets(summary, secrets).trim().split(/\r?\n/).at(-1) ?? '';
+  const installationAuth = new RegExp(btoa('x-access-token:') + '[A-Za-z0-9+/_=-]+', 'g');
+  summary = summary.replace(installationAuth, '[REDACTED]');
   summary = summary.replace(/https?:\/\/[^\s'"<>]+/g, '<url>');
   const placeholder = (path: string): string => {
     const normalized = path.replaceAll('\\', '/');

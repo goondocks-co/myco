@@ -5,8 +5,7 @@ import type { ReleaseCheck, ReleaseProvenanceAnswer, ReleaseProvenanceRow } from
 import { live, QUICK_MS } from '../lib/live';
 export type { PackageTagMapping, ReleaseCheck, ReleaseProvenanceRow } from '../features/admin/project/wire';
 
-export type ReleaseProvenanceWrite = Pick<ReleaseProvenanceRow, 'enabled' | 'githubRepo' | 'productionRefs' | 'integrationRefs' | 'packageMap' | 'includeUnknown' | 'maxLookups' | 'revision'>
-  & { credential?: { token: string } | null };
+export type ReleaseProvenanceWrite = Pick<ReleaseProvenanceRow, 'enabled' | 'productionRefs' | 'integrationRefs' | 'packageMap' | 'includeUnknown' | 'maxLookups' | 'revision'>;
 
 /** A record's release state as the server presents it on every surface. */
 export interface ReleaseStatus {

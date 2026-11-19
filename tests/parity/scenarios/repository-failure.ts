@@ -31,7 +31,7 @@ export const repositoryFailure: ParityScenario = {
     });
     expect(configured.status).toBe(200);
     expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
-    await repository(target, { url: 'https://github.com/example/source.git', branch: 'main' });
+    await repository(target, 'example/source');
 
     const cases = [
       { suffix: 'reason', reason: { code: 'other', summary: "fatal: cannot open '/Users/private-user/Projects/customer/private.txt' https://reader:synthetic-secret-999@github.com/example/source.git" } },

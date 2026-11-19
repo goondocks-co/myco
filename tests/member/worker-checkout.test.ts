@@ -1,7 +1,9 @@
 import { budgetFixture } from '../myco-server/helpers/budget-fixture.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { describe, expect, it } from 'bun:test';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { stubProfileHarness } from '../helpers/stub-profile-harness.ts';
 import { join } from 'node:path';
 import { dispatchTask } from '@myco-server-worker/core/harness.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
@@ -12,22 +14,29 @@ import { detectHarnesses } from '@myco/runner/detect.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { connectRepository, githubFixture, SOURCE_URL, withApp } from '../myco-server/helpers/github-app.js';
 import { SEEDING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { MAP_ACTION, MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { RUN_REPOSITORY_DIGESTS_FILE } from '@goondocks/myco-shared/repository';
 import { createHash } from 'node:crypto';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { gitRepositoryFixture, GIT_READ_CREDENTIAL } from '../helpers/git-repository.js';
+import { gitRepositoryFixture } from '../helpers/git-repository.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { flagValue } from '../helpers/argv-flag.ts';
 
 /**
  * A native child reads the checkout and writes through the run's HTTP MCP
  * connection: a seeding run saves a spore, and a map run writes a map grounded
- * in the digest listing the worker wrote beside the checkout.
+ * in the digest listing the worker wrote beside the checkout. The source is the
+ * repository the App connection names, served locally under its GitHub address,
+ * reached with the token the Deployment minted and ended once Git is done.
  */
+
+/** A source served under the fixture repository's GitHub address, accepting only live tokens the fixture issued. */
+async function appSource(github: ReturnType<typeof githubFixture>, accepts = true) {
+  return gitRepositoryFixture('private', { github: SOURCE_URL, accepts: (username, token) => accepts && username === 'x-access-token'
+    && github.state.issued.some(entry => entry.token === token) && !github.state.revoked.includes(token) });
+}
 const sourceReader = (evidence: string, task: 'seed' | 'map' = 'seed') => `#!/usr/bin/env node
 const fs = require('node:fs');
 const cp = require('node:child_process');
@@ -75,14 +84,15 @@ if (process.argv.includes('status')) process.exit(0);
 `;
 
 describe('worker repository checkout over the Deployment wire', () => {
-  for (const access of ['public', 'private', 'invalid', 'invalid-v1-server', 'invalid-short-claim', 'invalid-older-server'] as const) {
-    it(access.startsWith('invalid') ? 'refuses invalid repository credentials before launching a harness and removes scratch files (' + access + ')' : `prepares ${access} source, saves spores under the run and removes its credentials and files`, async () => {
-      const source = await gitRepositoryFixture(access === 'public' ? 'public' : 'private');
+  for (const access of ['private', 'invalid', 'invalid-v1-server', 'invalid-short-claim', 'invalid-older-server', 'invalid-app-permissions'] as const) {
+    it(access.startsWith('invalid') ? 'refuses a token the source rejects before launching a harness and removes scratch files (' + access + ')' : 'prepares source with its minted token, saves spores under the run and ends the token and files', async () => {
+      const github = githubFixture();
+      const source = await appSource(github, access === 'private');
       const e = sqliteEnv({ workerLogin: true });
-      e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
-      const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
+      const env = () => withApp(e.serverEnv, github);
+      const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: github.fetchImpl });
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
-        const response = await pipeline.handleRequest(request, e.serverEnv);
+        const response = await pipeline.handleRequest(request, env());
         if (access === 'invalid-older-server' || access === 'invalid-v1-server') response.headers.set('x-myco-features', response.headers.get('x-myco-features')!.split(',').filter(feature => !feature.startsWith('repository-failure-') || (access === 'invalid-v1-server' && feature === 'repository-failure-v1')).join(','));
         if (access === 'invalid-short-claim' && new URL(request.url).pathname === '/worker/claim') {
           const answer = await response.json() as any;
@@ -97,9 +107,7 @@ describe('worker repository checkout over the Deployment wire', () => {
         const now = Date.now();
         await ensureMember(e.db, 'mem_worker', now, 'admin', 'worker');
         const owner = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
-        await projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey)).save('proj_1', {
-          url: source.url, branch: 'main', revision: null, credential: access === 'public' ? null : { ...GIT_READ_CREDENTIAL, ...(access.startsWith('invalid') ? { token: 'revoked-fixture-read-token' } : {}) },
-        }, 'mem_worker', now);
+        await connectRepository(env(), 'proj_1', { actor: 'mem_worker', now });
         e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','vault_evolution',1,?,'test')`, [now]);
         e.sqlite.run(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
         e.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
@@ -111,10 +119,20 @@ describe('worker repository checkout over the Deployment wire', () => {
         await writeFile(join(binaries, 'claude'), sourceReader(evidence), { mode: 0o700 });
         process.env.PATH = `${binaries}:${previousPath ?? ''}`;
         expect(detectHarnesses(['claude-code'])).toEqual([{ id: 'claude-code', installed: true, authenticated: true }]);
+        if (access === 'invalid-app-permissions') github.state.granted.contents = 'none';
+        const issuedBefore = github.state.issued.length;
         const lines: string[] = [];
         const outcome = await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot, only: ['claude-code'], once: true,
-          repositoryGitPath: source.gitPath, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
+          repositoryGitPath: source.gitPath, githubApi: github.fetchImpl, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
         expect(outcome).toEqual({ driven: 1, refused: null });
+        const checkoutToken = github.state.issued.at(-1)!;
+        if (access === 'invalid-app-permissions') expect(github.state.issued).toHaveLength(issuedBefore);
+        else if (access === 'invalid-short-claim') {
+          for (const { token } of github.state.issued) expect(github.state.revoked).toContain(token);
+        } else {
+          expect(checkoutToken.body).toEqual({ permissions: { contents: 'read', metadata: 'read' }, repository_ids: [1296269] });
+          expect(github.state.revoked).toContain(checkoutToken.token);
+        }
         const row = e.sqlite.query(`SELECT status,error,run_context AS context FROM agent_runs WHERE id='run_seed'`).get() as { status: string; error: string | null; context: string };
         if (!access.startsWith('invalid')) {
           const accounting = e.sqlite.query(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data FROM agent_runs WHERE id='run_seed'`).get() as Record<string, unknown>;
@@ -136,11 +154,13 @@ describe('worker repository checkout over the Deployment wire', () => {
           if (access === 'invalid-older-server') {
             expect(context.repositoryFailureCode).toBeUndefined();
             expect(context.repositoryFailureSummary).toBeUndefined();
+          } else if (access === 'invalid-app-permissions') {
+            expect(context.repositoryFailureCode).toBe('permissions_missing');
           } else {
             expect(context.repositoryFailureCode).toBe(access === 'invalid-short-claim' ? 'timed_out' : access === 'invalid-v1-server' ? 'fetch_failed' : 'access_refused');
             expect(context.repositoryFailureSummary).toContain(access === 'invalid-short-claim' ? 'Preparation exceeded' : 'fatal:');
           }
-          expect(row.context).not.toContain('revoked-fixture-read-token');
+          if (checkoutToken !== undefined) expect(row.context).not.toContain(checkoutToken.token);
           expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 0 });
           expect(await readdir(runRoot)).toEqual([]);
           expect(await readdir(source.home)).not.toContain('observed.json');
@@ -148,7 +168,7 @@ describe('worker repository checkout over the Deployment wire', () => {
         }
         if (row.status !== 'completed') throw new Error(`${JSON.stringify(row)}\n${lines.join('\n')}`);
         expect(row.error).toBeNull();
-        expect(JSON.parse(row.context).repository).toEqual({ url: source.url, branch: 'main', commit: source.second });
+        expect(JSON.parse(row.context).repository).toEqual({ url: SOURCE_URL, branch: 'main', commit: source.second });
         expect(e.sqlite.query(`SELECT author FROM spores`).all()).toEqual([{ author: 'run_seed' }]);
         const observed = JSON.parse(await readFile(evidence, 'utf8')) as Record<string, unknown>;
         expect(observed).toMatchObject({ commit: source.second, history: '2', source: 'Second committed rules.', gitTokenPresent: false });
@@ -158,7 +178,7 @@ describe('worker repository checkout over the Deployment wire', () => {
         const args = observed.args as string[];
         expect(flagValue(args, '--allowedTools')!.split(',')).toContain('Bash(git -C repo log:*)');
         expect([flagValue(args, '--model'), flagValue(args, '--effort')]).toEqual(['sonnet', 'medium']);
-        expect(JSON.stringify(observed)).not.toContain(GIT_READ_CREDENTIAL.token);
+        expect(JSON.stringify(observed)).not.toContain(checkoutToken.token);
         expect(JSON.stringify(lines)).not.toContain(owner.token);
         expect(await readdir(runRoot)).toEqual([]);
       } finally {
@@ -171,15 +191,16 @@ describe('worker repository checkout over the Deployment wire', () => {
   }
 
   it('completes a map run with its digest listing and no inventory upload', async () => {
-    const source = await gitRepositoryFixture('public');
+    const github = githubFixture();
+    const source = await appSource(github);
     const e = sqliteEnv({ workerLogin: true });
-    e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
-    const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
+    const env = () => withApp(e.serverEnv, github);
+    const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: github.fetchImpl });
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
       if (new URL(request.url).pathname === '/worker/repository') {
         expect(await request.clone().json()).not.toHaveProperty('files');
       }
-      return pipeline.handleRequest(request,e.serverEnv);
+      return pipeline.handleRequest(request, env());
     } });
     const previousPath = process.env.PATH;
     const origin = `http://127.0.0.1:${server.port}`;
@@ -187,7 +208,7 @@ describe('worker repository checkout over the Deployment wire', () => {
       const now = Date.now();
       await ensureMember(e.db, 'mem_worker', now, 'admin', 'worker');
       const owner = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
-      await projectRepositories(e.db, deploymentSecretStore(e.db, e.serverEnv.wrappingKey)).save('proj_1', { url: source.url, branch: 'main', revision: null, credential: null }, 'mem_worker', now);
+      await connectRepository(env(), 'proj_1', { actor: 'mem_worker', now });
       e.sqlite.run(`INSERT OR IGNORE INTO project_capabilities (project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','canopy',1,?,'test')`, [now]);
       e.sqlite.run(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
       e.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
@@ -199,7 +220,7 @@ describe('worker repository checkout over the Deployment wire', () => {
       process.env.PATH = `${binaries}:${previousPath ?? ''}`;
       const lines: string[] = [];
       const outcome = await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot: join(source.home, 'runs'), only: ['claude-code'], once: true,
-        repositoryGitPath: source.gitPath, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
+        repositoryGitPath: source.gitPath, githubApi: github.fetchImpl, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
       expect(outcome).toEqual({ driven: 1, refused: null });
       const row = e.sqlite.query(`SELECT status,error FROM agent_runs WHERE id='run_map'`).get() as { status: string; error: string | null };
       if (row.status !== 'completed') throw new Error(`${JSON.stringify(row)}\n${lines.join('\n')}`);
@@ -216,11 +237,11 @@ describe('worker repository checkout over the Deployment wire', () => {
       const beforeCarry = (await readCanopyMap(e.db, { projectId: 'proj_1' }))!;
       await completeBudgetMigration(e.db, Date.now());
       const head = source.second;
-      const automatic = await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: origin, actor: 'clock' }, Date.now());
+      const automatic = await dispatchTask(env(), MAP_TASK, 'proj_1', { serverUrl: origin, actor: 'clock' }, Date.now());
       if (!automatic.dispatched) throw new Error('automatic map was not dispatched');
       await writeFile(evidence, 'harness has not started');
       const carried = await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot: join(source.home, 'runs'),
-        only: ['claude-code'], once: true, repositoryGitPath: source.gitPath, pollIdleMs: 10,
+        only: ['claude-code'], once: true, repositoryGitPath: source.gitPath, githubApi: github.fetchImpl, pollIdleMs: 10,
         signal: AbortSignal.timeout(20_000), log: line => { lines.push(line); } });
       expect(carried).toEqual({ driven: 1, refused: null });
       expect(await readFile(evidence, 'utf8')).toBe('harness has not started');
@@ -240,17 +261,16 @@ describe('worker repository checkout over the Deployment wire', () => {
 });
 
 it('curates preassembled knowledge without preparing the connected repository', async () => {
-  const source=await gitRepositoryFixture('private');
+  const github=githubFixture();
+  const source=await appSource(github);
   const e=await budgetFixture();
-  e.env.SECRET_WRAP_KEY={get:async()=>btoa('r'.repeat(32))};
-  const pipeline=createServer({now:()=>Date.now(),sourceOf:()=>'127.0.0.1',fetchImpl:fetch});
-  const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:request=>pipeline.handleRequest(request,e.serverEnv)});
+  const env=()=>withApp(e.serverEnv,github);
+  const pipeline=createServer({now:()=>Date.now(),sourceOf:()=>'127.0.0.1',fetchImpl:github.fetchImpl});
+  const server=Bun.serve({hostname:'127.0.0.1',port:0,fetch:request=>pipeline.handleRequest(request,env())});
   const origin=`http://127.0.0.1:${server.port}`;
   const previousPath=process.env.PATH;
   try {
-    await projectRepositories(e.db,deploymentSecretStore(e.db,e.serverEnv.wrappingKey)).save('proj_1',{
-      url:source.url,branch:'main',revision:null,credential:{username:'reader',token:'expired-fixture-token'},
-    },'mem_worker',e.now);
+    await connectRepository(env(),'proj_1',{actor:'mem_worker',now:e.now});
     await settingsWriter(e.db).setCapability('proj_1','spore_curation',true,'mem_worker',e.now);
     const members=['a','b','c'].map(id=>({id,revision:0,closeness:6}));
     for(const member of members)e.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at) VALUES('proj_1',?,'myco-agent','Distinct guidance','decision','Keep the guidance.',?)",[member.id,e.now]);
@@ -280,7 +300,7 @@ if(process.argv.includes('status'))process.exit(0);
     process.env.PATH=`${bin}:${previousPath}`;
     const lines:string[]=[];
     expect(await runWorker({serverUrl:origin,token:owner.token,lockDir:null,runRoot:join(source.home,'runs'),only:['claude-code'],once:true,
-      repositoryGitPath:source.gitPath,pollIdleMs:10,signal:AbortSignal.timeout(20_000),log:line=>lines.push(line)})).toEqual({driven:1,refused:null});
+      repositoryGitPath:source.gitPath,githubApi:github.fetchImpl,pollIdleMs:10,signal:AbortSignal.timeout(20_000),log:line=>lines.push(line)})).toEqual({driven:1,refused:null});
     const run=e.sqlite.query("SELECT id,status,error,instruction,run_context FROM agent_runs WHERE task='curate-spores'").get() as {id:string;status:string;error:string|null;instruction:string;run_context:string};
     if(run.status!=='completed')throw new Error(JSON.stringify({run,lines}));
     const observed=JSON.parse(await readFile(evidence,'utf8'));
@@ -296,3 +316,64 @@ if(process.argv.includes('status'))process.exit(0);
     expect(e.sqlite.query('SELECT COUNT(*) n FROM agent_run_attempts WHERE run_id=?').get(run.id)).toEqual({n:1});
   } finally {process.env.PATH=previousPath;server.stop(true);e.sqlite.close();await source.dispose();}
 },30_000);
+
+const LATE_ANSWERS = { kept: 'not stopped', declared: 'stopped as a whole answer of declared length arrives', chunked: 'stopped while a chunked answer of no declared length is still arriving' } as const;
+for (const [arrival, words] of Object.entries(LATE_ANSWERS)) it(`revokes a checkout token exactly once when the run is ${words}`, async () => {
+  const cancelled = arrival !== 'kept';
+  const e = sqliteEnv({ workerLogin: true }), github = githubFixture();
+  const root = await mkdtemp(join(tmpdir(), 'myco-late-token-'));
+  const stopping = new AbortController();
+  const safety = setTimeout(() => stopping.abort(), 10_000);
+  try {
+    stubProfileHarness();
+    const failingGit = join(root, 'git');
+    await writeFile(failingGit, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const now = Date.now(), origin = 'https://fixture.invalid';
+    await ensureMember(e.db, 'mem_worker', now, 'admin', 'worker');
+    const owner = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
+    const env = withApp(e.serverEnv, github);
+    await connectRepository(env, 'proj_1', { actor: 'mem_worker', now });
+    e.sqlite.run("INSERT OR IGNORE INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES('proj_1','vault_evolution',1,?,'test')", [now]);
+    e.sqlite.run("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','myco-agent','built-in',1,?)", [now]);
+    e.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context) VALUES('proj_1','run_seed','myco-agent','vault-seed','queued',?,'worker',?,'{}')",
+      [now, JSON.stringify({ serverUrl: origin, actor: 'mem_worker', timeoutSeconds: 30 })]);
+    const pipeline = createServer({ now: Date.now, sourceOf: () => '1.2.3.4', fetchImpl: github.fetchImpl });
+    // The Deployment's answer arrives whole; with cancellation, the run is stopped the moment its body has been read.
+    const transport = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const response = await pipeline.handleRequest(request, env);
+      if (new URL(request.url).pathname !== '/worker/repository') return response;
+      const text = await response.text();
+      if (arrival === 'chunked') {
+        // The run is stopped after the first half of the body; the rest still arrives, as a hosted Deployment's chunked answer does.
+        const bytes = new TextEncoder().encode(text);
+        const body = new ReadableStream<Uint8Array>({ async start(controller) {
+          controller.enqueue(bytes.slice(0, bytes.length >> 1));
+          await new Promise(resolve => setTimeout(resolve, 5));
+          stopping.abort(new Error('stopped while the answer arrived'));
+          await new Promise(resolve => setTimeout(resolve, 20));
+          controller.enqueue(bytes.slice(bytes.length >> 1));
+          controller.close();
+        } });
+        const headers = new Headers(response.headers);
+        headers.delete('content-length');
+        return new Response(body, { status: response.status, headers });
+      }
+      const delivered = new Response(text, { status: response.status, headers: { ...Object.fromEntries(response.headers), 'content-length': String(Buffer.byteLength(text)) } });
+      const read = delivered.text.bind(delivered);
+      delivered.text = async () => { const body = await read(); if (cancelled) stopping.abort(new Error('stopped as the answer arrived')); return body; };
+      return delivered;
+    };
+    const lines: string[] = [];
+    await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot: root, only: ['claude-code'], once: true, pollIdleMs: 1,
+      signal: stopping.signal, fetchImpl: transport as typeof fetch, githubApi: github.fetchImpl, repositoryGitPath: failingGit, log: line => lines.push(line) });
+    const checkout = github.state.issued.at(-1)!;
+    expect(checkout.body).toEqual({ permissions: { contents: 'read', metadata: 'read' }, repository_ids: [1296269] });
+    const deadline = Date.now() + 5_000;
+    while (!github.state.revoked.includes(checkout.token) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(github.state.revoked.filter(token => token === checkout.token)).toHaveLength(1);
+    for (const { token } of github.state.issued) expect(lines.join('\n')).not.toContain(token);
+    // A stopped run never reads its source: its preparation failed for its caller.
+    if (cancelled) expect(e.sqlite.query("SELECT status FROM agent_runs WHERE id='run_seed'").get()).not.toEqual({ status: 'completed' });
+  } finally { clearTimeout(safety); stopping.abort(); e.sqlite.close(); await rm(root, { recursive: true, force: true }); }
+}, 20_000);

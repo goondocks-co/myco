@@ -9,8 +9,7 @@ import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { connectRepository, githubFixture, SOURCE_URL, UNSIGNED_APP, withApp } from './helpers/github-app.js';
 import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
@@ -19,7 +18,7 @@ import { changingAt, pausingAtStatement, storingCall } from './helpers/store-fau
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const RUN = { projectId: 'proj_1', runId: 'run_rotation' };
-const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
+const SOURCE = { url: SOURCE_URL, branch: 'main' };
 const WRAP_KEY = btoa('r'.repeat(32));
 const OPERATIONS = [
   { path: '/worker/lease', body: {}, expected: { held: true } },
@@ -32,15 +31,15 @@ async function rig(target: 'cloudflare' | 'bun') {
   const root = mkdtempSync(join(tmpdir(), 'myco-lease-rotation-'));
   let now = Date.now();
   e.env.SECRET_WRAP_KEY = { get: async () => WRAP_KEY };
-  const env = target === 'bun'
+  const github = githubFixture();
+  const env = withApp(target === 'bun'
     ? serverEnvFromBunConfig({ sqlite: e.sqlite, blobDir: join(root, 'blobs'), SECRET_WRAP_KEY: WRAP_KEY, now: () => now })
-    : e.serverEnv;
+    : e.serverEnv, github);
   turnOnGatedCapabilities(e.sqlite);
   await ensureMember(env.db, 'mem_worker', now, 'admin', 'worker');
   await ensureMember(env.db, 'mem_other_worker', now, 'admin', 'other worker');
   const owner = await issueMemberToken(env.db, { memberId: 'mem_worker', machineId: 'machine_worker' }, now);
-  await projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey))
-    .save(RUN.projectId, { ...SOURCE, revision: null, credential: null }, 'mem_worker', now);
+  await connectRepository(env, RUN.projectId, { actor: 'mem_worker', now });
   e.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [now]);
   e.sqlite.run(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
     VALUES (?,?, 'myco-agent','vault-seed','queued',?,'worker',?,'{}')`,

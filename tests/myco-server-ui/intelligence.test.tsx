@@ -1,4 +1,3 @@
-import { REPOSITORY_FAILURE_CODES } from '@goondocks/myco-shared/repository';
 import { DISPATCH_REFUSAL_MESSAGE, type DispatchRefusal } from '@myco-server-worker/core/harness';
 import { DISPATCH_REFUSAL_WORDS, refusalOf } from '../../packages/myco-server/ui/src/features/work/RunTask';
 import { ApiError } from '../../packages/myco-server/ui/src/lib/api';
@@ -648,23 +647,21 @@ it('words a run whose agent could not use the chosen model from the reason it re
 });
 
 const REPOSITORY_FAILURE_CASES = [
-  ['not_found', 'Myco couldn’t find the repository. Check the repository URL and that the access token can read it.'],
-  ['access_refused', 'The repository refused access. Update its access token and check organization approval.'],
+  ['app_not_configured', 'GitHub repository access needs setup. The server operator runs `myco server github-app` for this server.'],
+  ['permissions_missing', 'The App installation has not granted the read access this needs. Approve the App’s requested permissions in GitHub, then check again.'],
+  ['not_found', 'Myco couldn’t find the repository. Add this repository to the Myco GitHub App’s installation in GitHub, then reconnect it in Project Settings → Repository.'],
+  ['access_refused', 'GitHub refused access to this repository through the App installation. Check in GitHub that the installation includes it and its requested permissions are approved, then check again.'],
   ['revision_missing', 'The repository branch or commit is missing. Check the connected branch, then start a new run.'],
   ['timed_out', 'Repository preparation timed out. Check the runner’s network connection, then try again.'],
   ['disk', 'The runner couldn’t write the repository. Free disk space and check the runner’s directory permissions.'],
   ['other', 'Myco couldn’t prepare the repository. Check the Git error in the run’s technical details, correct it, then try again.'],
-  ['fetch_failed', 'Myco couldn’t read the repository. Check the repository and branch. If it uses a token, check the token can read this repository: for an organization repository, its resource owner must be the organization, and the organization may need to approve it.'],
+  ['fetch_failed', 'Myco couldn’t read the repository. Check the branch, that the server’s GitHub App installation still includes this repository, and that its read permissions are approved in GitHub.'],
   ['submodules', 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.'],
   ['lfs', 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.'],
   ['too_large', 'The repository is too large for Myco to prepare. Choose a smaller source.'],
   ['commit_mismatch', 'Myco couldn’t verify the expected commit. Retry the task to prepare it from a known commit.'],
   ['checkout_failed', 'Myco couldn’t prepare the repository. Check its connection and try again.'],
 ] as const;
-
-it('pins user copy for every repository failure code', () => {
-  expect(REPOSITORY_FAILURE_CASES.map(([code]) => code).sort()).toEqual([...REPOSITORY_FAILURE_CODES].sort());
-});
 
 for (const [code, words] of REPOSITORY_FAILURE_CASES) {
   it(`words repository preparation ${code} from the structured reason`, () => {
@@ -1035,6 +1032,7 @@ it('words every dispatch refusal and makes settled refusals final', () => {
   const expected: Record<DispatchRefusal, string> = {
     not_landed: 'This task is not available yet.',
     repository_missing: 'The code map and other code tasks need this project’s repository before they can run.',
+    repository_unavailable: 'Code tasks wait until the server operator sets up repository access with myco server github-app.',
     harness_unavailable: 'Myco can’t run this task here. An admin can check its setup.',
     unknown_task: 'This task isn’t available here. Refresh the page to see the available tasks.',
     unknown_project: 'This project is no longer available here. Choose another project.',

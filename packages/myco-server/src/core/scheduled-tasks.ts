@@ -16,8 +16,7 @@
 import { repositoryFailureRead, type RepositoryFailureStreak } from '../db/runs/repository-failures.js';
 import { RUN_ID_PREFIX } from '../constants.js';
 import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { projectRepositories } from './repositories.js';
-import { deploymentSecretStore } from './secrets.js';
+import { repositoryReady } from './repositories.js';
 import type { ServerEnv } from './adapters.js';
 import { AlreadyRunning, DispatchAdmissionRefused, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, repositoryWorkerAvailable, type LaunchSpec } from './harness.js';
 import { buildTaskInput } from './task-inputs.js';
@@ -176,9 +175,8 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
 
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
   if (REQUIRED_REPOSITORY_TASKS.includes(task)) {
-    const repository = await projectRepositories(env.db, deploymentSecretStore(env.db, env.wrappingKey)).describe(projectId);
-    if (repository === null) return 'repository_missing';
-    if (repository.credential !== null && (!repository.credential.configured || !repository.credential.readable)) return 'repository_unavailable';
+    const readiness = await repositoryReady(env, { projectId });
+    if (readiness !== 'ready') return readiness === 'missing' ? 'repository_missing' : 'repository_unavailable';
     if (!(await workerAvailable(task))) return 'worker_unavailable';
   }
   if (schedule.preCondition !== undefined) {

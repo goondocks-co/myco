@@ -344,14 +344,13 @@ describe('recovery and retired settings on the dashboard', () => {
     expect(await answer.json()).toMatchObject({ supported: false, reason: 'this server cannot make automatic backups', schedule: expect.anything() });
   });
 
-  it('omits retired Deployment leaves and marks retired secret slots', async () => {
+  it('omits retired Deployment leaves and offers no retired secret slot', async () => {
     const { env } = rig();
     const { leaves } = (await (await request(env, ADMIN, 'GET', '/api/settings')).json()) as { leaves: Array<{ leaf: string; retired: boolean }> };
     expect(leaves.find((l) => l.leaf === 'agent.reasoningLevel')).toBeUndefined();
     expect(leaves.every((l) => typeof l.retired === 'boolean')).toBe(true);
     expect(leaves.every((l) => !l.retired)).toBe(true);
-    const { secrets } = (await (await request(env, ADMIN, 'GET', '/api/secrets')).json()) as { secrets: Array<{ name: string; retired: boolean }> };
-    expect(secrets.find((s) => s.name === 'github')?.retired).toBe(true);
-    expect(secrets.some((s) => !s.retired)).toBe(true);
+    const { secrets } = (await (await request(env, ADMIN, 'GET', '/api/secrets')).json()) as { secrets: Array<{ name: string }> };
+    expect(secrets.map((s) => s.name)).not.toContain('github');
   });
 });

@@ -4,13 +4,16 @@ import { MAP_ACTION, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy'
 import { memberHeadersFor, type ParityScenario } from '../harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 import { allowWorkerClaims, putCapability, putSetting, wake } from '../clients/requests.ts';
-import { captureSession, dispatch, runList, takeRun } from '../clients/runs.ts';
+import { captureSession, dispatch, repository, runList, takeRun } from '../clients/runs.ts';
 
 /**
  * A map run on the worker path, on both targets: the worker's repository step
  * pins the commit and the map input together, the run writes its map over its
  * own credential, the worker's end is judged against the stored row, a second
- * pass over the same commit closes unchanged, and a member reads the map.
+ * pass over the same commit closes unchanged, and a member reads the map. The
+ * repository is connected through the App against the controlled GitHub, and
+ * the scheduled pass reads its source with a minted token before carrying the
+ * map forward.
  */
 export const canopy: ParityScenario = {
   name: 'canopy: a worker map run pinned to its commit, closed on its map, and read over MCP',
@@ -32,10 +35,10 @@ export const canopy: ParityScenario = {
     const tool = async (credential: string, name: string, args: Record<string, unknown>) =>
       (await post('/mcp', credential, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })).result.structuredContent.result;
 
-    const source = { url: 'https://example.test/map.git', branch: 'main' };
+    const source = { url: 'https://github.com/example/map', branch: 'main' };
     const commit = 'a'.repeat(40);
     const endpoint = `/api/projects/${target.projectId}`;
-    const connected = await owner(`${endpoint}/repository`, 'PUT', { ...source, revision: null });
+    const connected = { repository: await repository(target, 'example/map') };
     const claimed = new Map<string, { attemptId: string }>();
     const leasedRun = async (pinnedCommit = commit) => {
       const run = await takeRun(target, (await dispatch(target, 'canopy-map')).runId);
@@ -108,6 +111,7 @@ export const canopy: ParityScenario = {
       const identity = { projectId: target.projectId, runId: automatic.id, attemptId: automatic.attemptId };
       const access = await post('/worker/repository', target.memberToken, identity);
       expect(access.comparison).toMatchObject({ commit, revision: stored.revision });
+      expect(access.repository).toMatchObject({ ...source, remote: source.url, credential: { username: 'x-access-token', token: expect.stringMatching(/^ghs_/) } });
       const nextCommit = 'd'.repeat(40);
       expect(await post('/worker/repository', target.memberToken, { ...identity, ...source, commit: nextCommit }))
         .toMatchObject({ pin: { commit: nextCommit } });

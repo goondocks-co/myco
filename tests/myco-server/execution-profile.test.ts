@@ -16,7 +16,7 @@ import { PROFILE_HOLD_PREFIXES, sourceReadUnavailable, credentialUnavailable, ho
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { MODEL_CATALOG_FRESH_MS, PROFILE_HARNESSES, REASONING_TIERS, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { connectRepository, githubFixture, withApp } from './helpers/github-app.js';
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { HARNESSES } from '@myco/runner/harnesses.js';
 
@@ -32,7 +32,7 @@ async function rig(workerLogin = true) {
   await ensureMember(f.db, 'mem_worker', NOW, 'admin', 'worker');
   const token = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'fixture' }, NOW);
   f.sqlite.run(`INSERT INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','a','built-in',1,?)`, [NOW]);
-  await projectRepositories(f.db,deploymentSecretStore(f.db,f.serverEnv.wrappingKey)).save('proj_1',{url:'https://example.test/repo',branch:'main',revision:null},'mem_worker',NOW);
+  await connectRepository(withApp(f.serverEnv, githubFixture()), 'proj_1', { actor: 'mem_worker', now: NOW });
   const queue = (id: string, task = 'vault-seed') => f.sqlite.run(`INSERT INTO agent_runs
     (project_id,id,agent_id,task,status,queued_at,held_by,instruction,run_context)
     VALUES ('proj_1',?,'myco-agent',?,'queued',?,'worker','read the project','{}')`, [id, task, NOW]);

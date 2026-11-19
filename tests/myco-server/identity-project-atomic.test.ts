@@ -5,12 +5,9 @@ import { tryNameMemberFromLogin } from '@myco-server-worker/auth/members-admin.j
 import { memberNamingFailures } from '@myco-server-worker/db/meta/member-naming-failure.js';
 import { unarchiveProject, createProject } from '@myco-server-worker/db/storage/projects.js';
 import { handleUnarchiveProject } from '@myco-server-worker/api/projects.js';
-import { projectRepositories } from '@myco-server-worker/core/repositories.js';
-import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
-import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { OWNER_ENV, PRINCIPAL, ownerCookie } from './helpers/owner.js';
-import { saveReleaseSettings } from '@myco-server-worker/db/settings/release-connection.js';
+import { saveReleaseSettings, type ReleaseSettingsValues } from '@myco-server-worker/db/settings/release-connection.js';
 import { releaseDueAfterSave } from '@myco-server-worker/db/release/due.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
@@ -124,70 +121,17 @@ describe('identity and Project atomic writes', () => {
     }
   });
 
-  it('rejects a release constraint violation without committing an orphan secret', async () => {
+  it('rejects a release constraint violation without committing its due row', async () => {
     const r = sqliteEnv();
-    r.env.SECRET_WRAP_KEY = { get: async () => btoa('a'.repeat(32)) };
-    const secrets = deploymentSecretStore(r.db, r.serverEnv.wrappingKey);
     const revision = 'fixture-release-revision';
-    const slot = `release-provenance:proj_1:${revision}`;
-    const values = [revision, 2, 'example/project', '[]', '[]', '[]', 1, 10, slot, NOW, 'mem_machine_1'];
+    const values: ReleaseSettingsValues = [revision, 2, '[]', '[]', '[]', 1, 10, NOW, 'mem_machine_1'];
     const due = releaseDueAfterSave({ projectId: 'proj_1', revision, tracked: true });
-    const sealed = await secrets.preparePut(slot, 'fixture-release-token', 'mem_machine_1', NOW);
-    await expect(saveReleaseSettings(r.db, { project: 'proj_1', previous: null, values, slot, sealed, now: NOW, actor: 'mem_machine_1', due })).rejects.toThrow();
-    expect(r.sqlite.query("SELECT revision,secret_slot FROM project_release_provenance WHERE project_id='proj_1'").all()).toEqual([]);
-    expect(await secrets.list()).toEqual([]);
+    await expect(saveReleaseSettings(r.db, { project: 'proj_1', previous: null, values, now: NOW, due })).rejects.toThrow();
+    expect(r.sqlite.query("SELECT revision FROM project_release_provenance WHERE project_id='proj_1'").all()).toEqual([]);
+    expect(r.sqlite.query("SELECT project_id FROM release_check_due WHERE project_id='proj_1'").all()).toEqual([]);
     values[1] = 1;
-    expect(await saveReleaseSettings(r.db, { project: 'proj_1', previous: null, values, slot, sealed, now: NOW, actor: 'mem_machine_1', due })).toBe(true);
-    expect(r.sqlite.query("SELECT revision,secret_slot FROM project_release_provenance WHERE project_id='proj_1'").get())
-      .toEqual({ revision, secret_slot: slot });
-    expect(await secrets.get(slot)).toBe('fixture-release-token');
+    expect(await saveReleaseSettings(r.db, { project: 'proj_1', previous: null, values, now: NOW, due })).toBe(true);
+    expect(r.sqlite.query("SELECT revision,updated_by AS actor FROM project_release_provenance WHERE project_id='proj_1'").get()).toEqual({ revision, actor: 'mem_machine_1' });
   });
 
-  it('retains the old ciphertext and reference when either secret replacement fails at retirement', async () => {
-    for (const kind of ['repository', 'release'] as const) {
-      const r = sqliteEnv();
-      r.env.SECRET_WRAP_KEY = { get: async () => btoa('a'.repeat(32)) };
-      const secrets = deploymentSecretStore(r.db, r.serverEnv.wrappingKey);
-      const repositories = projectRepositories(r.db, secrets);
-      const releases = releaseProvenance(r.db, secrets);
-      const save = (revision: string | null, token: string) =>
-        kind === 'repository'
-          ? repositories.save(
-              'proj_1',
-              { revision, url: 'https://github.com/example/project.git', branch: 'main', credential: { username: 'reader', token } },
-              'mem_machine_1',
-              NOW,
-            )
-          : releases.save(
-              'proj_1',
-              {
-                revision,
-                enabled: true,
-                githubRepo: 'example/project',
-                productionRefs: ['refs/tags/v*'],
-                integrationRefs: ['origin/main'],
-                packageMap: [],
-                includeUnknown: true,
-                maxLookups: 10,
-                credential: { token },
-              },
-              'mem_machine_1',
-              NOW,
-            );
-      const first = (await save(null, 'fixture-old-token'))!;
-      const table = kind === 'repository' ? 'project_repositories' : 'project_release_provenance';
-      const before = r.sqlite.query(`SELECT * FROM ${table}`).all();
-      const secretBefore = r.sqlite.query('SELECT * FROM deployment_secrets').all();
-      r.sqlite.run(
-        "CREATE TRIGGER fail_retire BEFORE DELETE ON deployment_secrets BEGIN SELECT RAISE(ABORT,'fixture retire failure'); END",
-      );
-      await expect(save(first.revision, 'fixture-new-token')).rejects.toThrow('fixture retire failure');
-      expect(r.sqlite.query(`SELECT * FROM ${table}`).all()).toEqual(before);
-      expect(r.sqlite.query('SELECT * FROM deployment_secrets').all()).toEqual(secretBefore);
-      r.sqlite.run('DROP TRIGGER fail_retire');
-      const next = (await save(first.revision, 'fixture-new-token'))!;
-      expect(next.revision).not.toBe(first.revision);
-      expect(await secrets.list()).toHaveLength(1);
-    }
-  });
 });

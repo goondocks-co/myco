@@ -323,10 +323,9 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'release_provenance.reconcile_interval_minutes': {
     consumer: at('core/release-provenance.ts', reconcileReleaseProvenance), value: () => 30, invalid: () => 30.5,
     async observe(r) {
-      const secrets = deploymentSecretStore(r.env.db, r.env.wrappingKey);
-      const store = releaseProvenance(r.env.db, secrets);
+      const store = releaseProvenance(r.env.db);
       if ((await store.describe('proj_1')).revision === null) {
-        await store.save('proj_1', { revision: null, enabled: true, githubRepo: 'o/r', productionRefs: ['refs/tags/v*'], integrationRefs: ['origin/main'], packageMap: [], includeUnknown: true, maxLookups: 1, credential: null }, 'test', NOW);
+        await store.save('proj_1', { revision: null, enabled: true, productionRefs: ['refs/tags/v*'], integrationRefs: ['origin/main'], packageMap: [], includeUnknown: true, maxLookups: 1 }, 'test', NOW);
       }
       r.sqlite.run(`UPDATE project_release_provenance SET check_started_at = ?, check_run_id = NULL, check_lease_until = NULL, check_requested_at = NULL WHERE project_id = 'proj_1'`, [NOW - 20 * 60_000]);
       r.sqlite.run(`UPDATE release_check_due SET next_at = ?, lease_id = NULL, lease_until = NULL WHERE project_id = 'proj_1'`, [NOW - 20 * 60_000]);

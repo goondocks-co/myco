@@ -80,7 +80,7 @@ describe('task description registry gates', () => {
   it('exact disclosure: templates and standing rules equal the server build for every prompted task', async () => {
     const f = sqliteEnv();
     try {
-      f.sqlite.run(`INSERT INTO project_repositories (project_id, url, branch, revision, updated_at, updated_by) VALUES ('proj_1', ?, ?, 'test', 1, 'test')`, ['{{repository.url}}', '{{repository.branch}}']);
+      f.sqlite.run(`INSERT INTO project_repositories (project_id,url,branch,revision,github_repository_id,github_installation_id,updated_at,updated_by) VALUES ('proj_1',?,?,'test',1296269,41,1,'test')`, ['{{repository.url}}', '{{repository.branch}}']);
       const tasks = await read(f);
       // Learning's prompt names one slice of one session, the card prompt is pulled only, and plan curation's prompt carries
       // the Project's stale plans as its material; none of them is built here.

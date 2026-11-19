@@ -9,11 +9,13 @@ import { stopRaceFixture } from './owner-review/stop-race.ts';
 import {serverEnvFromBindings} from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import {reconcileEmbedding} from '../../packages/myco-server/src/core/embedding/reconcile.ts';
 import {reconcileReleaseProvenance} from '../../packages/myco-server/src/core/release-provenance.ts';
-import {fakeGithub, REPO} from '../myco-server/helpers/github-fake.ts';
+import {installParityGitHub} from './github-fixture.ts';
 import {cloudflareEmbeddingLaunch} from '../../packages/myco-server/src/platform/cloudflare/embedding-runtime.ts';
 import {createServer} from '../../packages/myco-server/src/pipeline.ts';
 import type {ServerEnv} from '../../packages/myco-server/src/core/adapters.ts';
 
+// The Worker's outbound requests reach the controlled GitHub.
+installParityGitHub();
 const spans = new AsyncLocalStorage<StatementFrame>();
 let nextSpan=0;
 let fixture: ReturnType<typeof embeddingBindings> | undefined;
@@ -33,8 +35,8 @@ export async function primeObservedEmbedding(env:ServerEnv,projectId:string){
  throw new Error('Fixture embedding did not settle');
 }
 
-/** Runs the release checks due, as the clock's job runs them, against a modelled GitHub instead of the network. */
-export async function checkObservedRelease(env:ServerEnv){await reconcileReleaseProvenance({...env,outbound:fakeGithub(REPO)},Date.now());}
+/** Runs the release checks due, as the clock's job runs them; GitHub is the controlled fixture this Worker reaches. */
+export async function checkObservedRelease(env:ServerEnv){await reconcileReleaseProvenance(env,Date.now());}
 
 /** A local run-control transport serves the canonical embedding runtime under its dispatch span. */
 export function installObservedEmbeddingRuntime(env:ServerEnv,pending=new Set<Promise<void>>()){

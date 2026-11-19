@@ -67,7 +67,7 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
       if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
       if (op === 'map') {
         const repository = { url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) };
-        f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by) VALUES('proj_1','r1',?,?,0,'test')", [repository.url, repository.branch]);
+        f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES('proj_1','r1',?,?,1296269,41,0,'test')", [repository.url, repository.branch]);
         f.sqlite.run("UPDATE agent_runs SET task = 'canopy-map', run_context = ? WHERE id = 'target'", [JSON.stringify({ timeoutSeconds: 300, repository, canopy: { inputHash: 'b'.repeat(64), priorRevision: null } })]);
       }
       if (loss === 'mid_batch_revocation') f.sqlite.exec(`CREATE TRIGGER revoke_domain AFTER ${op === 'title' ? 'UPDATE' : 'INSERT'}
