@@ -1,9 +1,9 @@
 import { LEGACY_TRANSCRIPTS_NOT_IMPORTED } from './legacy-capture.js';
 import { captureHealthChecks } from './doctor-capture.js';
 import { doctorOutput } from './doctor-output.js';
+import { doctorDeploymentRequest, doctorDeploymentFailure, doctorDeploymentHealth } from '@myco/cli/doctor-deployment.js';
 import { managedMemberHarnesses, memberProvisionTarget, memberHarnessStatus } from '@myco/cli/member.js';
 /** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
-import { terminalText } from '@myco/utils/terminal-text.js';
 import { readUpdateNotice } from '../upgrade/check-cache.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,7 +30,6 @@ import { readDefaultDeployment } from '../member/default-deployment.js';
 import { autoJoinIdentityIssues, listLeftRepositories, pendingImportHolds } from '../member/auto-join.js';
 import { pathIsAbsent } from '../member/store.js';
 import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
-import { ServerClient } from '../member/transport.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
 import { observeLegacyStrayHistory } from '../member/legacy-strays.js';
 import { legacyVaultFiles } from '../member/home-role.js';
@@ -176,11 +175,11 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
   if (deployment === null && problem === null) {
     checks.push(row('Deployment', 'fail', `no member credential resolves for this project (--credential ${source}). Run \`myco login <address>\` to connect this machine.`));
   } else if (deployment !== null) {
-    const tools = await deployment.listTools();
+    const tools = await doctorDeploymentRequest(() => deployment.listTools());
     authenticated = tools.ok;
     checks.push(tools.ok
       ? row('Project access', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
-      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Restore access to this repository's Myco connection.`, `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Check the address and connection, then run \`myco login ${deployment.serverUrl}\`.`));
+      : row('Project access', 'fail', doctorDeploymentFailure(deployment.serverUrl, tools, "this machine's tool list")));
   }
 
   // Read after the Deployment was asked: its read renews a credential whose window is open.
@@ -190,7 +189,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     const expired = membership.expiresAt !== undefined && membership.expiresAt <= (deps.now ?? Date.now)();
     checks.push(membership.refreshTerminal === true
       ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`, `the Deployment will not renew this credential. Run \`myco login ${membership.serverUrl}\`; if refused, ${REJOIN_HINT}.`)
-      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Start a new agent session after restoring access.`, expired && !authenticated ? `${membership.serverUrl}: sign-in has expired. Run \`myco login ${membership.serverUrl}\`.` : undefined));
+      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Start a new agent session after restoring access.`, expired && !authenticated ? `${membership.serverUrl}: local credential expiry has passed; authentication not checked. Restore the connection, then run \`myco doctor\` again.` : undefined));
   }
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
@@ -248,15 +247,15 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   for (const membership of listing.memberships) {
     checks.push(row('Membership', 'ok', `${membership.serverUrl}${selected?.serverUrl === deploymentUrl(membership.serverUrl) ? ' (default for new repositories)' : ''}; machine ${membership.machineId}, joined ${iso(membership.joinedAt)}.`));
     const state = membership.refreshTerminal === true ? 'refused renewal' : membership.expiresAt !== undefined && membership.expiresAt <= now ? 'expired' : membership.expiresAt === undefined ? 'expiry unknown' : 'locally unexpired';
-    checks.push(row('Credential', state === 'locally unexpired' ? 'not-checked' : membership.refreshTerminal === true ? 'fail' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}; run \`myco login ${membership.serverUrl}\`` : ` — run \`myco login ${membership.serverUrl}\``}.`));
-    const healthy = await new ServerClient(membership, deps.fetch ?? globalThis.fetch).health({
-      connectTimeoutMs: HOME_HEALTH_TIMEOUT_MS,
-      requestTimeoutMs: Math.min(deps.requestTimeoutMs ?? HOME_HEALTH_TIMEOUT_MS, HOME_HEALTH_TIMEOUT_MS),
+    checks.push(row('Credential', state === 'locally unexpired' ? 'not-checked' : membership.refreshTerminal === true ? 'fail' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}; run \`myco login ${membership.serverUrl}\`` : ' — run `myco doctor` from a connected repository to check this credential'}.`));
+    const health = await doctorDeploymentHealth(membership.serverUrl, {
+      fetch: deps.fetch ?? globalThis.fetch,
+      timeoutMs: Math.min(deps.requestTimeoutMs ?? HOME_HEALTH_TIMEOUT_MS, HOME_HEALTH_TIMEOUT_MS),
     });
-    if (healthy) reachable.add(deploymentUrl(membership.serverUrl));
-    checks.push(row('Deployment', healthy ? 'ok' : 'fail', healthy
+    if (health.ok) reachable.add(deploymentUrl(membership.serverUrl));
+    checks.push(row('Deployment', health.ok ? 'ok' : 'fail', health.ok
       ? `${membership.serverUrl} answers its health route.`
-      : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection.${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
+      : `${doctorDeploymentFailure(membership.serverUrl, health, 'its health route')}${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
   }
   const projects = listRegistryEntriesResult(home);
   for (const conflict of projects.conflicts ?? []) checks.push(row('Repository connection', 'fail', registryConflictWords(conflict)));
