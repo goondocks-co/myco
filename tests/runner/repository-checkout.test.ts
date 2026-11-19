@@ -238,7 +238,7 @@ cp.execFileSync(${JSON.stringify(gitPath)}, process.argv.slice(2), { stdio: 'inh
   let failure: RepositoryCheckoutError | undefined;
   try { await prepareRepositoryCheckout({ ...request(), credential: undefined, gitPath: executable, pin: async commit => commit }); }
   catch (error) { expect(error).toBeInstanceOf(RepositoryCheckoutError); failure = error as RepositoryCheckoutError; }
-  expect(failure?.failure.summary).toContain('fatal: cannot read https://example.test');
+  expect(failure?.failure.summary).toContain('fatal: cannot read <url>');
   expect(JSON.stringify(failure?.failure)).not.toContain('shortpw');
   expect(JSON.stringify(failure?.failure)).not.toContain('reader:');
 });
@@ -353,4 +353,10 @@ it('names a missing revision before exposing files', async () => {
   await expect(prepareRepositoryCheckout({...request(),branch:'absent-branch',pin:async commit => commit}))
     .rejects.toMatchObject({failure:{code:'revision_missing'}});
 
+});
+
+it('reports local Git permission failures as disk errors with private paths masked', async () => {
+  const executable = join(home, 'git-local-permission');
+  await writeFile(executable, '#!/usr/bin/env node\n' + `process.stderr.write("fatal: could not lock config file '/Users/private/project/.git/config': Permission denied"); process.exit(128);`, { mode: 0o700 });
+  await expect(prepareRepositoryCheckout({ ...request(), gitPath: executable, pin: async commit => commit })).rejects.toMatchObject({ failure: { code: 'disk', summary: "fatal: could not lock config file '<path>': Permission denied" } });
 });

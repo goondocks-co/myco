@@ -34,7 +34,7 @@ export const repositoryFailure: ParityScenario = {
     await repository(target, { url: 'https://github.com/example/source.git', branch: 'main' });
 
     const cases = [
-      { suffix: 'reason', reason: { code: 'other', summary: 'fatal: unable to access https://reader:synthetic-secret-999@github.com/example/source.git' } },
+      { suffix: 'reason', reason: { code: 'other', summary: "fatal: cannot open '/Users/private-user/Projects/customer/private.txt' https://reader:synthetic-secret-999@github.com/example/source.git" } },
       { suffix: 'old', reason: undefined },
       { suffix: 'invalid', reason: { code: 'worker_supplied_reason', summary: 'private detail' } },
     ];
@@ -56,9 +56,12 @@ export const repositoryFailure: ParityScenario = {
       if (entry.reason?.code === 'other') expect(failure?.repositoryFailure).toEqual(detail.run.repositoryFailure);
       else expect(failure?.repositoryFailure).toBeUndefined();
       if (entry.reason?.code === 'other') {
-        expect(detail.run.repositoryFailure).toMatchObject({ code: 'other', summary: expect.stringContaining('fatal:') });
+        expect(detail.run.repositoryFailure.code).toBe('other');
+        expect(detail.run.repositoryFailure.summary).toContain('fatal:');
         expect(JSON.stringify({ detail, work })).not.toContain('synthetic-secret-999');
         expect(JSON.stringify({ detail, work })).not.toContain('reader:');
+        expect(JSON.stringify({ detail, work })).not.toContain('private-user');
+        expect(detail.run.repositoryFailure.summary).toContain('<path>');
       } else expect(detail.run.repositoryFailure).toBeUndefined();
     }
   },

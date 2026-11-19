@@ -88,7 +88,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'event_refs', 'processed_resources', 'plans',
   'attachments', 'transcripts', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'spore_curation_work', 'spore_curation_receipts', 'spore_curation_owners',
-  'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'spore_curation_units', 'spore_curation_unit_members', 'spore_curation_considerations', 'spore_curation_answers', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'context_delivery_anchors', 'tool_prompt_links',
+  'agent_tasks', 'agent_runs', 'run_served_material', 'run_subject_interruptions', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'spore_curation_units', 'spore_curation_unit_members', 'spore_curation_considerations', 'spore_curation_answers', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts', 'context_delivery_anchors', 'tool_prompt_links',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'release_state_unresolved', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports', 'run_bodies',
   'knowledge_git_provenance', 'session_artifacts', 'turn_cards', ...DOCUMENT_ARTIFACT_TABLES,

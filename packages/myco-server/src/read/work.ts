@@ -1,3 +1,5 @@
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
+import { CURATION_TASK } from '../core/task-catalogue.js';
 import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
@@ -34,6 +36,8 @@ export type OutcomeKind = 'learn' | 'title' | 'map' | 'seed';
 /** Each outcome task and the kind of work it is. */
 const OUTCOME_KINDS: Readonly<Record<string, OutcomeKind>> = {
   [EXTRACTION_TASK]: 'learn',
+  [CARD_TASK]: 'learn',
+  [CURATION_TASK]: 'learn',
   [TITLING_TASK]: 'title',
   [MAP_TASK]: 'map',
   [SEEDING_TASK]: 'seed',

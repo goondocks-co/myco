@@ -532,14 +532,24 @@ export function diagnosticDetail(value: string, max: number): string {
 }
 
 /** Closed reasons and bounded Git summaries; credentials are removed before any display projection or truncation. */
-export function parseRepositoryFailure(value: unknown, secrets: readonly string[] = []): RepositoryFailure | null {
+export function parseRepositoryFailure(value: unknown, secrets: readonly string[] = [], checkoutRoot?: string): RepositoryFailure | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const code = Reflect.get(value, 'code');
   if (typeof code !== 'string' || !(REPOSITORY_FAILURE_CODES as readonly string[]).includes(code)) return null;
-  let summary = ['fetch_failed', 'other', 'timed_out'].includes(code) && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
+  let summary = !['submodules','lfs','too_large','commit_mismatch'].includes(code) && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
   summary = maskDiagnosticSecrets(summary, secrets).trim().split(/\r?\n/).at(-1) ?? '';
+  summary = summary.replace(/https?:\/\/[^\s'"<>]+/g, '<url>');
+  if (checkoutRoot) summary = summary.split(checkoutRoot).join('<checkout>');
+  summary = summary.replace(/(['"])(?:[A-Za-z]:[\\/]|\/|\\\\).*?\1/g, '$1<path>$1');
+  summary = summary.replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\s'"<>]+|(?<![\w:<>])\/(?!\/)[^\s'"<>]+/g, '<path>');
   const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
   return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
+}
+
+/** A v1 Deployment retains Git's line under the reason codes it knows. */
+export function repositoryFailureForVersion(value: RepositoryFailure, version: 1 | 2): RepositoryFailure {
+  if (version === 2 || ['fetch_failed','checkout_failed','submodules','lfs','too_large','commit_mismatch'].includes(value.code)) return value;
+  return { ...value, code: 'fetch_failed' };
 }
 
 /** Remove the caller's known credentials before prose projection or truncation. */

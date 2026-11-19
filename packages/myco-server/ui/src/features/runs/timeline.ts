@@ -2,7 +2,7 @@ import { shortTime } from '../work/words';
 import type { RunHoursAnswer } from './RunsPage';
 
 export type RunsWindow = 'day' | 'week';
-interface Slice { at: number; worked: number; unchanged: number; failed: number }
+interface Slice { at: number; worked: number; unchanged: number; failed: number; interrupted: number }
 type Lane = RunHoursAnswer['lanes'][number];
 
 const HOUR_MS = 3_600_000;
@@ -10,13 +10,14 @@ const HOUR_MS = 3_600_000;
 /** A lane's counts in each slice of the window, oldest first, a slice with nothing finished included. */
 export function slicesOf(answer: Pick<RunHoursAnswer, 'window'>, lane: Lane): Slice[] {
   const { since, until, sliceMs } = answer.window;
-  const slices = Array.from({ length: Math.round((until - since) / sliceMs) }, (_, i): Slice => ({ at: since + i * sliceMs, worked: 0, unchanged: 0, failed: 0 }));
+  const slices = Array.from({ length: Math.round((until - since) / sliceMs) }, (_, i): Slice => ({ at: since + i * sliceMs, worked: 0, unchanged: 0, failed: 0, interrupted: 0 }));
   for (const hour of lane.hours) {
     const slice = slices[Math.floor((hour.hour - since) / sliceMs)];
     if (slice === undefined) continue;
     slice.worked += hour.worked;
     slice.unchanged += hour.unchanged;
     slice.failed += hour.failed;
+    slice.interrupted += hour.interrupted ?? 0;
   }
   return slices;
 }
@@ -50,7 +51,7 @@ export interface QuietSpell { from: number; to: number; words: string }
 export function gapsOf(answer: Pick<RunHoursAnswer, 'window' | 'lanes'>, now: number): QuietSpell[] {
   const { since } = answer.window;
   const end = Math.floor(now / HOUR_MS) * HOUR_MS;
-  const busy = new Set(answer.lanes.flatMap((lane) => lane.hours.filter((h) => h.worked + h.unchanged + h.failed > 0).map((h) => h.hour)));
+  const busy = new Set(answer.lanes.flatMap((lane) => lane.hours.filter((h) => h.worked + h.unchanged + h.failed + (h.interrupted ?? 0) > 0).map((h) => h.hour)));
   const spells: Array<{ from: number; to: number }> = [];
   let from: number | null = null;
   for (let hour = since; hour <= end; hour += HOUR_MS) {

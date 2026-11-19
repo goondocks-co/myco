@@ -1,4 +1,4 @@
-import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
+import { RUN_FAILURE_WORDS, interruptionWords } from '@goondocks/myco-shared/run-control';
 /**
  * Myco's work in words: every sentence the page and the run panel show, built
  * from the numbers the server answers. A run reads as what it came to, a
@@ -394,7 +394,9 @@ const REPOSITORY_FAILURE_WORDS = {
   checkout_failed: 'Myco couldn’t prepare the repository. Check its connection and try again.',
 } satisfies Readonly<Record<RepositoryFailure['code'], string>>;
 
-export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null): string {
+export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null, machine: string | null = null): string {
+  const interrupted = interruptionWords(code, machine);
+  if (interrupted !== null) return interrupted;
 
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
   if (code === 'repository_unprepared') return repositoryFailure === null

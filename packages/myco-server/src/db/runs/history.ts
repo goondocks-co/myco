@@ -1,3 +1,4 @@
+import { subjectCompletionAt } from './interruptions.js';
 /**
  * Run history reads: Work summaries over supported UTC windows from the maintained rollups, keyset run timelines, the
  * run list and one run's row, and the failure and hold reads attention takes.
@@ -153,7 +154,7 @@ const failedSince = (a: string, keys: { from: string; where: string }): string =
   ['idx_agent_runs_task', `${a}.started_at>=?2`],
   ['idx_agent_runs_failed_unstarted', `${a}.started_at IS NULL AND COALESCE(${a}.queued_at,${a}.completed_at)>=?2`],
 ].map(([index, since]) =>
-  `SELECT ${a}.project_id,${a}.id,${a}.task,${a}.dry_run,${a}.started_at,${a}.queued_at,${a}.completed_at FROM ${keys.from} agent_runs ${a} INDEXED BY ${index}
+  `SELECT ${a}.project_id,${a}.id,${a}.task,${a}.dry_run,${a}.started_at,${a}.queued_at,${a}.completed_at,${a}.subject,${a}.error_code FROM ${keys.from} agent_runs ${a} INDEXED BY ${index}
     WHERE ${keys.where} AND ${a}.status='failed' AND ${since}`).join(' UNION ALL ');
 /** Every task ?1 names in each Project that accepts capture. */
 const VISIBLE_TASKS = { from: 'projects p CROSS JOIN (SELECT DISTINCT value FROM json_each(?1)) t CROSS JOIN', where: 'p.archived_at IS NULL AND r.project_id=p.project_id AND r.task=t.value' };
@@ -161,11 +162,12 @@ const VISIBLE_TASKS = { from: 'projects p CROSS JOIN (SELECT DISTINCT value FROM
  * A failed outcome is a failure since the lookback that produced nothing, after the task's last completed run there.
  * The latest such failure is also the latest failure that produced nothing at all, since any later one is in the window.
  */
+const unresolvedOutcome = (row: string): string => `COALESCE(${row}.started_at,${row}.queued_at,${row}.completed_at)>CASE WHEN ${row}.error_code='run_interrupted_repeated' THEN ${subjectCompletionAt(row)} ELSE ${failureThreshold(`${row}.project_id`, `${row}.task`)} END`;
 const failing = read<[string, number], Row>({ name: 'runs.failingOutcomes', sql: `SELECT r.project_id,r.task,COUNT(*) AS failures,MIN(${FAILING_AT}) AS since,MAX(${FAILING_AT}) AS latest_at,
-    (SELECT l.id FROM (${failedSince('l', { from: '', where: 'l.project_id=r.project_id AND l.task=r.task' })}) l WHERE NOT ${producedSql('l')}
+    (SELECT l.id FROM (${failedSince('l', { from: '', where: 'l.project_id=r.project_id AND l.task=r.task' })}) l WHERE NOT ${producedSql('l')} AND ${unresolvedOutcome('l')}
       ORDER BY COALESCE(l.started_at,l.queued_at,l.completed_at) DESC,l.id DESC LIMIT 1) AS latest_run
   FROM (${failedSince('r', VISIBLE_TASKS)}) r
-  WHERE r.dry_run=0 AND ${FAILING_AT}>${failureThreshold('r.project_id','r.task')}
+  WHERE r.dry_run=0 AND ${unresolvedOutcome('r')}
     AND NOT ${producedSql('r')}
   GROUP BY r.project_id,r.task ORDER BY latest_at DESC` });
 export const failingRows = async (db: RelationalStore, tasks: readonly string[], lookbackFrom: number): Promise<Row[]> => (await readSet(db, failing.bind(JSON.stringify(tasks), lookbackFrom)))[0];

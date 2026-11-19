@@ -95,7 +95,8 @@ export function parseRepositoryCheckoutSpec(value: unknown): RepositoryCheckoutS
 }
 
 /** Structured repository checkout reasons supported by a Deployment's worker end reports. */
-export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
+export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v2';
+export const LEGACY_REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
 export const REPOSITORY_FAILURE_CODES = ['not_found', 'access_refused', 'revision_missing', 'timed_out', 'disk', 'other', 'fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
 export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
 export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }

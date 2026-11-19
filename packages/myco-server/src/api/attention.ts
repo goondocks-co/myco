@@ -8,7 +8,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, notFound, resolveProjectScope, ok } from './scope.js';
 import { projectRepositoryNeeded } from '../read/repository-requirements.js';
-import { readAttention } from '../core/attention.js';
+import { readAttention, readRepositoryAttention } from '../core/attention.js';
 
 export async function handleAttention(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const projectId = ctx.url.searchParams.get('project');
@@ -17,7 +17,9 @@ export async function handleAttention(env: ServerEnv, ctx: OwnerContext): Promis
     const scope = await resolveProjectScope(env.db, ctx.member, projectId);
     if (scope === null) return notFound();
     const requirement = await projectRepositoryNeeded(env, scope);
-    return ok({ items: requirement === null ? [] : [{ kind: 'repository_missing', tone: 'warn', ...requirement }], unavailable: [] });
+    const streaks = await readRepositoryAttention(env, scope.projectId);
+    return ok({ items: [...(requirement === null ? [] : [{ kind: 'repository_missing', tone: 'warn', ...requirement }]),
+      ...streaks.map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak }))], unavailable: [] });
   }
   return ok(await readAttention(env, ctx.now));
 }

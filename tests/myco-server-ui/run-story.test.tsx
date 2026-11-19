@@ -447,4 +447,7 @@ it('shows an abandoned direct title as stopped work without a failure', async ()
   expect(story(panel).textContent).toContain('Work stopped before a result was saved');
   expect(story(panel).textContent).not.toContain('The direct model call failed');
   expect(panel.textContent).toContain('No title saved');
+  expect(panel.querySelector('[data-run-headline]')?.textContent).toBe('Interrupted');
+  expect(panel.textContent).toContain('The title was interrupted before a result was recorded. Myco will try again.');
+  expect(panel.textContent).not.toContain('Nothing ran, and nothing was spent.');
 });

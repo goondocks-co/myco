@@ -519,21 +519,40 @@ describe('direct session titles', () => {
     h.sqlite.close();
   });
 
-  it('closes abandoned direct work without reserving runner capacity', async () => {
+  it('bounds abandoned direct titles over a day and shows the last attempt as failed', async () => {
     const h = direct(async () => { throw new Error('not called'); });
     h.env.afterResponse = () => {};
     const run = await h.title('direct');
     expect(await dispatchLoad(h.env.db, TITLING_TASK, NOW)).toMatchObject({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
     await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
     expect(h.runRow(run.runId!)).toMatchObject({ status: 'skipped', error: 'The direct model call ended without recording a result; the work stays due' });
-    expect(h.row('direct')).toEqual(untouched);
+    expect(h.row('direct')).toMatchObject({ title: null, summary: null });
     const work = () => readWork(h.env.db, {all:false,projectIds:['proj_1']}, NOW - 1, NOW + 86_400_000);
     expect((await work()).timeline).toEqual([]);
-    h.sqlite.run("UPDATE agent_runs SET status='failed',error_code='run_failed',error='The direct model call did not settle before its deadline' WHERE id=?", [run.runId!]);
-    await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 2);
-    expect((await work()).timeline).toEqual([]);
-    const retry = await titleSession(h.env, { projectId: 'proj_1', sessionId: 'direct', now: NOW + OWNER_TITLING_WINDOW_MS + 1, origin: ORIGIN }, { retry: true });
-    expect(retry.outcome).toBe('dispatched');
+    const minuteMs = 60_000;
+    for (let tick = 1; tick <= 24 * 60; tick++) {
+      const at = NOW + minuteMs * tick;
+      await runStaleSweep(h.env, at);
+      await backfillTitles(h.env, at, 'active');
+    }
+    expect(h.runRows()).toHaveLength(TITLING_MAX_ATTEMPTS);
+    expect(h.runRows().filter(row => row.status === 'failed')).toHaveLength(1);
+    expect((await work()).timeline).toMatchObject([{ status: 'failed', failure: { code: 'title_interrupted_repeated' } }]);
+    h.sqlite.close();
+  });
+
+  it('settles an incomplete direct claim without blocking other stale work or rewriting failed history', async () => {
+    const h = direct(async () => { throw new Error('not called'); });
+    h.env.afterResponse = () => {};
+    const run = await h.title('direct');
+    h.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,provider,status,started_at,run_context)
+      SELECT project_id,'bad-direct',agent_id,task,provider,'running',started_at,'{"execution":"direct","timeoutSeconds":1}' FROM agent_runs WHERE id=?`, [run.runId!]);
+    h.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,provider,status,started_at,completed_at,error,error_code,run_context)
+      SELECT project_id,'old-failure',agent_id,task,provider,'failed',started_at,started_at,'The direct model call did not settle before its deadline','run_failed',run_context FROM agent_runs WHERE id=?`, [run.runId!]);
+    await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
+    expect(h.runRow(run.runId!)).toMatchObject({ status: 'skipped' });
+    expect(h.runRow('bad-direct')).toMatchObject({ status: 'failed', error: 'The direct title claim is incomplete' });
+    expect(h.runRow('old-failure')).toMatchObject({ status: 'failed', error: 'The direct model call did not settle before its deadline' });
     h.sqlite.close();
   });
 

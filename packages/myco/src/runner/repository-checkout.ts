@@ -18,14 +18,15 @@ const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
 /** A checkout refusal carries only a closed reason and a sanitized Git summary. */
 export class RepositoryCheckoutError extends Error {
   readonly failure: RepositoryFailure;
-  constructor(code: RepositoryFailureCode, message: string, summary?: string, secrets: readonly string[] = []) {
+  constructor(code: RepositoryFailureCode, message: string, summary?: string, secrets: readonly string[] = [], checkoutRoot?: string) {
     super(message);
     this.name = 'RepositoryCheckoutError';
-    this.failure = parseRepositoryFailure({ code, summary }, secrets)!;
+    this.failure = parseRepositoryFailure({ code, summary }, secrets, checkoutRoot)!;
   }
 }
 
 export interface RepositoryCheckoutRequest {
+  timeoutMs?: number;
   url: string;
   branch: string;
   credential?: { username: string; token: string };
@@ -126,7 +127,7 @@ async function git(
         const token = env.MYCO_GIT_TOKEN ?? '';
         const username = env.MYCO_GIT_USERNAME ?? '';
         const secrets = [token, username, ...(token && username ? [username + ':' + token] : [])];
-        reject(new RepositoryCheckoutError(gitFailureCode(summary), `Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`, summary, secrets));
+        reject(new RepositoryCheckoutError(gitFailureCode(summary), `Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`, summary, secrets, cwd));
       }
       else resolve(Buffer.concat(chunks).toString('utf8'));
     });
@@ -135,16 +136,17 @@ async function git(
 
 /** Git's transport and filesystem errors become a closed preparation reason. */
 function gitFailureCode(words: string): RepositoryFailureCode {
-  if (/no space left|disk quota|file too large|read-only file system|unable to write|cannot create.*(?:directory|file)/i.test(words)) return 'disk';
-  if (/authentication failed|access denied|permission denied|returned error: (?:401|403)|could not read (?:Username|Password)/i.test(words)) return 'access_refused';
-  if (/repository .*not found|repository not found|returned error: 404|does not appear to be a git repository/i.test(words)) return 'not_found';
+  if (/no space left|disk quota|file too large|read-only file system|unable to write|cannot create.*(?:directory|file)|(?:work tree|config file|config lock|object file|\.git[\/]).*permission denied/i.test(words)) return 'disk';
+  if (/authentication failed|access denied|returned error: (?:401|403)|could not read (?:Username|Password)/i.test(words)) return 'access_refused';
+  if (/repository .*not found|repository not found/i.test(words)) return 'access_refused';
+  if (/returned error: 404|does not appear to be a git repository/i.test(words)) return 'not_found';
   if (/couldn.t find remote ref|not our ref|not a valid (?:object|commit)|bad object|unknown revision|needed a single revision/i.test(words)) return 'revision_missing';
   return 'other';
 }
 
 /** Prepare committed files in an isolated workspace; no repository hooks or filters execute. */
 export async function prepareRepositoryCheckout(request: RepositoryCheckoutRequest): Promise<RepositoryCheckout> {
-  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs ?? CHECKOUT_TIMEOUT_MS)]);
   const url = repositoryUrl(request.url);
   repositoryBranch(request.branch);
   if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new RepositoryCheckoutError('commit_mismatch', 'Invalid repository commit.');
@@ -267,12 +269,12 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     await dispose();
     if (error instanceof RepositoryCheckoutError) throw error;
     if (signal.aborted && !request.signal.aborted) {
-      throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${CHECKOUT_TIMEOUT_MS / 1000} seconds.`);
+      throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${(request.timeoutMs ?? CHECKOUT_TIMEOUT_MS) / 1000} seconds.`);
     }
     if (request.signal.aborted || typeof (error as NodeJS.ErrnoException)?.code !== 'string') throw error;
     const words = error instanceof Error ? error.message : String(error);
-    const disk = ['ENOSPC', 'EDQUOT', 'EROFS', 'EFBIG'].includes((error as NodeJS.ErrnoException)?.code ?? '');
+    const disk = ['ENOSPC', 'EDQUOT', 'EROFS', 'EFBIG', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException)?.code ?? '');
     throw new RepositoryCheckoutError(disk ? 'disk' : gitFailureCode(words), 'Repository preparation failed.', words,
-      request.credential === undefined ? [] : [request.credential.token, request.credential.username, `${request.credential.username}:${request.credential.token}`]);
+      request.credential === undefined ? [] : [request.credential.token, request.credential.username, `${request.credential.username}:${request.credential.token}`], root);
   }
 }

@@ -1,3 +1,4 @@
+import { scheduleLeaves, scheduledTasks } from './schedule-rules.js';
 /**
  * Needs you: what on this Deployment an administrator should act on, now.
  *
@@ -20,6 +21,9 @@
  * A rule whose read fails is named in `unavailable` and the others still answer, so one unreadable fact never hides
  * the rest, and an empty list with nothing unavailable means nothing needs anyone.
  */
+import { interruptedEndings } from '../db/runs/interruptions.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
+import { CURATION_TASK } from './task-catalogue.js';
 import { repositoryFailureStreaks, type RepositoryFailureStreak } from '../db/runs/repository-failures.js';
 import { repositoriesNeeded } from '../read/repository-requirements.js';
 import type { ServerEnv } from './adapters.js';
@@ -60,13 +64,13 @@ const PRODUCER_STATUS_MS = 5_000;
 const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.audited === true).map(([task]) => task);
 
 /** The outcome tasks whose failure needs someone: learning and the code map. */
-const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
+const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, CURATION_TASK, MAP_TASK];
 
 export type AttentionItem =
   | ({ kind: 'repository_preparation_failed'; tone: 'warn' } & RepositoryFailureStreak)
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
-  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string }
+  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; interruptionMachine?: string | null }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number>; latestDiagnostic?: import('../ingest/parse.js').ParseDiagnostic }
@@ -134,11 +138,17 @@ const RULES: readonly Rule[] = [
     kind: 'outcome_failed',
     read: async (env, now, _harnessFacts, _metadata, repositoryFacts) => {
       const held = new Set((await repositoryFacts()).map(row => row.projectId));
-      return (await failingOutcomes(env.db, WATCHED_OUTCOME_TASKS, now - OUTCOME_LOOKBACK_MS))
-        .filter(f => !held.has(f.projectId) || f.task !== MAP_TASK).map(f => ({
+      const failures = (await failingOutcomes(env.db, WATCHED_OUTCOME_TASKS, now - OUTCOME_LOOKBACK_MS))
+        .filter(f => !held.has(f.projectId) || f.task !== MAP_TASK);
+      const interrupted = await interruptedEndings(env.db, failures.map(f => ({ projectId: f.projectId, runId: f.latestRunId })));
+      return failures.map(f => {
+        const ending = interrupted.find(end => end.runId === f.latestRunId && end.projectId === f.projectId);
+        return {
+          ...(ending === undefined ? {} : { interruptionMachine: ending.machine }),
           kind: 'outcome_failed', tone: 'bad', projectId: f.projectId, outcome: f.kind, task: f.task,
           failures: f.failures, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
-        }));
+        };
+      });
     },
   },
   {
@@ -225,7 +235,7 @@ export async function readAttention(env: ServerEnv, now: number): Promise<Attent
   let pendingMetadata: Promise<StatusMetadata> | undefined;
   const metadata = () => pendingMetadata ??= statusMetadata(env.db);
   let pendingRepositoryFacts: Promise<RepositoryFailureStreak[]> | undefined;
-  const repositoryFacts = () => pendingRepositoryFacts ??= repositoryFailureStreaks(env.db);
+  const repositoryFacts = () => pendingRepositoryFacts ??= readRepositoryAttention(env);
   const settled = await Promise.allSettled(RULES.map((rule) => rule.read(env, now, harnessFacts, metadata, repositoryFacts)));
   const items: AttentionItem[] = [];
   const unavailable: AttentionKind[] = [];
@@ -234,4 +244,15 @@ export async function readAttention(env: ServerEnv, now: number): Promise<Attent
     else unavailable.push(RULES[i]!.kind);
   });
   return { items, unavailable };
+}
+
+/** Repository notices follow the configured normal interval unless their reason requires back-off. */
+export async function readRepositoryAttention(env: ServerEnv, projectId?: string): Promise<RepositoryFailureStreak[]> {
+  const failures = await repositoryFailureStreaks(env.db, projectId);
+  if (failures.length === 0) return [];
+  const tasks = scheduledTasks((await scheduleLeaves(env)).overrides);
+  return failures.map(failure => {
+    const schedule = tasks.find(row => row.task === failure.task)?.schedule;
+    return failure.backoff || schedule === undefined ? failure : { ...failure, retryAt: failure.latestAt + schedule.intervalSeconds * 1000 };
+  });
 }

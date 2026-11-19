@@ -1,3 +1,4 @@
+import { RUN_INTERRUPTION_STEPS } from './schema-steps-run-interruptions.js';
 import { CURATION_UNDO_STEPS } from './schema-steps-curation-undo.js';
 import { REWIND_STEPS } from './schema-steps-rewind.js';
 import { ATTENTION_STEPS } from './schema-steps-attention.js';
@@ -2423,6 +2424,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...ATTENTION_STEPS.map(stamp),
   ...CURATION_ANSWER_STEPS.map(stamp),
   ...CURATION_UNDO_STEPS.map(stamp),
+  ...RUN_INTERRUPTION_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

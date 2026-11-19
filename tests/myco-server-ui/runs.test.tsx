@@ -52,6 +52,13 @@ function mount(route = '/runs', finished: (cursor: string | null) => unknown = (
 }
 
 describe('Runs page', () => {
+  it('lists interrupted attempts with their machine and the visible retry bound', async () => {
+    mount('/runs?outcome=interrupted', () => ({ rows: [{ ...RUN, result: 'interrupted', errorCode: 'run_interrupted_repeated' }], cursor: null }), { ...HOURS, totals: { ...counts(0, 0, 0), interrupted: 1, waitedMs: 0 } });
+    expect((await screen.findByText(/1 run finished in the last 24 hours/)).textContent).toContain('1 interrupted');
+    expect(await screen.findByText(/interrupted three times, most recently on homelab-mini/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Interrupted' })).toBeTruthy();
+  });
+
   it('shows when runs finished per runner with the quiet spells, what is failing with its trend, and every run linked to its panel and runner', async () => {
     mount();
     expect((await screen.findByText(/7 runs finished in the last 24 hours/)).textContent).toBe('7 runs finished in the last 24 hours: 3 worked, 1 changed nothing, 3 failed.');

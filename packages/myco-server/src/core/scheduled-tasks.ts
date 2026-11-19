@@ -164,7 +164,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   const gate = admissionForTask(task);
   if (gate?.kind === 'capability' && !held.capabilities.has(taskFactsKey(projectId, gate.capability))) return 'capability_off';
   if (schedule.overlap === 'skip' && runs.live) return 'already_running';
-  if (REQUIRED_REPOSITORY_TASKS.includes(task) && held.repositoryFailures?.some(failure => failure.projectId === projectId && now < failure.retryAt)) return 'repository_backoff';
+  if (REQUIRED_REPOSITORY_TASKS.includes(task) && held.repositoryFailures?.some(failure => failure.projectId === projectId && failure.backoff && now < failure.retryAt)) return 'repository_backoff';
 
   const accelerator = schedule.accelerator === undefined ? undefined : declared(ACCELERATORS, schedule.accelerator.name);
   const count = schedule.accelerator !== undefined && accelerator !== undefined

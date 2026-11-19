@@ -1,3 +1,5 @@
+import { readAttention } from '@myco-server-worker/core/attention.js';
+import { readFinishedRuns } from '@myco-server-worker/read/run-hours.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { commitRunUpdate } from '@myco-server-worker/core/release.js';
@@ -28,7 +30,7 @@ import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { LEARNING_STAGES, buildHandStartLearning } from '@myco-server-worker/core/learning-stages.js';
 import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
-import { NOW, HOUR, DAY, enable, capture, publish, GOTCHAS, EMPTY_CARD, cardWorker, cardRun, plainTurns } from './helpers/learning-stages.ts';
+import { NOW, HOUR, DAY, enable, capture, publish, GOTCHAS, EMPTY_CARD, cardWorker, cardRun, learningRun, plainTurns } from './helpers/learning-stages.ts';
 
 it('with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document', async () => {
   await withDocumentStores(async (db, name) => {
@@ -275,5 +277,70 @@ it('finishes and retires an assigned pending turn that its material cannot serve
     expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 }, {
       projectId: 'project', runId: run.claimed.run.id, attemptId: run.claimed.run.attemptId, status: 'completed',
     })).toEqual({ ended: true, status: 'completed' });
+  });
+});
+
+for (const kind of ['cards', 'learning'] as const) it(`bounds consecutive ${kind} interruptions and records each attempt on Runs`, async () => {
+  await withDocumentStores(async db => {
+    const prepared = kind === 'cards' ? await cardRun(db, plainTurns(1)) : await learningRun(db, plainTurns(1), 'high');
+    const { env, principal } = prepared;
+    await db.prepare("UPDATE member_credentials SET runtime_label='Build Mac' WHERE id=?").bind(principal.kind === 'member' ? principal.tokenId : principal.credentialId).run();
+    const poll = (now: number) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
+    let claim = 'run' in prepared.claimed ? prepared.claimed.run : prepared.claimed;
+    let at = NOW + DAY + 10;
+    const ids: string[] = [];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      ids.push(claim.id);
+      await db.prepare('UPDATE agent_runs SET lease_expires_at=? WHERE id=?').bind(at, claim.id).run();
+      expect(await expireLeases(env, at + 1)).toBe(1);
+      expect((await getRun(db, { projectId: 'project' }, claim.id))?.status).toBe(attempt < 3 ? 'skipped' : 'failed');
+      const notices = (await readAttention(env, at + 1)).items.filter(item => item.kind === 'outcome_failed');
+      expect(notices).toMatchObject(attempt < 3 ? [] : [{ projectId: 'project', task: claim.task, interruptionMachine: 'Build Mac' }]);
+      at += DAY;
+      if (attempt < 3) { const next = await poll(at); if (!next.claimed) throw new Error('retry not claimed'); claim = next.run; }
+    }
+    expect(await poll(at)).toMatchObject({ claimed: false });
+    await db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,subject)
+      SELECT project_id,'other-session-completed',agent_id,task,'completed',?,?, 'session:other' FROM agent_runs WHERE id=?`).bind(at, at, claim.id).run();
+    expect((await readAttention(env, at)).items.filter(item => item.kind === 'outcome_failed')).toMatchObject([{ runId: claim.id }]);
+
+    const finished = await readFinishedRuns(db, { all: false, projectIds: ['project'] }, { since: NOW, until: at, filters: { outcome: 'interrupted' }, limit: 20 });
+    expect(finished.rows.map(row => row.runId).sort()).toEqual(ids.sort());
+    expect(finished.rows.every(row => row.interruptionMachine === 'Build Mac')).toBe(true);
+    expect(await dispatchTask(env, 'extract-curate', 'project', { serverUrl: 'https://myco.test', actor: 'mem_worker', params: { session_id: 'long' } }, at)).toMatchObject({ dispatched: true });
+    const manual = await poll(at + 1);
+    if (!manual.claimed) throw new Error('manual recovery not claimed');
+    let active = manual.run;
+    const call = async (name: string, input: Record<string, unknown>) => {
+      const response = await worker.fetch(new Request('https://myco.test/mcp', { method: 'POST', headers: memberHeaders(active.runToken, { [PROJECT_HEADER]: 'project' }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }) }), prepared.bindings as never);
+      return JSON.parse((await response.json() as any).result.content[0].text);
+    };
+    const material = await call(kind === 'cards' ? 'myco_run_cards' : 'myco_run_learning', { op: 'material' });
+    if (kind === 'cards') await call('myco_run_cards', { op: 'write', revision: material.revision, cards: material.turns.map((turn: any) => ({ turns: [turn.turn_key], signal: 'high', card: EMPTY_CARD })) });
+    else expect(await call('myco_run_learning', { op: 'complete', handoff: 'No lasting lessons.' })).toMatchObject({ completed: true });
+    await call('myco_run', { op: 'report', action: kind === 'cards' ? CARD_REPORT_ACTION : 'extract', summary: 'completed', audit: RUN_AUDIT });
+    expect(await endLeasedRun(env, { principal, now: at + 2 }, { projectId: 'project', runId: manual.run.id, attemptId: manual.run.attemptId, status: 'completed' })).toMatchObject({ ended: true, status: 'completed' });
+    expect((await readAttention(env, at + 2)).items.filter(item => item.kind === 'outcome_failed')).toEqual([]);
+    await capture(db, 'long', [{ id: uuid(999), text: 'New work after recovery', replies: ['Done.'], at: at + 3 }], 'project', at + 3);
+    at += DAY;
+    await publish(db, at + 3, prepared.bindings.BUCKET);
+    const cards = await poll(at + 4);
+    if (!cards.claimed) throw new Error('new cards not claimed');
+    active = cards.run;
+    if (kind === 'learning') {
+      const next = await call('myco_run_cards', { op: 'material' });
+      await call('myco_run_cards', { op: 'write', revision: next.revision, cards: next.turns.map((turn: any) => ({ turns: [turn.turn_key], signal: 'high', card: EMPTY_CARD })) });
+      await call('myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded', audit: RUN_AUDIT });
+      await endLeasedRun(env, { principal, now: at + 5 }, { projectId: 'project', runId: active.id, attemptId: active.attemptId, status: 'completed' });
+      const learning = await poll(at + 6);
+      if (!learning.claimed) throw new Error('new learning not claimed');
+      active = learning.run;
+    }
+    await db.prepare('UPDATE agent_runs SET lease_expires_at=? WHERE id=?').bind(at + 7, active.id).run();
+    await expireLeases(env, at + 7);
+    expect((await getRun(db, { projectId: 'project' }, active.id))?.status).toBe('skipped');
+    expect((await readAttention(env, at + 7)).items.filter(item => item.kind === 'outcome_failed')).toEqual([]);
+
   });
 });

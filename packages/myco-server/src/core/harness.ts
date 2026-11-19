@@ -38,7 +38,7 @@ import { heldPartition } from './embedding/policy.js';
 import { type RunErrorCode, LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 import { prepareWorkerEnd } from './worker-end.js';
 import type { WorkerUsage, ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
-import { REQUIRED_REPOSITORY_TASKS, REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec, type RepositoryFailure } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_PREPARATION_TIMEOUT_MS, REQUIRED_REPOSITORY_TASKS, REPOSITORY_TASKS, capabilitiesRequiredBy, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { repositoryIdentity } from './repositories.js';
 /**
  * The one dispatcher: every agent task a Deployment runs goes through here,
@@ -86,7 +86,7 @@ import { emit } from '../telemetry.js';
 import { type ActorCeiling, type ClaimedRunRow } from './runs.js';
 import { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 import { deploymentTaskEntriesSince } from '../db/runs/claim.js';
-import { retireInterruptedFailures, lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
+import { lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
 import { runRemainingMs, getRun } from '../db/runs/lifecycle.js';
 import { applyRunUpdate, runUpdateStatement } from '../db/runs/change.js';
 import { ensureAgent } from '../db/runs/state.js';
@@ -746,6 +746,7 @@ export async function dispatchTask(env: ServerEnv, task: string, projectId: stri
 /** What a claim answers a worker: the run, the harness chosen for it, the credentials it runs under, and what the worker lays out in the run's directory. */
 interface ClaimedRun extends ClaimedRunRow {
   repository?: RepositoryCheckoutSpec;
+  preparationTimeoutMs?: number;
   harness: string;
   profile: ExecutionProfile;
   runToken: string;
@@ -1026,7 +1027,7 @@ export async function claimNextRun(
       ...row,
       instruction: claimed.input?.instruction ?? instruction,
       instructions: instructionsFileFor(built),
-      ...(claimed.input?.repository === undefined ? {} : { repository: claimed.input.repository }),
+      ...(claimed.input?.repository === undefined ? {} : { repository: claimed.input.repository, preparationTimeoutMs: REPOSITORY_PREPARATION_TIMEOUT_MS }),
       harness,
       profile,
       runToken: minted.token,
@@ -1110,7 +1111,7 @@ async function pullAtClaim(
       claimed: true,
       run: {
         ...claimed.row, instruction: claimed.input?.instruction ?? input.instruction, instructions: input.instructions ?? null,
-        ...(claimed.input?.repository === undefined ? {} : { repository: claimed.input.repository }), harness: chosen.harness, profile,
+        ...(claimed.input?.repository === undefined ? {} : { repository: claimed.input.repository, preparationTimeoutMs: REPOSITORY_PREPARATION_TIMEOUT_MS }), harness: chosen.harness, profile,
         runToken: claimed.issued.token, attemptId: claimed.issued.tokenId, credentialEnv: chosen.credentialEnv,
         leaseExpiresAt: worker.now + WORKER_LEASE_MS, timeoutSeconds: runTimeoutForTask(stage.task) ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
       },
@@ -1153,7 +1154,7 @@ export async function renewLease(env: ServerEnv, worker: { principal: WorkerPrin
 export async function endLeasedRun(
   env: ServerEnv,
   worker: { principal: WorkerPrincipal; now: number; clock?: () => number },
-  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; identity?: ExecutionIdentity; accountingVersion?: number; attemptId?: string; refusal?: ProfileRefusal | null; repositoryFailure?: RepositoryFailure | null; harnessStop?: HarnessStop | null },
+  run: { projectId: string; runId: string; status: 'completed' | 'failed'; error?: string | null; usage?: WorkerUsage | null; identity?: ExecutionIdentity; accountingVersion?: number; attemptId?: string; refusal?: ProfileRefusal | null; repositoryFailure?: unknown; harnessStop?: HarnessStop | null },
 ): Promise<{ ended: boolean; reason?: string; status?: 'completed' | 'failed' }> {
   const clock = worker.clock ?? (() => worker.now);
   const prepared = await prepareWorkerEnd(env, { worker: worker.principal, clock }, run);
@@ -1180,7 +1181,7 @@ export async function endLeasedRun(
 
 /** Settle expired attempts and retire their exact credentials, then prune inactive worker metadata. */
 export async function expireLeases(env: ServerEnv, now: number): Promise<number> {
-  let settled = await retireInterruptedFailures(env.db, DRAIN_BATCH);
+  let settled = 0;
   for (const lapsed of await lapsedLeases(env.db, now, DRAIN_BATCH)) {
     if (!(await settleLapsedLease(env.db, { projectId: lapsed.projectId }, lapsed.id, lapsed.owner, lapsed.dispatchedBy, now))) continue;
     await retireDispatchCredential(env, lapsed.dispatchedBy, now);

@@ -361,3 +361,11 @@ it('retains all safe diagnostic fields from an older runner coded ending', () =>
     .toEqual({ code: 'permission_refused', names: ['myco_run'], exitCode: 3, signal: 'SIGTERM' });
   expect(harnessStopFromError('the harness stopped: error (unknown; token: private)')).toBeNull();
 });
+
+it('masks absolute repository paths and retains a known code for older Deployments', () => {
+  const reason = parseRepositoryFailure({ code: 'disk', summary: "fatal: cannot open '/Users/example/checkout/.git/config' or /home/private/secret.txt" }, [], '/Users/example/checkout')!;
+  expect(reason.summary).toContain('<checkout>');
+  expect(reason.summary).toContain('<path>');
+  expect(JSON.stringify(reason)).not.toContain('/Users');
+  expect(JSON.stringify(reason)).not.toContain('/home');
+});

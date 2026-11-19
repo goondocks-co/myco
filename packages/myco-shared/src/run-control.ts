@@ -1,3 +1,6 @@
+/** Consecutive interrupted attempts admitted before automatic work stops. */
+export const MAX_CONSECUTIVE_INTERRUPTION_ATTEMPTS = 3;
+
 import { memberHeaders } from './member-protocol.js';
 
 /** Refusals the run control plane names, in the reader's words. */
@@ -96,3 +99,15 @@ export const RUN_FAILURE_WORDS: Readonly<Record<string, string>> = {
   completion_redirect: 'The model service redirected the request. Myco refuses provider redirects. '
     + 'Check the API base URL in Settings, then try again.',
 };
+
+/** Reader words for recorded interruptions, with machine identity only where the caller may name it. */
+export function interruptionWords(code: string | null | undefined, machine: string | null = null): string | null {
+  const where = machine === null ? '' : ` on ${machine}`;
+  switch (code) {
+    case 'run_interrupted': return `The work was interrupted${where}. Myco will try again.`;
+    case 'execution_abandoned': return 'The title was interrupted before a result was recorded. Myco will try again.';
+    case 'run_interrupted_repeated': return `The work was interrupted three times${machine === null ? ' on a machine whose name is unavailable' : `, most recently on ${machine}`}. Automatic attempts have stopped.`;
+    case 'title_interrupted_repeated': return 'The title was interrupted three times. Automatic attempts have stopped.';
+    default: return null;
+  }
+}

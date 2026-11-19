@@ -19,7 +19,6 @@ import {
   renewLease,
 } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
-import { readWork } from '@myco-server-worker/read/work.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import worker_ from '@myco-server-worker/entry/cloudflare.js';
 import { memberHeaders } from './helpers/fixtures.js';
@@ -147,30 +146,4 @@ describe('the worker that ran a run', () => {
     await expireLeases(r.e.serverEnv, NOW + WORKER_LEASE_MS);
     expect((await getRunDetail(r.e.db, SCOPE, 'run_1', Date.now(), 'mem_viewer'))?.run).toMatchObject({ status: 'queued', worker: null });
   });
-});
-
-it('keeps a lapsed subject out of failed work while its retry is pending and counts only a failed retry', async () => {
-  const r = await rig();
-  try {
-    const mac = await r.worker('mem_mac', 'fixture_machine');
-    expect((await r.claim(mac, NOW)).claimed).toBe(true);
-    r.e.sqlite.run("UPDATE agent_runs SET subject='title:session' WHERE id='run_1'");
-    await expireLeases(r.e.serverEnv, NOW + WORKER_LEASE_MS);
-    expect((await getRunDetail(r.e.db, SCOPE, 'run_1', NOW, 'mem_viewer'))?.run).toMatchObject({status:'skipped',errorCode:'lease_lapsed'});
-    const since = Math.floor(NOW / 86_400_000) * 86_400_000;
-    const work = () => readWork(r.e.db, {all:false,projectIds:['proj_1']}, since, since + 86_400_000);
-    expect((await work()).timeline).toEqual([]);
-    expect((await work()).summary?.every(outcome => outcome.failed === 0)).toBe(true);
-    r.e.sqlite.run("UPDATE agent_runs SET status='failed' WHERE id='run_1'");
-    await expireLeases(r.e.serverEnv, NOW + WORKER_LEASE_MS + 1);
-    expect((await work()).timeline).toEqual([]);
-    expect((await work()).summary?.every(outcome => outcome.failed === 0)).toBe(true);
-    r.e.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,error,error_code,subject)
-      VALUES('proj_1','retry','myco-agent','title-summary','failed',?,?, 'the retry failed','run_failed','title:session')`, [NOW + WORKER_LEASE_MS + 1,NOW + WORKER_LEASE_MS + 2]);
-    expect((await work()).timeline.map(run => run.id)).toEqual(['retry']);
-    expect((await work()).summary?.find(outcome => outcome.kind === 'title')?.failed).toBe(1);
-    r.e.sqlite.run("UPDATE agent_runs SET status='completed',error=NULL,error_code=NULL WHERE id='retry'");
-    expect((await work()).timeline).toEqual([]);
-    expect((await work()).summary?.every(outcome => outcome.failed === 0)).toBe(true);
-  } finally { r.e.sqlite.close(); }
 });

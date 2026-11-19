@@ -553,6 +553,14 @@ it('slows repeated repository failures for only their Project and clears the not
     const leaves = { activeWindowDays: 30, coldThresholdDays: 7 };
     expect(await decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBe('repository_backoff');
     expect(await decideTask(f.env,'proj_2',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBeNull();
+    f.sqlite.run("UPDATE agent_runs SET run_context=? WHERE id IN ('first','second')", [JSON.stringify({ repositoryFailureCode: 'timed_out' })]);
+    expect(await notices()).toMatchObject([{ failure: { code: 'timed_out' }, backoff: false }]);
+    expect(await decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBeNull();
+    f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,error,error_code,run_context,dispatch_spec)
+      VALUES('proj_2','bad-context','myco-agent','canopy-map','failed',?,?, 'the worker failed while driving the run (repository_unprepared)','repository_unprepared','not-json',?)`, [NOW-1000,NOW-500,JSON.stringify({ actor: 'clock' })]);
+    await readScheduleFacts(f.env, ['canopy-map'], NOW);
+    expect(await notices()).toMatchObject([{ projectId: 'proj_1', failure: { code: 'timed_out' } }]);
+
     ended('success','completed',NOW - 1000);
     expect(await notices()).toEqual([]);
     expect(await decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBeNull();

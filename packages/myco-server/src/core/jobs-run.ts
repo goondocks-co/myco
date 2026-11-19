@@ -29,7 +29,7 @@ import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
 import { endQueuedRun, expireLeases } from './harness.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
-import { abandonDirectTitle, retireAbandonedDirectTitles } from '../db/runs/direct-titles.js';
+import { abandonDirectTitle } from '../db/runs/direct-titles.js';
 import { staleAfter } from './run-deadline.js';
 import { classify, emit } from '../telemetry.js';
 import { moveRunBodies } from '../db/runs/bodies.js';
@@ -198,7 +198,7 @@ export function queueExpiredError(heldBy: string | null): string {
  * holds.
  */
 export async function runStaleSweep(env: ServerEnv, now: number): Promise<number> {
-  let changed = await retireAbandonedDirectTitles(env.db, JOB_BATCH);
+  let changed = 0;
   const budget=await dailyBudget(env.db);
   const activation = await budgetActivation(env.db);
   const opened = activation.active ? await budgetQueueOpenedAt(env.db) : null;

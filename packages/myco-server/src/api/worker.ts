@@ -1,5 +1,5 @@
 import { parseHarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
-import { parseRepositoryFailure, parseHarnessStop } from '@goondocks/myco-shared/run-text';
+import { parseHarnessStop } from '@goondocks/myco-shared/run-text';
 
 import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -150,7 +150,7 @@ export async function handleWorkerEnd(env: ServerEnv, ctx: DeploymentContext): P
     const outcome = await endLeasedRun(env, { principal: ctx.worker, now: ctx.now, clock: ctx.clock }, {
       ...run, status, ...parseWorkerAccounting(asked), error: typeof asked.error === 'string' ? asked.error : null,
       refusal: parseProfileRefusal(asked.refusal),
-      repositoryFailure: parseRepositoryFailure(asked.repositoryFailure),
+      repositoryFailure: asked.repositoryFailure,
       harnessStop: parseHarnessStop(asked.harnessStop),
     });
     return ok({ persisted: true, ...outcome });

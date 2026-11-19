@@ -1,3 +1,4 @@
+import { isInterruptedRunSql } from './interruptions.js';
 /**
  * Finished runs, counted once: one `run_finished` fact per run that finished (completed or failed) in the kept window,
  * and the `run_hour` counters, one row per hour, Project, task, runner, agent, result and error code, summing those
@@ -42,8 +43,7 @@ export type FactFilter = typeof FACT_FILTERS[number];
 const BUCKET = ['hour', 'project_id', 'task', 'runner_id', 'harness', 'result', 'error_code'] as const;
 const FACT = ['project_id', 'run_id', 'at', 'hour', 'task', 'runner_id', 'harness', 'result', 'outcome', 'error_code', 'wait_ms'] as const;
 /** A run's fact, its columns in `FACT` order, over the run row `r`. */
-const factOf = (r: string) => {
-  const result = runResultSql(r);
+const factOf = (r: string, result = runResultSql(r)) => {
   return [`${r}.project_id`, `${r}.id`, `${r}.completed_at`, hourOf(`${r}.completed_at`), `COALESCE(${r}.task,'')`, runRunnerSql(r),
     `COALESCE(${r}.harness,'')`, result, outcomeOf(result), `COALESCE(${r}.error_code,'')`, waited(r)];
 };
@@ -58,6 +58,22 @@ export function runHourTriggers(): Trigger[] {
     trigger('run_hour_insert', 'agent_runs', 'INSERT', [insertFacts(`SELECT ${factOf('NEW').join(',')} WHERE 1`)], finishedNow('NEW')),
     trigger('run_hour_count', 'run_finished', 'INSERT', [countFact]),
     trigger('run_hour_ready_mark', 'projection_catchup', 'UPDATE OF done', [MARK_RUNS], `NEW.projection='${RUN_HOUR_PROJECTION}' AND OLD.done IS NOT NEW.done`),
+  ];
+}
+
+/** Interrupted endings have their own finished result and outcome. */
+export function interruptedRunHourTriggers(): Trigger[] {
+  const eligible = (r: string) => `(${r}.${FINISHED_RUN_STATUSES} OR (${isInterruptedRunSql(r)})) AND ${r}.completed_at IS NOT NULL`;
+  const fact = (r: string) => {
+    const interrupted = isInterruptedRunSql(r);
+    const result = `CASE WHEN ${interrupted} THEN 'interrupted' ELSE ${runResultSql(r)} END`;
+    const values = factOf(r, result);
+    values[8] = `CASE WHEN ${interrupted} THEN 'interrupted' ELSE ${outcomeOf(runResultSql(r))} END`;
+    return values;
+  };
+  return [
+    trigger('run_hour_finish', 'agent_runs', 'UPDATE OF status', [insertFacts(`SELECT ${fact('NEW').join(',')} WHERE 1`)], `${eligible('NEW')} AND OLD.status NOT IN ('completed','failed','skipped')`),
+    trigger('run_hour_insert', 'agent_runs', 'INSERT', [insertFacts(`SELECT ${fact('NEW').join(',')} WHERE 1`)], eligible('NEW')),
   ];
 }
 

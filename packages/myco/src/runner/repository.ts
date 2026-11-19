@@ -13,14 +13,14 @@ export function digestListing(digests: readonly CheckoutFileDigest[]): string {
 export class RepositoryAlreadyCurrent extends Error {}
 
 /** Worker checkout task, Git executable, digest listing and optional knowledge cache. */
-export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string; task?: string }
+export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string; task?: string; preparationTimeoutMs?: number }
 
 /** Prepare source with credentials held only by the checkout process, and, where asked, write its digest listing beside it. */
 export async function prepareWorkerCheckout(
   spec: RepositoryCheckoutSpec, scratchDir: string, signal: AbortSignal,
   request: (input: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>, options: WorkerCheckoutOptions = {},
 ): Promise<RepositoryCheckout> {
-  const checkoutSignal = AbortSignal.any([signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
+  const checkoutSignal = AbortSignal.any([signal, AbortSignal.timeout(options.preparationTimeoutMs ?? CHECKOUT_TIMEOUT_MS)]);
   try {
     const answer = await request({}, checkoutSignal);
     const repository = answer.repository as RepositoryAccess | null | undefined;
@@ -32,7 +32,7 @@ export async function prepareWorkerCheckout(
     checkoutSignal.throwIfAborted();
     const comparison = parseRepositoryComparison(answer.comparison);
     const checkout = await prepareRepositoryCheckout({
-      url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
+      timeoutMs: options.preparationTimeoutMs, url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
       compareCommit: comparison?.commit,
       credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
       destination: join(scratchDir, RUN_REPOSITORY_DIR),
@@ -60,7 +60,7 @@ export async function prepareWorkerCheckout(
     }
     return checkout;
   } catch (error) {
-    if (checkoutSignal.aborted && !signal.aborted) throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${CHECKOUT_TIMEOUT_MS / 1000} seconds.`);
+    if (checkoutSignal.aborted && !signal.aborted) throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${(options.preparationTimeoutMs ?? CHECKOUT_TIMEOUT_MS) / 1000} seconds.`);
     throw error;
   }
 }

@@ -75,7 +75,7 @@ if (process.argv.includes('status')) process.exit(0);
 `;
 
 describe('worker repository checkout over the Deployment wire', () => {
-  for (const access of ['public', 'private', 'invalid', 'invalid-older-server'] as const) {
+  for (const access of ['public', 'private', 'invalid', 'invalid-v1-server', 'invalid-short-claim', 'invalid-older-server'] as const) {
     it(access.startsWith('invalid') ? 'refuses invalid repository credentials before launching a harness and removes scratch files (' + access + ')' : `prepares ${access} source, saves spores under the run and removes its credentials and files`, async () => {
       const source = await gitRepositoryFixture(access === 'public' ? 'public' : 'private');
       const e = sqliteEnv({ workerLogin: true });
@@ -83,7 +83,12 @@ describe('worker repository checkout over the Deployment wire', () => {
       const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
         const response = await pipeline.handleRequest(request, e.serverEnv);
-        if (access === 'invalid-older-server') response.headers.set('x-myco-features', response.headers.get('x-myco-features')!.split(',').filter(feature => feature !== 'repository-failure-v1').join(','));
+        if (access === 'invalid-older-server' || access === 'invalid-v1-server') response.headers.set('x-myco-features', response.headers.get('x-myco-features')!.split(',').filter(feature => !feature.startsWith('repository-failure-') || (access === 'invalid-v1-server' && feature === 'repository-failure-v1')).join(','));
+        if (access === 'invalid-short-claim' && new URL(request.url).pathname === '/worker/claim') {
+          const answer = await response.json() as any;
+          if (answer.claimed) answer.run.preparationTimeoutMs = 1;
+          return Response.json(answer, { status: response.status, headers: response.headers });
+        }
         return response;
       } });
       const previousPath = process.env.PATH;
@@ -132,8 +137,8 @@ describe('worker repository checkout over the Deployment wire', () => {
             expect(context.repositoryFailureCode).toBeUndefined();
             expect(context.repositoryFailureSummary).toBeUndefined();
           } else {
-            expect(context.repositoryFailureCode).toBe('access_refused');
-            expect(context.repositoryFailureSummary).toBeUndefined();
+            expect(context.repositoryFailureCode).toBe(access === 'invalid-short-claim' ? 'timed_out' : access === 'invalid-v1-server' ? 'fetch_failed' : 'access_refused');
+            expect(context.repositoryFailureSummary).toContain(access === 'invalid-short-claim' ? 'Preparation exceeded' : 'fatal:');
           }
           expect(row.context).not.toContain('revoked-fixture-read-token');
           expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 0 });

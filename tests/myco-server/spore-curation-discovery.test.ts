@@ -1,3 +1,4 @@
+import { readAttention } from '@myco-server-worker/core/attention.js';
 import { CURATION_PREVIEW_PAGES, discoverCurationPreview } from '@myco-server-worker/core/curation-preview.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { asOwnerPost, OWNER_ENV } from './helpers/owner.js';
@@ -5,7 +6,7 @@ import { expect, test } from 'bun:test';
 import { curationFixture as fixture, keepAnswer, note, scope } from './helpers/curation.js';
 import { discoverSporeClusters, CURATION_SEEDS_PER_TICK, CURATION_SEED_CAP, curationAssignment } from '@myco-server-worker/core/spore-curation.js';
 import { CURATION_MATERIAL_BYTES } from '@myco-server-worker/core/spore-curation-contract.js';
-import { endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { expireLeases, endLeasedRun } from '@myco-server-worker/core/harness.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { VECTOR_LOST_MS } from '@myco-server-worker/core/embedding/provider.js';
@@ -54,13 +55,15 @@ test('missing calibration remains unevaluated until statistics arrive, and a set
   } finally { f.sqlite.close(); }
 });
 
-test('three failed attempts close a poison group and release seeds for a new overlap', async () => {
+test('three interrupted attempts close a poison group and release seeds for a new overlap', async () => {
   const f = await fixture();
   try {
     await f.enable(); await f.add('a'); await f.add('b'); await f.discover();
     for (let attempt = 0; attempt < 3; attempt++) {
       const now = f.now + attempt * 8 * 3_600_000, run = await claimed(f, now);
-      await endLeasedRun(f.env, { principal: f.principal, now: now + 1 }, { ...scope, runId: run.id, attemptId: run.attemptId, status: 'failed', error: 'No answer.' });
+      f.sqlite.run('UPDATE agent_runs SET lease_expires_at=? WHERE id=?', [now + 1, run.id]);
+      await expireLeases(f.env, now + 1);
+      expect((await readAttention(f.env, now + 1)).items.filter(item => item.kind === 'outcome_failed')).toMatchObject(attempt < 2 ? [] : [{ task: 'curate-spores', runId: run.id }]);
       await discoverSporeClusters(f.env, now + 2);
     }
     expect(f.sqlite.query('SELECT decision,reason FROM spore_curation_work').get()).toEqual({ decision: 'failed', reason: 'Curation stopped after 3 attempts without a decision' });

@@ -1,3 +1,4 @@
+import { interruptionWords } from '@goondocks/myco-shared/run-control';
 /**
  * Today's words: every sentence the page shows, built from the numbers the
  * server answers. Nothing here names a mechanism or shows an id; a run reads
@@ -204,6 +205,7 @@ export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'mach
 
 /** The words of one "Needs you" item. `projectName` names a Project by id, or null when the dashboard does not know it. */
 export interface NeedsYouWords {
+  retryTask?: { projectId: string; task: string };
   title: string;
   detail: string;
   action: { label: string; to: string } | null;
@@ -221,8 +223,9 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
   switch (item.kind) {
     case 'repository_preparation_failed':
       return {
+        retryTask: { projectId: item.projectId, task: item.task },
         title: `Repository preparation keeps failing in ${projectName(item.projectId) ?? 'a project'}`,
-        detail: `${runErrorWords('repository_unprepared', null, item.failure)} Scheduled retries are slowed down.${item.retryAt > now ? ` Next retry ${when(item.retryAt, now)}.` : ' Another retry is due.'}`,
+        detail: `${runErrorWords('repository_unprepared', null, item.failure)}${item.backoff ? ' Scheduled retries are slowed down.' : ''}${item.retryAt > now ? ` Next retry in ${retryIn(item.retryAt, now)}.` : ' Another retry is due.'}`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
       };
     case 'repository_missing':
@@ -237,7 +240,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     case 'outcome_failed':
       return {
         title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
-        detail: `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
+        detail: item.interruptionMachine !== undefined ? `${inProject(item.projectId)} ${interruptionWords('run_interrupted_repeated', item.interruptionMachine)}` : `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
       };
     case 'runs_without_audit':
@@ -471,4 +474,11 @@ export function harnessHealthWords(fact: MachineHarnessHealth): string {
   if (fact.state === 'held_elsewhere') return harnessToolsElsewhere(harness, machine, fact.toolsDeployment);
   if (fact.state === 'ready') return `${harness}'s Myco tools on ${machine} are set up`;
   return `${harness} on ${machine}: ${fact.action!}`;
+}
+
+/** The remaining retry delay in the largest whole reader unit. */
+function retryIn(at: number, now: number): string {
+  const delay = at - now;
+  const [unit, noun] = delay >= DAY ? [DAY, 'day'] : delay >= HOUR ? [HOUR, 'hour'] : [MINUTE, 'minute'];
+  return count(Math.max(1, Math.ceil(delay / unit)), noun);
 }
