@@ -115,13 +115,11 @@ describe('provisioned harness health', () => {
   });
 
   it('needs nobody for a former machine whose credentials lapsed, until it is in contact again', async () => {
-    const r = await rig();
+    const r = await rig(), lapsed = NOW + MEMBER_TOKEN_TTL_MS, held = async (at: number) => (await r.attention(at)).map((item) => [item.machineId, item.kind]);
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Approve Codex in system settings.')] }, NOW);
-    expect((await r.attention()).map((item) => item.machineId)).toEqual(['machine_1']);
-    const lapsed = NOW + MEMBER_TOKEN_TTL_MS;
-    expect(await r.attention(lapsed)).toEqual([]);
+    const [current, former] = [await held(NOW), await held(lapsed)];
     await issueMemberToken(r.fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, lapsed);
-    expect(await r.attention(lapsed)).toEqual([expect.objectContaining({ kind: 'harness_needs_repair', machineId: 'machine_1', state: 'trust_required' })]);
+    expect({ current, former, again: await held(lapsed) }).toEqual({ current: [['machine_1', 'harness_needs_repair']], former: [], again: [['machine_1', 'harness_needs_repair']] });
   });
 
   for (const settled of [

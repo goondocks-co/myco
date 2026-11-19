@@ -440,8 +440,6 @@ describe('the session page a run reads', () => {
     }
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at)
                 VALUES ('proj_1', 'live', 'm1', 'tok_1', ?, ?, ?)`, [NOW, NOW, NOW]);
-    // Each holds a prompt, as every listed session does.
-    sqlite.run(`INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) SELECT project_id, session_id, 'live', 1, 1, 1, 1 FROM sessions`);
 
     const small = (await call(harness.token, 'myco_run_sessions', { op: 'list', limit: 2 }) as any).result.sessions;
     expect(small.length).toBe(2);
@@ -463,8 +461,6 @@ describe('the session page a run reads', () => {
       sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, started_at, ended_at)
                   VALUES ('proj_1', ?, 'm1', 'tok_1', ?, ?, ?, ?)`, [`c${i}`, NOW - 5_000 + i, NOW, NOW - 5_000 + i, NOW]);
     }
-    // Each holds a prompt, as every listed session does.
-    sqlite.run(`INSERT OR IGNORE INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) SELECT project_id, session_id, 'live', 1, 1, 1, 1 FROM sessions`);
     const served = (await call(harness.token, 'myco_run_sessions', { op: 'list', limit: 9999 }) as any).result.sessions;
     expect(served.length).toBe(cap);
   });

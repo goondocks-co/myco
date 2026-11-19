@@ -26,7 +26,7 @@ import type { ProjectSet } from '../read/scope.js';
 import { decodeSessionsAcrossCursor, PROJECT_CURSOR_REFUSAL, SESSIONS_ACROSS_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { MAX_PAGE, OFFSET_REFUSAL } from './intelligence.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
-import { sessionQuietBefore } from '../core/titling.js';
+import { sessionQuietBefore } from '../core/session-quiet.js';
 
 const clampLimit = (raw: string | null): number => {
   const n = raw === null ? NaN : Number(raw);

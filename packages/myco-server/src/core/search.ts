@@ -14,6 +14,7 @@ import {
 } from './search-query.js';
 import { entryKey, matchingPlanDocuments, rankWindow, type KindWindow, type RankedEntry, type RankedWindow } from './search-ranking.js';
 import { pageOfHits, SEARCH_PAGE_BATCH, type PageInput } from './search-hits.js';
+import { sessionQuietBefore } from './session-quiet.js';
 
 /**
  * The one search operation, for HTTP, MCP, curation and near-match. A relevance search ranks the newest matches of each
@@ -97,7 +98,8 @@ async function wordSearchPage(search: WordSearch): Promise<WordAnswer> {
   const binding = searchBinding(search.reach, request);
   const cursor = request.cursor === null ? null : decodeCursor(request.cursor, binding);
   if (kinds.length === 0 || projects.length === 0) return empty;
-  const walk: Walk = { ...search, binding, input: (scores) => ({ db: env.db, projects, request, scores }) };
+  const quietBefore = await sessionQuietBefore(env, now);
+  const walk: Walk = { ...search, binding, input: (scores) => ({ db: env.db, projects, request, scores, quietBefore }) };
   const input = walk.input;
   if (request.order === 'time') return timePage(walk, kinds, cursor?.o === 't' ? cursor : null);
   if (cursor?.o === 't') throw new SearchRefused('cursor_foreign', 'cursor belongs to a search by time: send it with order=time, or send none for the first page');

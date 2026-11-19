@@ -12,7 +12,7 @@ import { listCatalogTurns } from '../../read/document-catalog.js';
 import { decodeCursor } from '../../read/scope.js';
 import { PROMPT_ORIGINS } from '../../ingest/kinds.js';
 import { getReleaseStatus } from '../../core/provenance.js';
-import { sessionQuietBefore } from '../../core/titling.js';
+import { sessionQuietBefore } from '../../core/session-quiet.js';
 import { plans_getPlan as getPlan } from '../../read/catalog/plans.js';
 import {
   sessions_getSession as getSession,

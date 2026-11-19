@@ -69,7 +69,7 @@ interface sessions_SessionRow {
    * sending anything. False for a read given no instant to judge by.
    */
   working: boolean;
-  /** Whether the session is live: heard from within the idle close with no end recorded (`sessionLiveSql`). False for a read given no quiet instant. */
+  /** Whether the session is live: heard from within the idle close with no end recorded (`presentedLive`). False for a read given no quiet instant. */
   live: boolean;
   /** When a live session stops being live unless it sends more; null when it is not live. */
   liveUntil: number | null;
@@ -254,10 +254,14 @@ function sessions_activityWindow(opts: sessions_SessionFilters): boolean {
   return true;
 }
 
-/** An activity window over open sessions opens no earlier than the quiet instant: a session quiet before it is not open. */
+/**
+ * Open sessions are read through their receipts: a live session was heard from after the quiet instant, so an activity
+ * window opening there, or later, lists exactly the open sessions however much history the Project holds. A window of
+ * starts with its own start instant keeps that meaning.
+ */
 function sessions_openWindow<T extends sessions_SessionFilters>(opts: T): T {
-  if (opts.window !== 'activity' || opts.state !== 'open' || opts.quietBefore === undefined) return opts;
-  return { ...opts, since: Math.max(opts.since ?? opts.quietBefore + 1, opts.quietBefore + 1) };
+  if (opts.state !== 'open' || opts.quietBefore === undefined || (opts.window !== 'activity' && opts.since !== undefined)) return opts;
+  return { ...opts, window: 'activity', since: Math.max(opts.since ?? opts.quietBefore + 1, opts.quietBefore + 1) };
 }
 
 /**

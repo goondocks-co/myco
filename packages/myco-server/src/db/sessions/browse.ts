@@ -2,7 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { sessionMaterialReadySql } from './material.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
-import { occurredAt, presentedEndedAt, presentedStartedAt } from '../session-dates.js';
+import { occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
 /** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
@@ -50,23 +50,6 @@ export const WORKING_CAP_MS = 3 * 60 * 60 * 1000;
 
 const LIVE_SESSION = notTombstonedSql('s');
 
-/**
- * Whether a session is live, as 0 or 1: heard from after `quiet` (the instant `sessionQuietBefore` answers), with no end
- * recorded or a turn opened after it. A session quiet since then reads as ended, whether or not its harness sent an end.
- * With `quiet` null, no session reads as live.
- */
-export const sessionLiveSql = (quiet: string): string =>
-  `(${quiet} IS NOT NULL AND s.last_received_at > ${quiet} AND (${PRESENTED_ENDED_AT} IS NULL OR COALESCE(s.working_since > ${PRESENTED_ENDED_AT}, 0)))`;
-
-/**
- * A session known to hold no prompt and no tool call, such as a run refused before its first prompt: no turn is open,
- * the publisher has caught up with it (`sessionMaterialReadySql`), no document of it is being converted, and none counts
- * a prompt or a tool call. Such a session is listed nowhere; one whose capture is still being published is not known empty.
- */
-const KNOWN_EMPTY = `(s.working_since IS NULL AND NOT EXISTS (SELECT 1 FROM session_documents held
-  WHERE held.project_id = s.project_id AND held.session_id = s.session_id AND (held.state <> 'live' OR held.prompts > 0 OR held.tool_calls > 0))
-  AND ${sessionMaterialReadySql('s')})`;
-
 /** Every primary and sibling transcript is fully parsed at full fidelity. */
 const FULL_FIDELITY = `${sessionMaterialReadySql('s')} AND NOT EXISTS (SELECT 1 FROM transcripts t
   WHERE t.project_id = s.project_id AND t.session_id = s.session_id
@@ -79,7 +62,7 @@ interface SessionBrowseFilters {
   agent?: string;
   window?: 'start' | 'activity';
   now?: number;
-  /** The instant `sessionQuietBefore` answers for `now`: given it, each row says whether it is live, and `open` and `ended` mean live and not. */
+  /** The instant `sessionQuietBefore` answers for `now`: given it, each row says whether it is live (`presentedLive`), and `open` and `ended` mean live and not. */
   quietBefore?: number;
   state?: 'open' | 'ended';
   memberLabel?: string;
@@ -131,7 +114,6 @@ function variantSql(shape: Shape): string {
       : scope === 'all' ? 'EXISTS (SELECT 1 FROM projects p WHERE p.project_id = s.project_id AND p.archived_at IS NULL)'
       : "instr({projects}, ',' || s.project_id || ',') > 0",
     LIVE_SESSION,
-    `NOT ${KNOWN_EMPTY}`,
     `({fidelity} = 0 OR (${FULL_FIDELITY}))`,
     '({branch} IS NULL OR s.branch = {branch})',
     '({agent} IS NULL OR s.agent = {agent})',
@@ -139,7 +121,7 @@ function variantSql(shape: Shape): string {
     // Open and ended as the page shows them, each session under one. Given the quiet instant, open is live and ended is
     // not. Without it, open is no end recorded, and a session working again after its recorded end is open while it
     // works: the working read lists it as open, and a read of ended sessions judged at an instant leaves it out.
-    `({state} IS NULL OR CASE WHEN {quiet} IS NOT NULL THEN ({state} = 'open') = ${sessionLiveSql('{quiet}')}
+    `({state} IS NULL OR CASE WHEN {quiet} IS NOT NULL THEN ({state} = 'open') = ${presentedLive('{quiet}', 's.')}
       ELSE ({state} = 'open' AND ${window === 'working' ? '1' : `${ENDED} IS NULL`})
       OR ({state} = 'ended' AND ${ENDED} IS NOT NULL AND ({endedAfter} IS NULL
         OR COALESCE(s.working_since <= ${ENDED} OR s.working_since <= {endedAfter}, 1))) END)`,
@@ -147,8 +129,8 @@ function variantSql(shape: Shape): string {
   ];
   // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
   if (window === 'working') conditions.push('s.working_since IS NOT NULL', 's.working_since > {workingAfter}', `(${ENDED} IS NULL OR ${ENDED} < s.working_since)`);
-  // Active in the window: a receipt at or after its start, and no end recorded before it.
-  if (window === 'activity') conditions.push('s.last_received_at >= {since}', `(${ENDED} IS NULL OR ${ENDED} >= {since})`);
+  // Active in the window: a receipt at or after its start, and open (`presentedOpen`) or ended no earlier than it.
+  if (window === 'activity') conditions.push('s.last_received_at >= {since}', `(${ENDED} >= {since} OR ${presentedOpen('s.')})`);
   // A window of starts bounds the instant the page is ordered by, so the filter admits what the order shows.
   if (window === 'start' && since) conditions.push(`${O} >= {since}`);
   if (until) conditions.push(`${O} < {until}`);
@@ -156,7 +138,7 @@ function variantSql(shape: Shape): string {
     ? `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND (s.project_id < {afterProject} OR (s.project_id = {afterProject} AND s.session_id < {afterId}))))`
     : `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND s.session_id < {afterId}))`);
   const index = window === 'activity' ? SESSIONS_ACTIVE_INDEX : window === 'working' ? SESSIONS_WORKING_INDEX : across ? SESSIONS_ACROSS_INDEX : '';
-  return `SELECT s.project_id, ${SESSION_COLUMNS}, ${sessionLiveSql('{quiet}')} AS live ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
+  return `SELECT s.project_id, ${SESSION_COLUMNS}, ${presentedLive('{quiet}', 's.')} AS live ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
     ORDER BY ${O} DESC${across ? ', s.project_id DESC' : ''}, s.session_id DESC LIMIT {limit}`;
 }
 

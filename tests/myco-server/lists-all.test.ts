@@ -19,11 +19,9 @@ async function harness() {
   const { sqlite } = fixture;
   sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_3', 'c', 0)`);
   sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, ?)`, [NOW]);
-  const session = (project: string, id: string, at: number, agent: string | null = 'claude-code') => {
+  const session = (project: string, id: string, at: number, agent: string | null = 'claude-code') =>
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at)
                 VALUES (?, ?, 'm1', 'tok_1', ?, ?, ?, ?)`, [project, id, at, at, agent, at]);
-    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) VALUES (?, ?, 'live', 1, 1, 1, ?)`, [project, id, at]);
-  };
   const spore = (project: string, id: string, at: number, type = 'gotcha') =>
     sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) VALUES (?, ?, 'agent_1', ?, 'active', ?, ?)`, [project, id, type, `body of ${id}`, at]);
   const plan = (project: string, key: string, at: number, status = 'active') =>
@@ -46,7 +44,7 @@ describe('the session list across Projects', () => {
     const { status, body } = await get('/api/sessions');
     expect(status).toBe(200);
     expect(body.rows.map((r: any) => [r.projectId, r.sessionId])).toEqual([['proj_2', 's_b'], ['proj_1', 's_a']]);
-    expect(body.rows[0]).toMatchObject({ promptCount: 1, toolCallCount: 0, agent: 'claude-code' });
+    expect(body.rows[0]).toMatchObject({ promptCount: 0, toolCallCount: 0, agent: 'claude-code' });
   });
 
   it('covers exactly the Projects named, archived or not, and answers 404 for a name that is not a Project', async () => {
@@ -251,11 +249,9 @@ describe('an activity window: the sessions active in it, however long ago they s
   async function activity() {
     const h = await harness();
     /** A session that started at `start`, last received an event at `last`, and ended at `end` when it has. */
-    const ran = (project: string, id: string, start: number, last: number, end: number | null = null) => {
+    const ran = (project: string, id: string, start: number, last: number, end: number | null = null) =>
       h.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at, ended_at)
                     VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?)`, [project, id, start, last, start, end]);
-      h.sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) VALUES (?, ?, 'live', 1, 1, 1, ?)`, [project, id, start]);
-    };
     const ids = async (path: string) => {
       const { status, body } = await h.get(path);
       expect({ path, status }).toEqual({ path, status: 200 });

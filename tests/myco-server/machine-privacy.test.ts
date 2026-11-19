@@ -31,7 +31,6 @@ function rig() {
   for (const [id, machine, token] of [['s_ada', 'ada_box', 'mt_ada'], ['s_lin', 'lin_box', 'mt_lin']] as const) {
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, started_at)
                 VALUES ('proj_1', ?, ?, ?, ?, ?, 'claude-code', ?)`, [id, machine, token, now - 5000, now - 5000, now - 5000]);
-    sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, prompts, user_prompts, updated_at) VALUES ('proj_1', ?, 'live', 1, 1, 1, ?)`, [id, now - 5000]);
   }
   sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, 0)`);
   sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, queued_at, leased_by)

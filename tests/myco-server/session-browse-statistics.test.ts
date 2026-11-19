@@ -1,15 +1,14 @@
 /**
  * The session list across Projects, what a Project holds, and the repositories machines could not capture: paging that
  * never skips or repeats a row, counters that agree with the rows they summarise, `building` instead of a false zero,
- * and reads that do not grow with the sessions a Deployment holds.
+ * and the live state every list reads. What these reads cost as history grows is `polled-reads-cost.test.ts`.
  */
 import { describe, expect, it } from 'bun:test';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import { decodeUncapturedCursor, getUncaptured, listUncaptured } from '@myco-server-worker/db/sessions/uncaptured-roots.js';
 import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
-import { sessionQuietBefore } from '@myco-server-worker/core/titling.js';
+import { sessionQuietBefore } from '@myco-server-worker/core/session-quiet.js';
 import {
   sessions_getSession as getSession,
   sessions_listSessionSummaries as listSessionSummaries,
@@ -17,9 +16,7 @@ import {
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/constants.js';
 import { issueMemberToken } from './helpers/member-token.js';
-import { measuredStore } from './helpers/read-budget.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -40,9 +37,7 @@ function rig() {
     e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content, content_hash, status, created_at, updated_at, token_id, received_at) VALUES (?, ?, ?, 'ep', 'm1', '- [ ] a', 'h', 'active', 1, 1, 't', 1)`, [project, key, session]);
   const tombstone = (project: string, session: string) =>
     e.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, ?, 'mem_1')`, [project, session, NOW]);
-  /** A session whose document holds a prompt: one the session list shows. */
-  const held = (project: string, id: string, over: Parameters<typeof session>[2] = {}) => { session(project, id, over); document(project, id, 1, 0); };
-  return { ...e, session, held, document, attachment, plan, tombstone };
+  return { ...e, session, document, attachment, plan, tombstone };
 }
 
 async function catchUp(db: Parameters<typeof catchUpProjections>[0]): Promise<void> {
@@ -52,8 +47,8 @@ async function catchUp(db: Parameters<typeof catchUpProjections>[0]): Promise<vo
 describe('the session list across Projects', () => {
   it('orders by the instant, the Project and the id, and pages one row at a time without skipping or repeating a tie', async () => {
     const r = rig();
-    for (const project of ['proj_1', 'proj_2']) for (const id of ['a', 'b']) r.held(project, id);
-    r.held('proj_1', 'older', { at: NOW - 10 });
+    for (const project of ['proj_1', 'proj_2']) for (const id of ['a', 'b']) r.session(project, id);
+    r.session('proj_1', 'older', { at: NOW - 10 });
     const seen: string[] = [];
     let cursor: string | undefined;
     do {
@@ -66,10 +61,10 @@ describe('the session list across Projects', () => {
 
   it('never skips or repeats a row when sessions arrive between two pages', async () => {
     const r = rig();
-    for (const id of ['a', 'b', 'c']) r.held('proj_1', id, { at: NOW - 100 });
+    for (const id of ['a', 'b', 'c']) r.session('proj_1', id, { at: NOW - 100 });
     const first = await listAcross(r.db, { all: true }, { limit: 2 }, NOW);
-    r.held('proj_2', 'newer', { at: NOW });
-    r.held('proj_2', 'same-instant', { at: NOW - 100 });
+    r.session('proj_2', 'newer', { at: NOW });
+    r.session('proj_2', 'same-instant', { at: NOW - 100 });
     const rest = await listAcross(r.db, { all: true }, { limit: 50, cursor: first.cursor! }, NOW);
     expect(first.rows.map(row => row.sessionId)).toEqual(['c', 'b']);
     expect(rest.rows.map(row => row.sessionId)).toEqual(['a']);
@@ -77,17 +72,17 @@ describe('the session list across Projects', () => {
 
   it('reads nothing for a cursor from before the list ordered by the Project first', async () => {
     const r = rig();
-    r.held('proj_1', 'a');
+    r.session('proj_1', 'a');
     expect(await listAcross(r.db, { all: true }, { cursor: `p1:${NOW}:proj_1:a` }, NOW)).toEqual({ rows: [], cursor: null });
   });
 
   it('keeps what each view always showed: no deleted session, archived Projects out of the all-Projects view, imported sessions in, a named Project in', async () => {
     const r = rig();
-    r.held('proj_1', 'live');
-    r.held('proj_1', 'deleted');
+    r.session('proj_1', 'live');
+    r.session('proj_1', 'deleted');
     r.tombstone('proj_1', 'deleted');
-    r.held('proj_1', 'imported', { occurredAt: NOW - DAY });
-    r.held('proj_2', 'archived');
+    r.session('proj_1', 'imported', { occurredAt: NOW - DAY });
+    r.session('proj_2', 'archived');
     await archiveProject(r.db, 'proj_2', 'mem_1', NOW);
     const ids = (rows: readonly { sessionId: string }[]) => rows.map(row => row.sessionId);
     expect(ids((await listAcross(r.db, { all: true }, {}, NOW)).rows)).toEqual(['live', 'imported']);
@@ -95,18 +90,19 @@ describe('the session list across Projects', () => {
     expect(ids((await listSessionSummaries(r.db, { projectId: 'proj_1' }, {}, NOW)).rows)).toEqual(['live', 'imported']);
   });
 
-  it('reads a session as live while heard from within the idle close, as ended once quiet past it with no end sent, and lists none holding no prompt or tool call', async () => {
+  it('reads a session as live while heard from within the idle close or resumed after its end, as ended once quiet past it with no end sent, alike in every list', async () => {
     const r = rig();
     const quietBefore = await sessionQuietBefore(r.serverEnv, NOW);
-    r.held('proj_1', 'talking', { at: NOW - MINUTE, endedAt: null });
-    r.held('proj_1', 'ended', { at: NOW - MINUTE });
-    r.held('proj_1', 'quiet', { at: quietBefore, endedAt: null });
-    for (const id of ['refused', 'empty']) r.session('proj_1', id, { at: NOW - MINUTE, endedAt: null });
-    r.document('proj_1', 'empty', 0, 0);
+    r.session('proj_1', 'talking', { at: NOW - MINUTE, endedAt: null });
+    r.session('proj_1', 'ended', { at: NOW - MINUTE });
+    r.session('proj_1', 'quiet', { at: quietBefore, endedAt: null });
+    r.session('proj_1', 'resumed', { at: NOW - 2 * MINUTE, endedAt: NOW - DAY });
+    r.sqlite.run(`UPDATE sessions SET started_at = ?, working_since = ? WHERE session_id = 'resumed'`, [NOW - 2 * DAY, NOW - 4 * 60 * MINUTE]);
     const read = async (state?: 'open' | 'ended') => (await listSessionSummaries(r.db, { projectId: 'proj_1' }, { state, quietBefore }, NOW)).rows.map(row => [row.sessionId, row.live, row.liveUntil]);
-    const talking = ['talking', true, NOW - MINUTE + (NOW - quietBefore)], ended = [['ended', false, null], ['quiet', false, null]];
-    expect({ all: await read(), open: await read('open'), ended: await read('ended') }).toEqual({ all: [talking, ...ended], open: [talking], ended });
-    expect((await listAcross(r.db, { all: true }, { state: 'open', window: 'activity', quietBefore }, NOW)).rows.map(row => row.sessionId)).toEqual(['talking']);
+    const open = [['talking', true, 2 * NOW - MINUTE - quietBefore], ['resumed', true, 2 * NOW - 2 * MINUTE - quietBefore]], ended = [['ended', false, null], ['quiet', false, null]];
+    expect({ all: await read(), open: await read('open'), ended: await read('ended') }).toEqual({ all: [open[0], ended[0], ended[1], open[1]], open, ended });
+    const across = async (filters: { state?: 'open'; since?: number }) => (await listAcross(r.db, { all: true }, { ...filters, window: 'activity', quietBefore }, NOW)).rows.map(row => row.sessionId);
+    expect({ liveNow: await across({ state: 'open' }), today: await across({ since: NOW - 60 * MINUTE }) }).toEqual({ liveNow: ['talking', 'resumed'], today: ['talking', 'ended', 'resumed'] });
     expect(await getSession(r.db, { projectId: 'proj_1' }, 'quiet', NOW, quietBefore)).toMatchObject({ endedAt: null, live: false, liveUntil: null });
   });
 });
@@ -181,32 +177,6 @@ describe('what a Project holds', () => {
     await catchUp(r.db);
     expect(await projectStatistics(r.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', sessions: 121, openSessions: 4, prompts: 130, toolCalls: 260, attachments: 1 });
   });
-
-  it('reads the same rows for one Project however many sessions it holds, on the store the Deployment runs on', async () => {
-    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
-    try {
-      const d1 = await mf.getD1Database('DB');
-      const seed = async (project: string, size: number, at: number) => {
-        await d1.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
-        const ids = JSON.stringify(Array.from({ length: size }, (_, n) => n));
-        await d1.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,agent,ended_at)
-          SELECT ?1,'s'||value,'m1','tok_1',?2,?2,'claude-code',?2 FROM json_each(?3)`).bind(project, at, ids).run();
-        await d1.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,user_prompts,prompts,tool_calls,updated_at) SELECT ?1,'s'||value,'live',1,1,1,1,1 FROM json_each(?2)`).bind(project, ids).run();
-      };
-      const measured = measuredStore(d1);
-      const cost = async (read: () => Promise<unknown>) => { measured.reset(); await read(); return measured.reads(); };
-      const stats = (project: string) => cost(() => projectStatistics(measured.db, project, NOW));
-      const page = (project: string) => cost(() => listSessionSummaries(measured.db, { projectId: project }, { limit: 50 }, NOW));
-      const across = () => cost(() => listAcross(measured.db, { all: true }, { limit: 50 }, NOW));
-      await seed('proj_small', 100, NOW);
-      await seed('proj_zzz', 1, NOW);
-      const acrossBefore = await across();
-      await seed('proj_large', 3000, NOW - DAY);
-      expect(await stats('proj_large')).toBe(await stats('proj_small'));
-      expect(await page('proj_large')).toBe(await page('proj_small'));
-      expect(await across()).toBe(acrossBefore);
-    } finally { await mf.dispose(); }
-  }, 120_000);
 });
 
 describe('the repositories machines could not capture', () => {

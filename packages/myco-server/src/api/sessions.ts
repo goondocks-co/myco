@@ -36,7 +36,8 @@ import { documentPromptTools, documentTurnCollection, documentTurnDetail, docume
 import { documentSessionActivity } from '../content/session-activity.js';
 import { sessionFiles } from '../read/session-files.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
-import { sessionQuietBefore, titleSession } from '../core/titling.js';
+import { titleSession } from '../core/titling.js';
+import { sessionQuietBefore } from '../core/session-quiet.js';
 import { changePlanStatus } from '../core/plans.js';
 import {
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
