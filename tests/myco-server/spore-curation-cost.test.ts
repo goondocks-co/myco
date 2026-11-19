@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CURATION_CLUSTER_CAP, CURATION_NEW_NOTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { undoSporeCuration,sporeCurationUndo } from '@myco-server-worker/core/spore-curation-undo.js';
 import { consolidateSpores,resolveSpore } from '@myco-server-worker/db/spores/lifecycle.js';
@@ -15,6 +16,7 @@ async function setup(db: RelationalStore): Promise<void> {
   await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_a','A',1)").run();
   await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('curator','Curator','built-in',1,1)").run();
   await db.prepare("INSERT INTO members(id,label,role,created_at) VALUES('admin','Ada','admin',1)").run();
+  await settingsWriter(db).setCapability(project, 'spore_curation', true, 'admin', 1);
   await db.prepare("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES(?1,'User','built-in',1,1)").bind(USER_AGENT_ID).run();
   for (const key of ['0','1']) {
     await db.prepare("INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES('proj_a',?1,'curator','curate-spores','running',1)").bind(key).run();
