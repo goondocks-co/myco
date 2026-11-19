@@ -53,6 +53,11 @@ source-build: prepare-build
 source-install: deps
 	node --import tsx scripts/source-install.ts
 
+.PHONY: source-deploy
+source-deploy: export MYCO_SOURCE_DEPLOY_COMMIT = $(COMMIT)
+source-deploy:
+	@node --import tsx scripts/source-deploy.ts
+
 worktree-sweep: deps
 	@node scripts/worktree-sweep.mjs $(ARGS)
 

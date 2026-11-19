@@ -61,6 +61,8 @@ Myco captures project memory and serves it back through context injection, MCP t
 
 ## Quality Gates
 
+- When changing database operations, schema steps, dashboard text, or shared validation inputs, read [development rules](docs/development/contributor-rules.md) before editing and reporting completion.
+
 - Run `npm run check:pr` before pushing.
 - For local test loops, target the smallest relevant scope first: `npm test -- <test-file-or-dir>` or `npm run test:debug -- <test-file-or-dir>`. Do not repeatedly pipe the full `npm test` suite through `grep` just to find one failure.
 - Before finishing a feature, run `make build` (it runs the checks too — no need to run `make check` separately).
