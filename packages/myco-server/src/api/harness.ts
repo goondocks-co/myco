@@ -23,9 +23,11 @@ import {
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '../core/run-deadline.js';
 import { RUNTIME_SERVED_TASKS } from '../core/worker-selection.js';
 import { type ActorCeiling } from '../core/runs.js';
+import { discoverCurationPreview, InvalidCurationContinuation } from '../core/curation-preview.js';
 import { deploymentTaskCeilingWindow } from '../db/runs/claim.js';
 import { memberRunsPerDay } from '../core/schedule-rules.js';
 import { isAdmin } from '../auth/roles.js';
+import { curationDailyLimit } from '../core/settings.js';
 import { emit } from '../telemetry.js';
 import { CURATION_TASK, runTimeoutForTask } from '../core/task-catalogue.js';
 import { buildTaskInput } from '../core/task-inputs.js';
@@ -37,7 +39,7 @@ const DAY_MS = 86_400_000;
 
 /**
  * The ceiling on a member who is not an admin: `memberRunsPerDay` runs of the task in a rolling day, across every
- * Project, counted by who started them. An admin starts runs uncapped.
+ * Project, counted by who started them. Curation previews have a separate per-admin, per-Project allowance.
  */
 async function memberCeiling(env: ServerEnv, ctx: OwnerContext, task: string): Promise<ActorCeiling | undefined> {
   if (isAdmin(ctx.member.role)) return undefined;
@@ -52,7 +54,7 @@ async function allowanceOf(env: ServerEnv, ceiling: ActorCeiling): Promise<Membe
   return { perDay: ceiling.perDay, used: window.used, resetsAt: window.pivotAt === null ? null : window.pivotAt + DAY_MS };
 }
 
-/** The caller's day of runs of `task`, as the dispatch would count it; null for an admin, who starts runs uncapped. */
+/** The caller's day of runs of `task`, as the dispatch would count it; null for an uncapped task. */
 export async function memberAllowance(env: ServerEnv, ctx: OwnerContext, task: string): Promise<MemberAllowance | null> {
   const ceiling = await memberCeiling(env, ctx, task);
   return ceiling === undefined ? null : allowanceOf(env, ceiling);
@@ -60,6 +62,8 @@ export async function memberAllowance(env: ServerEnv, ctx: OwnerContext, task: s
 
 /** A member's day of runs of the task is spent: 429 naming the ceiling and when the oldest run in it leaves the window. */
 async function dailyLimit(env: ServerEnv, ceiling: ActorCeiling, now: number): Promise<Response> {
+  if (ceiling.task === CURATION_TASK) return Response.json({ error: 'daily_limit', task: ceiling.task, perDay: ceiling.perDay, resetsAt: null,
+    message: `The preview allowance of ${ceiling.perDay} runs for this administrator and Project in 24 hours is spent. Try again after an earlier preview leaves that window.` }, { status: 429 });
   const { resetsAt } = await allowanceOf(env, ceiling);
   return Response.json({ error: 'daily_limit', task: ceiling.task, perDay: ceiling.perDay, resetsAt }, {
     status: 429,
@@ -90,24 +94,39 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   }
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
-  if (task === CURATION_TASK && (!dryRun || !isAdmin(ctx.member.role))) return badRequest('curate-spores hand starts require an administrator and dryRun:true; normal groups are pulled by runners');
+  if (task === CURATION_TASK && !isAdmin(ctx.member.role)) return Response.json({ error: dryRun ? 'curation_preview_needs_admin' : 'curation_hand_start_needs_admin',
+    message: dryRun ? 'Only an administrator may preview curation.' : 'Members cannot start curation by hand; it runs automatically when an administrator enables it for the Project.' }, { status: 403 });
   const params = task === CURATION_TASK && typeof body.group === 'string' ? { group: body.group } : undefined;
   // A fresh run is one over input that has not moved; only an admin spends on that.
   if (fresh && !isAdmin(ctx.member.role)) return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
-  const prepared = await prepareDispatch(env, task, projectId);
+  const prepared = await prepareDispatch(env, task, projectId, { curationPreview: dryRun && isAdmin(ctx.member.role) });
   if (!prepared.ok) return refuseAdmission(prepared.refusal, prepared.capability);
-  const ceiling = await memberCeiling(env, ctx, task);
+  if (task === CURATION_TASK && !dryRun) return badRequest('curate-spores hand starts require an administrator and dryRun:true; normal groups are pulled by runners');
+  const ceiling: ActorCeiling | undefined = task === CURATION_TASK
+    ? { actor: ctx.member.id, task, projectId, perDay: await curationDailyLimit(env.db, projectId), sinceMs: ctx.now - DAY_MS }
+    : await memberCeiling(env, ctx, task);
+  let preview;
+  try { preview = task === CURATION_TASK && dryRun ? await discoverCurationPreview(env, { projectId, now: ctx.now, group: params?.group, continuation: body.continuation }) : null; }
+  catch (error) {
+    if (!(error instanceof InvalidCurationContinuation)) throw error;
+    return Response.json({ error: 'invalid_curation_continuation', message: error.message }, { status: 400 });
+  }
   // Unchanged input returns without dispatching a run.
-  const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh, params });
+  const built = preview === null ? await buildTaskInput(env, task, projectId, ctx.now, { fresh, params, dryRun })
+    : preview.input === null ? null : { unchanged: false as const, input: preview.input };
+  if (preview !== null && built === null) return ok({ outcome: preview.outcome, continuation: preview.continuation,
+    message: preview.outcome === 'vectors_pending' ? 'Every note checked is waiting for similarity data. No preview run was started.'
+      : 'No qualifying curation group was found within the page budget; no preview run was started.' });
   if (built !== null && built.unchanged) {
     emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
     return ok({ outcome: 'unchanged' });
   }
   const input = built === null || built.unchanged
     ? {}
-    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
+    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts, context: built.input.context };
   try {
-    return ok(await dispatchPrepared(env, prepared.prepared, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, params, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } }));
+    const dispatched = await dispatchPrepared(env, prepared.prepared, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, params, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } });
+    return ok({ ...dispatched, ...(preview === null ? {} : { outcome: preview.outcome, continuation: preview.continuation }) });
   } catch (error) {
     if (error instanceof CeilingReached && ceiling !== undefined) return dailyLimit(env, ceiling, ctx.now);
     if (error instanceof DispatchAdmissionRefused) return refuseAdmission(error.refusal, error.capability);

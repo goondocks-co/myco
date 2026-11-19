@@ -53,17 +53,20 @@ export interface ReportInsert {
 
 const reportInsert = shapedStatements<Statement<BindValue[], { id: number }, 'write'>>();
 
-/** Record one report against a run this Project holds; an unknown run or an unregistered agent writes nothing and answers false — a foreign-key throw would read as retryable, and neither condition is. */
-export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert, caller?: RunCaller): Promise<boolean> {
+/** Bind one report to an existing Project run and registered agent. */
+export function reportInsertWrite(scope: ReadScope, report: ReportInsert, caller?: RunCaller) {
   const guard = runCallerGuard(caller);
   const statement = reportInsert(caller === undefined ? 'Any' : 'Caller', shape => write<BindValue[], { id: number }>({ name: `runs.insertReport${shape}`, sql:
     `INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, audit, created_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?
         WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?${guard.sql})
           AND EXISTS (SELECT 1 FROM agents WHERE id = ?) RETURNING id` }));
-  const inserted = await rows(db, statement.bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.audit, report.createdAt,
-    scope.projectId, report.runId, ...guard.params, report.agentId));
-  return inserted.length === 1;
+  return statement.bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.audit, report.createdAt,
+    scope.projectId, report.runId, ...guard.params, report.agentId);
+}
+
+export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert, caller?: RunCaller): Promise<boolean> {
+  return (await rows(db, reportInsertWrite(scope, report, caller))).length === 1;
 }
 
 /**

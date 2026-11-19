@@ -17,6 +17,8 @@ import type { RunAudit } from '../../packages/myco-server/src/core/run-audit.ts'
 import type { RunOutcomeCounts, RunReadSession, RunReads } from '../../packages/myco-server/src/db/runs/reads.ts';
 import type { ReportRow } from '../../packages/myco-server/src/db/runs/evidence.ts';
 import type { CAPABILITY_OFF } from '../../packages/myco-server/src/core/harness.ts';
+import type { CurationSource } from '../../packages/myco-server/src/api/curation.ts';
+import type { CurationAnswer } from '../../packages/myco-server/src/core/spore-curation-contract.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -35,7 +37,9 @@ const SAME: [
   Same<Ui.RunStep, RunStepRow>,
   Same<Ui.RunStepPage, RunStepPage>,
   Same<Ui.RunAudit, RunAudit>,
-] = [true, true, true, true, true, true, true, true];
+  Same<Ui.CurationSource, CurationSource>,
+  Same<Ui.CurationAnswer, CurationAnswer>,
+] = [true, true, true, true, true, true, true, true, true, true];
 
 const READS: [
   Reads<RunPageRow, Ui.RunPageRow>,

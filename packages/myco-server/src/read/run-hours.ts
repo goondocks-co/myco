@@ -120,6 +120,7 @@ export const FINISHED_RUNS_PAGE = 50;
 
 /** One finished run as the page lists it, with the runner that ran it. */
 export interface FinishedRun {
+  dryRun: boolean;
   projectId: string; projectName: string | null; runId: string; task: string | null; result: RunResult; errorCode: string | null;
   harness: string | null; model: string | null; runner: { id: string; name: string | null } | null;
   queuedAt: number | null; startedAt: number | null; completedAt: number;
@@ -133,6 +134,7 @@ export async function readFinishedRuns(db: RelationalStore, set: ProjectSet, pag
   const { rows, next } = await endedRuns(db, set, page);
   return {
     rows: rows.map((row): FinishedRun => ({
+      dryRun: Number(row.dry_run) === 1,
       projectId: row.project_id, projectName: row.project_name, runId: row.id, task: named(row.task), result: row.result, errorCode: named(row.error_code),
       harness: named(row.harness), model: row.model, runner: row.runner_id === '' ? null : { id: row.runner_id, name: row.runner_name },
       queuedAt: row.queued_at, startedAt: row.started_at, completedAt: Number(row.completed_at),

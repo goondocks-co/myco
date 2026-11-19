@@ -37,6 +37,7 @@ import { documentSessionActivity } from '../content/session-activity.js';
 import { sessionFiles } from '../read/session-files.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
+import { sessionQuietBefore } from '../core/session-quiet.js';
 import { changePlanStatus } from '../core/plans.js';
 import {
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
@@ -127,7 +128,7 @@ export function sessionFilters(url: URL): SessionFilters | Response {
   };
   const window = url.searchParams.get('window');
   if (window !== null && window !== 'start' && window !== 'activity') return badRequest('window must be start or activity');
-  if (window === 'activity' && since === undefined) return badRequest('an activity window needs since');
+  if (window === 'activity' && since === undefined && state !== 'open') return badRequest('an activity window needs since, except over open sessions: pass since, or state=open');
   const q = url.searchParams.get('q');
   if (q !== null) {
     const unsupported = [...(text('member') === undefined ? [] : ['member']), ...(window === 'activity' ? ['window=activity'] : [])];
@@ -145,7 +146,7 @@ export async function handleProjectSessions(env: ServerEnv, ctx: OwnerContext): 
   if (page instanceof Response) return page;
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;
-  const listed = await listSessionSummaries(env.db, scope, { ...page, ...filters }, ctx.now);
+  const listed = await listSessionSummaries(env.db, scope, { ...page, ...filters, quietBefore: await sessionQuietBefore(env, ctx.now) }, ctx.now);
   return ok({ ...listed, rows: nameOwnMachines(listed.rows, await ownMachineNames(env.db, ctx.member.id, ctx.now)) });
 }
 
@@ -155,7 +156,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const read = await getSession(env.db, scope, sessionId, ctx.now);
+  const read = await getSession(env.db, scope, sessionId, ctx.now, await sessionQuietBefore(env, ctx.now));
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   const counters = await documentCounters(env.db, scope, sessionId);

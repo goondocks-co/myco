@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import type { ParityTarget } from '../harness.ts';
 import { mcp, putCapability, wake, type ClaimedRun, type RouteTarget } from './requests.ts';
 
-export async function offerCurationGroup(target: RouteTarget & Pick<ParityTarget, 'primeEmbedding'>): Promise<void> {
+export async function offerCurationGroup(target: RouteTarget & Pick<ParityTarget, 'primeEmbedding'>, options: { discovery?: 'automatic' | 'preview' } = {}): Promise<void> {
   const save = (content: string) => mcp(target, 'myco_spores', { op: 'save', type: 'gotcha', content, agent_line: 'When delivery stalls, retain queued capture.' });
   const text = 'When capturing turns, retain canonical identities.\nWhen delivering turns, retain pending capture until acknowledged.';
   await save(text); await save(text);
@@ -11,6 +11,7 @@ export async function offerCurationGroup(target: RouteTarget & Pick<ParityTarget
     await save((concept + ' ').repeat(40) + '\nWhen delivering ' + concept + ', retain pending capture.\nWhen capturing ' + concept + ', retain canonical ids.');
   }
   await target.primeEmbedding!(target.projectId);
+  if (options.discovery === 'preview') return;
   expect((await putCapability(target, 'spore_curation', true)).status).toBe(200);
   for (let tick = 0; tick < 4; tick++) await wake(target);
 }

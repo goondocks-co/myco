@@ -682,6 +682,7 @@
     "tests/myco-server/session-lifecycle.test.ts": 11000,
     "tests/myco-server/session-long.test.ts": 120000,
     "tests/myco-server/session-pages-api.test.ts": 3766,
+    "tests/myco-server/polled-reads-cost.test.ts": 4600,
     "tests/myco-server/session-read-cost.test.ts": 9441,
     "tests/myco-server/session-read-projections.test.ts": 3680,
     "tests/myco-server/session-resume.test.ts": 192,

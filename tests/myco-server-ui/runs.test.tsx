@@ -74,6 +74,11 @@ describe('Runs page', () => {
     expect(within(all).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners/rn_mini');
   });
 
+  it('labels a stored preview in the runs list', async () => {
+    mount('/runs', () => ({ rows: [{ ...RUN, dryRun: true, result: 'unchanged', errorCode: null }], cursor: null }));
+    expect((await screen.findByText('Preview: nothing was changed', { exact: false })).textContent).toContain('Preview: nothing was changed');
+  });
+
   it('narrows the runs to a failure group and clears the narrowing', async () => {
     const asked = mount('/runs?outcome=failed&cause=machine_unresponsive');
     const all = await screen.findByRole('region', { name: 'All runs' });

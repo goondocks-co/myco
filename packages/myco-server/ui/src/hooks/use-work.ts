@@ -2,7 +2,7 @@ import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } f
 import { fetchJson, postJson } from '../lib/api';
 import type { TodaySporePage, WorkAnswer } from '../features/today/wire';
 import type { SessionResponse } from './use-sessions';
-import type { DispatchAnswer, RunAttempt, RunCall, RunCallPage, RunDetailAnswer, RunPage, RunPageRow, RunStep, RunStepPage } from '../features/work/wire';
+import type { CurationAnswerRead, CurationContinuation, CurationPreviewAnswer, DispatchAnswer, RunAttempt, RunCall, RunCallPage, RunDetailAnswer, RunPage, RunPageRow, RunStep, RunStepPage } from '../features/work/wire';
 import { MAX_RUN_STEPS } from '@goondocks/myco-shared/worker-steps';
 import { usePaged } from './use-paged';
 import { live } from '../lib/live';
@@ -101,6 +101,30 @@ export function useDispatchTask(projectId: string) {
       void client.invalidateQueries({ queryKey: ['work'] });
       void client.invalidateQueries({ queryKey: ['runs', projectId] });
     },
+  });
+}
+
+/** Starts a curation preview in a project: from the start, or from the place a previous preview's answer handed back. */
+export function useCurationPreview(projectId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (continuation: CurationContinuation | null) => postJson<CurationPreviewAnswer>('/api/harness/dispatch',
+      { projectId, task: 'curate-spores', dryRun: true, ...(continuation === null ? {} : { continuation }) }),
+    onSuccess: (answer) => {
+      if (answer.outcome !== 'group_found') return;
+      void client.invalidateQueries({ queryKey: ['work'] });
+      void client.invalidateQueries({ queryKey: ['runs', projectId] });
+    },
+  });
+}
+
+/** A curation run's checked answer, with its group's notes as they read now. Admins only. */
+export function useCurationAnswer(projectId: string, runId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['curation-answer', projectId, runId],
+    enabled,
+    queryFn: ({ signal }) => fetchJson<CurationAnswerRead>(`/api/projects/${seg(projectId)}/curation/answers/${seg(runId)}`, signal),
+    ...live<CurationAnswerRead>({ follows: ['runs', 'knowledge'] }),
   });
 }
 

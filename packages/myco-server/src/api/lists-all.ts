@@ -26,6 +26,7 @@ import type { ProjectSet } from '../read/scope.js';
 import { decodeSessionsAcrossCursor, PROJECT_CURSOR_REFUSAL, SESSIONS_ACROSS_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { MAX_PAGE, OFFSET_REFUSAL } from './intelligence.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
+import { sessionQuietBefore } from '../core/session-quiet.js';
 
 const clampLimit = (raw: string | null): number => {
   const n = raw === null ? NaN : Number(raw);
@@ -47,7 +48,7 @@ export async function handleSessionsAcross(env: ServerEnv, ctx: OwnerContext): P
   if (page instanceof Response) return page;
   const filters = sessionFilters(ctx.url);
   if (filters instanceof Response) return filters;
-  const listed = await listSessionSummariesAcross(env.db, set, { ...page, ...filters }, ctx.now);
+  const listed = await listSessionSummariesAcross(env.db, set, { ...page, ...filters, quietBefore: await sessionQuietBefore(env, ctx.now) }, ctx.now);
   return ok({ ...listed, rows: nameOwnMachines(listed.rows, await ownMachineNames(env.db, ctx.member.id, ctx.now)) });
 }
 

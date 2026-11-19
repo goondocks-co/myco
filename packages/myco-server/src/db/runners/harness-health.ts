@@ -1,5 +1,6 @@
 import { assertion, commitNamed, read, readSet, refusalCode, refused, write, type Bound } from '../index.js';
 import type { RelationalStore } from '../../core/adapters.js';
+import { machineInContactSql } from './machine-contact.js';
 
 interface HarnessCaptureRow { machine_id: string; agent: string; at: number }
 interface MachineActivityRow { machine_id: string; at: number }
@@ -100,9 +101,13 @@ const machineHarnessCaptureSinceRead = read<[machine: string, since: number], { 
   name: 'runners.machineHarnessCaptureSince', sql: `SELECT json_extract(agent_json,'$') AS agent,last_trust_start_at AS at
     FROM machine_capture_heads WHERE machine_id=?1 AND agent_json<>'null' AND last_trust_start_at>?2` });
 
-const provisionedRowsRead = read<[], HarnessReportRow>({ name: 'runners.provisionedHarnessReportRows', sql: `SELECT ${COLUMNS.split(',').map(column => `r.${column}`).join(',')} FROM machine_harness_reports r
+const provisionedRowsSql = (where: string) => `SELECT ${COLUMNS.split(',').map(column => `r.${column}`).join(',')} FROM machine_harness_reports r
     JOIN machine_claims mc ON mc.machine_id = r.machine_id
-    JOIN members m ON m.id = mc.member_id WHERE m.revoked_at IS NULL ORDER BY r.machine_id, r.position` });
+    JOIN members m ON m.id = mc.member_id WHERE m.revoked_at IS NULL${where} ORDER BY r.machine_id, r.position`;
+const provisionedRowsRead = read<[], HarnessReportRow>({ name: 'runners.provisionedHarnessReportRows', sql: provisionedRowsSql('') });
+/** The reports of machines in contact at `now`: a former machine's last report can no longer be acted on. */
+const contactedRowsRead = read<[now: number], HarnessReportRow>({ name: 'runners.contactedHarnessReportRows',
+  sql: provisionedRowsSql(` AND ${machineInContactSql('r.machine_id', '?1')}`) });
 
 const latestHarnessCaptureRead = read<[], Omit<HarnessCaptureRow, 'at'> & { at: number | null }>({ name: 'runners.latestHarnessCapture', sql: `SELECT r.machine_id, r.harness AS agent,h.last_live_received_at AS at
       FROM machine_harness_reports r
@@ -131,9 +136,9 @@ const workerMachineActivityRead = read<[since: number], MachineActivityRow>({ na
 
 const claimedMachineNamesRead = read<[], { machine_id: string; label: string | null }>({ name: 'runners.claimedMachineNames', sql: `SELECT machine_id, label FROM machine_claims` });
 
-/** Reported harnesses, each pair's latest live capture, machine activity from capture and contact, and names, in one snapshot. */
-export async function harnessAttentionRows(db: RelationalStore, since: number) {
-  return readSet(db, provisionedRowsRead.bind(), latestHarnessCaptureRead.bind(), recentMachineCaptureRead.bind(since),
+/** Harnesses reported by machines in contact at `now`, each pair's latest live capture, machine activity from capture and contact since `since`, and names, in one snapshot. */
+export async function harnessAttentionRows(db: RelationalStore, since: number, now: number) {
+  return readSet(db, contactedRowsRead.bind(now), latestHarnessCaptureRead.bind(), recentMachineCaptureRead.bind(since),
     workerMachineActivityRead.bind(since), claimedMachineNamesRead.bind());
 }
 

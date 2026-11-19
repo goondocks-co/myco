@@ -19,6 +19,8 @@ export interface PageInput {
   projects: readonly string[];
   request: SearchRequest;
   scores: ReadonlyMap<number, number> | null;
+  /** The instant `sessionQuietBefore` answers for the search: sessions read as live or not at it. */
+  quietBefore: number;
 }
 
 /** Documents one read checks after a page's first. */
@@ -29,11 +31,11 @@ const SNIPPET_SOURCE_CHARS = 2_000;
 /** A hit's identity: a card's turn key names a turn only within its session. */
 const hitKey = (doc: HydratedDocument) => JSON.stringify([typeOf(doc), doc.project_id, doc.kind === 'card' ? doc.session_id : null, doc.id]);
 
-function filtersOf({ projects, request }: PageInput): HydrationFilters {
+function filtersOf({ projects, request, quietBefore }: PageInput): HydrationFilters {
   const { filters } = request;
   return {
     projects, agent: filters.agent, branch: filters.branch, status: filters.status, session: filters.session_id,
-    sinceMs: filters.since === undefined ? undefined : filters.since * 1000, untilMs: filters.until === undefined ? undefined : filters.until * 1000,
+    sinceMs: filters.since === undefined ? undefined : filters.since * 1000, untilMs: filters.until === undefined ? undefined : filters.until * 1000, quietBefore,
   };
 }
 

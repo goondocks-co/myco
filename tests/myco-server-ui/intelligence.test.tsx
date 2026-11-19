@@ -23,7 +23,7 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { MOVING_MS } from '../../packages/myco-server/ui/src/lib/live';
-import { dailyLimitWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { dailyLimitWords, runLineWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -811,6 +811,40 @@ describe('stored run audit evidence', () => {
     fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain('Worker exceeded the execution budget.');
     expect(open.querySelector('[data-run-report]')!.textContent).toContain('Updated the map.');
+  });
+  it('labels a preview from its stored flag in the run row and page', async () => {
+    const answer = audit(); answer.run.dryRun = true; answer.run.result = 'unchanged';
+    expect(runLineWords('map', answer.run, { spores: 0, sessions: 0, readsRecorded: false })).toBe('Preview: nothing was changed');
+    const open = await openAudit(answer);
+    expect(open.querySelector('[data-run-headline]')!.textContent).toBe('Preview: nothing was changed');
+  });
+  it('reads a curation preview to an admin as changes beside the spores they start from, and asks nothing for a member', async () => {
+    const answer = { reason: 'Two spores said the same thing about one situation.', keep: ['wisdom-c'],
+      notes: [{ sources: ['decision-a', 'gotcha-b'], observation_type: 'decision', agent_line: 'When delivery stalls, retain queued capture.', content: 'Retain queued capture until the destination acknowledges it.' }],
+      retire: [{ id: 'gotcha-d', reason: 'The merged spore already says this.', made_unnecessary_by: 'new:0' }] };
+    const source = (id: string, content: string, revision = 0) => ({ id, revision: 0, current: { revision, status: 'active', observationType: 'gotcha', agentLine: `When ${id} applies.`, content } });
+    const detail = (who: typeof ADMIN | typeof MEMBER) => server(routes({ who, detail: {
+      [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail({ ...mapRuns[1]!, task: 'curate-spores' }, { run: { dryRun: true, result: 'unchanged' } })),
+      [`/api/projects/${P}/curation/answers/run_c19f7a0e55`]: () => Response.json({ applied: false, checked: { answer },
+        sources: [source('decision-a', 'Body of a.'), source('gotcha-b', 'Edited body of b.', 1), source('wisdom-c', 'Body of c.'), { id: 'gotcha-d', revision: 0, current: null }] }),
+    } }));
+    detail(ADMIN);
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    const decision = await within(await panel()).findByRole('region', { name: 'What curation would do' });
+    expect(decision.querySelector('[data-curation-preview-mark]')!.textContent).toContain('Preview: nothing was changed.');
+    const change = decision.querySelector<HTMLElement>('[data-curation-change]')!;
+    expect(within(change).getByRole('heading', { name: 'Would merge 2 spores into one' })).toBeTruthy();
+    expect([...change.querySelectorAll('[data-curation-body]')].map((body) => body.textContent)).toEqual(['Body of a.', 'Edited body of b.', 'Retain queued capture until the destination acknowledges it.']);
+    expect(change.querySelector('[data-curation-source="changed"]')!.textContent).toContain('Changed since this preview; shown as it reads now.');
+    expect(decision.querySelector('[data-curation-retire]')!.textContent).toContain('Would retire this sporeThe merged spore already says this. Covered by the new spore “When delivery stalls, retain queued capture.”This spore is no longer held');
+    expect(decision.querySelector('[data-curation-keep]')!.textContent).toBe('Would keep this spore as it isGotchaWhen wisdom-c applies.Body of c.');
+    expect(decision.textContent).not.toContain('made_unnecessary_by');
+    cleanup();
+    const { asked } = detail(MEMBER);
+    mount(`/p/${P}/work/runs/run_c19f7a0e55`);
+    await within(await panel()).findByRole('heading', { level: 2 });
+    expect(screen.queryByRole('region', { name: 'What curation would do' })).toBeNull();
+    expect(asked.some((url) => url.pathname.includes('/curation/'))).toBe(false);
   });
   for (const task of ['canopy-map', 'title-summary']) {
     it(`${task} with no write says checked and changed nothing`, async () => {

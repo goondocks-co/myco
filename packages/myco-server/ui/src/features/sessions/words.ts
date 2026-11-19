@@ -14,7 +14,7 @@ export { agentName, count, memberName, sinceWords, sporeLine, sporeTypeWord, whe
 /** The filter keys the table holds in the URL, in the order the bar shows them. */
 export const SESSION_FILTER_KEYS = ['agent', 'member', 'state', 'window'] as const;
 
-/** Open means no end was recorded: a runtime that died never ends its session, so this is what the data says, not a liveness claim. */
+/** Open means live: heard from within the server's idle close with no end recorded. A session gone quiet without an end reads as ended. */
 export const STATE_FILTER: FilterDefinition = {
   key: 'state',
   label: 'State',

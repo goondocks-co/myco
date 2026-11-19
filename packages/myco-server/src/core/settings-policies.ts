@@ -38,7 +38,7 @@ import { readRecallLeaves } from './recall.js';
 import { readMapSettings } from './canopy.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { reconcileIntervalMinutes } from './release-provenance.js';
-import { titlingIdleCloseMinutes } from './titling.js';
+import { titlingIdleCloseMinutes } from './session-quiet.js';
 import { runRetentionDays } from './jobs-run.js';
 import { scheduledIntervalHours } from './recovery-schedule.js';
 import { keptStagings } from './staging-retention.js';
@@ -103,7 +103,7 @@ const scheduling: SettingPolicy = {
 
 const titling: SettingPolicy = {
   id: 'titling',
-  owners: ['core/titling.ts'],
+  owners: ['core/session-quiet.ts'],
   leaves: ['agent.titling_idle_close_minutes'],
   async resolve(env) {
     const minutes = await titlingIdleCloseMinutes(env);

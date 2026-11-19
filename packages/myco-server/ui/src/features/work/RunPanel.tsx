@@ -15,6 +15,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import { AskedVersusDid, SourceMark, Tries, WhatHappened } from './RunStory';
+import { CurationDecision } from './CurationDecision';
 import { inferredEnd, recordedOutputWords, runStory, SOURCE_WORDS, type Source } from './story';
 import { stepsKnown } from './activity';
 import {
@@ -150,6 +151,8 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         </div>
       )}
 
+      {admin && run.task === 'curate-spores' && <CurationDecision projectId={projectId} runId={run.id} preview={run.dryRun === true} finished={finished} />}
+
       <Tries answer={answer} projectId={projectId} now={now} />
       <WhatHappened answer={answer} story={story} />
       <AskedVersusDid answer={answer} />
@@ -229,6 +232,7 @@ function WhatItRead({ answer, projectId, now, latest }: { answer: RunDetailAnswe
 
 /** The run's headline: what came of it, or where it stands while it has not finished. */
 function headlineOf({ run, read, produced }: RunDetailAnswer): string {
+  if (run.dryRun) return 'Preview: nothing was changed';
   if (run.errorCode === 'run_cancelled') return 'Cancelled';
   if (run.status === 'skipped') return 'Held off';
   if (run.status === 'queued') return 'Waiting to start';

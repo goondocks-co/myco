@@ -46,13 +46,16 @@ const P_GONE = 'proj_ffffffffffffffffffffffffffffffff';
 const project = (projectId: string, name: string) => ({ projectId, name, createdAt: 0, sessionCount: 3, lastActivityAt: NOW - MINUTE, archivedAt: null, archivedBy: null });
 const PROJECTS = [project(P_MYCO, 'Myco'), project(P_ATLAS, 'Atlas web')];
 
-const session = (over: Partial<TodaySession> & Pick<TodaySession, 'sessionId' | 'projectId'>): TodaySession & Record<string, unknown> => ({
+/** The server's default idle close: a row with no end is live this long past its last receipt, as the server sends it. */
+const IDLE_CLOSE = 120 * MINUTE;
+const session = (over: Partial<TodaySession> & Pick<TodaySession, 'sessionId' | 'projectId'>): TodaySession & Record<string, unknown> => liveAsServed({
   agent: 'claude-code', startedAt: NOW - HOUR, firstReceivedAt: NOW - HOUR, lastReceivedAt: NOW - 30 * MINUTE, endedAt: NOW - 30 * MINUTE,
   memberId: ADMIN.member.id, memberLabel: 'Ada', runtimeLabel: 'Ada’s studio Mac', title: null, summary: null, label: 'A session',
   promptCount: 3, toolCallCount: 0, activityBuckets: [], machineId: 'studio', createdByTokenId: 'mt_abcdefgh', branch: 'main',
   endedBy: null, endedByLabel: null, originPath: null, parentSessionId: null, parentReason: null, runtimeKind: 'cli', titledAt: null,
   ...over,
 });
+const liveAsServed = <T extends { endedAt: number | null; lastReceivedAt: number }>(row: T) => ({ liveUntil: row.endedAt === null ? row.lastReceivedAt + IDLE_CLOSE : null, ...row });
 
 const SESSIONS = [
   session({ sessionId: '0b6f0f55-8a36-5d0e-9c1b-6b1d0d3f2a11', projectId: P_MYCO, label: 'Canopy parity verified', summary: 'Ran the parity suite on both targets.', startedAt: NOW - 42 * MINUTE, firstReceivedAt: NOW - 42 * MINUTE, lastReceivedAt: NOW - MINUTE, endedAt: null, promptCount: 317 }),
@@ -62,7 +65,7 @@ const SESSIONS = [
 ];
 
 const run = (over: Partial<WorkRun> & Pick<WorkRun, 'id' | 'kind' | 'task'>): WorkRun => ({
-  requested: null, queuedAt: null, startedAt: null, completedAt: null,
+  dryRun: false, requested: null, queuedAt: null, startedAt: null, completedAt: null,
   identity: { status: 'not_recorded' }, costProvenance: null, harness: null, model: null, provider: null,
   projectId: P_MYCO, status: 'completed', result: 'produced', at: NOW - HOUR, outcome: { spores: 0, sessions: 0, maps: 0 },
   sessionId: null, failure: null, tokens: 1000, costUsd: 0.1, ...over,

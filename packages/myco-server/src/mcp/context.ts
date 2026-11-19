@@ -55,6 +55,7 @@ interface GrantPrincipal {
 
 export interface RunPrincipal {
   kind: 'run';
+  dryRun?: boolean;
   runId: string;
   task: string | null;
   /** The agent the run dispatched under; every write it makes carries it as `agent_id`. */
@@ -127,7 +128,7 @@ export function runToolContext(env: ServerEnv, ctx: RunContext): ToolContext {
     env: { ...env, db: runWriteStore(env.db, ctx.projectId, run.id, { tokenId: ctx.tokenId, now: ctx.now, clock: ctx.clock, deadline: runDeadline(run) }) },
     projectId: ctx.projectId,
     principal: {
-      kind: 'run', runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run),
+      kind: 'run', dryRun: run.dryRun === 1, runId: run.id, task: run.task, agentId: run.agentId, sessionId: sessionNamedByRun(run),
       runContext: run.runContext, model: run.model, tokenId: ctx.tokenId,
       attempt: run.resumedAt ?? run.startedAt ?? 0,
       allow: runAllowlist(taskTools(run.task), { dryRun: run.dryRun === 1 }),

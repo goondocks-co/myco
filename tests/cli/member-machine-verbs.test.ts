@@ -286,13 +286,52 @@ describe('a joined member with no 1.4 vault', () => {
   it('doctor fails by name when the Deployment does not answer', async () => {
     const rig = await memberRig();
     join(rig);
-    const down: FetchLike = async () => { throw new Error('connect ECONNREFUSED'); };
+    const attempts: Record<string, number> = {};
+    const down: FetchLike = async input => {
+      const path = new URL(String(input)).pathname;
+      attempts[path] = (attempts[path] ?? 0) + 1;
+      throw new Error('The socket connection was closed unexpectedly');
+    };
 
     const ran = await verb('doctor', ['--all'], down);
 
     expect(ran.answered).toBe(false);
-    expect(ran.stdout).toMatch(/Deployment: FAIL .*https:\/\/member-test\.invalid is unreachable or did not answer its health route/);
+    expect(ran.stdout).toMatch(/Deployment: FAIL https:\/\/member-test\.invalid connection problem while requesting its health route/);
+    expect(ran.stdout).toContain('connection problem');
+    expect(ran.stdout).not.toMatch(/myco login|nothing needs attention/);
+    expect(attempts).toEqual({ '/mcp': 2, '/health': 2 });
     expect(legacyArtifacts()).toEqual([]);
+  });
+
+  it('doctor recovers a dropped connection on both tool and health checks', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const dropped = new Set<string>();
+    const flaky: FetchLike = async (input, init) => {
+      const route = new URL(String(input)).pathname;
+      if (!dropped.has(route)) { dropped.add(route); throw new Error('connect ECONNRESET'); }
+      return rig.fetch(input, init);
+    };
+    const ran = await verb('doctor', ['--all'], flaky);
+    expect(ran.stdout).toMatch(/Project access: ok/);
+    expect(ran.stdout).toMatch(/Deployment: ok/);
+    expect(ran.stdout).not.toMatch(/Project access: FAIL|Deployment: FAIL|myco login/);
+  });
+
+  it('doctor reports a server failure without retrying it or asking for sign-in', async () => {
+    const rig = await memberRig();
+    join(rig);
+    let attempts = 0;
+    const unavailable: FetchLike = async (input, init) => {
+      if (new URL(String(input)).pathname !== '/mcp') return rig.fetch(input, init);
+      attempts += 1;
+      return Response.json({ error: 'unavailable', message: 'The Deployment cannot serve tools.' }, { status: 503 });
+    };
+    const ran = await verb('doctor', [], unavailable);
+    expect(ran.answered).toBe(false);
+    expect(ran.stdout).toMatch(/FAIL Project access: .*could not serve this machine's tool list \(unavailable\)/);
+    expect(ran.stdout).not.toMatch(/myco login|nothing needs attention/);
+    expect(attempts).toBe(1);
   });
 
   it('doctor renews a token that lapsed inside its lineage, and reports the successor', async () => {
@@ -319,6 +358,8 @@ describe('a joined member with no 1.4 vault', () => {
     expect(ran.stdout).toMatch(/Project access: FAIL .*refused this machine's tool list \(unauthorized\)/);
     expect(ran.stdout).toMatch(/Credential: FAIL .*the Deployment will not renew this credential/);
     expect(ran.stdout).toContain(REJOIN_HINT);
+    expect(ran.stdout).toContain(`myco login ${SERVER_URL}`);
+    expect(ran.stdout).not.toContain('nothing needs attention');
   });
 
   it('logs shows the worker\'s own log files and the events the Deployment refused, not a daemon log', async () => {

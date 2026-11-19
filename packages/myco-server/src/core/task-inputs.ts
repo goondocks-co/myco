@@ -1,3 +1,4 @@
+import { buildStoredCurationPreview, discoverCurationPreview } from './curation-preview.js';
 import { CURATION_STAGE, buildCurationInput, curationPrompt } from './spore-curation.js';
 /**
  * The tasks whose prompt the server builds: the four run outcomes.
@@ -45,6 +46,7 @@ export interface TaskInput {
 export interface TaskInputOptions {
   /** The queued run whose stored origin authorizes a named learning input. */
   runId?: string;
+  dryRun?: boolean;
   /** The run writes its artifact from the material alone rather than carrying the current one forward. */
   fresh?: boolean;
   /** The parameters the dispatch carries, for a task whose instruction is about one thing the dispatch names rather than the Project as a whole. */
@@ -79,6 +81,9 @@ interface TaskInputBuilder {
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [CURATION_TASK]: {
     build: async (env, projectId, now, options) => {
+      if (options.dryRun) return options.runId === undefined
+        ? (await discoverCurationPreview(env, { projectId, now, group: typeof options.params?.group === 'string' ? options.params.group : undefined })).input
+        : buildStoredCurationPreview(env, { projectId, now, runId: options.runId, group: typeof options.params?.group === 'string' ? options.params.group : undefined });
       const key = typeof options.params?.group === 'string' ? options.params.group : (await CURATION_STAGE.head(env.db, projectId, now))?.key;
       return key === undefined ? null : buildCurationInput(env, projectId, key);
     },

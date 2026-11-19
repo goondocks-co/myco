@@ -1,16 +1,17 @@
 import { Button, Card, HealthDot, ReadState, type HealthTone } from '../../design';
-import { LIVE_WITHIN_MS } from './timeline';
 import type { CaptureRow } from './wire';
 import { useMe } from '../../hooks/use-me';
 import { agentName, machineNames } from './words';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
 const DAY = 24 * 60 * 60_000;
+/** How recently an agent must have sent something to read as received recently. */
+const RECENT_MS = 15 * 60_000;
 
 /** How recently an agent sent anything, as a dot and the words it stands for. */
 export function recency(lastEventAt: number, now: number): { tone: HealthTone; live: boolean; label: string } {
   const age = now - lastEventAt;
-  if (age <= LIVE_WITHIN_MS) return { tone: 'ok', live: false, label: 'Received recently' };
+  if (age <= RECENT_MS) return { tone: 'ok', live: false, label: 'Received recently' };
   if (age <= DAY) return { tone: 'ok', live: false, label: 'Received today' };
   if (age <= 7 * DAY) return { tone: 'faint', live: false, label: 'Quiet this week' };
   return { tone: 'warn', live: false, label: 'Quiet for over a week' };

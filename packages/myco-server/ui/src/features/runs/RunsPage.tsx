@@ -30,6 +30,7 @@ export interface RunHoursAnswer {
 }
 /** One run of `GET /api/runs/finished`. */
 interface FinishedRun {
+  dryRun?: boolean;
   projectId: string; projectName: string | null; runId: string; task: string | null; result: 'produced' | 'unchanged' | 'failed' | 'failed_with_output';
   errorCode: string | null; harness: string | null; model: string | null; runner: { id: string; name: string | null } | null; completedAt: number;
 }
@@ -155,7 +156,7 @@ export function RunsPage() {
               <li key={`${run.projectId}\u0000${run.runId}`} className="flex items-center" data-runs-run={outcomeOf(run.result)}>
                 <ListRow className="flex-1" to={runPath(run.projectId, run.runId)} leading={<HealthDot tone={outcome.tone} label={outcome.words} />}
                   title={`${capital(taskWords(run.task))}${run.projectName === null ? '' : ` · ${run.projectName}`}`}
-                  meta={[outcome.words, run.errorCode === null || outcomeOf(run.result) !== 'failed' ? null : runErrorWords(run.errorCode), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
+                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || outcomeOf(run.result) !== 'failed' ? null : runErrorWords(run.errorCode), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
                 {run.runner !== null && <Link to={runnerPath(run.runner.id)} className="shrink-0 px-s3 t-small">{run.runner.name ?? 'Its runner'}</Link>}
               </li>
             );

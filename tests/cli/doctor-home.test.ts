@@ -548,15 +548,17 @@ describe('home doctor', () => {
     expect(await runMemberVerb('doctor', [], { ...deps, stdout: () => {} })).toBe(false);
   });
 
-  it('warns on an expired credential and names the recovery command', async () => {
+  it('warns on local expiry without claiming the Deployment refused the credential', async () => {
     writeDeploymentMembership({ serverUrl: personal, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt: now - 1 }, { mycoHome: home });
     const credential = (await homeReport(home, deps)).find(check => check.name === 'Credential')!;
     expect(credential.status).toBe('warn');
     expect(credential.detail).toContain('expired');
-    expect(credential.detail).toContain('myco login');
+    expect(credential.detail).toContain('myco doctor');
+    expect(credential.detail).not.toContain('myco login');
     writeRegistryEntry({ version: 2, root: scratch, projectId: 'proj_home', serverUrl: personal, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt: now - 1 }, { mycoHome: home });
     const rows = await projectReport('registry', { ...deps, fetch: async () => { throw new Error('offline'); } });
     expect(rows.find(check => check.name === 'Credential')?.status).toBe('warn');
+    expect(rows.map(check => check.summary ?? check.detail).join('\n')).not.toContain('myco login');
 
   });
 
@@ -583,7 +585,9 @@ describe('home doctor', () => {
     deps.fetch = async (_input, init) => new Promise((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new Error('deadline')), { once: true });
     });
-    expect((await homeReport(home, deps)).filter(check => check.name === 'Deployment').map(check => check.status)).toEqual(['fail', 'fail']);
+    const timedOut = (await homeReport(home, deps)).filter(check => check.name === 'Deployment');
+    expect(timedOut.map(check => check.status)).toEqual(['fail', 'fail']);
+    expect(timedOut.every(check => check.detail.includes('connection problem'))).toBe(true);
   });
 
   it('records paths on ordinary leave and keeps good markers visible beside malformed markers', async () => {

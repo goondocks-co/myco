@@ -80,6 +80,7 @@ interface WorkMap { projectId: string; branch: string; commit: string; generated
 
 /** A run that published output or failed, listed in the timeline. */
 export interface WorkRun {
+  dryRun: boolean;
   requested: ExecutionProfile | null;
   queuedAt: number | null;
   startedAt: number | null;
@@ -236,6 +237,7 @@ function workRunOf(row: Record<string, unknown>): WorkRun {
   const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
   return {
     ...runAccounting(row.usage_data, row.cost_provenance),
+    dryRun: num(row.dry_run) === 1,
     requested: requestedProfile(row.requested_profile),
     queuedAt: orNull(row.queued_at), startedAt: orNull(row.started_at), completedAt: orNull(row.completed_at),
     harness: row.harness == null ? null : String(row.harness),

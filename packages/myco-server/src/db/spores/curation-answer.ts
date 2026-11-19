@@ -2,6 +2,9 @@ import type { RelationalStore } from '../../core/adapters.js';
 import type { SporeInsert } from '../../core/spores.js';
 import type { CurationAnswer } from '../../core/spore-curation-contract.js';
 import { CURATION_ANSWER_ATTEMPTS } from '../../core/spore-curation-contract.js';
+import { CURATION_TASK } from '../../core/task-catalogue.js';
+import { reportInsertWrite } from '../runs/evidence.js';
+import { capabilityOnSql } from '../settings/admission.js';
 import { assertion, commitNamed, first, read, refusalCode, refusalDetail, rows, write } from '../index.js';
 import { sporeInsertWrite } from './records.js';
 import { curationDecisionSql } from './curation-consideration.js';
@@ -16,8 +19,10 @@ const admitted = assertion<AssignmentSlots>({
   with: `WITH held AS (SELECT json_extract(j.value,'$.id') AS id,json_extract(j.value,'$.revision') AS expected,s.status,s.revision
     FROM json_each(?4) j LEFT JOIN spores s ON s.project_id=?1 AND s.id=json_extract(j.value,'$.id'))`,
   when: `NOT EXISTS (SELECT 1 FROM held WHERE status IS NULL OR status<>'active' OR revision<>expected)
-    AND EXISTS (SELECT 1 FROM spore_curation_work w JOIN agent_runs r ON r.project_id=w.project_id AND r.id=?2
-      WHERE w.project_id=?1 AND w.cluster_key=?3 AND w.decision IS NULL AND (w.run_id=?2 OR r.dry_run=1))
+    AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id=?1 AND r.id=?2 AND r.task='${CURATION_TASK}' AND (
+      (r.dry_run=1 AND json_extract(r.run_context,'$.curation.key')=?3 AND json_extract(r.run_context,'$.curation.members')=?4)
+      OR (r.dry_run=0 AND ${capabilityOnSql('?1', "'spore_curation'")} AND EXISTS (SELECT 1 FROM spore_curation_work w
+        WHERE w.project_id=?1 AND w.cluster_key=?3 AND w.decision IS NULL AND w.run_id=?2))))
     AND EXISTS (SELECT 1 FROM spore_curation_answers WHERE project_id=?1 AND run_id=?2 AND cluster_key=?3 AND submissions=?5 AND answer IS NULL)`,
   detail: `COALESCE((SELECT 'spore '||id||' is '||COALESCE(status,'missing')||' at revision '||COALESCE(revision,-1)||'; offered revision '||expected FROM held
     WHERE status IS NULL OR status<>'active' OR revision<>expected LIMIT 1),'assignment closed or submission superseded')`,
@@ -69,9 +74,10 @@ export interface CheckedCuration {
   notes: readonly SporeInsert[];
 }
 export async function commitCurationAnswer(db: RelationalStore, options: {
-  project: string; run: string; agent: string; work: CurationWork; checked: CheckedCuration; submission: number; dryRun: boolean; now: number;
+  project: string; run: string; agent: string; work: CurationWork | null; checked: CheckedCuration; submission: number; dryRun: boolean; now: number;
 }): Promise<void> {
   const { project, run, agent, work, checked, submission, dryRun, now } = options;
+  if (!dryRun && work === null) throw new Error('An applied curation answer requires an owned group');
   const encoded = JSON.stringify(checked.members);
   const replaced = new Map<string, string[]>();
   for (const [index, note] of checked.answer.notes.entries())
@@ -87,6 +93,8 @@ export async function commitCurationAnswer(db: RelationalStore, options: {
   });
   await commitNamed(db, {
     admitted: admitted.bind(project, run, checked.group, encoded, submission),
+    preview: dryRun ? [reportInsertWrite({ projectId: project }, { runId: run, agentId: agent, action: 'preview',
+      summary: 'Curation preview only: no notes changed.', details: JSON.stringify(checked.answer, null, 2), audit: null, createdAt: now })] : [],
     notes: dryRun ? [] : checked.notes.map(note => sporeInsertWrite({ projectId: project }, note)),
     history: dryRun ? [] : curationAnswerHistory({ project, run, group: checked.group, now, answer: checked.answer, outputs: checked.notes.map(note=>note.id),events:resolutions }),
     events: dryRun ? [] : resolutions.map(event=>insertEvent.bind(project,event.id,agent,event.source,event.target,event.action,event.reason,run,now)),
@@ -97,7 +105,7 @@ export async function commitCurationAnswer(db: RelationalStore, options: {
     outputs: dryRun ? [] : [reviewOutputs.bind(project, checked.group, JSON.stringify(outputs))],
     moves: dryRun ? [] : changed.map(member => move.bind(project, member.id, member.revision, retired.has(member.id) ? 'obsolete' : 'consolidated', now)),
     saved: save.bind(project, run, checked.group, JSON.stringify(checked), dryRun ? 0 : 1, submission),
-    ...(dryRun ? {} : curationCloseWrites({ projectId: project, work, decision: changed.length === 0 ? 'keep' : 'resolved', reason: checked.answer.reason, now, reviewed: checked.members })),
+    ...(dryRun ? {} : curationCloseWrites({ projectId: project, work: work!, decision: changed.length === 0 ? 'keep' : 'resolved', reason: checked.answer.reason, now, reviewed: checked.members })),
   });
 }
 const answer = read<[project: string, run: string], { cluster_key: string; submissions: number; answer: string | null; applied: number }>({

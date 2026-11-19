@@ -29,7 +29,6 @@ import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 import { promptPreview, PROMPT_PREVIEW_CHARS } from '../../packages/myco-server/ui/src/features/sessions/Turn';
 import { parseCard } from '../../packages/myco-server/ui/src/features/sessions/card-text';
 import { memberFilter, startedWords, windowBounds } from '../../packages/myco-server/ui/src/features/sessions/words';
-import { LIVE_WITHIN_MS } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { rawIdsIn } from '../helpers/raw-ids';
 import { containmentWords } from '../../packages/myco-server/ui/src/features/sessions/Outcomes';
 
@@ -64,13 +63,16 @@ const P3 = '00000000-0000-7000-8000-000000000003';
 const P4 = '00000000-0000-7000-8000-000000000004';
 
 /** A session as the server serves it: listed across projects, or read on its own. */
-const session = (over: Record<string, unknown> = {}) => ({
+/** The server's default idle close: a row with no end is live this long past its last receipt, as the server sends it. */
+const IDLE_CLOSE = 120 * 60_000;
+const session = (over: Record<string, unknown> = {}) => withLiveUntil({
   projectId: 'x', sessionId: 's1', machineId: 'mac-1', createdByTokenId: 'mt_0123456789abcdef', firstReceivedAt: NOW - HOUR, lastReceivedAt: NOW - MINUTE,
   agent: 'claude-code', branch: 'main', startedAt: NOW - HOUR, endedAt: null, endedBy: null, endedByLabel: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null,
   memberId: 'mem_q3Vb8xRk2LmT7wYz', memberLabel: 'Ada', runtimeLabel: 'Ada’s studio Mac', runtimeKind: 'cli',
   title: null, summary: null, titledAt: null, label: 's1', promptCount: 2, toolCallCount: 3, activityBuckets: [1, 0, 0, 0, 0, 0, 0, 1],
   ...over,
 });
+const withLiveUntil = <T extends { endedAt: unknown; lastReceivedAt: unknown }>(row: T) => ({ liveUntil: row.endedAt === null ? (row.lastReceivedAt as number) + IDLE_CLOSE : null, ...row });
 const page = (rows: unknown[], cursor: string | null = null) => Response.json({ rows, cursor });
 const counts = { prompts: 1, userPrompts: 1, mycoCalls: 0, toolCalls: 3, failedTools: 0, responses: 1, plans: 0, attachments: 2 };
 const NO_OUTCOME = { runs: [], spores: { total: 0, items: [] } };
@@ -153,8 +155,8 @@ describe('the sessions table', () => {
     session({ sessionId: 's2', projectId: 'y', agent: 'codex', title: 'Checkout errors name their field', summary: 'Replaced the generic errors.\nAdded tests.', label: 'Checkout errors name their field', startedAt: NOW - 5 * HOUR, endedAt: NOW - 4 * HOUR, promptCount: 12 }),
     session({ sessionId: 's3', agent: 'cursor', title: null, label: 'Untitled session', startedAt: NOW - DAY - HOUR, endedAt: NOW - DAY, memberId: 'mem_harness', memberLabel: 'harness', promptCount: 1 }),
   ];
-  /** The live group's read: open sessions heard from within the live span, under the same filters. */
-  const livePath = (filters: Omit<Parameters<typeof sessionListPath>[0], 'state' | 'active'>) => sessionListPath({ ...filters, state: 'open', active: { since: NOW - LIVE_WITHIN_MS } });
+  /** The live group's read: the sessions the server judges live, under the same filters. */
+  const livePath = (filters: Omit<Parameters<typeof sessionListPath>[0], 'state' | 'active' | 'live'>) => sessionListPath({ ...filters, live: true });
 
   it('lists every project’s sessions at /sessions: the live ones pinned on top, the rest under the day each started, each row opening its session', async () => {
     const { requested } = server(base({
@@ -333,7 +335,7 @@ describe('the sessions table', () => {
     };
     const live = client.getQueryCache().findAll({ queryKey: ['sessions', 'live'] })[0]!;
     const quietIn = interval(live);
-    expect(typeof quietIn === 'number' && quietIn > 0 && quietIn <= 15 * 60_000).toBe(true);
+    expect(typeof quietIn === 'number' && quietIn > 0 && quietIn <= IDLE_CLOSE).toBe(true);
     expect((live.options as Polled).refetchIntervalInBackground).toBe(false);
     expect(live.meta?.follows).toEqual(['sessions']);
     const pages = client.getQueryCache().findAll({ queryKey: ['sessions', 'x'] })[0]!;
@@ -537,10 +539,12 @@ describe('the session reading page', () => {
       await waitFor(() => expect(copied).toEqual([line]));
       expect(facts.textContent).not.toContain('claude --resume');
       cleanup();
-      server(routes({ '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed' }, { resume: null }) }));
+      server(routes({ '/api/projects/x/sessions/s1': () => detail({ title: 'Flaky test port collision fixed', liveUntil: null }, { resume: null }) }));
       mount('/p/x/sessions/s1?about=1');
       await screen.findByRole('button', { name: 'Copy session id' });
       expect(screen.queryByRole('button', { name: 'Copy resume command' })).toBeNull();
+      // No end was sent, and the server says it is not live: it went quiet.
+      expect(document.querySelector('[data-facts]')!.textContent).toContain('Went quietLast heard');
     } finally {
       if (clipboard === undefined) Reflect.deleteProperty(navigator, 'clipboard'); else Object.defineProperty(navigator, 'clipboard', clipboard);
     }

@@ -27,7 +27,7 @@ import type { ReadScope } from '../../read/scope.js';
 import { memberWriteStore, type MemberWriteActor } from '../../auth/member-write-store.js';
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../run-statuses.js';
 import { runOriginSql, DISPATCH_ACTOR_SQL } from '../run-context.js';
-import { admissionForTask } from '../../core/task-catalogue.js';
+import { admissionForTask, CURATION_TASK, isCurationPreview } from '../../core/task-catalogue.js';
 import { settingsWriter } from '../../core/settings.js';
 import { PROJECT_WORK_SQL, CAPABILITY_ON_SQL } from '../../db/settings/admission.js';
 import { budgetClaimPredicate } from './budget-policy.js';
@@ -65,17 +65,19 @@ function actorCeilingParams(runId: string, ceiling: ActorCeiling | undefined): (
   return ceiling === undefined ? [null, null, null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.projectId ?? null, ceiling.projectId ?? null, runId, runId, ceiling.perDay];
 }
 
-const PROJECT_ADMISSION_WHERE = ` AND ${PROJECT_WORK_SQL} AND (? IS NULL OR ${CAPABILITY_ON_SQL})`;
+const projectAdmissionWhereSql = (preview = '0'): string => ` AND ${PROJECT_WORK_SQL} AND (? IS NULL OR ${preview} OR ${CAPABILITY_ON_SQL})`;
+const PROJECT_ADMISSION_WHERE = projectAdmissionWhereSql();
 
 function projectAdmissionParams(scope: ReadScope, capability?: string | null): (string | null)[] {
   return [scope.projectId, capability ?? null, scope.projectId, capability ?? null];
 }
 
-const ADMISSION_WHERE = `
+const admissionWhereSql = (preview?: string): string => `
    ${CONCURRENCY_ADMISSION_SQL}
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ? AND provider IS NOT 'direct' AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}
-${PROJECT_ADMISSION_WHERE}`;
+${projectAdmissionWhereSql(preview)}`;
+const ADMISSION_WHERE = admissionWhereSql();
 
 async function writeDispatchRecord(db: RelationalStore, statement: Bound, admission?: { actor?: MemberWriteActor; setup?: Bound[] }): Promise<boolean> {
   const statements = [...(admission?.setup ?? []), statement];
@@ -193,7 +195,7 @@ const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
 
 export async function recordQueued(db: RelationalStore, scope: ReadScope, record: QueuedRecord, options: { singleFlight?: boolean; ceiling?: ActorCeiling; actor?: MemberWriteActor; setup?: Bound[] } = {}): Promise<boolean> {
   const gate = admissionForTask(record.task);
-  const statement = queueRecordWrite.bind(scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model, record.dryRun === true ? 1 : 0, record.queuedAt, storedQueueHold(record.heldBy), record.dispatchSpec, record.runContext ?? null, record.dispatchSpec, scope.projectId, record.id, options.singleFlight === true ? record.task : null, scope.projectId, record.task, ...actorCeilingParams(record.id, options.ceiling), ...projectAdmissionParams(scope, gate?.kind === 'capability' ? gate.capability : null));
+  const statement = queueRecordWrite.bind(scope.projectId, record.id, record.agentId, record.task, record.instruction ?? null, record.provider, record.model, record.dryRun === true ? 1 : 0, record.queuedAt, storedQueueHold(record.heldBy), record.dispatchSpec, record.runContext ?? null, record.dispatchSpec, scope.projectId, record.id, options.singleFlight === true ? record.task : null, scope.projectId, record.task, ...actorCeilingParams(record.id, options.ceiling), ...projectAdmissionParams(scope, gate?.kind === 'capability' && !(isCurationPreview(record.task, { dryRun: record.dryRun }) && options.actor?.authority === 'admin') ? gate.capability : null));
   return writeDispatchRecord(db, statement, options);
 }
 
@@ -246,7 +248,7 @@ function pulledClaimPredicate(pull: PulledCandidate, admission: WriteAdmission):
 export function workerClaimPredicate(candidate: ClaimCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
   const money = admission.budget===undefined ? {sql:'1',params:[]} : budgetClaimPredicate(admission.budget,admission.now);
   return {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL AND ${QUEUED_CLAIM_HEAD_SQL}${ADMISSION_WHERE} AND ${money.sql} AND (${admission.settingsGuard === undefined ? '1' : observedRevisionPredicate({}, true).sql}))`,
+    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ? AND dispatched_by IS NULL AND ${QUEUED_CLAIM_HEAD_SQL}${admissionWhereSql(`(task='${CURATION_TASK}' AND dry_run=1)`)} AND ${money.sql} AND (${admission.settingsGuard === undefined ? '1' : observedRevisionPredicate({}, true).sql}))`,
     params: [candidate.projectId, candidate.id, candidate.task, ...admissionParams({ projectId: candidate.projectId }, candidate.task, candidate.id, admission), ...money.params, ...(admission.settingsGuard === undefined ? [] : [JSON.stringify(admission.settingsGuard)])],
   };
 }

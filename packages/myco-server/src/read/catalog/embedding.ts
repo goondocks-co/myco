@@ -72,7 +72,7 @@ interface embedding_SemanticAnswer {
 }
 
 /** Semantic queries use the same metadata filters as full-text queries. */
-async function embedding_semanticSearch(db: embedding_import_RelationalStore, scope: embedding_import_ReadScope, semantic: embedding_SemanticSearch, types: readonly string[], options: embedding_import_SearchOptions, limit: number): Promise<embedding_SemanticAnswer> {
+async function embedding_semanticSearch(db: embedding_import_RelationalStore, scope: embedding_import_ReadScope, semantic: embedding_SemanticSearch, types: readonly string[], options: embedding_import_SearchOptions, limit: number, quietBefore: number | null = null): Promise<embedding_SemanticAnswer> {
   const values = await semantic.provider.embed(options.query);
   const filters: embedding_import_VectorFilters = {};
   for (const key of ['status', 'session_id', 'observation_type', 'release_state', 'release_confidence'] as const) {
@@ -88,10 +88,12 @@ async function embedding_semanticSearch(db: embedding_import_RelationalStore, sc
     const statuses = options.status === undefined && (type === 'spore' || type === 'plan')
       ? SEARCH_CURRENT_STATUSES[type]
       : [filters.status];
+    // A session's state moves with the clock, so stored vector metadata cannot filter it; it is judged below.
+    const { status: _stored, ...timeless } = filters;
     return statuses.map(status => ({
-      ...filters,
+      ...(type === 'session' ? timeless : filters),
       type,
-      ...(status === undefined ? {} : { status }),
+      ...(status === undefined || type === 'session' ? {} : { status }),
     }));
   });
   const branches = await Promise.all(queries.map(filters => embedding_semanticHits(
@@ -106,9 +108,15 @@ async function embedding_semanticSearch(db: embedding_import_RelationalStore, sc
     },
   )));
   const candidates = branches.flat().filter(row => options.status !== undefined || isCurrentSearchStatus(row.type, row.status));
-  const records = await semanticRecords(db, { project: scope.projectId, records: candidates, agent: options.agent, branch: options.branch });
-  const admitted = candidates.filter(row => records.has(JSON.stringify([row.type, row.record_id])));
-  const filtered = (options.agent !== undefined || options.branch !== undefined)
+  const records = await semanticRecords(db, { project: scope.projectId, records: candidates, agent: options.agent, branch: options.branch, quietBefore });
+  const stated = filters.status !== undefined && retained.includes('session');
+  const admitted = candidates.flatMap((row) => {
+    const record = records.get(JSON.stringify([row.type, row.record_id]));
+    if (record === undefined) return [];
+    const status = record.status ?? row.status;
+    return filters.status !== undefined && row.type === 'session' && status !== filters.status ? [] : [{ ...row, status }];
+  });
+  const filtered = (options.agent !== undefined || options.branch !== undefined || stated)
     && capped && admitted.length < limit;
   const hits = admitted
     .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
