@@ -111,7 +111,7 @@ export async function resolveSpore(db: RelationalStore, scope: ReadScope, reques
         event.newSporeId, imported ? 0 : 1),
       event: insertEvent.bind(scope.projectId, event.id, event.agentId, event.sporeId, event.action, event.newSporeId, event.reason, event.sessionId,
         event.author, event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt),
-      history: !imported && event.newSporeId!==null && (event.action==='consolidate'||event.action==='supersede')
+      history: !imported && expected==='active' && event.newSporeId!==null && (event.action==='consolidate'||event.action==='supersede')
         ?curationResolutionHistory({project:scope.projectId,event:event.id,source:event.sporeId,target:event.newSporeId,status,now}):[],
       move: moveSource.bind(status, now, scope.projectId, event.sporeId),
     });

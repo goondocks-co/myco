@@ -30,7 +30,10 @@ const notes=read<[project:string,unit:string],CurationUndoNote>({name:'curationU
   WHERE m.project_id=?1 AND m.unit_id=?2 ORDER BY m.role,m.spore_id`});
 
 const expectedKnowledge=knowledgeStateSql('m.after_json');
-const currentKnowledge=sporeKnowledgeSql('s',"CASE WHEN m.role='output' AND s.status='obsolete' THEN 'active' ELSE s.status END");
+/** A retired output reads as unchanged only when a person retired it; one a later, still-current curation retired or used blocks the undo. */
+const usedLater=`EXISTS(SELECT 1 FROM spore_curation_unit_members x CROSS JOIN spore_curation_units xu ON xu.project_id=x.project_id AND xu.id=x.unit_id
+  WHERE x.project_id=m.project_id AND x.spore_id=m.spore_id AND x.unit_id<>m.unit_id AND x.role IN ('source','retired') AND xu.undone_at IS NULL)`;
+const currentKnowledge=sporeKnowledgeSql('s',`CASE WHEN m.role='output' AND s.status='obsolete' AND NOT ${usedLater} THEN 'active' ELSE s.status END`);
 const differentField=`(SELECT key FROM json_each(${expectedKnowledge}) expected WHERE json_extract(${currentKnowledge},'$."'||expected.key||'"') IS NOT expected.value LIMIT 1)`;
 const laterUnit=(column:string):string=>`(SELECT ${column} FROM spore_curation_unit_members later CROSS JOIN spore_curation_units u
   ON u.project_id=later.project_id AND u.id=later.unit_id WHERE later.project_id=m.project_id AND later.spore_id=m.spore_id

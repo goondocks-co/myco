@@ -273,3 +273,33 @@ test('a restored original is named as current again, without advice to roll back
     expect(message).not.toContain('backup');
   }finally{f.sqlite.close();}
 });
+
+test('a curation whose output a later curation retired is undone only after that one, and a note that was not current gets no undo of its own',async()=>{
+  const f=await fixture();
+  try{
+    await f.enable();await f.add('x1');await f.add('x2');
+    const run=async(body:Record<string,unknown>)=>{
+      for(let i=0;i<8;i++)await f.discover();
+      const claim=await f.poll();if(!claim.claimed)throw new Error('not claimed');
+      const applied=await f.call(claim.run.runToken,'myco_run_curation',body) as {notes?:{id:string}[]};
+      await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{...scope,runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'});
+      return {unit:claim.run.id,notes:applied.notes??[]};
+    };
+    const status=async(id:string)=>(await getSpore(f.db,scope,id))!.status;
+    const undo=(unitId:string,now:number)=>undoSporeCuration(f.db,{projectId:'proj_1',unitId,actor:'mem_worker',now});
+    const first=await run({...keepAnswer([]),notes:[note(['x1','x2'])]});const output=first.notes[0]!.id;
+    await f.add(output,[1,0],f.now+5);await f.add('k1',[1,0],f.now+6);
+    const later=await run({...keepAnswer(['k1']),retire:[{id:output,reason:'Covered by k1.',made_unnecessary_by:'k1'}]});
+    expect(await undo(first.unit,f.now+10)).toMatchObject({ok:false});
+    expect([await status('x1'),await status('x2'),await status(output)]).toEqual(['consolidated','consolidated','obsolete']);
+    expect(await undo(later.unit,f.now+11)).toMatchObject({ok:true});
+    expect(await undo(first.unit,f.now+12)).toMatchObject({ok:true});
+    expect([await status('x1'),await status('x2'),await status(output)]).toEqual(['active','active','obsolete']);
+
+    await f.add('was-retired');await f.add('successor');
+    await resolveSpore(f.db,scope,{status:'obsolete',now:f.now,event:{id:'retire-1',sporeId:'was-retired',agentId:'myco-agent',action:'obsolete',newSporeId:null,reason:'Wrong.',author:null,sessionId:null,createdAt:f.now}});
+    await resolveSpore(f.db,scope,{status:'superseded',now:f.now+1,expect:{status:'obsolete'},event:{id:'supersede-1',sporeId:'was-retired',agentId:'myco-agent',action:'supersede',newSporeId:'successor',reason:'Replaced.',author:null,sessionId:null,createdAt:f.now+1}});
+    expect(await undo('supersede-1',f.now+13)).toMatchObject({ok:false});
+    expect(await status('was-retired')).toBe('superseded');
+  }finally{f.sqlite.close();}
+});
