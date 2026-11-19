@@ -95,7 +95,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
   if (task === CURATION_TASK && !isAdmin(ctx.member.role)) return Response.json({ error: dryRun ? 'curation_preview_needs_admin' : 'curation_hand_start_needs_admin',
-    message: dryRun ? 'Only a Deployment administrator may preview curation.' : 'Members cannot start curation by hand; scheduled curation is pulled by runners when the Project enables it.' }, { status: 403 });
+    message: dryRun ? 'Only an administrator may preview curation.' : 'Members cannot start curation by hand; it runs automatically when an administrator enables it for the Project.' }, { status: 403 });
   const params = task === CURATION_TASK && typeof body.group === 'string' ? { group: body.group } : undefined;
   // A fresh run is one over input that has not moved; only an admin spends on that.
   if (fresh && !isAdmin(ctx.member.role)) return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
@@ -115,7 +115,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   const built = preview === null ? await buildTaskInput(env, task, projectId, ctx.now, { fresh, params, dryRun })
     : preview.input === null ? null : { unchanged: false as const, input: preview.input };
   if (preview !== null && built === null) return ok({ outcome: preview.outcome, continuation: preview.continuation,
-    message: preview.outcome === 'vectors_pending' ? 'Every seed visited is waiting for vector data. No preview run was started.'
+    message: preview.outcome === 'vectors_pending' ? 'Every note checked is waiting for similarity data. No preview run was started.'
       : 'No qualifying curation group was found within the page budget; no preview run was started.' });
   if (built !== null && built.unchanged) {
     emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
