@@ -285,6 +285,32 @@ test.describe('Knowledge', () => {
     });
   }
 
+  test('curation undo lists the whole change for admins and offers no control to members',async({browser})=>{
+    test.skip(!onFixture(),'the curation is the fixture’s');
+    const line='When reviewing combined guidance, check its original situations.';
+    for(const {role,cookie} of ROLES){
+      const {context,page,watch}=await openPage(browser,{path:'/knowledge',viewport:'desktop',mode:'dark',cookie:screensEnv(cookie)});
+      try{
+        await page.getByRole('link',{name:line,exact:true}).click();
+        await expect(page.getByRole('heading',{level:1,name:line})).toBeVisible();
+        const undo=page.getByRole('button',{name:'Undo curation',exact:true});
+        if(role==='member'){await expect(undo).toHaveCount(0);continue;}
+        await undo.click();const dialog=page.getByRole('dialog');
+        await expect(dialog).toContainText('Retire only the notes listed for retirement. Other notes stay as they are.');
+        await expect(dialog).toContainText('All changes happen together.');
+        await expect(dialog.getByRole('heading',{name:'Original notes to restore'})).toBeVisible();
+        await expect(dialog.getByRole('link',{name:'When curation combines distinct situations, keep their original guidance.'})).toBeVisible();
+        await expect(dialog.getByRole('heading',{name:'Notes to retire'})).toBeVisible();
+        await expect(dialog.getByRole('button',{name:'Undo curation',exact:true})).toBeEnabled();
+        await expectNoRawIds(page,'[role="dialog"]');await expectAxeClean(page,['[role="dialog"]']);await shoot(page,'curation-undo','desktop','dark');
+        await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+        await page.locator('[data-spore-lineage]').getByRole('link',{name:'When curation combines distinct situations, keep their original guidance.'}).click();
+        await expect(page.getByRole('button',{name:'Undo curation',exact:true})).toBeVisible();
+        expectQuiet(watch);
+      }finally{await context.close();}
+    }
+  });
+
   test('the old address of a project’s spores leads to its Knowledge', async ({ browser }) => {
     test.skip(!onFixture(), 'the project is the fixture’s');
     const project = fixtureProject();

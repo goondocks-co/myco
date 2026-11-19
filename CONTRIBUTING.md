@@ -89,6 +89,8 @@ Generated files belong in the same commit as their sources. Skill trigger eval c
 
 Development sessions are real project history. Preserve capture continuity and avoid destructive vault operations.
 
+To install and deploy an exact source commit to your own Cloudflare Deployment, use [the guarded source-deploy command](docs/development/source-deploy.md).
+
 Run `make source-install` from a checkout to build and check Myco, then install it where `myco update` would (`<home>/bin/myco`) and add it to PATH. It prepares SQLite, the dashboard and bundled files; it does not run tests. Open a new shell after installation to use `myco` on PATH. First installs print `myco setup`. Source builds keep their checkout and commit provenance; automatic updates leave them in place. Plain `myco update` installs the selected channel release, and `make source-install` switches back to source. No runtime pins or wrapper are created.
 
 Using a different `MYCO_HOME` repoints the shell PATH block to that home and attempts to repoint Myco's shared `~/.local/bin/myco` link.

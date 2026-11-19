@@ -1,3 +1,4 @@
+import { CURATION_UNDO_STEPS } from './schema-steps-curation-undo.js';
 import { REWIND_STEPS } from './schema-steps-rewind.js';
 import { ATTENTION_STEPS } from './schema-steps-attention.js';
 import { CURATION_ANSWER_STEPS } from './schema-steps-curation-answer.js';
@@ -2422,6 +2423,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...REWIND_STEPS.map(stamp),
   ...ATTENTION_STEPS.map(stamp),
   ...CURATION_ANSWER_STEPS.map(stamp),
+  ...CURATION_UNDO_STEPS.map(stamp),
   ...GITHUB_APP_PROJECT_STEPS.map(stamp),
 ];
 

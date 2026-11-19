@@ -967,7 +967,8 @@
     "tests/member/prompt-files.test.ts": 750,
     "tests/member/prompt-files-killed.test.ts": 2000,
     "tests/myco-server/spore-curation-cost.test.ts": 12000,
-    "tests/myco-server/spore-curation-discovery.test.ts": 10000
+    "tests/myco-server/spore-curation-discovery.test.ts": 10000,
+    "tests/myco-server/spore-curation-undo.test.ts": 4000
   },
   "parity": {
     "github app: sign-in beside the App, and admin-only setup status": 500,

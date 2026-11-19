@@ -494,6 +494,14 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   seedTitles(ctx.databasePath, sessionIds, now);
   seedTurnCards(ctx.databasePath, turns);
   settleSporeTimes(ctx.databasePath, sporeIds, now);
+  const curationHeaders=memberHeaders(SESSIONS[6]!.machine,'myco');
+  const curationTool=async(arguments_:Record<string,unknown>)=>{
+    const response=await fetch(url+'/mcp',{method:'POST',headers:curationHeaders,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'myco_spores',arguments:{project:idOf('myco'),...arguments_}}})});
+    const body=await expectOk(response,'curation fixture') as {result?:{structuredContent?:{result?:Record<string,unknown>}}};
+    const result=body.result?.structuredContent?.result;if(result?.error!==undefined||result===undefined)throw new Error('Curation fixture was refused');return result;
+  };
+  const original=await curationTool({op:'save',type:'gotcha',agent_line:'When curation combines distinct situations, keep their original guidance.',content:'Original guidance for the curation undo screen.'});
+  await curationTool({op:'consolidate',observation_type:'wisdom',source_spore_ids:[{id:original.id,revision:0}],consolidated_content:'Combined guidance for the curation undo screen.',agent_line:'When reviewing combined guidance, check its original situations.'});
   const runs = seedRuns(ctx.databasePath, now, sporeIds, sessionIds);
   seedReleaseState(ctx.databasePath, sessionIds, now);
   seedBackup(ctx.databasePath, now);
@@ -503,7 +511,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     projects: PROJECTS.map((p) => ({ projectId: p.projectId, name: p.name })),
     sessions: SESSIONS.length,
     liveSessionId,
-    spores: SPORES.length,
+    spores: SPORES.length+2,
     plans: PLANS.length,
     runs,
   };

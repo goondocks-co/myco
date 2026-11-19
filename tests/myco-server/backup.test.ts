@@ -2,6 +2,9 @@
  * The backup engine: table dispositions drift-guarded against the DDL, the
  * round trip, the refusal gates, and the retention rule.
  */
+import { consolidateSpores } from '@myco-server-worker/db/spores/lifecycle.js';
+import { getSpore } from '@myco-server-worker/db/spores/records.js';
+import { sporeCurationUndo,undoSporeCuration } from '@myco-server-worker/core/spore-curation-undo.js';
 import { readCurationCoverage } from '@myco-server-worker/db/spores/curation-answer.js';
 import { restoreStoredBackup } from './helpers/stored-restore.js';
 import { describe, expect, it } from 'bun:test';
@@ -187,9 +190,13 @@ describe('portable machine identities', () => {
       source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
       for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
       expect(await readCurationCoverage(source.db, 'proj_bk')).toEqual({unconsidered:1,unevaluated:0});
+      await consolidateSpores(source.db,{projectId:'proj_bk'},{wisdom:{id:'wisdom-backup',agentId:'agent_bk',sessionId:null,observationType:'wisdom',content:'Combined guidance.',agentLine:'When changing capture, preserve history.',context:null,filePath:null,tags:null,contentHash:null,properties:null,author:null,createdAt:source.now},sources:[{id:'unconsidered',revision:0}],event:{agentId:'agent_bk',author:null,reason:'One situation.',sessionId:null,createdAt:source.now},now:source.now});
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
+      expect((await sporeCurationUndo(target.db,{projectId:'proj_bk'},'unconsidered'))!.unit.id).toBe('wisdom-backup');
+      expect(await undoSporeCuration(target.db,{projectId:'proj_bk',unitId:'wisdom-backup',actor:'mem_machine_1',now:source.now+1})).toMatchObject({ok:true});
+      expect((await getSpore(target.db,{projectId:'proj_bk'},'unconsidered'))!.status).toBe('active');
       expect(target.sqlite.query('SELECT * FROM prompt_context_answers').all())
         .toEqual(source.sqlite.query('SELECT * FROM prompt_context_answers').all());
     } finally { source.sqlite.close(); target.sqlite.close(); }

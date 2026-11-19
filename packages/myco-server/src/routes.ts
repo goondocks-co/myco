@@ -1,3 +1,4 @@
+import { handleSporeCurationUndo, handleUndoCuration } from './api/curation-undo.js';
 import { handleCurationAnswer, handleCurationCoverage } from './api/curation.js';
 import { MAX_REPOSITORY_REQUEST_BYTES } from '@goondocks/myco-shared/repository';
 import { handleSetup } from './api/setup.js';
@@ -294,6 +295,8 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('grant', 'admin', 'project', ['member']), method: 'POST', path: '/api/projects/{projectId}/grants/{grantId}/revoke', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/grants\/(?<grantId>[A-Za-z0-9._-]{1,64})\/revoke$/, auth: 'session', authority: 'admin', handler: handleRevokeGrant },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/agents', auth: 'session', authority: 'member', handler: handleAgents },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PUT', path: '/api/agents/{agentId}', pattern: /^\/api\/agents\/(?<agentId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleRegisterAgent },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}/curation', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})\/curation$/, auth: 'session', authority: 'admin', handler: handleSporeCurationUndo },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/projects/{projectId}/curation/{unitId}/undo', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/curation\/(?<unitId>[^/]{1,192})\/undo$/, auth: 'session', authority: 'admin', handler: handleUndoCuration },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/projects/{projectId}/curation/coverage', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/curation\/coverage$/, auth: 'session', authority: 'admin', handler: handleCurationCoverage },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/projects/{projectId}/curation/answers/{runId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/curation\/answers\/(?<runId>[^/]{1,192})$/, auth: 'session', authority: 'admin', handler: handleCurationAnswer },
   { authorization: httpPolicy('run', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/runs', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'session', authority: 'member', handler: handleProjectRuns },
