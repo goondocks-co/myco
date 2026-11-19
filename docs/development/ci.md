@@ -43,6 +43,35 @@ MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
 MYCO_PARITY_SHARD=1/7 npm run test:parity
 ```
 
+## Bun runtime pin
+
+`.bun-version` selects Bun for CI, release compilation and `make source-deploy`.
+The server Dockerfile's `BUN_VERSION` default must agree with it. A compiled
+binary embeds its compiler's Bun runtime.
+
+Bun 1.4.3 corrects the failed `node:child_process.spawnSync()` result to match
+Node: `pid: 0`, `status: null`, `output: null`. Bun 1.4.0 returned
+`pid: undefined`, `status: undefined`, `output: [null, null, null]`.
+The installer child-home tests require the safety refusal and no child PID;
+they accept both failed-spawn sentinels. Their nine failures on 1.4.3 came from
+requiring `undefined`, while the guard still refused each child before launch.
+
+Minimal reproduction, run with each runtime from an empty scratch directory:
+
+```js
+import { spawnSync } from 'node:child_process';
+const result = spawnSync('./does-not-exist');
+console.log(result.pid, result.status, result.output, result.error?.code);
+```
+
+Bun 1.4.0 prints `undefined undefined [ null, null, null ] ENOENT`;
+Bun 1.4.3 and Node print `0 null null ENOENT`. The change is documented under
+[`node:child_process` in Bun 1.4.3's release notes](https://bun.sh/blog/bun-v1.4.3#node-child-process).
+The [1.4.1](https://bun.sh/blog/bun-v1.4.1) and
+[1.4.2](https://bun.sh/blog/bun-v1.4.2) notes do not describe this result change.
+
+## Repeating a test group
+
 To repeat one whole group, use the workflow's shard assignment and the label
 printed by `MYCO_RUNNER_DRY_RUN=1 npm test`. `MYCO_TEST_GROUP` filters after shard
 assignment; an unknown label or a group assigned elsewhere is an error.
