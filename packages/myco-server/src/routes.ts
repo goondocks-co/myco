@@ -1,7 +1,7 @@
 import { TELEMETRY_BODY_BYTES } from './core/telemetry-policy.js';
 import { receiveTelemetry } from './core/telemetry-receiver.js';
 import { TELEMETRY_INGEST_POLICY } from './auth/telemetry-policy.js';
-import { handleTelemetryKeys, handleIssueTelemetryKey, handleRevokeTelemetryKey, handleForgetTelemetryKey } from './api/telemetry.js';
+import { handleTelemetryKeys, handleIssueTelemetryKey, handleRevokeTelemetryKey, handleForgetTelemetryKey } from './api/telemetry-keys.js';
 import { handleSporeCurationUndo, handleUndoCuration } from './api/curation-undo.js';
 import { handleCurationAnswer, handleCurationCoverage } from './api/curation.js';
 import { MAX_REPOSITORY_REQUEST_BYTES } from '@goondocks/myco-shared/repository';
