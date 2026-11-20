@@ -184,10 +184,9 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <CountButton>{countEvidence(answer, 'toolCalls', 'tool call')}</CountButton>
               <CountButton onClick={() => openFilter('failed')}>{countEvidence(answer, 'failedTools', 'failed', 'failed')}</CountButton>
               {answer.visibility.reportedErrors === 'not_visible' ? <CountButton>Reported errors: not visible</CountButton> : answer.reportedErrors > 0 && <CountButton>{answer.reportedErrors.toLocaleString()} reported errors</CountButton>}
-              {answer.nestedToolCalls > 0 && <CountButton>{answer.nestedToolCalls.toLocaleString()} nested calls</CountButton>}
+              {answer.nestedToolCalls > 0 && <CountButton value={answer.nestedToolCalls}>{answer.nestedToolCalls === 1 ? 'nested call' : 'nested calls'}</CountButton>}
               <CountButton onClick={() => openFilter('myco')}>{countEvidence(answer, 'mycoCalls', 'Myco call')}</CountButton>
               <CountButton onClick={() => setTab('files')}>{fileEditWords(answer.fileEdits)}</CountButton>
-              {answer.nestedToolCalls > 0 && <CountButton value={answer.nestedToolCalls}>nested calls</CountButton>}
               <CountButton onClick={() => setAbout(true)}>About this session</CountButton>
             </div>
           </header>

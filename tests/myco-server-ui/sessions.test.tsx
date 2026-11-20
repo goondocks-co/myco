@@ -2366,6 +2366,7 @@ for (const agent of ['codex', 'cursor'] as const) it(`renders ${agent} evidence 
     else {
       expect(await screen.findByText('pwd', { exact: true })).toBeTruthy();
       expect(screen.queryByText('Steered while it ran')).toBeNull();
+      expect(header.textContent?.match(/nested calls?/g)).toHaveLength(1);
       expect(screen.getByRole('button', { name: /2 model calls.*1 nested call/ })).toBeTruthy();
     }
     fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
