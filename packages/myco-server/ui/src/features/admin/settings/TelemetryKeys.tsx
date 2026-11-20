@@ -28,7 +28,7 @@ export function TelemetryKeys() {
     description="Connect a sender that reports agent activity using OpenTelemetry. These keys accept telemetry and cannot read Myco."
     actions={<Button onClick={() => setAdding(true)}>Add telemetry key</Button>}>
     <CommandBlock caption="OTLP endpoint base" command={keys.data?.endpoint ?? window.location.origin} />
-    <p className="t-small text-muted">Configure your sender for OTLP/HTTP JSON with this base address and the authorization header shown when you create a key.</p>
+    <p className="t-small text-muted">Configure your sender for OTLP/HTTP using this base address and the header shown when you create a key.</p>
     {keys.isPending ? <LoadingState label="Loading telemetry keys" /> : keys.isError ? <ErrorState error={keys.error} onRetry={() => void keys.refetch()} />
       : keys.data.keys.length === 0 ? <Card><p className="t-body text-muted">No telemetry keys.</p></Card>
         : <RowCard label="Telemetry keys">{keys.data.keys.map(key => <div key={key.id} className="flex items-start justify-between gap-s4 px-s4 py-s4">
