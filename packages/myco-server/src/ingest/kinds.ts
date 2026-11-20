@@ -87,6 +87,7 @@ const toolCallFields: Record<string, FieldSpec> = {
   durationMs: int(MAX_DURATION_MS, 'duration_ms'),
   filesAffected: { bound: { type: 'stringArray', maxItems: MAX_FILES_AFFECTED, maxItem: MAX_FILE_PATH_CHARS }, column: 'files_affected' },
   nested: { bound: { type: 'bool' } },
+  reportedError: { bound: { type: 'bool' } },
   success: { bound: { type: 'bool' }, required: true, column: 'success' },
   resultReason: { bound: { type: 'enum', values: TOOL_RESULT_REASONS }, column: 'result_reason' },
   mycoTool: str(64, 'myco_tool'),

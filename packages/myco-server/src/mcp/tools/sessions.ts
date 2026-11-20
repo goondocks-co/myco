@@ -8,7 +8,7 @@ import { TurnLocatorBuilding } from '../../db/documents/locators.js';
  * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { documentTurnCollection, documentTurnDetail, TURN_COLLECTIONS, type TurnCollection } from '../../content/session-turns.js';
-import { documentCounters, listCatalogTurns } from '../../read/document-catalog.js';
+import { documentCounters, listSessionTurns } from '../../read/document-catalog.js';
 import { sessionEvidence } from '../../read/session-evidence.js';
 import { decodeCursor } from '../../read/scope.js';
 import { PROMPT_ORIGINS } from '../../ingest/kinds.js';
@@ -94,7 +94,7 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
       return await documentTurnDetail(ctx.env, scope, id, promptId) ?? failure('Turn not found; call myco_sessions with op get and id to list its turns.');
     }
     if (cursor !== undefined && decodeCursor(cursor) === null) return failure('Invalid cursor; call myco_sessions with op get and id without cursor to list its turns.');
-    const turns = ctx.principal.kind === 'grant' ? undefined : await listCatalogTurns(db, scope, id, {
+    const turns = ctx.principal.kind === 'grant' ? undefined : await listSessionTurns(db, scope, id, {
       origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor,
     });
     const { turns: turnCount, ...evidence } = sessionEvidence(row.agent, await documentCounters(db, scope, id));

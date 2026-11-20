@@ -11,10 +11,13 @@ import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import worker from '@myco-server-worker/index.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
-import { envelope, memberPost, sqliteEnv } from './helpers/fixtures.js';
+import { envelope, memberPost, sqliteEnv, memoryBlobStore } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { launchParentSession } from '@myco/member/session-lineage.js';
+import { documentCounters, listSessionTurns } from '@myco-server-worker/read/document-catalog.js';
+import { documentTurnDetail } from '@myco-server-worker/content/session-turns.js';
+import type { SessionInvocation } from '@myco-server-worker/read/session-invocations.js';
 
 const instant = '2026-01-01T00:00:00Z';
 const row = (type: string, payload: Record<string, unknown>) => ({ type, timestamp: instant, payload });
@@ -200,8 +203,8 @@ test('unrecognized harness wrappers preserve person counts and empty wrappers op
   const fixture = sqliteEnv();
   try {
     for (const [agent, people, turns, personEntries, wrappers] of [
-      ['claude-code', 5, 7, 6, ['<bash-input>pwd</bash-input>', '<user-prompt-submit-hook>context</user-prompt-submit-hook>', '<scheduled-task>context</scheduled-task>', '<note/>']],
-      ['codex', 2, 3, 3, ['<user_shell_command>pwd</user_shell_command>', '<turn_aborted>interrupted</turn_aborted>', '<note/>']],
+      ['claude-code', 5, 7, 5, ['<bash-input>pwd</bash-input>', '<user-prompt-submit-hook>context</user-prompt-submit-hook>', '<scheduled-task>context</scheduled-task>', '<note/>']],
+      ['codex', 2, 3, 2, ['<user_shell_command>pwd</user_shell_command>', '<turn_aborted>interrupted</turn_aborted>', '<note/>']],
       ['codex', 1, 4, 1, ['<hc from="planner">Follow up</hc>', '<hc from="planner">Check again</hc>', '<hc from="planner">Finish</hc>']],
     ] as const) {
       const session = `${agent}-${people}`;
@@ -231,4 +234,57 @@ test('transcript agent instructions reopen an ended session and a self launch pa
     const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/reopen'), { ...fixture.env, ...OWNER_ENV });
     expect(await response.json()).toMatchObject({ session: { endedAt: null, launchParentSessionId: 'parent' }, turns: 1, personTurns: 0 });
   } finally { fixture.sqlite.close(); }
+});
+
+test('direct Codex command errors stay separate from legacy failures, including a same-id completion', async () => {
+  const fixture = sqliteEnv();
+  const scope = { projectId: 'proj_1', memberId: 'owner', role: 'owner' as const };
+  try {
+    for (const sameCall of [false, true]) {
+      const records = [row('event_msg', { type: 'task_started', turn_id: 'task' }), message('user', 'Find the requested string'),
+        row('response_item', { type: 'function_call', call_id: 'command', name: 'exec_command', arguments: '{"cmd":"grep missing file"}' }),
+        ...(sameCall ? [row('event_msg', { type: 'item_completed', turn_id: 'task', item: { type: 'CommandExecution', id: 'command', command: 'grep missing file', exit_code: 1, status: 'failed', aggregated_output: 'No match' } })] : []),
+        row('response_item', { type: 'function_call_output', call_id: 'command', output: 'Process exited with code 1\nOutput:\nNo match' }),
+        ...(!sameCall ? [row('response_item', { type: 'function_call', call_id: 'shell', name: 'shell', arguments: '{"command":"grep missing file"}' }),
+          row('response_item', { type: 'function_call_output', call_id: 'shell', output: JSON.stringify({ output: 'No match', metadata: { exit_code: 1 } }) })] : []),
+      ];
+      const session = sameCall ? 'same-call' : 'noisy';
+      const env = await captureDocumentTranscript(fixture.db, fixture.bucket, session, `tx_${crypto.randomUUID().replaceAll('-', '')}`, records.map(record => JSON.stringify(record)).join('\n') + '\n', Date.now(), 0, 'codex', 'proj_1');
+      await publishDocuments(env, Date.now() + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+      const counts = await documentCounters(fixture.db, scope, session);
+      expect(counts).toMatchObject({ failedTools: 0, toolCalls: sameCall ? 1 : 2, reportedErrors: sameCall ? 1 : 2, nestedToolCalls: 0 });
+      const header = await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/${session}`), { ...fixture.env, ...OWNER_ENV });
+      expect(await header.json()).toMatchObject({ failedTools: 0, counts: { failedTools: 0 }, reportedErrors: sameCall ? 1 : 2 });
+      const turns = await listSessionTurns(fixture.db, scope, session, { origins: ['user'] });
+      expect(turns.rows.map(turn => turn.failedTools)).toEqual([0]);
+      expect((await listSessionTurns(fixture.db, scope, session, { origins: ['user'], filter: 'failed' })).rows).toEqual([]);
+      const detail = await documentTurnDetail(env, scope, session, turns.rows[0]!.promptId);
+      expect(detail!.tools).toMatchObject({ failed: 0, reportedErrors: sameCall ? 1 : 2, failures: [] });
+    }
+  } finally { fixture.sqlite.close(); }
+});
+
+test('late invocation evidence overlays turn reads and person turns without changing learning or entry counts', async () => {
+  await withDocumentStores(async db => {
+    const bucket = memoryBlobStore();
+    const scope = { projectId: 'project' };
+    const records = [row('event_msg', { type: 'task_started', turn_id: 'task' }), message('user', 'Inspect the query')];
+    const env = await captureDocumentTranscript(db, bucket, 'invoked', `tx_${'8'.repeat(32)}`, records.map(record => JSON.stringify(record)).join('\n') + '\n', Date.now(), 0, 'codex', 'project');
+    await publishDocuments(env, Date.now() + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const original = await listSessionTurns(db, scope, 'invoked', { origins: ['user'] });
+    const head = original.rows[0]!;
+    const fact: SessionInvocation = { startAt: head.createdAt + 1_000, endAt: head.createdAt + 10_000, matchedBy: 'exact', keyLabel: 'Planner', serviceName: 'automation', agentName: 'reviewer' };
+    for (const [facts, invoked, matchedBy] of [[[], false, null], [[fact], true, 'exact'], [[fact, { ...fact, startAt: head.createdAt - 1_000 }], false, null], [[{ ...fact, matchedBy: 'inferred' }], true, 'inferred'], [[{ ...fact, startAt: head.createdAt + 120_000 }], false, null]] as const) {
+      const provider = async () => facts;
+      const turns = await listSessionTurns(db, scope, 'invoked', { origins: ['user', 'agent_dispatch'], invocations: provider });
+      const detail = await documentTurnDetail(env, scope, 'invoked', head.promptId, provider);
+      expect([turns.rows[0]!.origin, detail!.prompt.origin]).toEqual([invoked ? 'agent_dispatch' : 'user', invoked ? 'agent_dispatch' : 'user']);
+      expect([turns.rows[0]!.invocation?.matchedBy ?? null, detail!.prompt.invocation?.matchedBy ?? null]).toEqual([matchedBy, matchedBy]);
+      if (invoked) expect(detail!.prompt.invocation?.keyLabel).toBe('Planner');
+      expect(await documentCounters(db, scope, 'invoked', provider)).toMatchObject({ userTurns: invoked ? 0 : 1, userPrompts: 1, turns: 1 });
+      expect((await listSessionTurns(db, scope, 'invoked', { origins: ['user'], invocations: provider })).rows).toHaveLength(invoked ? 0 : 1);
+      expect((await documentTurnInput(env, 'project', 'invoked', head.promptId))?.origin).toBe('user');
+    }
+    expect((await documentCounters(db, scope, 'invoked'))?.userTurns).toBe(1);
+  });
 });

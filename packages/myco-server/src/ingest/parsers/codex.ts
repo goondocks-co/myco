@@ -20,7 +20,7 @@ import { isInstructionOrigin } from '../../read/extraction-origins.js';
  * whole session) or, where the rollout records none, its byte position. A
  * message outside any turn the window has read names no prompt.
  */
-import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
+import { toolResultDeclarationOf, toolResultFailed, toolResultReportedError } from '@goondocks/myco-shared/tool-result';
 import { sha256Hex, uuidv5 } from '../../hash.js';
 import { evaluatePromptRules, promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
@@ -193,6 +193,7 @@ export const codexParser: TranscriptParser = {
         const call = await callForResult(input, this.agent, source, pending, { promptId, createdAt, offset });
         const output = (typeof payload.output === 'string' ? payload.output : codexText(payload.output)).slice(0, input.view ? undefined : TOOL_OUTPUT_PREVIEW_CHARS);
         const failed = toolResultFailed({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: payload, toolName: call.toolName });
+        const reportedError = toolResultReportedError({ declaration: toolResultDeclarationOf(CAPTURE_RULE_BUNDLES, this.agent), record: value, result: payload, toolName: call.toolName });
         events.push({
           kind: failed ? 'tool.failure' : 'tool.use', source, ...(input.view?{callOffset:call.toolName==='unknown'?undefined:call.offset,outcomeOffset:offset}:{}), legacyId: call.toolCallId,
           payload: {
@@ -202,6 +203,7 @@ export const codexParser: TranscriptParser = {
             input: call.input,
             ...(output === '' ? {} : { output }),
             success: !failed,
+            ...(reportedError ? { reportedError: true } : {}),
             ...(failed ? { resultReason: 'reported', errorMessage: output === '' ? 'tool failed' : output } : {}),
           },
           createdAt: call.createdAt,

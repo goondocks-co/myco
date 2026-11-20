@@ -78,7 +78,7 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
     summary: toolSummary(p.input), input, input_bytes: new TextEncoder().encode(input).length,
     files_affected: Array.isArray(p.filesAffected) ? p.filesAffected : filesNamedByToolInput(p.input),
     success: failed ? 0 : 1, output_preview: preview(p.output), error_message: preview(p.errorMessage),
-    nested: p.nested === true, result_reason: str(p.resultReason), duration_ms: typeof p.durationMs === 'number' ? p.durationMs : null,
+    nested: p.nested === true, ...(p.reportedError === true ? { reported_error: true } : {}), result_reason: str(p.resultReason), duration_ms: typeof p.durationMs === 'number' ? p.durationMs : null,
     call_source: at.call === undefined ? (str(p.toolName) && p.toolName !== 'unknown' ? { ordinal: 0, offset: 0, origin: 'reported' } : null) : at.call,
     outcome_source: at.outcome ?? { ordinal: 0, offset: 0, origin: 'reported' },
   };

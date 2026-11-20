@@ -7,7 +7,7 @@ export const ROLLUP_TOOLS = 8;
 const ERROR_EXCERPT_CHARS = 240;
 
 /** An absent result is an unknown outcome; only a tool's reported error counts as a failure. */
-export const reportedToolFailure = (record: DocRecord): boolean => record.success === 0
+export const reportedToolFailure = (record: DocRecord): boolean => record.reported_error === true || record.success === 0
   && (record.result_reason == null || record.result_reason === 'reported');
 
 export interface ToolRollup {

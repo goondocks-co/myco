@@ -1,7 +1,6 @@
 import worker from '@myco-server-worker/index.js';
 import { captureDocumentTranscript } from '../myco-server/helpers/document-stores.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from '../myco-server/helpers/owner.js';
 import { sessionEvidence } from '@myco-server-worker/read/session-evidence.js';
 import { TICK_MS, RUNNING_TICK_MS } from '../../packages/myco-server/ui/src/lib/live';
@@ -2367,10 +2366,37 @@ for (const agent of ['codex', 'cursor'] as const) it(`renders ${agent} evidence 
       expect(await screen.findByText('pwd', { exact: true })).toBeTruthy();
       expect(screen.queryByText('Steered while it ran')).toBeNull();
       expect(header.textContent?.match(/nested calls?/g)).toHaveLength(1);
+      expect(screen.getByText('1 call reported an error or a non-zero exit')).toBeTruthy();
       expect(screen.getByRole('button', { name: /2 model calls.*1 nested call/ })).toBeTruthy();
     }
     fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
     const about = await screen.findByRole('dialog', { name: 'About this session' });
     expect(about.textContent).toContain(agent === 'codex' ? 'At least 1 file edited' : 'Files edited: not visible');
   } finally { fixture.sqlite.close(); }
+});
+
+it('keeps incomplete evidence invisible and unwraps an invoked turn envelope once', async () => {
+  const invocation = { startAt: NOW - 3000, endAt: NOW, matchedBy: 'inferred', keyLabel: 'Planner', serviceName: null, agentName: null };
+  const answer = await detail({}, { personTurns: 0, nestedToolCalls: 1, reportedErrors: 1 }).json();
+  answer.visibility.nestedToolCalls = 'not_visible';
+  answer.visibility.reportedErrors = 'not_visible';
+  server(base({
+    '/api/projects/x/sessions/s1': () => Response.json(answer),
+    '/api/projects/x/sessions/s1/turns': () => page([turn({ origin: 'agent_dispatch', invocation })]),
+    [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+      prompt: { promptId: P1, origin: 'agent_dispatch', invocation, text: '<a>nested</a>', envelope: { name: 'a', attributes: '' }, blobKey: null, parentPromptId: null, createdAt: NOW - 3000 },
+      card: null, responses: [], plans: [], attachments: [], children: [], injection: null, answers: [], metrics: { tools: [], durationMs: null, tokens: null },
+      tools: { complete: true, evidenceReady: false, total: 1, nested: 1, reportedErrors: 1, failed: 0, byTool: [{ toolName: 'exec', count: 1 }], failures: [], files: [], filesNamed: 0, myco: [] },
+    }),
+  }));
+  mount('/p/x/sessions/s1');
+  const opened = await screen.findByTestId(`turn-${P1}`);
+  expect(await within(opened).findByText('<a>nested</a>', { exact: true })).toBeTruthy();
+  expect(within(opened).getAllByText('a', { exact: true })).toHaveLength(1);
+  expect(within(opened).getByText('Probably invoked by another program · Planner')).toBeTruthy();
+  expect(within(opened).getByText('Nested calls and reported errors are not visible for this stored turn.')).toBeTruthy();
+  expect(within(opened).queryByText(/calls? reported an error/)).toBeNull();
+  expect(document.querySelector('[data-session-counts]')!.textContent).not.toContain('1 nested call');
+  fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
+  expect((await screen.findByRole('dialog', { name: 'About this session' })).textContent).toContain('Not visible');
 });

@@ -78,6 +78,16 @@ export interface ResumeCommand {
   line: string;
 }
 
+/** Invocation confidence and labels carried by a displayed turn. */
+export interface TurnInvocation {
+  startAt: number;
+  endAt: number | null;
+  matchedBy: 'exact' | 'inferred';
+  keyLabel: string | null;
+  serviceName: string | null;
+  agentName: string | null;
+}
+
 /** Observations retain their numeric counters; coverage is an independent fact. */
 export interface SessionEvidence {
   toolCalls: number;

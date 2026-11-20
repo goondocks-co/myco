@@ -41,7 +41,13 @@ export function toolResultDeclarationOf(bundles: readonly { name: string; toolRe
 export function toolResultFailed(request: { declaration: ToolResultDeclaration | undefined; record?: unknown; result?: unknown; toolName?: string }): boolean {
   assertToolResultDeclaration('', request.declaration);
   const { failure } = request.declaration;
-  if (failure !== null && getAtPath(request[failure.from], failure.path) === failure.equals) return true;
+  return failure !== null && getAtPath(request[failure.from], failure.path) === failure.equals;
+}
+
+/** Reported command errors are evidence independent of the harness's failure flag. */
+export function toolResultReportedError(request: Parameters<typeof toolResultFailed>[0]): boolean {
+  assertToolResultDeclaration('', request.declaration);
+  if (toolResultFailed(request)) return true;
   const command = request.declaration.commandOutput;
   if (command === undefined || request.toolName === undefined || !command.tools.includes(request.toolName)) return false;
   const output = getAtPath(request.result, command.path);

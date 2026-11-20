@@ -3,9 +3,6 @@ import { ownedLines, unfinishedCalls, recordId, legacyRecordId, replyChunks, res
 import { LEGACY_RECORD_ID_SCHEME, isReplySource, RecordSourceInvalid } from '@goondocks/myco-shared/record-identity';
 import { MAX_BLOB_BYTES } from '../../constants.js';
 import { utf8 } from '../../hash.js';
-import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
-import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import { attributedPrompt } from '../../core/session-invocations.js';
 
 /** Retained tool calls above this count become explicit failures. */
 const MAX_PENDING_CALLS = 32;
@@ -72,9 +69,6 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       for (const line of ownedLines(input.lines, input.sessionId, parser.continuation)) {
         const derived = await parser.parse({ ...input, now:input.view?line.receivedAt??input.now:input.now, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId, claims });
         for (const event of derived) {
-          if (event.kind === 'prompt') event.payload = attributedPrompt(event.payload, { at: event.createdAt,
-            launchParentSessionId: input.launchParentSessionId,
-            invocations: sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, parser.agent) ? input.invocations : undefined });
           if (event.kind === 'prompt' && event.opensTurn === false) {
             event.payload.claim ??= 'context';
             if (openPromptId !== undefined) event.payload.parentPromptId = openPromptId;

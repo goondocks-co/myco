@@ -1,5 +1,4 @@
 import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
-import { attributedPrompt, sessionInvocationFacts } from '../core/session-invocations.js';
 /**
  * The session document publisher.
  *
@@ -505,11 +504,6 @@ class SessionPublication {
   private async publishQueued(rows: readonly QueuedRow[]): Promise<void> {
     if (rows.length === PUBLISH_QUEUE_PER_PASS) this.more = true;
     const content = bundleContentEnv(this.env);
-    const prompts = rows.filter(row => row.kind === 'prompt');
-    const invocations = prompts.length === 0 ? [] : await sessionInvocationFacts(this.db, {
-      projectId: this.projectId, sessionId: this.sessionId,
-      from: Math.min(...prompts.map(row => row.created_at)), until: Math.max(...prompts.map(row => row.created_at)) + 1,
-    });
     for (let at = 0, size = 1; at < rows.length; size *= 2) {
       const group: QueuedRecord[] = [];
       for (const row of rows.slice(at, at + size)) {
@@ -522,9 +516,7 @@ class SessionPublication {
             const header = row.kind === 'prompt' ? documentRecord(row.kind, payload, row.created_at, origin) : null;
             parentId = header?.k === 'prompt' && typeof header.parent_prompt_id === 'string' ? header.parent_prompt_id : null;
           });
-          const attributed = row.kind === 'prompt' ? attributedPrompt(payload, { at: row.created_at,
-            launchParentSessionId: this.doc.launch_parent_session_id ?? undefined, invocations }) : payload;
-          group.push({ consumed: ref, record: documentRecord(row.kind, attributed, row.created_at, origin) });
+          group.push({ consumed: ref, record: documentRecord(row.kind, payload, row.created_at, origin) });
         } catch (error) {
           const outcome = publicationOutcome(error);
           const delay = Math.min(Math.max(row.retry_at - row.received_at, PUBLISH_BACKOFF_MIN_MS), PUBLISH_BACKOFF_MAX_MS);

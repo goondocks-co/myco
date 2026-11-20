@@ -147,10 +147,10 @@ function polling(tool: TurnToolInput): boolean {
 /** Reply characters a control or notification turn needs when no successful file edit is present. */
 export const CONTROL_REPLY_CHARS = 1_500;
 
-/** Instruction turns with failed calls or plans need cards; control turns need a file change or a substantial reply. */
+/** Failed calls and plans need cards; other control turns need a file change or a substantial reply. */
 export function triageTurn(turn: TurnInput): string | null {
   const instruction = isInstructionOrigin(turn.origin);
-  if (instruction && (turn.plans.length > 0 || turn.tools.some(failed))) return null;
+  if (turn.plans.length > 0 || turn.tools.some(failed)) return null;
   const replies = turn.replies.reduce((total, reply) => total + reply.text.length, 0);
   const control = !instruction || noHumanText(turn.prompt)
     && turn.steering.every(prompt => noHumanText(prompt.text));

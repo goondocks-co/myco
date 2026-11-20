@@ -216,6 +216,7 @@ export type PromptOrigin = (typeof PROMPT_ORIGINS)[number];
 
 /** One top-level prompt of a session and counts of what followed it; the list the timeline renders collapsed. */
 export interface TurnRow {
+  invocation?: import('../features/sessions/wire').TurnInvocation;
   promptId: string;
   origin: string;
   promptKind: string | null;
@@ -263,6 +264,7 @@ export interface ToolRollup {
 }
 
 export interface TurnPrompt {
+  invocation?: import('../features/sessions/wire').TurnInvocation;
   claim?: string | null;
   envelope?: { name: string; attributes: string } | null;
   promptId: string;

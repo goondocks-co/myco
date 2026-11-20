@@ -120,5 +120,6 @@ it('publishes an older Codex shell result with metadata exit_code as a reported 
     { type: 'response_item', payload: { type: 'function_call_output', call_id: 'older-shell', output: JSON.stringify({ output: 'failed command', metadata: { exit_code: 7 } }) } },
   ];
   const events = await PARSERS.codex!.parse({ lines: records.map((value, offset) => ({ value, offset })), sessionId: 'older-shell-session', transcriptId: 'older-shell-transcript', recordScheme: 'source-record-v1', scheme: 'offset-v1', now: Date.now(), terminal: 'complete_file' });
-  expect(events.filter(event => event.kind === 'tool.failure').map(event => ({ name: event.payload.toolName, success: event.payload.success, reason: event.payload.resultReason }))).toEqual([{ name: 'shell', success: false, reason: 'reported' }]);
+  expect(events.filter(event => event.kind === 'tool.use').map(event => ({ name: event.payload.toolName, success: event.payload.success, reported: event.payload.reportedError }))).toEqual([{ name: 'shell', success: true, reported: true }]);
+  expect(events.some(event => event.kind === 'tool.failure')).toBe(false);
 });

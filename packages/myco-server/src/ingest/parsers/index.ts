@@ -47,7 +47,6 @@ export interface ParsedLine {
 
 export interface ParserInput {
   launchParentSessionId?: string;
-  invocations?: readonly import('../../core/session-invocations.js').SessionInvocation[];
   view?: boolean;
   identities?: Map<string,readonly string[]>;
   /** Canonical tool ids whose owning prompt this window proves. */

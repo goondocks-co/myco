@@ -170,7 +170,7 @@ export function toolCallRow(record: DocRecord, at: PageLocator) {
   };
 }
 
-export type PromptWireRow = ReturnType<typeof promptRow>;
+export type PromptWireRow = ReturnType<typeof promptRow> & { invocation?: import('../read/session-invocations.js').SessionInvocation };
 export type ResponseWireRow = ReturnType<typeof responseRow>;
 export type ToolCallWireRow = ReturnType<typeof toolCallRow>;
 

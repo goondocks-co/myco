@@ -30,7 +30,7 @@ import {
   turns_parseOrigins as parseOrigins,
   turns_sessionTurnContexts as sessionTurnContexts,
 } from '../read/catalog/turns.js';
-import { documentCounters, listCatalogTurns } from '../read/document-catalog.js';
+import { documentCounters, listSessionTurns } from '../read/document-catalog.js';
 import { TurnLocatorBuilding } from '../db/documents/locators.js';
 import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords, TURN_COLLECTIONS, type TurnCollection } from '../content/session-turns.js';
 import { documentSessionActivity } from '../content/session-activity.js';
@@ -269,7 +269,7 @@ export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Pro
   if (order !== null && order !== 'asc' && order !== 'desc') return badRequest('order must be asc or desc');
   const promptId = ctx.url.searchParams.get('turn') ?? undefined;
   const around = page.cursor === undefined ? ctx.url.searchParams.get('around') ?? undefined : undefined;
-  return ok(await listCatalogTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId,
+  return ok(await listSessionTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId,
     filter: filter ?? undefined, around }));
 }
 

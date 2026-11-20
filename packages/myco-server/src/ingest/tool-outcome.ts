@@ -23,6 +23,7 @@ const callFields = [
   'canopy_injection_tokens',
 ] as const;
 const outcomeFields = [
+  'reported_error',
   'success',
   'error_message',
   'result_reason',

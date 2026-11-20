@@ -25,10 +25,10 @@ export async function completedTool(input: ParserInput, agent: string, line: Par
   const sourceTurn = shape.turnAt === undefined ? undefined : str(getAtPath(value, shape.turnAt));
   const promptId = sourceTurn === undefined || sourceTurn === owner.turnId ? owner.promptId : undefined;
   return {
-    kind: failed ? 'tool.failure' : 'tool.use', source, offset, callOffset: offset, outcomeOffset: offset,
+    kind: 'tool.use', source, offset, callOffset: offset, outcomeOffset: offset,
     createdAt: lineTime(value, input.now, undatedAt),
     payload: { nested: !owner.directCalls.has(key), toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset }), promptId,
-      toolName: server === undefined ? name : `mcp__${server}__${name}`, input: args ?? {}, output: text, success: !failed,
-      ...(failed ? { resultReason: 'reported', errorMessage: typeof exit === 'number' ? `Exit code ${exit}` : `Tool status: ${String(status)}` } : {}) },
+      toolName: server === undefined ? name : `mcp__${server}__${name}`, input: args ?? {}, output: text, success: true, ...(failed ? { reportedError: true } : {}),
+    },
   };
 }

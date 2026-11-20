@@ -135,8 +135,9 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
     ? rollup.myco.map((call) => ({ key: call.name, name: call.name, count: call.count, failed: call.failed }))
     : (summary?.myco ?? []).map((call) => ({ key: `${call.tool}:${call.op ?? ''}`, name: `${call.tool}${call.op !== null ? ` · ${call.op}` : ''}`, count: call.count, failed: call.failed }));
   const failuresTotal = rollup !== null ? failed : summary?.failed ?? 0;
-  const partial = summary?.complete === false;
-  const nested = summary?.nested ?? 0;
+  const partial = summary?.complete === false || summary?.evidenceReady === false;
+  const nested = summary?.evidenceReady === false ? 0 : summary?.nested ?? 0;
+  const reportedErrors = summary?.reportedErrors ?? 0;
   const calls = total > 0 || nested > 0 || partial;
   const byTool = rollup === null ? '' : countsLine(rollup);
   return (
@@ -151,8 +152,8 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
           </p>
         )}
         {summary?.evidenceReady === false && <p className="t-small text-muted">Nested calls and reported errors are not visible for this stored turn.</p>}
-        {nested > 0 && <p className="t-small text-muted">{count(nested, 'nested call')} run inside orchestration calls</p>}
-        {(summary?.reportedErrors ?? 0) > 0 && <p className="t-small text-muted">{summary!.reportedErrors} calls reported an error or a non-zero exit</p>}
+        {summary?.evidenceReady !== false && nested > 0 && <p className="t-small text-muted">{count(nested, 'nested call')} run inside orchestration calls</p>}
+        {summary?.evidenceReady !== false && reportedErrors > 0 && <p className="t-small text-muted">{count(reportedErrors, 'call')} reported an error or a non-zero exit</p>}
         {shown !== undefined && shown.shown < shown.total && <p className="t-small text-muted" data-testid="tool-partial">Failures, Myco calls and files below: showing the first {shown.shown.toLocaleString()} of {shown.total.toLocaleString()} calls.</p>}
         {myco.length > 0 && (
           <ul className="flex flex-wrap gap-s2" aria-label="Myco tool calls">
