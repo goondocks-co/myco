@@ -96,3 +96,21 @@ test('Cursor transcript-only numbers distinguish unseen tools and edits from zer
       visibility: { toolCalls: 'not_visible', failedTools: 'not_visible', mycoCalls: 'not_visible', filesEdited: 'not_visible' } });
   } finally { fixture.sqlite.close(); }
 });
+
+test('a hook-written instruction uses the same launch origin as a parsed instruction', async () => {
+  const fixture = sqliteEnv();
+  try {
+    const issued = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine' }, Date.now());
+    for (const [kind, payload] of [
+      ['session.start', { agent: 'windsurf', launchParentSessionId: launchParentSession('hook-session', { BAGGAGE: 'gen_ai.conversation.id=parent-session' }) }],
+      ['prompt', { promptId: crypto.randomUUID(), text: '<relay sender="planner">Read the task</relay>', origin: 'user' }],
+    ] as const) {
+      const response = await worker.fetch(memberPost(issued.token, envelope({ eventId: crypto.randomUUID(), sessionId: 'hook-session', kind, payload })), fixture.env);
+      expect((await response.json() as { persisted: boolean }).persisted).toBe(true);
+    }
+    await publishDocuments(fixture.serverEnv, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/hook-session/turns?origins=agent_dispatch'), { ...fixture.env, ...OWNER_ENV });
+    expect(response.status).toBe(200);
+    expect((await response.json() as { rows: { origin: string; preview: string }[] }).rows).toMatchObject([{ origin: 'agent_dispatch', preview: 'Read the task' }]);
+  } finally { fixture.sqlite.close(); }
+});

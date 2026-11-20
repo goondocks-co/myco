@@ -970,7 +970,7 @@
     "tests/myco-server/spore-curation-cost.test.ts": 12000,
     "tests/myco-server/spore-curation-discovery.test.ts": 10000,
     "tests/myco-server/spore-curation-undo.test.ts": 4000,
-    "tests/myco-server/session-transcript-truth.test.ts": 2000
+    "tests/myco-server/session-transcript-truth.test.ts": 6000
   },
   "parity": {
     "session activity: request clocks distinguish live work from late capture while older members retain receipt-time liveness": 2000,

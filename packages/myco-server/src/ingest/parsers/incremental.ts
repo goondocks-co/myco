@@ -5,6 +5,7 @@ import { MAX_BLOB_BYTES } from '../../constants.js';
 import { utf8 } from '../../hash.js';
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { attributedPrompt } from '../../core/session-invocations.js';
 
 /** Retained tool calls above this count become explicit failures. */
 const MAX_PENDING_CALLS = 32;
@@ -71,15 +72,9 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       for (const line of ownedLines(input.lines, input.sessionId, parser.continuation)) {
         const derived = await parser.parse({ ...input, now:input.view?line.receivedAt??input.now:input.now, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId, claims });
         for (const event of derived) {
-          if (event.kind === 'prompt' && event.payload.origin === 'user') {
-            const invocation = sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, parser.agent)
-              ? input.invocations?.filter(fact => fact.from <= event.createdAt && event.createdAt < fact.until) ?? [] : [];
-            if (invocation.length > 1) throw new Error('session_invocation_overlap');
-            const origin = invocation[0]?.origin ?? (input.launchParentSessionId === undefined ? 'user' : 'agent_dispatch');
-            event.payload.origin = origin;
-            const parent = invocation[0]?.parentSessionId ?? (invocation.length === 0 ? input.launchParentSessionId : undefined);
-            if (origin === 'agent_dispatch' && parent !== undefined) event.payload.originSessionId = parent;
-          }
+          if (event.kind === 'prompt') event.payload = attributedPrompt(event.payload, { at: event.createdAt,
+            launchParentSessionId: input.launchParentSessionId,
+            invocations: sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, parser.agent) ? input.invocations : undefined });
           if (event.kind === 'prompt' && event.opensTurn === false && openPromptId !== undefined) event.payload.parentPromptId = openPromptId;
           if(input.view)event.sourceEnd??=line.sourceEnd;
           if(input.view&&(event.kind==='tool.use'||event.kind==='tool.failure')){
