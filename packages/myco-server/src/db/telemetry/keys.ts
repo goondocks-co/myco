@@ -1,10 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { first, read, rows, write } from '../index.js';
-import {
-  TELEMETRY_KEY_LIMIT,
-  TELEMETRY_REQUESTS_PER_KEY,
-  TELEMETRY_RATE_WINDOW_MS,
-} from '../../core/telemetry-policy.js';
+import { TELEMETRY_KEY_LIMIT, TELEMETRY_SPAN_LIMIT } from '../../core/telemetry-policy.js';
 
 export interface TelemetryKeyRow {
   id: string;
@@ -14,11 +10,13 @@ export interface TelemetryKeyRow {
   last_used_at: number | null;
   revoked_at: number | null;
   spans: number;
+  quota: number;
+  clock_skew_ms: number | null;
   cleanup_done: number;
 }
 const list = read<[], TelemetryKeyRow>({
   name: 'telemetryKeys.list',
-  sql: 'SELECT id,label,created_by,created_at,last_used_at,revoked_at,spans,cleanup_done FROM telemetry_keys ORDER BY created_at DESC,id',
+  sql: `SELECT id,label,created_by,created_at,last_used_at,revoked_at,spans,cleanup_done,clock_skew_ms,CAST(${TELEMETRY_SPAN_LIMIT}/MAX(1,(SELECT COUNT(*) FROM telemetry_keys WHERE revoked_at IS NULL)) AS INTEGER) AS quota FROM telemetry_keys ORDER BY created_at DESC,id`,
 });
 const issue = write<
   [id: string, hash: string, label: string, actor: string, now: number, limit: number],
@@ -26,7 +24,7 @@ const issue = write<
 >({
   name: 'telemetryKeys.issue',
   sql: `INSERT INTO telemetry_keys(id,key_hash,label,created_by,created_at)
-    SELECT ?1,?2,?3,?4,?5 WHERE (SELECT COUNT(*) FROM telemetry_keys)<?6 RETURNING id`,
+    SELECT ?1,?2,?3,?4,?5 WHERE (SELECT COUNT(*) FROM telemetry_keys WHERE revoked_at IS NULL)<?6 RETURNING id`,
 });
 const authenticate = read<[hash: string], { id: string }>({
   name: 'telemetryKeys.authenticate',
@@ -47,7 +45,10 @@ export async function insertTelemetryKey(
   db: RelationalStore,
   key: { id: string; hash: string; label: string; actor: string; now: number },
 ): Promise<boolean> {
-  return (await first(db, issue.bind(key.id, key.hash, key.label, key.actor, key.now, TELEMETRY_KEY_LIMIT))) !== null;
+  return (
+    (await first(db, issue.bind(key.id, key.hash, key.label, key.actor, key.now, TELEMETRY_KEY_LIMIT))) !==
+    null
+  );
 }
 /** Ending authority changes only its key row; housekeeping owns bounded cleanup. */
 export async function revokeTelemetryKey(
@@ -59,10 +60,3 @@ export async function revokeTelemetryKey(
 export async function forgetTelemetryKey(db: RelationalStore, id: string): Promise<boolean> {
   return (await first(db, forget.bind(id))) !== null;
 }
-const admit = write<[id: string, window: number, limit: number], { id: string }>({
-  name: 'telemetryKeys.admit',
-  sql: `UPDATE telemetry_keys SET requests=CASE WHEN rate_window=?2 THEN requests+1 ELSE 1 END,rate_window=?2
-    WHERE id=?1 AND revoked_at IS NULL AND (rate_window<>?2 OR requests<?3) RETURNING id`,
-});
-export const admitTelemetryRequest = async (db: RelationalStore, id: string, now: number): Promise<boolean> =>
-  (await first(db, admit.bind(id, Math.floor(now / TELEMETRY_RATE_WINDOW_MS), TELEMETRY_REQUESTS_PER_KEY))) !== null;

@@ -133,11 +133,12 @@ describe('the power state a tick resolves', () => {
     const f = fixture();
     f.seedSession('s1', NOW);
     const ran = (await runTick(f.env, NOW)).jobs.map((j) => j.name);
-    // A tick an owner requests runs every job but the clock-owned ones; the target's own clock runs those too.
-    expect([...ran].sort()).toEqual(SERVER_JOBS.filter((j) => j.wake === undefined).map((j) => j.name).sort());
+    expect(ran).not.toContain('telemetry-reconcile');
+    // Clock-owned jobs require the target's clock; telemetry requires a due work flag.
+    expect([...ran].sort()).toEqual(SERVER_JOBS.filter((j) => j.wake === undefined && j.name !== 'telemetry-reconcile').map((j) => j.name).sort());
     expect(ran[0]).toBe('transcript-parse');
     expect(ran.indexOf('storage-content-cleanup')).toBeGreaterThan(ran.indexOf('raw-provenance-backfill'));
-    expect((await runTick(f.env, NOW, { wake: 'clock' })).jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.map((j) => j.name).sort());
+    expect((await runTick(f.env, NOW, { wake: 'clock' })).jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter(j => j.name !== 'telemetry-reconcile').map((j) => j.name).sort());
     expect(ran).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep', 'search-index', 'embedding-reconcile']));
   });
 
@@ -252,7 +253,7 @@ describe('run-stale-sweep', () => {
     const broken: ServerEnv = { ...f.env, db: retire.store };
     const report = await runTick(broken, NOW);
     expect(retire.failures()).toBeGreaterThan(0);
-    expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name).sort());
+    expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined && j.name !== 'telemetry-reconcile').map((j) => j.name).sort());
     expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
     expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
   });

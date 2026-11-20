@@ -1,7 +1,12 @@
 import { expect, it } from 'bun:test';
-import { parseTraces } from '@myco-server-worker/core/otlp.js';
+import { receiveTelemetry } from '@myco-server-worker/core/telemetry-receiver.js';
+import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
+import { sqliteEnv } from './helpers/fixtures.js';
+import { parseTraces as parseAtReceipt } from '@myco-server-worker/core/otlp.js';
 import { storeTelemetrySpans } from '@myco-server-worker/db/telemetry/ingest.js';
 import { insertTelemetryKey, revokeTelemetryKey } from '@myco-server-worker/db/telemetry/keys.js';
+import { runTelemetryWork } from '@myco-server-worker/core/telemetry-work.js';
 import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.js';
 import { telemetryReconciliationDue } from '@myco-server-worker/db/telemetry/matching.js';
 import { pruneTelemetry, telemetryRetentionDue } from '@myco-server-worker/db/telemetry/retention.js';
@@ -11,12 +16,15 @@ import { lineage_sessionLineage } from '@myco-server-worker/read/catalog/lineage
 import { d1TwoScale, eachUnit, expectTwoScale } from './helpers/two-scale.js';
 import { telemetryBatch, telemetrySpan, telemetryTrace } from './helpers/telemetry.js';
 const NOW = 1_800_000_000_000;
+const parseTraces = (raw: unknown) => parseAtReceipt(raw, NOW);
 
 it('ingest, lineage and an unchanged wake remain bounded as settled history grows', async () => {
   const costs = await d1TwoScale({
     sizes: [40, 4000],
     setup: async (db) => {
-      await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_otel','Telemetry',1)").run();
+      await db
+        .prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_otel','Telemetry',1)")
+        .run();
       await db
         .prepare(
           `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
@@ -31,10 +39,13 @@ it('ingest, lineage and an unchanged wake remain bounded as settled history grow
         actor: 'member',
         now: NOW,
       });
-      for (let group = 0; group < Math.ceil(4000 / 350); group++) {
-        const key = `history-${group}`;
-        await insertTelemetryKey(db, { id: key, hash: key, label: 'History sender', actor: 'member', now: NOW });
-      }
+      await insertTelemetryKey(db, {
+        id: 'history',
+        hash: 'history',
+        label: 'History sender',
+        actor: 'member',
+        now: NOW,
+      });
       await storeTelemetrySpans(db, {
         key: 'test-key',
         spans: parseTraces(telemetryTrace('lead', 'worker')).spans,
@@ -52,10 +63,11 @@ it('ingest, lineage and an unchanged wake remain bounded as settled history grow
         NOW,
       );
       for (let offset = from; offset < to; ) {
-        const group = Math.floor(offset / 350),
-          key = `history-${group}`,
-          count = Math.min(100, to - offset, 350 - (offset % 350));
-        const body = Array.from({ length: count }, (_, i) => telemetryTrace('history-lead', `other-${offset + i}`));
+        const key = 'history',
+          count = Math.min(100, to - offset);
+        const body = Array.from({ length: count }, (_, i) =>
+          telemetryTrace('history-lead', `other-${offset + i}`),
+        );
         const spans = body.flatMap((batch, i) =>
           batch.resourceSpans[0]!.scopeSpans[0]!.spans.filter((_, index) => index !== 1).map((span) => ({
             ...span,
@@ -84,7 +96,9 @@ it('ingest, lineage and an unchanged wake remain bounded as settled history grow
       {
         name: 'read recorded lineage',
         run: async (db) =>
-          expect((await lineage_sessionLineage(db, { projectId: 'proj_otel' }, 'worker'))?.edges).toContainEqual(
+          expect(
+            (await lineage_sessionLineage(db, { projectId: 'proj_otel' }, 'worker'))?.edges,
+          ).toContainEqual(
             expect.objectContaining({ parentId: 'lead', childId: 'worker', source: 'telemetry' }),
           ),
       },
@@ -92,13 +106,7 @@ it('ingest, lineage and an unchanged wake remain bounded as settled history grow
         name: 'settled wake',
         run: async (db, { store }) => {
           while (await telemetryReconciliationDue(store, NOW)) await reconcileTelemetry(store, NOW);
-          await cleanRevokedTelemetry(db);
-          await pruneTelemetry(db, NOW, 64);
-          await reconcileTelemetry(db, NOW);
-          expect(await telemetryReconciliationDue(db, NOW)).toBe(false);
-          expect(await telemetryRetentionDue(db, NOW)).toBe(false);
-          expect(await revokedTelemetryDue(db)).toBe(false);
-          expect(await telemetrySessionChangesDue(db)).toBe(false);
+          expect(await runTelemetryWork(db, NOW)).toEqual({ changed: 0, more: false });
         },
       },
     ],
@@ -121,8 +129,9 @@ it('appending a full batch does not rescan the held trace per span', async () =>
       if (to > 0)
         await storeTelemetrySpans(db, {
           key,
-          spans: parseTraces(telemetryBatch(Array.from({ length: to }, (_, i) => telemetrySpan(i + 1, { trace }))))
-            .spans,
+          spans: parseTraces(
+            telemetryBatch(Array.from({ length: to }, (_, i) => telemetrySpan(i + 1, { trace }))),
+          ).spans,
           now: NOW,
         });
     },
@@ -147,7 +156,9 @@ it('revocation writes one authority row and cleanup takes a fixed page', async (
   const costs = await d1TwoScale({
     sizes: [100, 700],
     setup: async (db) => {
-      await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_rev','Revocation',1)").run();
+      await db
+        .prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_rev','Revocation',1)")
+        .run();
       await db
         .prepare(
           "INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_rev','worker','machine','credential',1,1)",
@@ -172,13 +183,7 @@ it('revocation writes one authority row and cleanup takes a fixed page', async (
       );
       await db
         .prepare(
-          "INSERT INTO telemetry_resolutions(trace_id,span_id,key_id,project_id,session_id,matched_by,invocation,evidence) SELECT trace_id,span_id,key_id,'proj_rev','worker','exact',1,json_array(key_id) FROM telemetry_spans WHERE key_id=?1",
-        )
-        .bind(key)
-        .run();
-      await db
-        .prepare(
-          'INSERT INTO telemetry_resolution_keys(trace_id,span_id,key_id) SELECT trace_id,span_id,key_id FROM telemetry_resolutions WHERE key_id=?1',
+          "INSERT INTO telemetry_resolutions(trace_id,span_id,key_id,project_id,session_id,matched_by,invocation) SELECT trace_id,span_id,key_id,'proj_rev','worker','exact',1 FROM telemetry_spans WHERE key_id=?1",
         )
         .bind(key)
         .run();
@@ -186,7 +191,8 @@ it('revocation writes one authority row and cleanup takes a fixed page', async (
     cases: [
       {
         name: 'end key authority',
-        run: async (db) => expect(await revokeTelemetryKey(db, { id: key, actor: 'member', now: NOW })).toBe(true),
+        run: async (db) =>
+          expect(await revokeTelemetryKey(db, { id: key, actor: 'member', now: NOW })).toBe(true),
       },
       {
         name: 'remove one revoked page',
@@ -198,4 +204,78 @@ it('revocation writes one authority row and cleanup takes a fixed page', async (
     ],
   });
   expectTwoScale(costs);
+}, 120000);
+
+it('receiver no-ops write nothing and idle work reads one flag as live keys grow', async () => {
+  const base = sqliteEnv(),
+    key = 'mycootel_' + 'A'.repeat(43);
+  const pending: Array<() => Promise<void>> = [];
+  let scale = 0;
+  const costs = await d1TwoScale({
+    sizes: [1, 8],
+    setup: async (db) => {
+      await deploymentIdentity(db);
+    },
+    grow: async (db, from, to) => {
+      for (let i = from; i < to; i++)
+        await insertTelemetryKey(db, {
+          id: `http-${i}`,
+          hash: i === 0 ? await sha256Hex(key) : `hash-${i}`,
+          label: 'Cost sender',
+          actor: 'member',
+          now: NOW,
+        });
+      await storeTelemetrySpans(db, {
+        key: 'http-0',
+        spans: parseTraces(telemetryBatch([telemetrySpan(1, { trace: 9999 })])).spans,
+        now: NOW,
+      });
+      await reconcileTelemetry(db, NOW);
+    },
+    cases: [
+      ...[
+        ['malformed JSON', '{', 'traces'],
+        ['logs', { resourceLogs: [{ scopeLogs: [{ logRecords: [{}] }] }] }, 'logs'],
+        ['empty export', {}, 'traces'],
+        ['identical retry', telemetryBatch([telemetrySpan(1, { trace: 9999 })]), 'traces'],
+        ['one new span', null, 'traces'],
+        ['256 new spans', null, 'traces'],
+      ].map(([name, body, signal], index) => ({
+        name: String(name),
+        extra: 16,
+        run: async (db: Parameters<typeof receiveTelemetry>[0]['db'], at: { scale: number }) => {
+          scale = at.scale;
+          const payload =
+            body ??
+            telemetryBatch(
+              Array.from({ length: index === 4 ? 1 : 256 }, (_, i) =>
+                telemetrySpan(i + 1, { trace: 20000 + index * 10 + scale }),
+              ),
+            );
+          const response = await receiveTelemetry(
+            { ...base.serverEnv, db, afterResponse: (work) => pending.push(work), wake: async () => {} },
+            new Request(`https://s/v1/${signal}`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+              body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+            }),
+            NOW + (scale * 3 + (index >= 4 ? index - 3 : 0)) * 60000,
+            'cost',
+          );
+          expect(response.status).toBe(index === 0 ? 400 : 200);
+          while (pending.length) await pending.shift()!();
+        },
+      })),
+      {
+        name: 'idle work flag',
+        run: async (db, { store }) => {
+          while ((await runTelemetryWork(store, NOW)).more) {}
+          expect(await runTelemetryWork(db, NOW)).toEqual({ changed: 0, more: false });
+        },
+      },
+    ],
+  });
+  base.sqlite.close();
+  expectTwoScale(costs);
+  for (const cost of costs.slice(0, 4)) expect(cost.writes.some(Boolean)).toBe(false);
 }, 120000);

@@ -26,7 +26,8 @@ export async function extendTelemetryLineage(
     if (!hidden.has(id)) {
       let index = hidden.size,
         label = `unavailable-${index}`;
-      while (nodes.has(key(projectId, label)) || [...hidden.values()].includes(label)) label = `unavailable-${++index}`;
+      while (nodes.has(key(projectId, label)) || [...hidden.values()].includes(label))
+        label = `unavailable-${++index}`;
       hidden.set(id, label);
     }
     return { project: projectId, session: hidden.get(id)! };
@@ -46,7 +47,8 @@ export async function extendTelemetryLineage(
         { projectId: edge.parentProjectId, sessionId: edge.parentId },
         { projectId: edge.childProjectId, sessionId: edge.childId },
       ]) {
-        if (!nodes.has(key(pair.projectId, pair.sessionId))) pairs.set(key(pair.projectId, pair.sessionId), pair);
+        if (!nodes.has(key(pair.projectId, pair.sessionId)))
+          pairs.set(key(pair.projectId, pair.sessionId), pair);
       }
     }
     const room = 200 - nodes.size;

@@ -26,7 +26,10 @@ const allIds = write<[limit: number]>({ name: 'telemetryPartitions.ids', sql: al
 const allWindows = write<[limit: number]>({ name: 'telemetryPartitions.windows', sql: all.windows });
 const allPartitions = write<[limit: number]>({ name: 'telemetryPartitions.empty', sql: all.partitions });
 const keyIds = write<[key: string, limit: number]>({ name: 'telemetryPartitions.keyIds', sql: one.ids });
-const keyWindows = write<[key: string, limit: number]>({ name: 'telemetryPartitions.keyWindows', sql: one.windows });
+const keyWindows = write<[key: string, limit: number]>({
+  name: 'telemetryPartitions.keyWindows',
+  sql: one.windows,
+});
 const keyPartitions = write<[key: string, limit: number]>({
   name: 'telemetryPartitions.keyEmpty',
   sql: one.partitions,
@@ -37,7 +40,12 @@ export async function retireTelemetryPartitions(
   options: { limit: number; key?: string },
 ): Promise<void> {
   if (options.key === undefined)
-    await commit(db, allIds.bind(options.limit), allWindows.bind(options.limit), allPartitions.bind(options.limit));
+    await commit(
+      db,
+      allIds.bind(options.limit),
+      allWindows.bind(options.limit),
+      allPartitions.bind(options.limit),
+    );
   else
     await commit(
       db,

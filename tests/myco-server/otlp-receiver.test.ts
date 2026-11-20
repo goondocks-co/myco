@@ -1,16 +1,15 @@
 import { telemetryFixture as fixture } from './helpers/telemetry-fixture.js';
-import { cleanRevokedTelemetry, revokedTelemetryDue } from '@myco-server-worker/db/telemetry/revocation.js';
-import { storeTelemetrySpans } from '@myco-server-worker/db/telemetry/ingest.js';
-import { parseTraces } from '@myco-server-worker/core/otlp.js';
-import { eachUnit } from './helpers/two-scale.js';
 import { describe, expect, it } from 'bun:test';
-import { createServer } from '@myco-server-worker/pipeline.js';
+import { runTelemetryWork } from '@myco-server-worker/core/telemetry-work.js';
+import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.js';
-import { invocationsForSession, invocationForTurn } from '@myco-server-worker/core/telemetry-invocations.js';
+import {
+  invocationsForSession,
+  invocationsForTurns,
+} from '@myco-server-worker/core/telemetry-invocations.js';
 import { pruneTelemetry } from '@myco-server-worker/db/telemetry/retention.js';
 import {
   TELEMETRY_BODY_BYTES,
-  TELEMETRY_MAX_SPAN_MS,
   TELEMETRY_INVOCATIONS_PER_PAGE,
   TELEMETRY_MATCH_WAIT_MS,
   TELEMETRY_RETENTION_MS,
@@ -18,12 +17,16 @@ import {
   TELEMETRY_SPANS_PER_TRACE,
   TELEMETRY_TEXT_BYTES,
 } from '@myco-server-worker/core/telemetry-policy.js';
-import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { lineage_sessionLineage } from '@myco-server-worker/read/catalog/lineage.js';
-import { seedCredential } from './helpers/d1.js';
-import { sqliteEnv, envelope, noOutboundFetch, uuid } from './helpers/fixtures.js';
-import { OWNER_ENV, ownerCookie, seedMemberRoleAccount, MEMBER_SUB } from './helpers/owner.js';
-import { telemetryAttribute, telemetryBatch, telemetryId, telemetrySpan, telemetryTrace } from './helpers/telemetry.js';
+import { uuid, publishFixture } from './helpers/fixtures.js';
+import { ownerCookie, seedMemberRoleAccount, MEMBER_SUB } from './helpers/owner.js';
+import {
+  telemetryAttribute,
+  telemetryBatch,
+  telemetryId,
+  telemetrySpan,
+  telemetryTrace,
+} from './helpers/telemetry.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -34,18 +37,33 @@ describe('OpenTelemetry receiver', () => {
     const before = await (await f.owner('/api/telemetry/keys')).json();
     expect(JSON.stringify(before)).not.toContain(f.key);
     expect((await f.send(telemetryTrace('lead', 'worker'))).status).toBe(200);
-    expect((await f.send({ resourceLogs: [{ scopeLogs: [{ logRecords: [{}] }] }] }, '/v1/logs')).status).toBe(200);
+    expect((await f.send({ resourceLogs: [{ scopeLogs: [{ logRecords: [{}] }] }] }, '/v1/logs')).status).toBe(
+      200,
+    );
     expect(
       (
         await f.send(
-          { resourceMetrics: [{ scopeMetrics: [{ metrics: [{ gauge: { dataPoints: [{ asDouble: 0.5 }] } }] }] }] },
+          {
+            resourceMetrics: [
+              { scopeMetrics: [{ metrics: [{ gauge: { dataPoints: [{ asDouble: 0.5 }] } }] }] },
+            ],
+          },
           '/v1/metrics',
         )
       ).status,
     ).toBe(200);
-    const listed = (await (await f.owner('/api/telemetry/keys')).json()) as { keys: Record<string, unknown>[] };
+    const listed = (await (await f.owner('/api/telemetry/keys')).json()) as {
+      keys: Record<string, unknown>[];
+    };
     expect(listed.keys).toEqual([
-      expect.objectContaining({ label: 'test sender', lastUsedAt: NOW, accepted: 3, rejected: 0, logs: 1, metrics: 1 }),
+      expect.objectContaining({
+        label: 'test sender',
+        lastUsedAt: NOW,
+        accepted: 3,
+        rejected: 0,
+        logs: 0,
+        metrics: 0,
+      }),
     ]);
     const read = await f.server.handleRequest(
       new Request('https://s/api/projects', { headers: { authorization: `Bearer ${f.key}` } }),
@@ -54,7 +72,9 @@ describe('OpenTelemetry receiver', () => {
     expect(read.status).toBe(401);
     seedMemberRoleAccount(f.e.sqlite);
     const member = await f.server.handleRequest(
-      new Request('https://s/api/telemetry/keys', { headers: { cookie: await ownerCookie(f.e.db, NOW, MEMBER_SUB) } }),
+      new Request('https://s/api/telemetry/keys', {
+        headers: { cookie: await ownerCookie(f.e.db, NOW, MEMBER_SUB) },
+      }),
       f.env,
     );
     expect(member.status).toBe(403);
@@ -66,8 +86,12 @@ describe('OpenTelemetry receiver', () => {
     expect((await f.send({}, '/v1/traces', { authorization: '' })).status).toBe(401);
     expect((await f.send('broken')).status).toBe(400);
     expect((await f.send({ resourceSpans: 1 })).status).toBe(400);
-    expect((await f.send({ resourceLogs: [{ scopeLogs: [{ logRecords: [null] }] }] }, '/v1/logs')).status).toBe(400);
-    expect((await f.send({}, '/v1/traces', { 'content-length': String(TELEMETRY_BODY_BYTES + 1) })).status).toBe(413);
+    expect(
+      (await f.send({ resourceLogs: [{ scopeLogs: [{ logRecords: [null] }] }] }, '/v1/logs')).status,
+    ).toBe(400);
+    expect(
+      (await f.send({}, '/v1/traces', { 'content-length': String(TELEMETRY_BODY_BYTES + 1) })).status,
+    ).toBe(413);
     const oversized = telemetrySpan(2, {
       attributes: [telemetryAttribute('unknown.note', 'x'.repeat(TELEMETRY_TEXT_BYTES + 1))],
     });
@@ -92,7 +116,9 @@ describe('OpenTelemetry receiver', () => {
       );
     }
     expect(
-      await (await f.send(telemetryBatch([telemetrySpan(TELEMETRY_SPANS_PER_TRACE + 1, { trace: 10_000 })]))).json(),
+      await (
+        await f.send(telemetryBatch([telemetrySpan(TELEMETRY_SPANS_PER_TRACE + 1, { trace: 10_000 })]))
+      ).json(),
     ).toMatchObject({ partialSuccess: { rejectedSpans: '1' } });
     f.env.tokenLimit = { limit: async () => ({ success: false }) };
     const limited = await f.send({});
@@ -114,7 +140,9 @@ describe('OpenTelemetry receiver', () => {
     );
     expect(await (await f.send(body)).json()).toEqual({});
     expect(await (await f.send(body)).json()).toEqual({});
-    expect(JSON.stringify(f.e.sqlite.query('SELECT * FROM telemetry_spans').all())).not.toContain('must be discarded');
+    expect(JSON.stringify(f.e.sqlite.query('SELECT * FROM telemetry_spans').all())).not.toContain(
+      'must be discarded',
+    );
     await reconcileTelemetry(f.e.db, NOW);
     const lineage = await lineage_sessionLineage(f.e.db, { projectId: 'proj_2' }, 'worker /β', { all: true });
     expect(lineage?.edges).toContainEqual(
@@ -146,13 +174,16 @@ describe('OpenTelemetry receiver', () => {
         )
       ).status,
     ).toBe(401);
-    expect(invocationForTurn(facts.rows, { startAt: NOW - 500, endAt: NOW + 100 })).toEqual(facts.rows[0]!);
     expect(
-      invocationForTurn([{ ...facts.rows[0]!, endAt: NOW + TELEMETRY_MAX_SPAN_MS }], {
-        startAt: NOW + TELEMETRY_MAX_SPAN_MS / 2,
-        endAt: NOW + TELEMETRY_MAX_SPAN_MS / 2,
+      await invocationsForTurns(f.e.db, { projectId: 'proj_2', sessionId: 'worker /β', starts: [NOW - 500] }),
+    ).toEqual([expect.objectContaining({ startAt: NOW, matchedBy: 'exact', keyLabel: 'test sender' })]);
+    expect(
+      await invocationsForTurns(f.e.db, {
+        projectId: 'proj_2',
+        sessionId: 'worker /β',
+        starts: [NOW + 10_000],
       }),
-    ).toBeNull();
+    ).toEqual([]);
     expect((await invocationsForSession(f.e.db, 'proj_1', 'worker /β')).rows).toEqual([]);
     expect(await (await f.owner(`/api/telemetry/keys/${f.id}/revoke`, {})).json()).toEqual({ revoked: true });
     expect((await f.send(body)).status).toBe(401);
@@ -177,6 +208,13 @@ describe('OpenTelemetry receiver', () => {
     };
     expect([...first.rows, ...last.rows].map((row) => row.spanId)).toEqual(spans.map((span) => span.spanId));
     expect(last.nextCursor).toBeNull();
+    expect(
+      await invocationsForTurns(f.e.db, {
+        projectId: 'proj_1',
+        sessionId: 'worker',
+        starts: [NOW + 199_500],
+      }),
+    ).toHaveLength(3);
     f.e.sqlite.close();
   });
 
@@ -223,9 +261,26 @@ describe('OpenTelemetry receiver', () => {
     expect((await invocationsForSession(f.e.db, 'proj_1', 'candidate')).rows).toEqual([
       expect.objectContaining({ matchedBy: 'inferred' }),
     ]);
-    expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate'))?.edges).toContainEqual(
-      expect.objectContaining({ inferred: true }),
-    );
+    expect(
+      (await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate'))?.edges,
+    ).toContainEqual(expect.objectContaining({ inferred: true }));
+
+    await f.start('decoy', 'proj_2');
+    const other = (await (await f.owner('/api/telemetry/keys', { label: 'Other sender' })).json()) as {
+      id: string;
+      key: string;
+    };
+    const conflicting = telemetryTrace('decoy', 'candidate');
+    for (const span of conflicting.resourceSpans[0]!.scopeSpans[0]!.spans)
+      span.traceId = telemetryId(999, 32);
+    await f.send(conflicting, '/v1/traces', { authorization: `Bearer ${other.key}` });
+    await reconcileTelemetry(f.e.db, NOW);
+    const disputed = await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate', {
+      all: true,
+    });
+    expect(disputed?.edges).toEqual([]);
+    expect(disputed?.reports?.map((row) => row.inferred).sort()).toEqual([false, true]);
+    await f.owner(`/api/telemetry/keys/${other.id}/revoke`, {});
     await f.send(
       telemetryBatch([
         telemetrySpan(1, { trace: 2, conversation: 'lead' }),
@@ -233,17 +288,17 @@ describe('OpenTelemetry receiver', () => {
       ]),
     );
     await reconcileTelemetry(f.e.db, NOW);
-    expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate'))?.edges).toContainEqual(
-      expect.objectContaining({ inferred: false }),
-    );
+    expect(
+      (await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate'))?.edges,
+    ).toContainEqual(expect.objectContaining({ inferred: false }));
     await f.start('other');
     await f.send(inferred(3, 'feature', 'other-agent'));
     await f.send(inferred(4, 'no-such-branch'));
     await reconcileTelemetry(f.e.db, NOW);
     expect((await invocationsForSession(f.e.db, 'proj_1', 'other')).rows).toEqual([]);
-    expect((await invocationsForSession(f.e.db, 'proj_1', 'candidate')).rows.map((row) => row.traceId)).toEqual([
-      telemetryId(2, 32),
-    ]);
+    expect(
+      (await invocationsForSession(f.e.db, 'proj_1', 'candidate')).rows.map((row) => row.traceId),
+    ).toEqual([telemetryId(2, 32)]);
     f.e.sqlite.close();
   });
   it('drops a named session that never arrives after the bounded match wait', async () => {
@@ -252,7 +307,9 @@ describe('OpenTelemetry receiver', () => {
     await f.send(telemetryTrace('lead', 'never-arrives'));
     await reconcileTelemetry(f.e.db, NOW + TELEMETRY_MATCH_WAIT_MS + 1);
     expect(
-      f.e.sqlite.query('SELECT conversation_id FROM telemetry_spans WHERE conversation_id=?').all('never-arrives'),
+      f.e.sqlite
+        .query('SELECT conversation_id FROM telemetry_spans WHERE conversation_id=?')
+        .all('never-arrives'),
     ).toEqual([]);
     f.e.sqlite.close();
   });
@@ -298,6 +355,55 @@ describe('OpenTelemetry receiver', () => {
         row.matchedBy,
       ]),
     ).toEqual([[telemetryId(11, 32), NOW + 600_000, 'inferred']]);
+    f.e.sqlite.close();
+  });
+  it('revisits repository bindings, a branch learned after a live turn and tombstoned duplicate ids', async () => {
+    const f = await fixture();
+    const settle = async () => {
+      while ((await runTelemetryWork(f.e.db, NOW)).more) {}
+    };
+    await f.start('lead');
+    await f.capture('worker', 'session.start', { agent: 'codex', startedAt: NOW - 3600000 }, 'proj_2');
+    await f.capture(
+      'worker',
+      'prompt',
+      { promptId: uuid(200), text: 'A live turn', origin: 'user' },
+      'proj_2',
+    );
+    await publishFixture(f.e, NOW);
+    const body = telemetryBatch([
+      telemetrySpan(1, { conversation: 'lead' }),
+      telemetrySpan(3, {
+        parent: 1,
+        operation: 'invoke_agent',
+        attributes: [
+          telemetryAttribute('vcs.repository.url.full', 'https://example.test/late'),
+          telemetryAttribute('vcs.ref.head.name', 'feature'),
+        ],
+      }),
+    ]);
+    await f.send(body);
+    await settle();
+    f.e.sqlite
+      .query('INSERT INTO project_remotes(remote,project_id,first_seen_at) VALUES(?,?,?)')
+      .run('example.test/late', 'proj_2', NOW);
+    await settle();
+    expect((await invocationsForSession(f.e.db, 'proj_2', 'worker')).rows).toEqual([]);
+    f.e.sqlite
+      .query('UPDATE sessions SET branch=? WHERE project_id=? AND session_id=?')
+      .run('feature', 'proj_2', 'worker');
+    await settle();
+    expect((await invocationsForSession(f.e.db, 'proj_2', 'worker')).rows).toHaveLength(1);
+    await f.start('duplicate');
+    await f.start('duplicate', 'proj_2');
+    const exact = telemetryTrace('lead', 'duplicate');
+    for (const span of exact.resourceSpans[0]!.scopeSpans[0]!.spans) span.traceId = telemetryId(99, 32);
+    await f.send(exact);
+    await settle();
+    expect((await invocationsForSession(f.e.db, 'proj_1', 'duplicate')).rows).toEqual([]);
+    await tombstoneSession(f.env, { projectId: 'proj_2' }, 'duplicate', 'mem_fixture', NOW, 'test deletion');
+    await settle();
+    expect((await invocationsForSession(f.e.db, 'proj_1', 'duplicate')).rows).toHaveLength(1);
     f.e.sqlite.close();
   });
 });

@@ -1,3 +1,5 @@
+import { telemetryJobs } from './telemetry-work.js';
+import { telemetryWork, isTelemetryWorkDue, type TelemetryWork } from '../db/telemetry/work.js';
 import { estimateRefreshDue } from './budget-estimates.js';
 import { storageCleanupPending } from './storage-cleanup.js';
 import { deviceReclamationPending } from '../db/identity/authority-retention.js';
@@ -112,10 +114,12 @@ function drainOnlyAt(pacer: TickPacer | undefined, now: number): pacer is TickPa
 }
 
 /** Runs `jobs` at `state`, reporting each as it ends. */
-async function runJobs(env: ServerEnv, now: number, state: PowerState, jobs: readonly string[], drainOnly = false): Promise<JobReport[]> {
+async function runJobs(env: ServerEnv, now: number, state: PowerState, options: { jobs: readonly string[]; drainOnly?: boolean; telemetry: TelemetryWork }): Promise<JobReport[]> {
   const reports: JobReport[] = [];
   const started = Date.now();
   const measured = measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT,wallMs:CONTENT_WALL_MS });
+  const jobs = telemetryJobs({ work: options.telemetry, now, jobs: options.jobs });
+  const drainOnly = options.drainOnly ?? false;
   const ordered = [...jobs.filter(name => name === 'transcript-parse'),
     ...jobs.filter(name => name !== 'transcript-parse' && !ARCHIVE_JOBS.has(name)),
     ...jobs.filter(name => ARCHIVE_JOBS.has(name))];
@@ -158,9 +162,10 @@ async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): P
 }
 
 /** What the engine itself asserts about the Deployment's depth: a run inside its bound keeps it no deeper than idle. A run past its bound holds nothing — its runtime is gone, and the sweep is what it needs. One existence read, whatever the count. */
-export async function engineAssertions(env: ServerEnv, now: number): Promise<PowerAssertion[]> {
+export async function engineAssertions(env: ServerEnv, now: number, telemetry?: TelemetryWork): Promise<PowerAssertion[]> {
   const [inside, queued,budgetQueued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db,'other'),hasQueuedRun(env.db,'budget')]);
   const assertions: PowerAssertion[] = [];
+  if (isTelemetryWorkDue(telemetry ?? await telemetryWork(env.db), now)) assertions.push({ name: 'telemetry:due', maxDepth: 'active' });
   if (await estimateRefreshDue(env.db,now)) assertions.push({name:'estimate:due',maxDepth:'sleep'});
   if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
@@ -212,11 +217,12 @@ function continuationDelay(now: number, cadence: number, drainAt: Record<string,
  */
 export async function runTick(env: ServerEnv, now: number, options: { serverUrl?: string; wake?: TickWake; pacer?: TickPacer; workRequested?: boolean } = {}): Promise<TickReport> {
   const pacer = options.pacer;
+  const telemetry = await telemetryWork(env.db);
   if (drainOnlyAt(pacer, now) && !(pacer.heldBy === EMBEDDING_SWEEP_ASSERTION && await embeddingKeepsAwake(env, now))) {
     const workState = options.workRequested ? 'active' : pacer.state;
     const requested = options.workRequested ? jobsDueAt(workState, options.wake ?? 'clock').filter(job => job.onWorkWake).map(job => job.name) : [];
     const due = [...new Set([...pacer.draining.filter((name) => (pacer.drainAt?.[name] ?? 0) <= now), ...requested])];
-    const jobs = await runJobs(env, now, workState, due, true);
+    const jobs = await runJobs(env, now, workState, { jobs: due, drainOnly: true, telemetry });
     // A queued run waits on no cadence: an owner's dispatch during a drain starts as it would at any other wake.
     const drained = await drainAfterJobs(env, now, workState);
     const continuation = continuedJobs(now, jobs, pacer.draining.filter((name) => !due.includes(name)), pacer.drainAt);
@@ -228,10 +234,10 @@ export async function runTick(env: ServerEnv, now: number, options: { serverUrl?
   }
   const last = await lastActivityAt(env.db);
   const idleMs = last === null ? null : Math.max(0, now - last);
-  const assertions = await engineAssertions(env, now);
+  const assertions = await engineAssertions(env, now, telemetry);
   const resolved = resolvePowerState(idleMs ?? Number.POSITIVE_INFINITY, POWER_THRESHOLDS, assertions);
 
-  const jobs = await runJobs(env, now, resolved.state, jobsDueAt(resolved.state, options.wake ?? 'request').map((job) => job.name));
+  const jobs = await runJobs(env, now, resolved.state, { jobs: jobsDueAt(resolved.state, options.wake ?? 'request').map((job) => job.name), telemetry });
 
   // The clock's own dispatches, then the drain: a scheduled task past a limit joins the queue this same wake.
   let scheduled: ScheduleReport = { dispatched: 0, skipped: 0 };

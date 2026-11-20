@@ -3,11 +3,16 @@ import type { OwnerContext } from '../context.js';
 import { toBase64Url } from '../base64.js';
 import { sha256Hex } from '../hash.js';
 import { badRequest, readJsonObject } from './scope.js';
-import { forgetTelemetryKey, insertTelemetryKey, revokeTelemetryKey, telemetryKeys } from '../db/telemetry/keys.js';
+import {
+  forgetTelemetryKey,
+  insertTelemetryKey,
+  revokeTelemetryKey,
+  telemetryKeys,
+} from '../db/telemetry/keys.js';
 import { telemetryCounts } from '../db/telemetry/ingest.js';
 import {
   TELEMETRY_DAY_MS,
-  TELEMETRY_SPANS_PER_KEY,
+  TELEMETRY_RETENTION_DAYS,
   TELEMETRY_KEY_LIMIT,
   TELEMETRY_KEY_PREFIX,
   TELEMETRY_KEY_BYTES,
@@ -15,7 +20,9 @@ import {
 } from '../core/telemetry-policy.js';
 
 export async function handleTelemetryKeys(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const counts = new Map((await telemetryCounts(env.db, ctx.now - TELEMETRY_DAY_MS)).map((row) => [row.key_id, row]));
+  const counts = new Map(
+    (await telemetryCounts(env.db, ctx.now - TELEMETRY_DAY_MS)).map((row) => [row.key_id, row]),
+  );
   return Response.json({
     endpoint: ctx.url.origin,
     keys: (await telemetryKeys(env.db)).map((row) => ({
@@ -27,8 +34,10 @@ export async function handleTelemetryKeys(env: ServerEnv, ctx: OwnerContext): Pr
       revokedAt: row.revoked_at,
       cleanupDone: row.cleanup_done === 1,
       usedSpans: row.spans,
-      spanQuota: TELEMETRY_SPANS_PER_KEY,
-      quotaReached: row.spans >= TELEMETRY_SPANS_PER_KEY,
+      spanQuota: row.quota,
+      dailySpans: Math.floor(row.quota / TELEMETRY_RETENTION_DAYS),
+      clockSkewMs: row.clock_skew_ms,
+      quotaReached: row.spans >= row.quota,
       accepted: counts.get(row.id)?.accepted ?? 0,
       rejected: counts.get(row.id)?.rejected ?? 0,
       logs: counts.get(row.id)?.logs ?? 0,
@@ -59,7 +68,7 @@ export async function handleIssueTelemetryKey(env: ServerEnv, ctx: OwnerContext)
     return Response.json(
       {
         error: 'telemetry_key_limit',
-        reason: `No key was saved: Myco holds ${TELEMETRY_KEY_LIMIT} keys. Revoke an unused key and remove its record before creating another.`,
+        reason: `No key was saved: Myco has ${TELEMETRY_KEY_LIMIT} live telemetry keys. Revoke an unused key before creating another.`,
       },
       { status: 409 },
     );

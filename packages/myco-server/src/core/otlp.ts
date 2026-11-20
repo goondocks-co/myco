@@ -5,7 +5,8 @@ import {
   TELEMETRY_NAME_BYTES,
   TELEMETRY_SPANS_PER_REQUEST,
   TELEMETRY_TEXT_BYTES,
-  TELEMETRY_MAX_SPAN_MS,
+  TELEMETRY_EARLIEST_MS,
+  TELEMETRY_FUTURE_MS,
 } from './telemetry-policy.js';
 
 type ObjectValue = Record<string, unknown>;
@@ -70,7 +71,8 @@ function boundedValue(raw: unknown, depth = 0): boolean {
       (typeof value.intValue === 'string' && /^-?\d{1,20}$/.test(value.intValue)) ||
       Number.isSafeInteger(value.intValue)
     );
-  if ('doubleValue' in value) return typeof value.doubleValue === 'number' && Number.isFinite(value.doubleValue);
+  if ('doubleValue' in value)
+    return typeof value.doubleValue === 'number' && Number.isFinite(value.doubleValue);
   const arrayValue = object(value.arrayValue);
   if ('arrayValue' in value && arrayValue === null) return false;
   const array = arrayValue?.values ?? (arrayValue === null ? undefined : []);
@@ -101,7 +103,12 @@ function attributes(
   const seen = new Set<string>();
   for (const item of raw) {
     const pair = object(item);
-    if (pair === null || !text(pair.key, TELEMETRY_NAME_BYTES) || !boundedValue(pair.value) || seen.has(pair.key)) {
+    if (
+      pair === null ||
+      !text(pair.key, TELEMETRY_NAME_BYTES) ||
+      !boundedValue(pair.value) ||
+      seen.has(pair.key)
+    ) {
       throw new Error(`attribute is malformed, duplicated or exceeds ${TELEMETRY_TEXT_BYTES} bytes`);
     }
     seen.add(pair.key);
@@ -111,7 +118,9 @@ function attributes(
       out[pair.key] = value.stringValue;
     } else if (tokens.has(pair.key)) {
       const count =
-        typeof value.intValue === 'string' && /^\d+$/.test(value.intValue) ? Number(value.intValue) : value.intValue;
+        typeof value.intValue === 'string' && /^\d+$/.test(value.intValue)
+          ? Number(value.intValue)
+          : value.intValue;
       if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0)
         throw new Error('token count requires a nonnegative safe intValue');
       out[pair.key] = count;
@@ -121,7 +130,9 @@ function attributes(
 }
 
 const id = (value: unknown, length: number): value is string =>
-  typeof value === 'string' && new RegExp(`^[0-9a-fA-F]{${length}}$`).test(value) && /[1-9a-fA-F]/.test(value);
+  typeof value === 'string' &&
+  new RegExp(`^[0-9a-fA-F]{${length}}$`).test(value) &&
+  /[1-9a-fA-F]/.test(value);
 function nano(value: unknown): string {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) value = String(value);
   if (typeof value !== 'string' || !/^\d{1,20}$/.test(value) || BigInt(value) > 18446744073709551615n)
@@ -132,7 +143,7 @@ const nullable = (attrs: Record<string, string | number>, key: string) =>
   typeof attrs[key] === 'string' && attrs[key] !== '' ? (attrs[key] as string) : null;
 
 /** OTLP/HTTP JSON with hex ids, integer enums and uint64 timestamps as strings or safe integers. */
-export function parseTraces(raw: unknown): ParsedTraces {
+export function parseTraces(raw: unknown, now = Date.now()): ParsedTraces {
   const root = object(raw);
   if (root === null || (root.resourceSpans !== undefined && !Array.isArray(root.resourceSpans)))
     throw new Error('resourceSpans must be an array');
@@ -185,8 +196,11 @@ export function parseTraces(raw: unknown): ParsedTraces {
           const startNs = nano(span.startTimeUnixNano),
             endNs = nano(span.endTimeUnixNano);
           if (BigInt(endNs) < BigInt(startNs)) throw new Error('span ends before it starts');
-          if (BigInt(endNs) - BigInt(startNs) > BigInt(TELEMETRY_MAX_SPAN_MS) * 1000000n)
-            throw new Error(`span duration exceeds ${TELEMETRY_MAX_SPAN_MS} milliseconds`);
+          if (
+            BigInt(startNs) / 1000000n < BigInt(TELEMETRY_EARLIEST_MS) ||
+            BigInt(endNs) / 1000000n > BigInt(now + TELEMETRY_FUTURE_MS)
+          )
+            throw new Error('span times must be from 2020 through one day after receipt');
           const attrs = attributes(span.attributes, STRINGS, TOKENS);
           const conversationId = nullable(attrs, 'gen_ai.conversation.id');
           if (conversationId !== null && conversationId.length > MAX_ID_CHARS)
@@ -257,7 +271,10 @@ export function countSignal(raw: unknown, signal: 'logs' | 'metrics'): number {
             if (item[kind] !== undefined && object(item[kind]) === null)
               throw new Error('metric data must be an object');
             const points = object(item[kind])?.dataPoints;
-            if (points !== undefined && (!Array.isArray(points) || points.some((point) => object(point) === null)))
+            if (
+              points !== undefined &&
+              (!Array.isArray(points) || points.some((point) => object(point) === null))
+            )
               throw new Error('dataPoints must be an array of objects');
             if (Array.isArray(points)) count += points.length;
           }

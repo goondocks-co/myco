@@ -591,7 +591,8 @@ describe('versioned schema steps', () => {
     const source = sqliteEnv();
     const promptId = crypto.randomUUID();
     const writerRows = new Map<string, Record<string, unknown>>();
-    writerRows.set('telemetry_lineage_reports', { session_id: 'grammar-session', parent_project_id: 'proj_test', parent_session_id: 'parent', key_id: 'key', matched_by: 'exact', evidence: '[]', service_name: 'sender', claims: 1 });
+    writerRows.set('telemetry_session_changes', { session_id: 'grammar-session', scope: 'session', revision: 1, cursor_trace: '', cursor_key: '' });
+    writerRows.set('telemetry_lineage_reports', { session_id: 'grammar-session', parent_project_id: 'proj_test', parent_session_id: 'parent', key_id: 'key', matched_by: 'exact', service_name: 'sender', trace_id: '1'.repeat(32), span_id: '1'.repeat(16) });
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
     writerRows.set('session_title_work', { session_id: 'grammar-session', mode: 'claim' });
     writerRows.set('release_check_due', { next_at: 0, revision: 'r' });

@@ -3,6 +3,7 @@ import { commit, read, rows, write } from '../index.js';
 import { TELEMETRY_CLOCK_TOLERANCE_MS, TELEMETRY_TRACE_PAGE } from '../../core/telemetry-policy.js';
 
 const affected = `SELECT w.trace_id,w.key_id FROM telemetry_dependency_ids w WHERE w.session_id=?2
+ UNION SELECT w.trace_id,w.key_id FROM project_remotes p JOIN telemetry_dependency_windows w ON w.remote=p.remote WHERE p.project_id=?1 AND ?6='project'
  UNION SELECT w.trace_id,w.key_id FROM sessions s JOIN project_remotes p ON p.project_id=s.project_id
  JOIN telemetry_dependency_windows w ON w.remote=p.remote AND w.ref=s.branch
  WHERE s.project_id=?1 AND s.session_id=?2 AND (s.started_at BETWEEN w.start_ms-${TELEMETRY_CLOCK_TOLERANCE_MS} AND w.start_ms+${TELEMETRY_CLOCK_TOLERANCE_MS}
@@ -13,6 +14,7 @@ interface Change {
   project_id: string;
   session_id: string;
   revision: number;
+  scope: 'project' | 'session';
   cursor_trace: string;
   cursor_key: string;
 }
@@ -21,7 +23,7 @@ const next = read<[], Change>({
   sql: 'SELECT * FROM telemetry_session_changes LIMIT 1',
 });
 const page = read<
-  [project: string, session: string, trace: string, key: string, limit: number],
+  [project: string, session: string, trace: string, key: string, limit: number, scope: 'project' | 'session'],
   { trace_id: string; key_id: string }
 >({
   name: 'telemetryChanges.page',
@@ -45,15 +47,22 @@ export async function notifyTelemetrySessions(db: RelationalStore): Promise<void
   if (change === undefined) return;
   const found = await rows(
     db,
-    page.bind(change.project_id, change.session_id, change.cursor_trace, change.cursor_key, TELEMETRY_TRACE_PAGE),
+    page.bind(
+      change.project_id,
+      change.session_id,
+      change.cursor_trace,
+      change.cursor_key,
+      TELEMETRY_TRACE_PAGE,
+      change.scope,
+    ),
   );
   const last = found.at(-1);
   await commit(
     db,
     mark.bind(JSON.stringify(found)),
-    ...(last === undefined
+    ...(found.length < TELEMETRY_TRACE_PAGE
       ? [end.bind(change.project_id, change.session_id, change.revision)]
-      : [advance.bind(change.project_id, change.session_id, change.revision, last.trace_id, last.key_id)]),
+      : [advance.bind(change.project_id, change.session_id, change.revision, last!.trace_id, last!.key_id)]),
   );
 }
 export const telemetrySessionChangesDue = async (db: RelationalStore): Promise<boolean> =>

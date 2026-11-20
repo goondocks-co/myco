@@ -15,13 +15,15 @@ export const TELEMETRY_SPAN_LIMIT = 50_000;
 export const TELEMETRY_ATTRIBUTE_LIMIT = 128;
 export const TELEMETRY_TEXT_BYTES = 1024;
 export const TELEMETRY_NAME_BYTES = 256;
-export const TELEMETRY_KEY_LIMIT = 64;
-export const TELEMETRY_SPANS_PER_KEY = Math.floor(TELEMETRY_SPAN_LIMIT / TELEMETRY_KEY_LIMIT);
-export const TELEMETRY_REQUESTS_PER_KEY = 60;
+export const TELEMETRY_KEY_LIMIT = 8;
+
+export const TELEMETRY_REQUESTS_PER_KEY = 300;
 export const TELEMETRY_RATE_WINDOW_MS = 60_000;
-export const TELEMETRY_MAX_SPAN_MS = 60 * 60 * 1000;
+export const TELEMETRY_EARLIEST_MS = Date.UTC(2020, 0, 1);
+export const TELEMETRY_FUTURE_MS = 86_400_000;
 export const TELEMETRY_DAY_MS = 86_400_000;
-export const TELEMETRY_RETENTION_MS = 30 * TELEMETRY_DAY_MS;
+export const TELEMETRY_RETENTION_DAYS = 30;
+export const TELEMETRY_RETENTION_MS = TELEMETRY_RETENTION_DAYS * TELEMETRY_DAY_MS;
 export const TELEMETRY_MATCH_WAIT_MS = 7 * TELEMETRY_DAY_MS;
 /** Turn starts within two seconds of an invocation start are eligible. */
 export const TELEMETRY_CLOCK_TOLERANCE_MS = 2_000;
@@ -37,7 +39,6 @@ export const TELEMETRY_TABLES = [
   'telemetry_spans',
   'telemetry_resolutions',
   'telemetry_lineage_reports',
-  'telemetry_resolution_keys',
   'telemetry_dependency_ids',
   'telemetry_dependency_windows',
   'telemetry_session_changes',

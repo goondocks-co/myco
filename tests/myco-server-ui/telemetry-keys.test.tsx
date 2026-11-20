@@ -34,6 +34,8 @@ it('shows connection counts and a key header once, then revokes with removal exp
           revokedAt: revoked ? Date.now() : null,
           usedSpans: 100,
           spanQuota: 100,
+          dailySpans: 3,
+          clockSkewMs: 120000,
           quotaReached: true,
           cleanupDone: false,
           accepted: 8,
@@ -50,7 +52,10 @@ it('shows connection counts and a key header once, then revokes with removal exp
     </QueryClientProvider>,
   );
   expect(await screen.findByText('8 accepted · 1 rejected spans in the last day')).toBeTruthy();
-  expect(await screen.findByText('100 / 100 retained spans · Span quota reached')).toBeTruthy();
+  expect(
+    await screen.findByText('100 / 100 retained spans · about 3 a day over 30 days · Span quota reached'),
+  ).toBeTruthy();
+  expect(screen.getByText(/120 seconds/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Add telemetry key' }));
   fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My sender' } });
   fireEvent.click(screen.getByRole('button', { name: 'Create key' }));
@@ -101,9 +106,16 @@ it('lists disagreeing key reports without presenting either as the selected pare
   });
   globalThis.fetch = (async () =>
     Response.json({
-      nodes: [node('worker'), node('lead-a'), { ...node('lead-a'), projectId: 'proj_2', label: 'Other Project lead' }],
+      nodes: [
+        node('worker'),
+        node('lead-a'),
+        { ...node('lead-a'), projectId: 'proj_2', label: 'Other Project lead' },
+      ],
       edges: [],
-      reports: [report('lead-a', 'First key'), { ...report('lead-a', 'Second key'), parentProjectId: 'proj_2' }],
+      reports: [
+        report('lead-a', 'First key'),
+        { ...report('lead-a', 'Second key'), parentProjectId: 'proj_2', inferred: true },
+      ],
       truncated: false,
     })) as typeof fetch;
   render(
@@ -113,8 +125,12 @@ it('lists disagreeing key reports without presenting either as the selected pare
       </QueryClientProvider>
     </MemoryRouter>,
   );
-  expect(await screen.findByText('Reports disagree about the parent. No reported parent is selected.')).toBeTruthy();
+  expect(
+    await screen.findByText('Reports disagree about a parent. No disputed parent is selected.'),
+  ).toBeTruthy();
   expect(screen.getByText(/reported by First key/)).toBeTruthy();
-  expect(screen.getByText(/Other Project lead · reported by Second key/)).toBeTruthy();
+  expect(
+    screen.getByText(/worker: probable parent Other Project lead · reported by Second key/),
+  ).toBeTruthy();
   expect(screen.queryByText(/Child of/)).toBeNull();
 });

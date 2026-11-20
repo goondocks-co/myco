@@ -1,8 +1,4 @@
-import { cleanRevokedTelemetry, revokedTelemetryDue } from '../db/telemetry/revocation.js';
-import { telemetrySessionChangesDue } from '../db/telemetry/changes.js';
-import { telemetryReconciliationDue } from '../db/telemetry/matching.js';
-import { reconcileTelemetry } from './telemetry-matching.js';
-import { pruneTelemetry, telemetryRetentionDue } from '../db/telemetry/retention.js';
+import { runTelemetryWork } from './telemetry-work.js';
 import { isDirectRunContext } from './run-deadline.js';
 import { deploymentSecretStore } from './secrets.js';
 import { pruneExpiredReservations } from '../db/context/reservations.js';
@@ -49,7 +45,7 @@ import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';
 import { searchBlobsDue } from '../db/search/blob-index.js';
-import { jobDispatchesAt, SCHEDULE_JOB, STAGING_RETENTION_JOB } from './jobs.js';
+import { jobDispatchesAt, SCHEDULE_JOB, STAGING_RETENTION_JOB, TELEMETRY_JOB } from './jobs.js';
 import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimFinishedAuthorities } from '../db/identity/authority-retention.js';
 import { transcriptRetention } from '../ingest/retention.js';
@@ -304,16 +300,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     return { changed, more: await searchBlobsDue(env.db, now) };
   },
   'agent-run-retention': agentRunRetention,
-  'telemetry-reconcile': async (env, now) => {
-    const cleaned = await cleanRevokedTelemetry(env.db);
-    const removed = await pruneTelemetry(env.db, now, JOB_BATCH);
-    const matched = await reconcileTelemetry(env.db, now);
-    return {
-      changed: cleaned + removed + matched,
-      more: await telemetryRetentionDue(env.db, now) || await telemetryReconciliationDue(env.db, now)
-        || await revokedTelemetryDue(env.db) || await telemetrySessionChangesDue(env.db),
-    };
-  },
+  [TELEMETRY_JOB]: (env, now) => runTelemetryWork(env.db, now),
   'run-hour-retention': (env, now) => pruneRunHours(env.db, now - RUN_HOUR_RETENTION_MS, JOB_BATCH),
   'run-body-move': (env, now) => moveRunBodies(env, now),
   'run-stale-sweep': runStaleSweep,

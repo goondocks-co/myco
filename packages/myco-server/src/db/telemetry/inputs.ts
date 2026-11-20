@@ -48,10 +48,12 @@ async function watchTelemetryTrace(
 }
 const snapshot = read<[trace: string, key: string], TraceRef>({
   name: 'telemetryWaits.snapshot',
-  sql: `SELECT t.trace_id,t.received_at,t.last_received_at,t.revision,q.key_id,q.revision AS work_revision FROM telemetry_traces t JOIN telemetry_trace_keys q ON q.trace_id=t.trace_id WHERE t.trace_id=?1 AND q.key_id=?2`,
+  sql: `SELECT t.trace_id,t.received_at,t.last_received_at,t.revision,q.key_id,q.revision AS work_revision FROM telemetry_traces t JOIN telemetry_trace_keys q ON q.trace_id=t.trace_id AND q.key_id=t.key_id WHERE t.trace_id=?1 AND q.key_id=?2`,
 });
-export const telemetryTraceSnapshot = async (db: RelationalStore, trace: TraceRef): Promise<TraceRef | undefined> =>
-  (await rows(db, snapshot.bind(trace.trace_id, trace.key_id)))[0];
+export const telemetryTraceSnapshot = async (
+  db: RelationalStore,
+  trace: TraceRef,
+): Promise<TraceRef | undefined> => (await rows(db, snapshot.bind(trace.trace_id, trace.key_id)))[0];
 
 /** Registers dependencies before reading them and fences settlement against their source version. */
 export async function withTelemetryInputs(
@@ -65,6 +67,10 @@ export async function withTelemetryInputs(
 ): Promise<number> {
   const epoch = await watchTelemetryTrace(db, options.trace, options.dependencies),
     result = await derive();
+  await watchTelemetryTrace(db, options.trace, {
+    ...options.dependencies,
+    ids: [...new Set([...options.dependencies.ids, ...result.resolutions.map((row) => row.session_id)])],
+  });
   await settleTelemetryTrace(db, options.trace, result.resolutions, {
     now: options.now,
     epoch,

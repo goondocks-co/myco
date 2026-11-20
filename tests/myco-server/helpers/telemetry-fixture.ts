@@ -16,7 +16,11 @@ export async function telemetryFixture() {
     server.handleRequest(
       new Request(`https://s${path}`, {
         method: body === undefined ? 'GET' : 'POST',
-        headers: { cookie: await ownerCookie(e.db, now), origin: 'https://s', 'content-type': 'application/json' },
+        headers: {
+          cookie: await ownerCookie(e.db, now),
+          origin: 'https://s',
+          'content-type': 'application/json',
+        },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
       env,
@@ -35,20 +39,32 @@ export async function telemetryFixture() {
     );
   seedCredential(e.sqlite, { expiresAt: NOW + TELEMETRY_RETENTION_MS * 2 });
   let event = 1;
-  const start = async (sessionId: string, projectId = 'proj_1', payload: Record<string, unknown> = {}) => {
+  const capture = async (
+    sessionId: string,
+    kind: 'prompt' | 'session.start',
+    payload: Record<string, unknown>,
+    projectId = 'proj_1',
+  ) => {
     const result = await ingestEvent(
       e.db,
       { projectId, machineId: 'machine_1', tokenId: 'mt_1', bodyBytes: 100, now },
       envelope({
         eventId: uuid(event++),
         sessionId,
-        kind: 'session.start',
+        kind,
         createdAt: now,
-        payload: { agent: 'codex', startedAt: now, branch: 'feature', ...payload },
+        payload,
       }),
     );
     expect(result.persisted).toBe(true);
   };
+  const start = (sessionId: string, projectId = 'proj_1', payload: Record<string, unknown> = {}) =>
+    capture(
+      sessionId,
+      'session.start',
+      { agent: 'codex', startedAt: now, branch: 'feature', ...payload },
+      projectId,
+    );
   return {
     e,
     env,
@@ -58,6 +74,7 @@ export async function telemetryFixture() {
     id,
     send,
     start,
+    capture,
     advance: (at: number) => {
       now = at;
     },

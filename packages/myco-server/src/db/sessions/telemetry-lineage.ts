@@ -19,11 +19,9 @@ export interface TelemetryLineageEdge {
   inferred: number;
   disputed: number;
 }
-const preferred = (project: string, session: string) => `(SELECT MIN(p.matched_by) FROM telemetry_lineage_reports p
- WHERE p.project_id=${project} AND p.session_id=${session} AND p.parent_session_id IS NOT NULL AND ${liveReport('p')})`;
 const disagreement = `(SELECT COUNT(*) FROM (SELECT DISTINCT other.parent_project_id,other.parent_session_id FROM telemetry_lineage_reports other
  WHERE other.project_id=r.project_id AND other.session_id=r.session_id AND other.parent_session_id IS NOT NULL
- AND other.matched_by=r.matched_by AND ${liveReport('other')} LIMIT 2))>1`;
+ AND ${liveReport('other')} LIMIT 2))>1`;
 const keys = `SELECT json_extract(value,'$.projectId') AS project_id,json_extract(value,'$.sessionId') AS session_id FROM json_each(?1)`;
 const incident = (name: string, on: string) =>
   read<[pairs: string, limit: number], TelemetryLineageEdge>({
@@ -35,11 +33,14 @@ const incident = (name: string, on: string) =>
  JOIN sessions parent ON parent.project_id=r.parent_project_id AND parent.session_id=r.parent_session_id
  JOIN telemetry_keys k ON k.id=r.key_id
  WHERE child.launch_parent_session_id IS NULL AND ${notTombstonedSql('child')} AND ${notTombstonedSql('parent')}
- AND ${liveReport('r')} AND r.matched_by=${preferred('r.project_id', 'r.session_id')}
+ AND ${liveReport('r')}
  GROUP BY r.parent_project_id,r.parent_session_id,r.project_id,r.session_id,r.key_id,r.service_name,r.matched_by
  ORDER BY r.parent_project_id,r.parent_session_id,r.project_id,r.session_id,r.key_id LIMIT ?2`,
   });
-const parents = incident('telemetryLineage.parents', 'r.project_id=key.project_id AND r.session_id=key.session_id');
+const parents = incident(
+  'telemetryLineage.parents',
+  'r.project_id=key.project_id AND r.session_id=key.session_id',
+);
 const children = incident(
   'telemetryLineage.children',
   'r.parent_project_id=key.project_id AND r.parent_session_id=key.session_id',

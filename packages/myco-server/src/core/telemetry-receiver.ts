@@ -1,10 +1,9 @@
-import { stampRequest } from './activity.js';
 import { classify, emit } from '../telemetry.js';
 import type { ServerEnv } from './adapters.js';
 import { parseTraces, countSignal } from './otlp.js';
 import { TELEMETRY_BODY_BYTES, TELEMETRY_KEY_PATTERN } from './telemetry-policy.js';
 import { countTelemetry, storeTelemetrySpans, telemetryKeyEnded } from '../db/telemetry/ingest.js';
-import { telemetryKeyForHash, admitTelemetryRequest } from '../db/telemetry/keys.js';
+import { telemetryKeyForHash } from '../db/telemetry/keys.js';
 import { sha256Hex } from '../hash.js';
 import { readBoundedBody } from '../ingest/body.js';
 import { authorizeHttp } from '../auth/http-authorization.js';
@@ -30,9 +29,18 @@ export async function receiveTelemetry(
   now: number,
   source: string,
 ): Promise<Response> {
-  if (!(await env.sourceLimit.limit({ key: `telemetry:${source}` })).success) return limited();
   const presented = /^Bearer ([^\s]+)$/i.exec(request.headers.get('authorization') ?? '')?.[1];
   if (presented === undefined || !TELEMETRY_KEY_PATTERN.test(presented)) return denied();
+  const url = new URL(request.url);
+  if (request.method !== 'POST' || !['/v1/traces', '/v1/logs', '/v1/metrics'].includes(url.pathname))
+    return malformed('send POST to /v1/traces, /v1/logs or /v1/metrics');
+  if (
+    (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase() !== 'application/json' ||
+    (request.headers.get('content-encoding') !== null &&
+      request.headers.get('content-encoding') !== 'identity')
+  )
+    return malformed('send uncompressed OTLP/HTTP with Content-Type: application/json');
+  if (!(await env.sourceLimit.limit({ key: `telemetry:${source}` })).success) return limited();
   const key = await telemetryKeyForHash(env.db, await sha256Hex(presented));
   if (key === null) return denied();
   if (
@@ -44,15 +52,9 @@ export async function receiveTelemetry(
     ))
   )
     return denied();
-  if (!(await admitTelemetryRequest(env.db, key.id, now))) return limited();
-  if (!(await env.tokenLimit.limit({ key: 'telemetry:deployment' })).success) return limited();
+  if (!(await env.tokenLimit.limit({ key: `telemetry:key:${key.id}` })).success) return limited();
+  if (!(await env.sourceLimit.limit({ key: 'telemetry:deployment' })).success) return limited();
   try {
-    if (
-      (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase() !== 'application/json' ||
-      (request.headers.get('content-encoding') !== null && request.headers.get('content-encoding') !== 'identity')
-    ) {
-      return malformed('send uncompressed OTLP/HTTP with Content-Type: application/json');
-    }
     const body = await readBoundedBody(request, TELEMETRY_BODY_BYTES);
     if (!body.ok) return Response.json({ code: 8, message: body.reason }, { status: 413 });
     let raw: unknown;
@@ -65,17 +67,16 @@ export async function receiveTelemetry(
     if (signal === 'traces') {
       let parsed: ReturnType<typeof parseTraces>;
       try {
-        parsed = parseTraces(raw);
+        parsed = parseTraces(raw, now);
       } catch (error) {
         return malformed((error as Error).message);
       }
       const saved = await storeTelemetrySpans(env.db, { key: key.id, spans: parsed.spans, now });
       const rejected = parsed.rejected + parsed.spans.length - saved.accepted;
       await countTelemetry(env.db, { key: key.id, now, rejected });
-      if (saved.retained > 0)
+      if (saved.wake)
         env.afterResponse(async () => {
           try {
-            await stampRequest(env.db, now);
             await env.wake?.();
           } catch (error) {
             emit({ kind: 'request_error', error_class: classify(error, env.platform.classifyError) });
@@ -92,8 +93,8 @@ export async function receiveTelemetry(
                   ...(saved.accepted < parsed.spans.length
                     ? [
                         saved.quotaReached
-                          ? 'telemetry key span quota reached; wait for retention or ask an administrator to revoke this key and configure a replacement'
-                          : 'trace or server capacity reached, or ids belong to another key',
+                          ? `telemetry key span quota reached (${saved.usedSpans}/${saved.spanQuota} spans); wait until retained spans age below the quota or ask an administrator to reduce the number of live senders`
+                          : 'trace or server capacity reached, server capacity reached',
                       ]
                     : []),
                 ].join('; '),
@@ -108,7 +109,6 @@ export async function receiveTelemetry(
     } catch (error) {
       return malformed((error as Error).message);
     }
-    await countTelemetry(env.db, { key: key.id, now, [signal]: count });
     return Response.json({});
   } catch (error) {
     if (telemetryKeyEnded(error)) return denied();

@@ -1,3 +1,4 @@
+import { refreshTelemetryWork } from '../db/telemetry/work.js';
 import { notifyTelemetrySessions } from '../db/telemetry/changes.js';
 import { withTelemetryInputs, telemetryTraceSnapshot } from '../db/telemetry/inputs.js';
 import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
@@ -18,11 +19,7 @@ import {
 import { TELEMETRY_ANCESTOR_LIMIT, TELEMETRY_MATCH_WAIT_MS } from './telemetry-policy.js';
 
 /** The nearest differently named ancestor in the trace; cycles and overlong ancestry supply no parent. */
-function ancestor(
-  span: StoredSpan,
-  byId: ReadonlyMap<string, StoredSpan>,
-): { span: StoredSpan; keys: string[] } | null {
-  const keys = new Set([span.key_id]);
+function ancestor(span: StoredSpan, byId: ReadonlyMap<string, StoredSpan>): StoredSpan | null {
   const seen = new Set([span.span_id]);
   let parent = span.parent_span_id;
   let nearest: StoredSpan | null = null;
@@ -30,13 +27,12 @@ function ancestor(
     if (seen.has(parent)) return null;
     seen.add(parent);
     const held = byId.get(parent);
-    if (held === undefined) return nearest === null ? null : { span: nearest, keys: [...keys] };
-    keys.add(held.key_id);
+    if (held === undefined) return nearest;
     if (nearest === null && held.conversation_id !== null && held.conversation_id !== span.conversation_id)
       nearest = held;
     parent = held.parent_span_id;
   }
-  return parent === null && nearest !== null ? { span: nearest, keys: [...keys] } : null;
+  return parent === null ? nearest : null;
 }
 
 /** Records canonical session references only; telemetry never creates a session or changes its Project or author. */
@@ -50,16 +46,12 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
     expired = now - trace.last_received_at >= TELEMETRY_MATCH_WAIT_MS;
   }
   const spans = await telemetryTraceSpans(db, trace);
-  const owned = spans.filter((span) => span.key_id === trace.key_id);
+  const owned = spans;
   if (owned.length === 0) return 0;
   const byId = new Map(spans.map((span) => [span.span_id, span]));
   const ancestors = new Map(owned.map((span) => [span.span_id, ancestor(span, byId)]));
   const namedIds = [
-    ...new Set(
-      owned
-        .flatMap((span) => [span.conversation_id, ancestors.get(span.span_id)?.span.conversation_id ?? null])
-        .filter((id): id is string => id !== null),
-    ),
+    ...new Set(spans.flatMap((span) => (span.conversation_id === null ? [] : [span.conversation_id]))),
   ];
   const dependencies = {
     ids: expired ? [] : namedIds,
@@ -81,9 +73,7 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
   };
   try {
     return await withTelemetryInputs(db, { trace, now, dependencies }, async () => {
-      const named = await telemetrySessionsNamed(db, [
-        ...new Set(spans.flatMap((span) => (span.conversation_id === null ? [] : [span.conversation_id]))),
-      ]);
+      const named = await telemetrySessionsNamed(db, namedIds);
       const identities = new Map<string, SessionIdentity[]>();
       for (const identity of named)
         identities.set(identity.session_id, [...(identities.get(identity.session_id) ?? []), identity]);
@@ -107,11 +97,12 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
       const matches: InferenceMatch[] = [];
       for (const span of owned) {
         if (span.conversation_id !== null || span.operation !== 'invoke_agent') continue;
-        const parent = exact(ancestors.get(span.span_id)?.span.conversation_id ?? null);
+        const parent = exact(ancestors.get(span.span_id)?.conversation_id ?? null);
         if (parent === null) continue;
         const detail = details.get(span.span_id)!;
         if (detail.repository !== null && detail.ref !== null && detail.ref !== '')
           matches.push({
+            keyId: span.key_id,
             traceId: span.trace_id,
             spanId: span.span_id,
             remote: detail.repository,
@@ -127,7 +118,7 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
       const resolutions: Resolution[] = [];
       for (const span of owned) {
         const ancestry = ancestors.get(span.span_id) ?? null,
-          parentSpan = ancestry?.span,
+          parentSpan = ancestry ?? undefined,
           parent = exact(parentSpan?.conversation_id ?? null);
         const invocation = span.operation === 'invoke_agent';
         const matchedBy = span.conversation_id === null ? 'inferred' : 'exact';
@@ -136,15 +127,6 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
         if (session === null || (!invocation && parent === null)) continue;
         resolutions.push({
           ...session,
-          evidence: JSON.stringify(
-            [
-              ...new Set([
-                span.key_id,
-                ...(ancestry?.keys ?? []),
-                ...(JSON.parse(inferred.get(span.span_id)?.evidence ?? '[]') as string[]),
-              ]),
-            ].sort(),
-          ),
           ...details.get(span.span_id)!,
           agent_name: span.agent_name,
           ...(remotes.has(span.span_id) ? { inferenceRemote: remotes.get(span.span_id)! } : {}),
@@ -175,6 +157,8 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
 export async function reconcileTelemetry(db: RelationalStore, now: number): Promise<number> {
   await notifyTelemetrySessions(db);
   let matched = 0;
-  for (const trace of await telemetryTracesDue(db, now)) matched += await reconcileTelemetryTrace(db, trace, now);
+  for (const trace of await telemetryTracesDue(db, now))
+    matched += await reconcileTelemetryTrace(db, trace, now);
+  await refreshTelemetryWork(db);
   return matched;
 }
