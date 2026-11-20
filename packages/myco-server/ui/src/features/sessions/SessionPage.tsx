@@ -1,3 +1,4 @@
+import { countEvidence, fileEditWords } from './evidence';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -76,7 +77,7 @@ export function SessionPage({ projectId, sessionId, projectName }: SessionPagePr
       projectId={projectId}
       projectName={projectName}
       now={now}
-      actions={admin ? <SessionActions projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={() => navigate(listPath, { replace: true })} /> : null}
+      actions={admin ? <SessionActions visibility={detail.data.visibility} projectId={projectId} session={detail.data.session} counts={detail.data.counts} onDeleted={() => navigate(listPath, { replace: true })} /> : null}
     />}</ReadState>
   );
 }
@@ -128,12 +129,12 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const name = projectName ?? 'A project';
   useFollowLive(projectId, session);
   const content: Record<Tab, ReactNode> = {
-    conversation: <Conversation learningAgedOut={answer.learningAgedOutAt != null} projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={counts.prompts} typedTotal={counts.userPrompts} now={now} />,
+    conversation: <Conversation learningAgedOut={answer.learningAgedOutAt != null} projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={answer.turns} typedTotal={answer.personTurns} now={now} />,
     activity: <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />,
     outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
     spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
     plans: <SessionPlans projectId={projectId} sessionId={session.sessionId} now={now} />,
-    files: <SessionFiles projectId={projectId} sessionId={session.sessionId} />,
+    files: <SessionFiles fileEdits={answer.fileEdits} projectId={projectId} sessionId={session.sessionId} />,
     lineage: <SessionLineageTab projectId={projectId} sessionId={session.sessionId} now={now} />,
   };
   // A narrow screen gives an open turn the whole page, with its own way back.
@@ -175,14 +176,17 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               {session.endedAt !== null && session.startedAt !== null && <><Sep /><span>{spanWords(session.endedAt - session.startedAt)}</span></>}
               {session.branch !== null && <><Sep /><span className="t-mono">{session.branch}</span></>}
             </p>
+            {session.launchParentSessionId !== null && <p className="t-small text-muted">Launched by another agent</p>}
             <Summary session={session} untitled={answer.untitled ?? null} live={live} />
             <div className="flex flex-wrap gap-s2" data-session-counts="">
-              <CountButton value={counts.prompts} onClick={() => openFilter('all')}>{counts.prompts === 1 ? 'turn' : 'turns'}</CountButton>
-              <CountButton value={counts.userPrompts} onClick={() => openFilter('you')}>from you</CountButton>
-              <CountButton value={counts.toolCalls}>{counts.toolCalls === 1 ? 'tool call' : 'tool calls'}</CountButton>
-              <CountButton value={counts.failedTools} tone={counts.failedTools > 0 ? 'bad' : undefined} onClick={() => openFilter('failed')}>failed</CountButton>
-              <CountButton value={counts.mycoCalls} tone={counts.mycoCalls > 0 ? 'primary' : undefined} onClick={() => openFilter('myco')}>{counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls'}</CountButton>
-              <CountButton value={answer.filesEdited} onClick={() => setTab('files')}>{answer.filesEdited === 1 ? 'file edited' : 'files edited'}</CountButton>
+              <CountButton value={answer.turns} onClick={() => openFilter('all')}>{answer.turns === 1 ? 'turn' : 'turns'}</CountButton>
+              <CountButton value={answer.personTurns} onClick={() => openFilter('you')}>from you</CountButton>
+              <CountButton>{countEvidence(answer, 'toolCalls', 'tool call')}</CountButton>
+              <CountButton tone={counts.failedTools > 0 ? 'bad' : undefined} value={answer.visibility.failedTools === 'recorded' ? counts.failedTools : undefined} onClick={() => openFilter('failed')}>{answer.visibility.failedTools === 'recorded' ? 'failed' : countEvidence(answer, 'failedTools', 'failed', 'failed')}</CountButton>
+              {answer.visibility.reportedErrors === 'not_visible' ? <CountButton>Reported errors: not visible</CountButton> : answer.reportedErrors > 0 && <CountButton>{answer.reportedErrors.toLocaleString()} reported errors</CountButton>}
+              {answer.visibility.nestedToolCalls === 'recorded' && answer.nestedToolCalls > 0 && <CountButton value={answer.nestedToolCalls}>{answer.nestedToolCalls === 1 ? 'nested call' : 'nested calls'}</CountButton>}
+              <CountButton tone={counts.mycoCalls > 0 ? 'primary' : undefined} value={answer.visibility.mycoCalls === 'recorded' ? counts.mycoCalls : undefined} onClick={() => openFilter('myco')}>{answer.visibility.mycoCalls === 'recorded' ? (counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls') : countEvidence(answer, 'mycoCalls', 'Myco call')}</CountButton>
+              <CountButton onClick={() => setTab('files')}>{fileEditWords(answer.fileEdits)}</CountButton>
               <CountButton onClick={() => setAbout(true)}>About this session</CountButton>
             </div>
           </header>

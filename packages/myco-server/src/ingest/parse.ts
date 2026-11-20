@@ -104,6 +104,7 @@ export interface ParsePersistence {
 
 /** The transcript a pass works on. */
 export interface ParseTarget {
+    launchParentSessionId?: string;
     persistence: ParsePersistence;
     projectId: string;
     transcriptId: string;
@@ -504,7 +505,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   const derive = async (): Promise<{ state: ParserState; input: ParserInput; parsed: DerivedEvent[] }> => {
     const state: ParserState = structuredClone(initialState);
     const input: ParserInput = { ...({view:true,identities:new Map<string,readonly string[]>(),toolPrompts:new ToolPromptLinks()}), lines: lines!, sessionId: target.sessionId, transcriptId: target.transcriptId, recordScheme, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
-      ...(target.role === undefined ? {} : { role: target.role }),
+      ...(target.role === undefined ? {} : { role: target.role }), launchParentSessionId: target.launchParentSessionId,
       terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
     return { state, input, parsed: await parser.parse(input) };
   };

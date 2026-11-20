@@ -16,6 +16,12 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  transcriptEvidence:
+    toolCalls: recorded
+    failedTools: recorded
+    mycoCalls: recorded
+    filesEdited: observed
+    commits: member_report_required
   displayEnvelopeTags: [command-message, command-args, command-contents, timestamp, pasted_content]
   # Tags of system-notification envelopes. origin.kind is the tag; turnOrigin is
   # the tag with hyphens written as underscores. A prompt that is only one such
@@ -219,7 +225,14 @@ capture:
       action: classify
       set_origin: system
       reason: claude-code-compact-continuation-summary
-    # Fail-safe: any other whole-message envelope is non-human (preserved, hidden). MUST be last.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [bash-input]
+      action: classify
+      set_origin: human
+      opens_turn: false
+      reason: claude-code-person-shell-command
     - event: user_prompt
       scope: this_agent
       when:

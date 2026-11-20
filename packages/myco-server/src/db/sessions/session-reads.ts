@@ -41,9 +41,9 @@ const lifecycle = read<Session, LifecycleRow>({ name: 'sessionReads.lifecycle', 
   `SELECT s.machine_id, s.created_by_token_id, s.started_at, s.ended_at, s.first_received_at
                 FROM sessions s WHERE s.project_id = ?1 AND s.session_id = ?2 AND ${notTombstonedSql('s')}` });
 
-export interface DocumentCountsRow { session_id: string; prompts: number; tool_calls: number; replies: number; plans: number }
+export interface DocumentCountsRow { session_id: string; turns: number; prompts: number; tool_calls: number; replies: number; plans: number }
 const documentCounts = read<[project: string, sessions: string], DocumentCountsRow>({ name: 'sessionReads.documentCounts', sql:
-  `SELECT d.session_id, d.prompts, d.tool_calls, d.replies, d.plans
+  `SELECT d.session_id,(SELECT COUNT(*) FROM session_prompts p WHERE p.project_id=d.project_id AND p.session_id=d.session_id AND p.generation=d.generation AND p.turn_key=p.prompt_id) AS turns,d.prompts, d.tool_calls, d.replies, d.plans
     FROM session_documents d WHERE d.project_id = ?1 AND d.session_id IN (SELECT value FROM json_each(?2)) AND d.state = 'live'` });
 
 export interface SessionCountsRow { prompts: number; toolCalls: number; responses: number; plans: number; attachments: number }

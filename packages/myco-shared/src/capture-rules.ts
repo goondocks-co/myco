@@ -4,6 +4,7 @@ import { ANY_AGENT_RULES_HARNESS } from './any-agent-rules.generated.js';
 import type { PromptIdentityDeclaration } from './prompt-identity.js';
 import type { RecordIdentityDeclaration } from './record-identity.js';
 import type { ToolResultDeclaration } from './tool-result.js';
+import type { CompletedTool, TranscriptEvidence } from './transcript-evidence.js';
 
 export interface CaptureRuleBundle {
   name: string;
@@ -18,6 +19,8 @@ export interface CaptureRuleBundle {
   promptIdentity: PromptIdentityDeclaration;
   recordIdentity?: RecordIdentityDeclaration;
   toolResult?: ToolResultDeclaration;
+  transcriptEvidence?: TranscriptEvidence;
+  completedTools?: readonly CompletedTool[];
   fileTools?: readonly { tool: string; pathField: string; mutates?: boolean; extract?: 'patch' }[];
 }
 
@@ -64,10 +67,30 @@ export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boo
   }
   return false;
 }
-const ENCLOSING_ENVELOPE = /^<([A-Za-z][\w-]*)(\s[^>]*)?>[\s\S]*<\/\1>$|^<([A-Za-z][\w-]*)(\s[^>]*)?\/>$/;
+const ENCLOSING_ENVELOPE = /^<([A-Za-z][\w.-]*)(\s[^>]*)?>[\s\S]*<\/\1>$|^<([A-Za-z][\w.-]*)(\s[^>]*)?\/>$/;
 
 export function isEnclosingEnvelope(prompt: string): boolean {
   return ENCLOSING_ENVELOPE.test(prompt.trim());
+}
+
+/** A complete outer element carries presentation metadata; its name and attributes assign no origin. */
+export function promptEnvelope(prompt: string): { text: string; envelope: { name: string; attributes: string } } | null {
+  const body = prompt.trim();
+  const opening = /^<([A-Za-z][\w.-]*)(\s(?:[^"'<>]|"[^"]*"|'[^']*')*)?\s*(\/?)>/.exec(body);
+  if (opening === null) return null;
+  const [token, name, attributes = ''] = opening;
+  if (token.endsWith('/>')) return token.length === body.length ? { text: '', envelope: { name: name!, attributes: attributes.replace(/\/\s*$/, '').trim() } } : null;
+  const escaped = name!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tokens = new RegExp(`<(/?)${escaped}(?=[\\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>`, 'g');
+  tokens.lastIndex = token.length;
+  let depth = 1;
+  for (let next = tokens.exec(body); next !== null; next = tokens.exec(body)) {
+    if (next[1] === '/') depth--;
+    else if (!next[0].endsWith('/>')) depth++;
+    if (depth === 0) return tokens.lastIndex === body.length
+      ? { text: body.slice(token.length, next.index).trim(), envelope: { name: name!, attributes: attributes.trim() } } : null;
+  }
+  return null;
 }
 export interface UserPromptRuleContext {
   prompt: string;
@@ -84,8 +107,8 @@ export interface SessionStartRuleContext {
 export type PromptOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
 
 export type UserPromptDecision =
-  | { action: 'pass'; prompt: string; origin?: PromptOrigin }
-  | { action: 'rewrite'; prompt: string; reason?: string; origin?: PromptOrigin }
+  | { action: 'pass'; prompt: string; origin?: PromptOrigin; opensTurn?: boolean }
+  | { action: 'rewrite'; prompt: string; reason?: string; origin?: PromptOrigin; opensTurn?: boolean }
   | { action: 'drop'; reason?: string };
 
 export type SessionStartDecision =
@@ -96,7 +119,8 @@ export function evaluatePromptRules(bundles: readonly RuleSource[], detectedAgen
   for (const bundle of bundles) {
     for (const rule of bundle.rules) {
       if (rule.event !== 'user_prompt' || !scopePermits(rule, bundle.name, detectedAgent) || !whenMatches(rule, ctx)) continue;
-      return applyAction(rule, ctx);
+      const decision = applyAction(rule, ctx);
+      return decision.action === 'drop' || rule.opens_turn === undefined ? decision : { ...decision, opensTurn: rule.opens_turn };
     }
   }
   return { action: 'pass', prompt: ctx.prompt };

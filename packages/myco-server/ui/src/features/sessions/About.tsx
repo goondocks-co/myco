@@ -1,3 +1,5 @@
+import { ToolUsageLine } from './Usage';
+import { countEvidence, fileEditWords } from './evidence';
 import { Button, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, Link, LoadingState, ShowMore, SlideOver } from '../../design';
 import { releaseStateLabel, shortRef } from '../../components/release/release-labels';
 import { useMe } from '../../hooks/use-me';
@@ -7,7 +9,6 @@ import { memberLabel } from '../../lib/member-name';
 import { workPlace } from '../today/words';
 import { lineageName, sessionPagePath } from './Lineage';
 import { RawData, type RawSection } from './RawData';
-import { ToolUsageLine } from './Usage';
 import { WhatCameOfIt } from './WhatCameOfIt';
 import { agentName, count, memberName } from './words';
 import { agoWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
@@ -91,9 +92,13 @@ function Facts({ answer, projectId, projectName, now, live }: { answer: SessionR
         ? <FactRow term="Ended">{dateTimeWords(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
         : <FactRow term={live ? 'Live' : 'Went quiet'}>Last heard {agoWords(session.lastReceivedAt, now)}</FactRow>}
       <FactRow term={session.endedAt === null ? 'Time observed' : 'Wall time'}>{answer.metrics?.durationMs === null ? 'Not recorded' : formatElapsed(answer.metrics?.durationMs ?? Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
-      <FactRow term="Tools">{answer.metrics !== undefined && answer.metrics.tools.length > 0 ? <ToolUsageLine tools={answer.metrics.tools} /> : `${count(counts.toolCalls, 'tool call')}${counts.failedTools > 0 ? ` · ${counts.failedTools} failed` : ''}`}</FactRow>
+      <FactRow term="Tools">{answer.visibility.toolCalls === 'recorded' && (answer.metrics?.tools.length ?? 0) > 0 ? <ToolUsageLine tools={answer.metrics!.tools} /> : countEvidence(answer, 'toolCalls', 'tool call')}</FactRow>
+      <FactRow term="Files">{fileEditWords(answer.fileEdits)}</FactRow>
+      <FactRow term="Reported errors">{answer.reportedErrors == null || answer.visibility.reportedErrors === 'not_visible' ? 'Not visible' : `${count(answer.reportedErrors, 'call')} reported an error or a non-zero exit`}</FactRow>
+      <FactRow term="Nested calls">{answer.visibility.nestedToolCalls === 'not_visible' ? 'Not visible' : `${count(answer.nestedToolCalls, 'call')} run inside orchestration calls`}</FactRow>
+      {session.launchParentSessionId !== null && <FactRow term="Launch">Launched by another agent</FactRow>}
       <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
-      <FactRow term="Size">{[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
+      <FactRow term="Size">{[count(answer.turns, 'turn'), count(answer.promptEntries, 'prompt entry', 'prompt entries'), countEvidence(answer, 'toolCalls', 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
       {release != null && <FactRow term="Release">{releaseStateLabel(release.state)}{release.ref !== null && release.state !== 'not_on_release_line' ? ` · ${shortRef(release.ref)}` : ''}</FactRow>}
       <Family projectId={projectId} session={session} />
     </FactsPanel>

@@ -52,7 +52,7 @@ describe('a session\'s commit observations', () => {
   it('answers no observations and no release check for a session whose commits were never observed', async () => {
     const r = await rig();
     r.session(P, 's_quiet');
-    expect(await r.commits(P, 's_quiet')).toEqual({ status: 200, body: { observations: [], release: null } });
+    expect(await r.commits(P, 's_quiet')).toEqual({ status: 200, body: { observations: [], release: null, range: { visibility: 'not_visible', reason: 'member_report_required' } } });
   });
 
   it('carries a squash release on the end commit it classified, though its basis is the merge commit', async () => {
@@ -64,6 +64,7 @@ describe('a session\'s commit observations', () => {
     await r.check(100 * MIN);
     expect(r.sqlite.query('SELECT basis_sha AS basisSha FROM knowledge_release_state WHERE record_id = ?').get('s_1')).toEqual({ basisSha: M });
     expect(await r.commits(P, 's_1')).toEqual({ status: 200, body: {
+      range: { visibility: 'not_visible', reason: 'member_report_required' },
       observations: [
         { point: 'session_start', headSha: A, branch: 'feat', changes: 'unreadable', capturedAt: 10 },
         { point: 'session_end', headSha: C, branch: 'feat', changes: 'none', capturedAt: 20 },
@@ -147,7 +148,7 @@ describe('a session\'s commit observations', () => {
     r.observe('proj_2', 's_shared', 'session_end', A);
     r.session('proj_2', 's_theirs');
     r.observe('proj_2', 's_theirs', 'session_end', A);
-    expect(await r.commits(P, 's_shared')).toEqual({ status: 200, body: { observations: [], release: null } });
+    expect(await r.commits(P, 's_shared')).toEqual({ status: 200, body: { observations: [], release: null, range: { visibility: 'not_visible', reason: 'member_report_required' } } });
     expect((await r.commits(P, 's_theirs')).status).toBe(404);
     expect((await r.commits(P, 's_absent')).status).toBe(404);
   });

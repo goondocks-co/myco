@@ -1,3 +1,4 @@
+import { isInstructionOrigin } from '../read/extraction-origins.js';
 import { editedFiles } from './tool-rollup.js';
 import { sourceBytes } from './turn-source.js';
 /**
@@ -19,10 +20,10 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
   const s = (value: unknown): string => (typeof value === 'string' ? value : '');
   return {
     turnKey, origin: s(prompt.origin) || 'user', prompt: s(prompt.text),
-    steering: records.filter((r) => r.k === 'prompt' && r.id !== turnKey).map((r) => ({ promptId: r.id, text: s(r.text) })),
+    steering: records.filter((r) => r.k === 'prompt' && r.id !== turnKey && r.claim !== 'context' && isInstructionOrigin(r.origin)).map((r) => ({ promptId: r.id, text: s(r.text) })),
     replies: records.filter((r) => r.k === 'reply').map((r) => ({ responseId: r.id, text: s(r.text) })),
     tools: records.filter((r) => r.k === 'tool').map((r) => ({
-      toolCallId: r.id, toolName: s(r.tool_name), input: typeof r.input === 'string' ? r.input : null,
+      toolCallId: r.id, nested: r.nested === true, toolName: s(r.tool_name), input: typeof r.input === 'string' ? r.input : null,
       output: typeof r.output_preview === 'string' ? r.output_preview : null, success: r.success === 1,
       fileChanging: editedFiles(r, typeof r.harness === 'string' ? r.harness : null).length > 0,
       errorMessage: typeof r.error_message === 'string' ? r.error_message : null,

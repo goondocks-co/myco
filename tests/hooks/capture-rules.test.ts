@@ -679,7 +679,7 @@ describe('claude-code manifest — structural envelope classification (real conf
     });
     expect(d).toMatchObject({ origin: 'system' });
   });
-  it('unknown claude envelope falls to the system fail-safe', () => {
+  it('unknown Claude envelopes are system context', () => {
     const d = evaluateUserPromptRules('claude-code', {
       prompt: '<future-thing>y</future-thing>',
       transcriptPath,
@@ -719,8 +719,8 @@ describe('codex manifest — structural envelope classification (real config)', 
     });
     expect(d).toEqual({ action: 'rewrite', prompt: 'real request', reason: 'codex-desktop-file-preamble' });
   });
-  it('unknown codex envelope falls to the system fail-safe', () => {
-    const d = evaluateUserPromptRules('codex', { prompt: '<future-thing>y</future-thing>', transcriptPath });
+  it('unknown Codex envelopes are system context', () => {
+    const d = evaluateUserPromptRules('codex', { prompt: '<future.thing>y</future.thing>', transcriptPath });
     expect(d).toMatchObject({ origin: 'system' });
   });
 });
@@ -815,4 +815,9 @@ describe('resolveSubagentThread', () => {
       threadLabel: null,
     });
   });
+});
+
+it('person-initiated shell wrappers have explicit speaker rules', () => {
+  expect(evaluateUserPromptRules('claude-code', { prompt: '<bash-input>pwd</bash-input>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human', opensTurn: false });
+  expect(evaluateUserPromptRules('codex', { prompt: '<user_shell_command>pwd</user_shell_command>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human', opensTurn: false });
 });

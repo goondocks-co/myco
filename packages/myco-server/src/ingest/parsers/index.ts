@@ -46,6 +46,7 @@ export interface ParsedLine {
 }
 
 export interface ParserInput {
+  launchParentSessionId?: string;
   view?: boolean;
   identities?: Map<string,readonly string[]>;
   /** Canonical tool ids whose owning prompt this window proves. */

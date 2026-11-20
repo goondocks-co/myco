@@ -8,7 +8,8 @@ import { TurnLocatorBuilding } from '../../db/documents/locators.js';
  * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { documentTurnCollection, documentTurnDetail, TURN_COLLECTIONS, type TurnCollection } from '../../content/session-turns.js';
-import { listCatalogTurns } from '../../read/document-catalog.js';
+import { documentCounters, listSessionTurns } from '../../read/document-catalog.js';
+import { sessionEvidence } from '../../read/session-evidence.js';
 import { decodeCursor } from '../../read/scope.js';
 import { PROMPT_ORIGINS } from '../../ingest/kinds.js';
 import { getReleaseStatus } from '../../core/provenance.js';
@@ -17,7 +18,6 @@ import { plans_getPlan as getPlan } from '../../read/catalog/plans.js';
 import {
   sessions_getSession as getSession,
   sessions_listSessionSummaries as listSessionSummaries,
-  sessions_sessionCounts as sessionCounts,
   type sessions_SessionRow as SessionRow,
 } from '../../read/catalog/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
@@ -36,12 +36,13 @@ interface SessionSummary {
   title: string | null;
   summary: string;
   prompt_count: number;
+  turnCount: number;
   tool_count: number;
   parent_session_id: string | null;
   launch_parent_session_id: string | null;
 }
 
-function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }): SessionSummary {
+function summary(row: SessionRow, counts: { prompts: number; toolCalls: number; turns: number }): SessionSummary {
   return {
     id: row.sessionId,
     agent: row.agent,
@@ -53,6 +54,7 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }
     title: row.title,
     summary: row.summary ?? '',
     prompt_count: counts.prompts,
+    turnCount: counts.turns,
     tool_count: counts.toolCalls,
     parent_session_id: row.parentSessionId,
     launch_parent_session_id: row.launchParentSessionId,
@@ -92,11 +94,11 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
       return await documentTurnDetail(ctx.env, scope, id, promptId) ?? failure('Turn not found; call myco_sessions with op get and id to list its turns.');
     }
     if (cursor !== undefined && decodeCursor(cursor) === null) return failure('Invalid cursor; call myco_sessions with op get and id without cursor to list its turns.');
-    const turns = ctx.principal.kind === 'grant' ? undefined : await listCatalogTurns(db, scope, id, {
+    const turns = ctx.principal.kind === 'grant' ? undefined : await listSessionTurns(db, scope, id, {
       origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor,
     });
-    const counts = await sessionCounts(db, scope, id);
-    return { ...summary(row, counts), counts, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
+    const { turns: turnCount, ...evidence } = sessionEvidence(row.agent, await documentCounters(db, scope, id));
+    return { ...summary(row, { ...evidence.counts, turns: turnCount }), ...evidence, turnCount, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
   }
 
   let sessionId: string | undefined;
@@ -124,7 +126,7 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     sessionId,
     quietBefore: await sessionQuietBefore(ctx.env, ctx.now),
   }, ctx.now);
-  return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount })), cursor: page.cursor };
+  return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount, turns: row.turnCount })), cursor: page.cursor };
 }
 
 /** Turn locator repair is a named, retryable read refusal on MCP. */

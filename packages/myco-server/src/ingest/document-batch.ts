@@ -1,4 +1,5 @@
 import { ToolPromptLinks } from '@goondocks/myco-shared/record-identity';
+import { isInstructionOrigin } from '../read/extraction-origins.js';
 import { toolPromptLinkStatements } from '../db/capture/tool-delivery-links.js';
 import { priorTurnFingerprints } from '../db/documents/turn-fingerprints.js';
 import { contentContribution, contentFingerprint, sourceBytes } from '../content/turn-source.js';
@@ -134,7 +135,7 @@ interface TurnAdded { tools: number; replies: number; children: number; plans: n
 export class DocumentBatch {
   readonly writer: DocumentWriter;
   private readonly toolPrompts = new ToolPromptLinks();
-  readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
+  readonly counts = { prompts: 0, instruction_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
   records = 0;
   calls = 0;
   lastRecordAt: number | null = null;
@@ -254,6 +255,7 @@ export class DocumentBatch {
   private ownerOf(record: DocRecord): string {
     if (record.k === 'prompt') {
       const parent = typeof record.parent_prompt_id === 'string' ? record.parent_prompt_id : null;
+      if (record.claim === 'context' && parent === null) { this.turns.set(record.id, null); return SESSION_OWNER; }
       const turn = this.turns.has(record.id) ? this.turns.get(record.id)! : parent === null ? record.id : (this.turns.get(parent) ?? null);
       this.turns.set(record.id, turn);
       return turn ?? SESSION_OWNER;
@@ -421,13 +423,16 @@ export class DocumentBatch {
         }
       }
       if (placed.outcome === 'merged') {
-        if (record.k === 'tool') this.counts.failed_tools += (placed.record.success === 0 ? 1 : 0) - (placed.held.success === 0 ? 1 : 0);
-        if (record.k === 'tool') this.counts.myco_calls += Number(recordMycoFields(placed.record).tool !== null) - Number(recordMycoFields(placed.held).tool !== null);
+        if (record.k === 'tool') {
+          this.counts.tool_calls += Number(placed.record.nested !== true) - Number(placed.held.nested !== true);
+          this.counts.failed_tools += Number(placed.record.nested !== true && placed.record.success === 0) - Number(placed.held.nested !== true && placed.held.success === 0);
+        }
+        if (record.k === 'tool') this.counts.myco_calls += Number(placed.record.nested !== true && recordMycoFields(placed.record).tool !== null) - Number(placed.held.nested !== true && recordMycoFields(placed.held).tool !== null);
         continue;
       }
       this.inserted.push([record.k, record.k === 'plan' ? planKeyOf(record) : record.id]);
       if (owner !== SESSION_OWNER) {
-        if (record.k === 'tool') this.addToTurn(owner, 'tools');
+        if (record.k === 'tool' && record.nested !== true) this.addToTurn(owner, 'tools');
         else if (record.k === 'reply') this.addToTurn(owner, 'replies');
         else if (record.k === 'prompt' && record.id !== owner) this.addToTurn(owner, 'children');
         else if (newPlan) this.addToTurn(owner, 'plans');
@@ -438,20 +443,21 @@ export class DocumentBatch {
       }
       if (record.k === 'prompt') {
         this.counts.prompts += 1;
-        if (record.origin === 'user') this.counts.user_prompts += 1;
+        const instruction = record.claim !== 'context' && isInstructionOrigin(record.origin);
+        if (instruction) this.counts.instruction_prompts += 1;
         const turnKey = owner === SESSION_OWNER ? null : owner;
         this.newPrompts.push({ record, turnKey });
         if (turnKey === record.id) {
           this.openTurn = record.id;
-          if (record.origin === 'user') this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
-          if (this.firstPrompt === null && record.origin === 'user') this.firstPrompt = preview(record.text);
+          if (instruction) this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
+          if (this.firstPrompt === null && instruction) this.firstPrompt = preview(record.text);
         }
       } else if (record.k === 'reply') this.counts.replies += 1;
       else if (record.k === 'plan') {
         if (!this.writer.plans.has(planKeyOf(record))) this.counts.plans += 1;
         this.writer.plans.add(planKeyOf(record));
       }
-      else {
+      else if (record.nested !== true) {
         this.counts.tool_calls += 1;
         if (recordMycoFields(record).tool !== null) this.counts.myco_calls += 1;
         if (record.success === 0) this.counts.failed_tools += 1;
@@ -533,7 +539,7 @@ export class DocumentBatch {
       settled.push({
         ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
-        ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
+        ...(complete ? { tools: input.tools.filter(tool => tool.nested !== true).length, replies: input.replies.length, children: records.filter(record => record.k === 'prompt' && record.id !== owner).length, plans: input.plans.length } : { added }),
         input_hash: hash, source_bytes: complete || fingerprint?.bytes != null ? bytes : null, input_chars: trimmed.text.length,
       });
     }
@@ -653,7 +659,7 @@ export class DocumentBatch {
   /** What this batch adds to the session's catalog row: its counters, chunk numbering and turn fields. */
   private catalogDelta(now: number): CatalogDelta {
     const c = this.counts;
-    return { prompts: c.prompts, userPrompts: c.user_prompts, replies: c.replies, toolCalls: c.tool_calls, failedTools: c.failed_tools, plans: c.plans,
+    return { prompts: c.prompts, instructionPrompts: c.instruction_prompts, replies: c.replies, toolCalls: c.tool_calls, failedTools: c.failed_tools, plans: c.plans,
       mycoCalls: c.myco_calls, firstPrompt: this.firstPrompt, openTurn: this.openTurn, lastRecordAt: this.lastRecordAt, nextChunk: this.writer.nextChunk,
       now, rewrittenBefore: this.rewrittenBefore };
   }

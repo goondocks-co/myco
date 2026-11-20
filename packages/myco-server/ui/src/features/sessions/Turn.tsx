@@ -1,3 +1,4 @@
+import { promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { useState, type ReactNode } from 'react';
 import { Button, CopyButton, Disclosure, ExternalLink, ItemLink, Lightbox, Markdown, ReadState, StatusChip, TypeChip } from '../../design';
 import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer, type RecordLocator, type TurnPrompt, type PlanRow } from '../../hooks/use-sessions';
@@ -19,12 +20,20 @@ export const PROMPT_PREVIEW_CHARS = 120;
 const LONG_PROMPT_CHARS = 600;
 
 /** What a turn calls where its prompt came from, in the reader's words rather than the wire's. */
-const ORIGIN_LABEL: Record<string, string> = {
+export const ORIGIN_LABEL: Record<string, string> = {
   user: 'From you',
   system: 'System',
-  agent_dispatch: 'Sub-agent',
+  agent_dispatch: 'Another agent',
   hook_injected: 'Added by a hook',
 };
+
+/** Invocation confidence and labels qualify the turn's displayed speaker. */
+export function turnOriginLabel(turn: Pick<TurnRow, 'origin' | 'invocation'>): string {
+  if (turn.invocation === undefined) return ORIGIN_LABEL[turn.origin] ?? 'Added';
+  const fact = turn.invocation;
+  const label = [fact.keyLabel, fact.serviceName, fact.agentName].filter(Boolean).join(' · ');
+  return `${fact.matchedBy === 'inferred' ? 'Probably invoked' : 'Invoked'} by another program${label === '' ? '' : ` · ${label}`}`;
+}
 
 /** A prompt's opening on one line, as the list row carries it. */
 export function promptPreview(turn: Pick<TurnRow, 'preview' | 'textChars' | 'blobKey'>, agent: string | null = null): string {
@@ -139,22 +148,28 @@ function Injection({ projectId, injection }: { projectId: string; injection: Tur
   );
 }
 
+function EnvelopeLabel({ envelope }: Pick<TurnPrompt, 'envelope'>) {
+  return envelope == null ? null : <p className="t-small text-muted">{envelope.name}{envelope.attributes === '' ? '' : ` · ${envelope.attributes}`}</p>;
+}
+
 /** The prompt itself: its whole text once the body is read, its opening before; a long one shows its opening until asked. */
-function PromptText({ projectId, sessionId, turn, text, blobKey, locator, agent }: { projectId: string; sessionId: string; turn: Pick<TurnRow, 'promptId' | 'preview' | 'textChars' | 'blobKey'>; text: string | null | undefined; blobKey: string | null | undefined; locator?: RecordLocator; agent: string | null }) {
+function PromptText({ projectId, sessionId, turn, text, blobKey, locator, agent, unwrapped = false }: { projectId: string; sessionId: string; turn: Pick<TurnRow, 'promptId' | 'preview' | 'textChars' | 'blobKey'>; text: string | null | undefined; blobKey: string | null | undefined; locator?: RecordLocator; agent: string | null; unwrapped?: boolean }) {
   const [whole, setWhole] = useState(false);
   if (text === undefined) return <p className="whitespace-pre-wrap break-words t-body font-medium text-ink">{promptPreview(turn, agent)}</p>;
   const stored = blobKey != null;
   if (!whole && (stored || (text?.length ?? 0) > LONG_PROMPT_CHARS)) {
     return <div className="flex flex-col items-start gap-s1">
-      {text === null ? <p>{promptPreview(turn, agent)}</p> : <PromptContent text={text} agent={agent} folded />}
+      {text === null ? <p>{promptPreview(turn, agent)}</p> : <PromptContent text={text} agent={agent} unwrapped={unwrapped} folded />}
       <Button variant="ghost" size="sm" className="-ml-s3" onClick={() => setWhole(true)}>Show the whole prompt</Button>
     </div>;
   }
-  return <TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId, at: locator === undefined ? undefined : { ...locator, sessionId } }} render={(value) => <PromptContent text={value} agent={agent} />} />;
+  return <TextOrBlob projectId={projectId} text={text} blobKey={blobKey ?? null} body={{ kind: 'prompt', id: turn.promptId, at: locator === undefined ? undefined : { ...locator, sessionId } }} render={(value) => <PromptContent text={value} agent={agent} unwrapped={unwrapped} />} />;
 }
 
-function PromptContent({ text, agent, folded = false }: { text: string; agent: string | null; folded?: boolean }) {
-  const shown = promptDisplay(text, agent);
+function PromptContent({ text, agent, folded = false, unwrapped = false }: { text: string; agent: string | null; folded?: boolean; unwrapped?: boolean }) {
+  const shown = unwrapped ? { text, envelopes: [] } : promptDisplay(text, agent);
+  const outer = !unwrapped && shown.envelopes.length === 0 && shown.text === text ? promptEnvelope(text) : null;
+  if (outer !== null) return <div className="flex flex-col gap-s2"><p className="t-small text-muted">{outer.envelope.name}{outer.envelope.attributes === '' ? '' : ` · ${outer.envelope.attributes}`}</p><p className={cn('whitespace-pre-wrap break-words t-body font-medium text-ink', folded && 'line-clamp-6')}>{outer.text}</p></div>;
   return <div className="flex flex-col gap-s2">
     {shown.envelopes.map((envelope, i) => envelope.text === '' ? <StatusChip key={i}>{envelope.label}</StatusChip> : <Disclosure key={i} summary={<StatusChip>{envelope.label}</StatusChip>}>
       <p className="whitespace-pre-wrap break-words t-small text-muted">{envelope.text}</p>
@@ -248,7 +263,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
   const subagents = (contexts?.[promptId] ?? body.context)?.subagents ?? 0;
   const injected = body.injection !== null && (body.injection.sporeIds.length > 0 || (body.injection.planIds ?? []).length > 0);
   const hasAnswers = (body.answers ?? []).length > 0;
-  const hasTools = total > 0 || body.tools?.complete === false;
+  const hasTools = (body.tools?.nested ?? 0) > 0 || total > 0 || body.tools?.complete === false;
   const added = <>
     {subagents > 0 && <Contribution label={`Myco prepared ${count(subagents, 'sub-agent preamble')}`} />}
     <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="answers" initial={body.answers ?? []} cursor={body.cursors?.answers} rowKey={(row) => row.id} label="context answers">
@@ -297,8 +312,9 @@ function ChildTurn({ projectId, sessionId, agent, contexts, child }: { projectId
   };
   return (
     <li data-testid={`turn-${prompt.promptId}`} data-child="true" data-origin={prompt.origin} className="flex flex-col gap-s3">
-      <PromptBubble origin={prompt.origin} thread={prompt.threadLabel} at={prompt.createdAt} steering={prompt.origin === 'user'}>
-        <PromptText projectId={projectId} sessionId={sessionId} turn={{ promptId: prompt.promptId, preview: prompt.text, textChars: prompt.text?.length ?? null, blobKey: prompt.blobKey }} text={prompt.text} blobKey={prompt.blobKey} locator={prompt.locator} agent={agent} />
+      <PromptBubble origin={prompt.origin} thread={prompt.threadLabel} at={prompt.createdAt} steering={prompt.origin === 'user' && prompt.claim !== 'context'}>
+        <EnvelopeLabel envelope={prompt.envelope} />
+        <PromptText projectId={projectId} sessionId={sessionId} turn={{ promptId: prompt.promptId, preview: prompt.text, textChars: prompt.text?.length ?? null, blobKey: prompt.blobKey }} text={prompt.text} unwrapped={prompt.envelope != null} blobKey={prompt.blobKey} locator={prompt.locator} agent={agent} />
       </PromptBubble>
       <TurnPages projectId={projectId} sessionId={sessionId} promptId={prompt.promptId} collection="attachments" initial={body.attachments} cursor={body.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">
         {(rows) => <Attachments projectId={projectId} attachments={rows} />}
@@ -339,7 +355,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
           {back}
           <time dateTime={new Date(turn.createdAt).toISOString()}>{dateTimeWords(turn.createdAt, now)}</time>
           {elapsed !== null && <><span aria-hidden>·</span><span>{formatElapsed(elapsed)}</span></>}
-          <StatusChip>{ORIGIN_LABEL[turn.origin] ?? 'Added'}</StatusChip>
+          <StatusChip>{turnOriginLabel(body?.prompt ?? turn)}</StatusChip>
           {turn.signal === 'high' && <StatusChip className="bg-primary-bg text-primary">Key moment</StatusChip>}
         </span>
         <span className="flex flex-wrap items-center gap-s2">
@@ -348,7 +364,8 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
         </span>
       </div>
       <PromptBubble origin={turn.origin} thread={turn.threadLabel}>
-        <PromptText key={turn.promptId} projectId={projectId} sessionId={sessionId} turn={turn} text={body === undefined ? undefined : body.prompt.text} agent={agent} blobKey={body?.prompt.blobKey} locator={body?.prompt.locator} />
+        <EnvelopeLabel envelope={body?.prompt.envelope} />
+        <PromptText key={turn.promptId} projectId={projectId} sessionId={sessionId} turn={turn} text={body === undefined ? undefined : body.prompt.text} unwrapped={body?.prompt.envelope != null} agent={agent} blobKey={body?.prompt.blobKey} locator={body?.prompt.locator} />
       </PromptBubble>
       <ReadState data={body} pending={detail.isPending} error={detail.error} onRetry={() => { void detail.refetch(); }} label="this turn">
         {(read) => <>

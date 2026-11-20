@@ -69,6 +69,10 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       for (const line of ownedLines(input.lines, input.sessionId, parser.continuation)) {
         const derived = await parser.parse({ ...input, now:input.view?line.receivedAt??input.now:input.now, terminal: undefined, state, transcriptMeta, lines: [line], openPromptId, claims });
         for (const event of derived) {
+          if (event.kind === 'prompt' && event.opensTurn === false) {
+            event.payload.claim ??= 'context';
+            if (openPromptId !== undefined) event.payload.parentPromptId = openPromptId;
+          }
           if(input.view)event.sourceEnd??=line.sourceEnd;
           if(input.view&&(event.kind==='tool.use'||event.kind==='tool.failure')){
             event.outcomeOffset??=line.offset;

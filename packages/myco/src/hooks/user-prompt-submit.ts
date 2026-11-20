@@ -115,6 +115,7 @@ export async function main(opts: HookMainOptions = {}) {
       process.stderr.write(`[myco] user-prompt-submit: dropped (${decision.reason ?? 'rule'})\n`);
       return { events: [], response, ignored: true };
     }
+    if (decision.opensTurn === false) return { events: [], response, ignored: true };
     const text = decision.action === 'rewrite' ? decision.prompt : rawPrompt;
     if (decision.action === 'rewrite') {
       process.stderr.write(`[myco] user-prompt-submit: rewritten (${decision.reason ?? 'rule'})\n`);

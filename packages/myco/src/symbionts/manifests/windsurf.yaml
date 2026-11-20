@@ -22,6 +22,12 @@ hookFields:
   prompt: tool_info.user_prompt
   toolOutput: tool_info.mcp_result
 capture:
+  transcriptEvidence:
+    toolCalls: not_visible
+    failedTools: not_visible
+    mycoCalls: not_visible
+    filesEdited: not_visible
+    commits: member_report_required
   # Windsurf stores transcripts flat, keyed by trajectory id.
   transcriptDiscovery:
     roots: ["~/.windsurf/transcripts"]

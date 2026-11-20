@@ -1,3 +1,4 @@
+import { instructionOriginSql } from '../document-tables.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../../constants.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
@@ -79,7 +80,7 @@ export function sessionLifecycleSchema(): string[] {
 /** A session is built once the walk passed it; every session is, once the walk finished. */
 const READY = `(f.built=1 OR EXISTS(SELECT 1 FROM projection_catchup c WHERE c.projection='${LIFECYCLE_PROJECTION}' AND c.phase='${LIFECYCLE_PHASE}' AND c.done=1))`;
 /** The latest user prompt a session's live document holds, read by the `created_at` seek on its generation. */
-const DOCUMENT_TURN = `(SELECT p.created_at FROM session_prompts p WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.origin='user'
+const DOCUMENT_TURN = `(SELECT p.created_at FROM session_prompts p WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND ${instructionOriginSql('p.origin')}
   AND p.generation=(SELECT d.generation FROM session_documents d WHERE d.project_id=sessions.project_id AND d.session_id=sessions.session_id AND d.state='live')
   ORDER BY p.created_at DESC LIMIT 1)`;
 const TURN = `MAX(COALESCE(f.latest_user_prompt_at,0),COALESCE(${DOCUMENT_TURN},0))`;

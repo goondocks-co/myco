@@ -1,10 +1,14 @@
-import type { DocRecord } from './document.js';
+import { TOOL_EVIDENCE_VERSION, type DocRecord } from './document.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { filesNamedByToolInput, mycoToolFields, MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED } from '@goondocks/myco-shared/member-protocol';
 import { getAtPath } from '@goondocks/myco-shared/dot-path';
 
 export const ROLLUP_TOOLS = 8;
 const ERROR_EXCERPT_CHARS = 240;
+
+/** An absent result is an unknown outcome; only a tool's reported error counts as a failure. */
+export const reportedToolFailure = (record: DocRecord): boolean => record.reported_error === true || record.success === 0
+  && (record.result_reason == null || record.result_reason === 'reported');
 
 export interface ToolRollup {
   tools: { name: string; count: number }[];
@@ -23,13 +27,16 @@ export interface ToolState {
   named: [string, number][];
   errors: [string, number, string][];
   removedErrors: string[];
+  evidenceReady: boolean;
+  nested: number;
+  reportedErrors: number;
   total: number;
   failed: number;
   mycoCalls: number;
   last: number | null;
 }
 
-export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], total: 0, failed: 0, mycoCalls: 0, last: null });
+export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], evidenceReady: true, nested: 0, reportedErrors: 0, total: 0, failed: 0, mycoCalls: 0, last: null });
 
 export function recordMycoFields(record: DocRecord) {
   let input: unknown = record.input;
@@ -59,6 +66,7 @@ export function toolFiles(record: DocRecord, harness: string | null = null): str
 }
 
 export function editedFiles(record: DocRecord, harness: string | null): string[] {
+  if (record.success === 0) return [];
   harness = typeof record.harness === 'string' ? record.harness : harness;
   const declared = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === harness)?.fileTools ?? [];
   return declared.some(tool => tool.tool === record.tool_name && tool.mutates) ? toolFiles(record, harness) : [];
@@ -66,6 +74,7 @@ export function editedFiles(record: DocRecord, harness: string | null): string[]
 
 /** Applies a placed record's contribution, removing the held version before a merged outcome. */
 export function adjustToolState(state: ToolState, record: DocRecord, harness: string | null, sign: 1 | -1): void {
+  if (sign === 1 && record.tool_evidence_version !== TOOL_EVIDENCE_VERSION) state.evidenceReady = false;
   if (sign === 1) state.last = Math.max(state.last ?? 0, record.created_at);
   if (record.k !== 'tool') return;
   const held = Object.hasOwn(state.calls, record.id) ? state.calls[record.id] : undefined;
@@ -82,9 +91,11 @@ export function adjustToolState(state: ToolState, record: DocRecord, harness: st
     if (count === 0) map.delete(name); else map.set(name, count);
     return [...map];
   };
-  const failed = record.success === 0 ? 1 : 0;
+  const failed = Number(record.success === 0);
+  state.reportedErrors += sign * Number(reportedToolFailure(record));
+  if (record.nested === true) { state.nested += sign; return; }
   state.total += sign;
-  state.failed += sign * failed;
+  state.failed += sign * Number(record.success === 0);
   state.tools = counts(state.tools, call.name);
   for (const path of call.named) state.named = counts(state.named, path);
   for (const path of call.files) state.files = counts(state.files, path);
@@ -113,8 +124,9 @@ export function needsToolInput(record: DocRecord, harness: string | null): boole
 
 /** The persisted accumulator contains scalars; keyed rows retain distinct contributions. */
 export function scalarToolState(state: ToolState): string {
-  return JSON.stringify({ total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, last: state.last });
+  return JSON.stringify({ evidenceReady: state.evidenceReady, total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, nested: state.nested, reportedErrors: state.reportedErrors, last: state.last });
 }
 export function parseToolState(text: string): ToolState {
-  return { ...emptyToolState(), ...JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'last'> };
+  const held = JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'nested' | 'reportedErrors' | 'last'> & { evidenceReady?: boolean };
+  return { ...emptyToolState(), ...held, evidenceReady: held.evidenceReady === true };
 }

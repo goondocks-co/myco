@@ -1,11 +1,12 @@
 /**
  * Titling material, read from a session's live document by the admitted titling run alone. The catalog chooses the
- * session's user turns; each is read from its first page: its prompt and the start of the prompt's first reply.
+ * session's instruction turns; each is read from its first page: its prompt and the start of the prompt's first reply.
  */
 import type { ContentStore } from '../core/adapters.js';
 import { MATERIAL_EXCERPT_CHARS, MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS } from '../constants.js';
 import type { TitlingMode } from '../core/titling-params.js';
 import { listCatalogTurns } from '../read/document-catalog.js';
+import { READ_ORIGINS } from '../read/extraction-origins.js';
 import { SessionDocument } from './session-pages.js';
 
 interface MaterialLine { prompt: string; response: string | null }
@@ -26,9 +27,9 @@ function fit<T extends MaterialLine>(rows: readonly T[], budget: number): { rows
   return { rows: kept, used };
 }
 
-/** The session's user turns in the given order, at most `limit`, each with its prompt and first reply cut to the excerpt. */
+/** The session's instruction turns in the given order, at most `limit`, each with its prompt and first reply cut to the excerpt. */
 async function materialRows(env: ContentStore, doc: SessionDocument, sessionId: string, limit: number, order: 'ASC' | 'DESC'): Promise<MaterialRow[]> {
-  const turns = await listCatalogTurns(env.db, { projectId: doc.projectId }, sessionId, { origins: ['user'], limit, order });
+  const turns = await listCatalogTurns(env.db, { projectId: doc.projectId }, sessionId, { origins: READ_ORIGINS, limit, order });
   const rows: MaterialRow[] = [];
   for (const turn of turns.rows) {
     const { pages } = await doc.ownerPages(turn.promptId, 0, 1);
@@ -44,7 +45,7 @@ async function materialRows(env: ContentStore, doc: SessionDocument, sessionId: 
 }
 
 /**
- * The session's user prompts, each with the start of its first reply, inside the character budget. At a session's end:
+ * The session's instructions, each with the start of its first reply, inside the character budget. At a session's end:
  * the earliest prompts. On an owner's ask or a refresh: the earliest and the latest halves, each fitted to its own half
  * of the budget, the tail from the latest prompt backwards, so what survives is the arc's end and never its middle.
  */

@@ -118,7 +118,7 @@ export const GOTCHAS: Turn[] = [
     tools: [{ name: 'Bash', input: { command: 'npx wrangler deploy --minify --compatibility-date=2026-08-01' }, output: 'Uploaded myco (1.2 sec)' }] },
   { id: uuid(4), text: 'Delete the old rows', at: NOW - DAY + 40, replies: ['Deleting with DELETE FROM runs.'] },
   { id: uuid(5), text: 'no, don\'t delete them; archive them with myco server archive --keep', at: NOW - DAY + 41, parent: uuid(4) },
-  { id: uuid(6), text: '<task-notification><status>completed</status></task-notification>', at: NOW - DAY + 50, replies: ['Noted.'] },
+  { id: uuid(6), origin: 'system', text: '<task-notification><status>completed</status></task-notification>', at: NOW - DAY + 50, replies: ['Noted.'] },
   { id: uuid(7), text: 'check CI', at: NOW - DAY + 60, tools: [{ name: 'Bash', input: { command: 'gh run watch 123' }, output: 'completed success' }] },
 ];
 
@@ -128,15 +128,15 @@ export const EMPTY_CARD: CardFields = { asked: 'a turn', done: 'routine work', o
 export interface MaterialAnswer { revision: string; page: number; next_page?: number; code?: string; error?: string; turns: CardMaterial[] }
 
 /** A card worker with calls through the real `/mcp` route. */
-export async function cardWorker(db: RelationalStore) {
+export async function cardWorker(db: RelationalStore, now = NOW) {
   const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter(), ...UNSIGNED_APP };
   const env = serverEnvFromBindings(bindings as never, recordingDeferred());
   await db.prepare(enable).run();
   await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
   await db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','agent','built-in',1,1)`).run();
-  await completeBudgetMigration(db, NOW);
-  await ensureMember(db, 'mem_worker', NOW, 'admin');
-  const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
+  await completeBudgetMigration(db, now);
+  await ensureMember(db, 'mem_worker', now, 'admin');
+  const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, now)).tokenId, 'm1');
   const poll = (now: number) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
   const request = (token: string, name: string, input: Record<string, unknown>, projectId = 'project') => worker.fetch(new Request('https://myco.test/mcp', {
     method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: projectId }),

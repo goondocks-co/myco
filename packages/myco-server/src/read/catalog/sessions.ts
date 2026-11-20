@@ -337,7 +337,7 @@ async function sessions_sessionLifecycle(db: sessions_import_RelationalStore, sc
 }
 
 /** The counts a list shows beside each session: the counters its document's catalog row keeps. */
-type sessions_ListCounts = Omit<sessions_SessionCounts, 'attachments'>;
+type sessions_ListCounts = Omit<sessions_SessionCounts, 'attachments'> & { turns: number };
 
 /** The catalog counters of every named session; a session with no live document counts zero. */
 async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): Promise<Map<string, sessions_ListCounts>> {
@@ -346,14 +346,15 @@ async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, sc
 }
 
 /** The counters of the sessions whose documents the rows describe; every other named session counts zero. */
-function sessions_countsOf(sessionIds: readonly string[], rows: readonly { session_id: string; prompts: number; tool_calls: number; replies: number; plans: number }[]): Map<string, sessions_ListCounts> {
-  const out = new Map<string, sessions_ListCounts>(sessionIds.map(id => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0 }]));
-  for (const row of rows) out.set(String(row.session_id), { prompts: Number(row.prompts), toolCalls: Number(row.tool_calls), responses: Number(row.replies), plans: Number(row.plans) });
+function sessions_countsOf(sessionIds: readonly string[], rows: readonly { session_id: string; turns: number; prompts: number; tool_calls: number; replies: number; plans: number }[]): Map<string, sessions_ListCounts> {
+  const out = new Map<string, sessions_ListCounts>(sessionIds.map(id => [id, { turns: 0, prompts: 0, toolCalls: 0, responses: 0, plans: 0 }]));
+  for (const row of rows) out.set(String(row.session_id), { turns: Number(row.turns), prompts: Number(row.prompts), toolCalls: Number(row.tool_calls), responses: Number(row.replies), plans: Number(row.plans) });
   return out;
 }
 
 /** A session row with the counts the rail shows beside it. */
 interface sessions_SessionSummaryRow extends sessions_SessionRow {
+  turnCount: number;
   promptCount: number;
   toolCallCount: number;
 }
@@ -371,7 +372,7 @@ async function sessions_listSessionSummariesImpl(db: sessions_import_RelationalS
     cursor: listed.cursor,
     rows: listed.rows.map((row) => {
       const c = counts.get(row.sessionId);
-      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
+      return { ...row, turnCount: c?.turns ?? 0, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
     }),
   };
 }
@@ -396,7 +397,7 @@ async function sessions_listSessionSummariesAcrossImpl(db: sessions_import_Relat
     cursor: listed.cursor,
     rows: listed.rows.map((row) => {
       const c = counts.get(row.projectId)?.get(row.sessionId);
-      return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
+      return { ...row, turnCount: c?.turns ?? 0, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
     }),
   };
 }

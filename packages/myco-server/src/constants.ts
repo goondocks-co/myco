@@ -10,7 +10,7 @@ export const SERVER_STATE_PREFIX = 'server.';
 export const SPORE_READ_STATE_PREFIX = 'spore_reads:';
 
 /** Derived transcript output version recorded with each publication. */
-export const PARSER_VERSION = 6;
+export const PARSER_VERSION = 7;
 
 /** The member identity every dispatched runtime authenticates as; durable so attribution survives across runs. */
 export const HARNESS_MEMBER_ID = 'mem_harness';

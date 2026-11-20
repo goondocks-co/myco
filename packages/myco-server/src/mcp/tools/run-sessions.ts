@@ -1,3 +1,4 @@
+import { documentCounters } from '../../read/document-catalog.js';
 import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
 /**
  * `myco_run_sessions`: settled sessions as material, and this run's own session.
@@ -16,7 +17,7 @@ import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
  * recorded as the run's read of its session.
  */
 import {
-  sessions_listSessions as listSessions,
+  sessions_listSessionSummaries as listSessionSummaries,
   sessions_getSession as getSession,
   sessions_sessionCounts as sessionCounts,
 } from '../../read/catalog/sessions.js';
@@ -43,10 +44,10 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
 
   if (input.op === 'list') {
     const limit = Math.min(Math.max(int(input.limit) ?? window.sessionPage, 1), window.sessionPage);
-    const page = await listSessions(db, scope, { limit, state: 'ended' });
+    const page = await listSessionSummaries(db, scope, { limit, state: 'ended', fidelity: 'full' }, ctx.now);
     return {
       sessions: page.rows.map((row) => ({
-        id: row.sessionId,
+        id: row.sessionId, prompt_count: row.promptCount, turnCount: row.turnCount,
         label: preview(row.label, window.sessionLabelChars),
         started_at: row.startedAt,
         ended_at: row.endedAt,
@@ -82,6 +83,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       agent: session.agent,
       branch: session.branch,
       prompt_count: counts.prompts,
+      turnCount: (await documentCounters(db, scope, sessionId))?.turns ?? 0,
       ...(session.title === null ? {} : { current_title: session.title }),
       ...(session.summary === null ? {} : { current_summary: session.summary }),
       ...(params.mode !== 'claim'

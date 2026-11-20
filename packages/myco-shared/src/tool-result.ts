@@ -3,6 +3,7 @@ import { getAtPath, parseDotPath } from './dot-path.js';
 export interface ToolResultDeclaration {
   failure: { from: 'record' | 'result'; path: string; equals: boolean } | null;
   evidence: string;
+  commandOutput?: { tools: string[]; path: string };
 }
 
 export class ToolResultDeclarationInvalid extends Error {
@@ -17,7 +18,12 @@ export function assertToolResultDeclaration(_agent: string, value: unknown): ass
   const refuse = (): never => { throw new ToolResultDeclarationInvalid(); };
   if (!object(value)) refuse();
   const declaration = value as Record<string, unknown>;
-  if (Object.keys(declaration).some(key => key !== 'failure' && key !== 'evidence') || !text(declaration.evidence)) refuse();
+  if (Object.keys(declaration).some(key => !['failure', 'evidence', 'commandOutput'].includes(key)) || !text(declaration.evidence)) refuse();
+  if (declaration.commandOutput !== undefined) {
+    const output = declaration.commandOutput;
+    if (!object(output) || !text(output.path) || !Array.isArray(output.tools) || !output.tools.every(text)
+      || Object.keys(output).some(key => key !== 'tools' && key !== 'path')) refuse();
+  }
   if (declaration.failure === null) return;
   if (!object(declaration.failure)) refuse();
   const failure = declaration.failure as Record<string, unknown>;
@@ -32,8 +38,25 @@ export function toolResultDeclarationOf(bundles: readonly { name: string; toolRe
 }
 
 /** Reads only the manifest-declared flag; absent flags do not report failure. */
-export function toolResultFailed(request: { declaration: ToolResultDeclaration | undefined; record?: unknown; result?: unknown }): boolean {
+export function toolResultFailed(request: { declaration: ToolResultDeclaration | undefined; record?: unknown; result?: unknown; toolName?: string }): boolean {
   assertToolResultDeclaration('', request.declaration);
   const { failure } = request.declaration;
   return failure !== null && getAtPath(request[failure.from], failure.path) === failure.equals;
+}
+
+/** Reported command errors are evidence independent of the harness's failure flag. */
+export function toolResultReportedError(request: Parameters<typeof toolResultFailed>[0]): boolean {
+  assertToolResultDeclaration('', request.declaration);
+  if (toolResultFailed(request)) return true;
+  const command = request.declaration.commandOutput;
+  if (command === undefined || request.toolName === undefined || !command.tools.includes(request.toolName)) return false;
+  const output = getAtPath(request.result, command.path);
+  if (typeof output !== 'string') return false;
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (object(parsed)) return (typeof parsed.exit_code === 'number' && parsed.exit_code !== 0) || parsed.isError === true
+      || (object(parsed.metadata) && typeof parsed.metadata.exit_code === 'number' && parsed.metadata.exit_code !== 0);
+  } catch { /* Command output can use the harness's labelled text envelope. */ }
+  const exit = /^Process exited with code (-?\d+)\s*$/m.exec(output.split('\nOutput:')[0]!);
+  return exit !== null && Number(exit[1]) !== 0;
 }

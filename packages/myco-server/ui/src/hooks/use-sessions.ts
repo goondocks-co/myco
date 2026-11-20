@@ -2,7 +2,7 @@ import type { ReleaseStatus } from './use-release-provenance';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchJson, postJson, SignedOutError } from '../lib/api';
 import { usePaged } from './use-paged';
-import type { ResumeCommand, SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
+import type { SessionEvidence, ResumeCommand, SessionListPage, SessionListRow, SessionOutcome } from '../features/sessions/wire';
 import { live } from '../lib/live';
 
 export interface SessionRow {
@@ -40,17 +40,7 @@ export interface SessionRow {
   label: string;
 }
 
-export interface SessionCounts {
-  prompts: number;
-  toolCalls: number;
-  failedTools: number;
-  /** The prompts a person typed, of all `prompts`. */
-  userPrompts: number;
-  mycoCalls: number;
-  responses: number;
-  plans: number;
-  attachments: number;
-}
+export type SessionCounts = SessionEvidence['counts'];
 
 /** Why an ended session has no title yet; the server's reason, in its own vocabulary. */
 export type UntitledReason = 'capture_pending' | 'capture_unsupported' | 'capture_stopped' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
@@ -67,14 +57,13 @@ export const UNTITLED_REASON_TEXT: Record<UntitledReason, string> = {
   waiting: 'Untitled: will be tried automatically soon',
 };
 
-export interface SessionResponse {
+export interface SessionResponse extends SessionEvidence {
   learningAgedOutAt?: number | null;
   session: SessionRow;
   /** Why the ended session has no title; null when it has one or is still open. */
   untitled?: UntitledReason | null;
   counts: SessionCounts;
   /** How many files the agent's editing tools changed. */
-  filesEdited: number;
   metrics?: { tools: ToolUsage[]; tokens: number | null; durationMs?: number | null };
   turnContexts?: Record<string, { subagents: number }>;
   /** Whether the session's work is released, or null when it has no release state. */
@@ -89,6 +78,7 @@ export interface SessionResponse {
 export interface PromptRow {
   promptId: string;
   text: string | null;
+  envelope?: { name: string; attributes: string } | null;
   blobKey: string | null;
   origin: string;
   promptKind: string | null;
@@ -99,6 +89,7 @@ export interface PromptRow {
 }
 
 export interface ToolCallRow {
+  nested?: boolean;
   toolCallId: string;
   promptId: string | null;
   toolName: string;
@@ -225,6 +216,7 @@ export type PromptOrigin = (typeof PROMPT_ORIGINS)[number];
 
 /** One top-level prompt of a session and counts of what followed it; the list the timeline renders collapsed. */
 export interface TurnRow {
+  invocation?: import('../features/sessions/wire').TurnInvocation;
   promptId: string;
   origin: string;
   promptKind: string | null;
@@ -272,6 +264,9 @@ export interface ToolRollup {
 }
 
 export interface TurnPrompt {
+  invocation?: import('../features/sessions/wire').TurnInvocation;
+  claim?: string | null;
+  envelope?: { name: string; attributes: string } | null;
   promptId: string;
   origin: string;
   promptKind: string | null;
@@ -635,6 +630,7 @@ export interface CommitReleaseCheck {
 }
 
 export interface SessionCommits {
+  range?: { visibility: 'not_visible'; reason: 'member_report_required' };
   /** Start first, then end. */
   observations: CommitObservation[];
   release: CommitReleaseCheck | null;
@@ -742,6 +738,9 @@ export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revis
 
 export interface ToolUsage { toolName: string; count: number }
 export interface ToolSummary {
+  evidenceReady?: boolean;
+  nested?: number;
+  reportedErrors?: number;
   /** False when the turn has pages the summary did not read: its counts then cover only the start of the turn. */
   complete: boolean;
   total: number;

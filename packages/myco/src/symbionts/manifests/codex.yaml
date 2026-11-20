@@ -14,6 +14,12 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  transcriptEvidence:
+    toolCalls: recorded
+    failedTools: recorded
+    mycoCalls: recorded
+    filesEdited: observed
+    commits: member_report_required
   # Rollout files are date-sharded: sessions/YYYY/MM/DD/rollout-<ts>-<sessionId>.jsonl
   transcriptDiscovery:
     roots: ["~/.codex/sessions"]
@@ -25,6 +31,25 @@ capture:
     # Both the timestamp and the id are dash-delimited, so the boundary between
     # `*` and `{sessionId}` is only recoverable from the id's shape.
     sessionIdPattern: "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+  completedTools:
+    - match: { type: event_msg, payload.type: item_completed, payload.item.type: CommandExecution }
+      key: payload.item.id
+      turnAt: payload.turn_id
+      name: exec_command
+      inputFields: { command: payload.item.command, cwd: payload.item.cwd }
+      outputAt: payload.item.aggregated_output
+      exitCodeAt: payload.item.exit_code
+      statusAt: payload.item.status
+      failedStatus: failed
+    - match: { type: event_msg, payload.type: item_completed, payload.item.type: McpToolCall }
+      key: payload.item.id
+      turnAt: payload.turn_id
+      nameAt: payload.item.tool
+      serverAt: payload.item.server
+      inputAt: payload.item.arguments
+      outputAt: payload.item.result
+      statusAt: payload.item.status
+      failedStatus: failed
   planDirs: []
   planTags:
     # Codex Plan Mode emits the approved plan as assistant text wrapped in
@@ -190,7 +215,7 @@ capture:
     - event: user_prompt
       scope: this_agent
       when:
-        prompt_envelope_tag_in: [environment_context, skill]
+        prompt_envelope_tag_in: [environment_context, skill, skills_instructions]
       action: classify
       set_origin: system
       reason: codex-system-envelope
@@ -213,15 +238,21 @@ capture:
       extract_after: "## My request for Codex:\n"
       reason: codex-desktop-file-preamble
 
-    # Fail-safe: any other whole-message envelope is non-human (preserved,
-    # hidden). MUST be last, after every drop and the file-preamble unwrap
-    # above, so it never pre-empts a human-wrapper rewrite.
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [user_shell_command]
+      action: classify
+      set_origin: human
+      opens_turn: false
+      reason: codex-person-shell-command
     - event: user_prompt
       scope: this_agent
       when:
         prompt_is_enclosing_envelope: true
       action: classify
       set_origin: system
+      opens_turn: true
       reason: codex-unknown-envelope
   prompts:
     shapes:
@@ -321,13 +352,7 @@ capabilities:
         - grep
         - rg
         - perl
-  # Codex's read surface flows through the Bash tool; its write surface is
-  # the dedicated `apply_patch` tool, which carries the whole patch envelope
-  # on `command` ("*** Begin Patch\n*** Update File: docs/x.md\n…") — the
-  # path lives in the `*** Add/Update/Delete File:` header, so the `patch`
-  # extractor pulls the first one (multi-file patches still register a
-  # single activity row). Shape confirmed from the dogfood vault's activity
-  # history (2,780 apply_patch rows, previously all file_path=NULL).
+  # Raw patches and structured command inputs expose file mutations.
   pathBearingTools:
     - tool: Bash
       pathField: command
@@ -347,6 +372,10 @@ capabilities:
         - grep
         - rg
         - perl
+    - tool: apply_patch
+      pathField: ""
+      extract: patch
+      mutates: true
     - tool: apply_patch
       pathField: command
       extract: patch
@@ -440,6 +469,7 @@ promptIdentity:
   readBeforePin: offset-v1
 
 toolResult:
+  commandOutput: { tools: [exec_command, write_stdin, shell, shell_command], path: output }
   failure: null
   evidence: tests/fixtures/tool-result-evidence.json
 recordIdentity:
@@ -451,8 +481,8 @@ recordIdentity:
         withinRecord: "record-text"
         evidence: "tests/fixtures/record-identity-evidence.json"
       tool-call:
-        key: {"from": "record", "path": ["payload.call_id", "payload.id"]}
-        resultKey: {"from": "record", "path": "payload.call_id"}
+        key: {"from": "record", "path": ["payload.call_id", "payload.id", "payload.item.id"]}
+        resultKey: {"from": "record", "path": ["payload.call_id", "payload.item.id"]}
         evidence: "tests/fixtures/record-identity-evidence.json"
       plan:
         position: true
@@ -465,8 +495,8 @@ recordIdentity:
         withinRecord: "record-text"
         evidence: "tests/fixtures/record-identity-evidence.json"
       tool-call:
-        key: {"from": "record", "path": ["payload.call_id", "payload.id"]}
-        resultKey: {"from": "record", "path": "payload.call_id"}
+        key: {"from": "record", "path": ["payload.call_id", "payload.id", "payload.item.id"]}
+        resultKey: {"from": "record", "path": ["payload.call_id", "payload.item.id"]}
         evidence: "tests/fixtures/record-identity-evidence.json"
       plan:
         key: {"from": "record", "path": "payload.id"}

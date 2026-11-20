@@ -164,6 +164,7 @@ describe('the retained read verbs in a joined project with no 1.4 vault', () => 
       expect(ran.stdout).toContain(`Deployment: ${SERVER_URL}  project: ${PROJECT}`);
       expect(ran.stdout).toContain('Session: sess-deployment-one');
       expect(ran.stdout).toContain('Prompts: 1');
+      expect(ran.stdout).toContain('Turns:   1');
     }
     const missing = await read('session', ['sess-nowhere'], rig.fetch);
     expect(missing.ok).toBe(false);

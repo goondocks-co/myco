@@ -12,6 +12,12 @@ hookFields:
   transcriptPath: transcript_path
   lastResponse: last_assistant_message
 capture:
+  transcriptEvidence:
+    toolCalls: recorded
+    failedTools: recorded
+    mycoCalls: recorded
+    filesEdited: observed
+    commits: member_report_required
   planDirs:
     - .pi/plans/
   # Pi writes an append-only JSONL per session, so the transcript ships as

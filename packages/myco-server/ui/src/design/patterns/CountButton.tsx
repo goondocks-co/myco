@@ -6,7 +6,7 @@ const frame = 'inline-flex items-baseline gap-s2 rounded-control border border-l
 
 export interface CountButtonProps {
   /** The number; absent for a control that sits in the row and counts nothing. */
-  value?: number;
+  value?: number | null;
   /** What it counts, as in "tool calls". */
   children: ReactNode;
   /** A state colour for the number. */
@@ -19,7 +19,7 @@ const TONE = { bad: 'text-bad', primary: 'text-primary' } as const;
 
 /** One count of a page's row of counts, which opens its view. */
 export function CountButton({ value, children, tone, onClick }: CountButtonProps) {
-  const body = <>{value !== undefined && <><strong className={cn('font-semibold tabular-nums', tone === undefined ? 'text-ink' : TONE[tone])}>{value.toLocaleString()}</strong>{' '}</>}{children}</>;
+  const body = <>{value != null && <><strong className={cn('font-semibold tabular-nums', tone === undefined ? 'text-ink' : TONE[tone])}>{value.toLocaleString()}</strong>{' '}</>}{children}</>;
   if (onClick === undefined) return <span className={frame}>{body}</span>;
   return <button type="button" onClick={onClick} className={cn(frame, 'hover:border-line-strong hover:text-ink', focusRing)}>{body}</button>;
 }

@@ -30,7 +30,7 @@ import {
   turns_parseOrigins as parseOrigins,
   turns_sessionTurnContexts as sessionTurnContexts,
 } from '../read/catalog/turns.js';
-import { documentCounters, listCatalogTurns } from '../read/document-catalog.js';
+import { documentCounters, listSessionTurns } from '../read/document-catalog.js';
 import { TurnLocatorBuilding } from '../db/documents/locators.js';
 import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords, TURN_COLLECTIONS, type TurnCollection } from '../content/session-turns.js';
 import { documentSessionActivity } from '../content/session-activity.js';
@@ -55,6 +55,7 @@ import { lineage_sessionLineage as sessionLineage } from '../read/catalog/lineag
 import { listSessionArtifacts } from '../read/session-artifacts.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
+import { sessionEvidence } from '../read/session-evidence.js';
 
 /** A cursor naming a document generation that is no longer live: the reader restarts from the first page. */
 const staleCursor = (): Response => Response.json({ error: 'stale_cursor' }, { status: 409 });
@@ -160,17 +161,13 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   const counters = await documentCounters(env.db, scope, sessionId);
+  const evidence = sessionEvidence(session.agent, counters);
   return ok({
     learningAgedOutAt: await learningAgedOutAt(env.db, scope.projectId, sessionId),
-    filesEdited: counters?.filesEdited ?? 0,
+    ...evidence,
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, lifecycle: await sessionLifecycleState(env.db, scope.projectId, sessionId), resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
-    counts: {
-      userPrompts: counters?.userPrompts ?? 0, mycoCalls: counters?.mycoCalls ?? 0,
-      prompts: counters?.prompts ?? 0, toolCalls: counters?.toolCalls ?? 0, failedTools: counters?.failedTools ?? 0,
-      responses: counters?.replies ?? 0, plans: counters?.plans ?? 0, attachments: counters?.attachments ?? 0,
-    },
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });
 }
@@ -272,7 +269,7 @@ export async function handleSessionTurns(env: ServerEnv, ctx: OwnerContext): Pro
   if (order !== null && order !== 'asc' && order !== 'desc') return badRequest('order must be asc or desc');
   const promptId = ctx.url.searchParams.get('turn') ?? undefined;
   const around = page.cursor === undefined ? ctx.url.searchParams.get('around') ?? undefined : undefined;
-  return ok(await listCatalogTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId,
+  return ok(await listSessionTurns(env.db, scope, sessionId, { ...page, origins, order: order === 'desc' ? 'DESC' : 'ASC', promptId,
     filter: filter ?? undefined, around }));
 }
 

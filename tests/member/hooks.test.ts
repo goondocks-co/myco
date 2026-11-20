@@ -148,6 +148,14 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(rig.rows('events')).toBe(0);
   });
 
+  it('a person’s local shell context asks for no model context and captures no hook prompt', async () => {
+    const tx = transcript([{ type: 'user', message: { role: 'user', content: '<bash-input>pwd</bash-input>' } }]);
+    const answer = await run('user-prompt-submit', { transcript_path: tx, prompt: '<bash-input>pwd</bash-input>' }, undefined, 'claude-code');
+    expect(answer.stdout).toContain('Session::');
+    expect(dialled()).toEqual([]);
+    expect(rig.rows('events')).toBe(0);
+  });
+
   it('pre-tool-use writes the empty response and dials nothing', async () => {
     const r = await run('pre-tool-use', { tool_name: 'Read', tool_input: { file_path: '/x' } });
     expect(r.stdout).toBe('');

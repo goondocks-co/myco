@@ -1,3 +1,5 @@
+import { READ_ORIGINS } from '../read/extraction-origins.js';
+
 /** The owner of records no turn resolves. */
 export const SESSION_OWNER = '';
 /** Characters a catalog preview of a prompt keeps. */
@@ -46,6 +48,8 @@ export function isArchivedEventMetadata(value: unknown): boolean {
 /** A catalog prompt belongs to its session's live generation. */
 export const liveDocumentPromptSql = (row: string): string => `EXISTS (SELECT 1 FROM session_documents d
   WHERE d.project_id=${row}.project_id AND d.session_id=${row}.session_id AND d.generation=${row}.generation AND d.state='live')`;
+/** Prompt origins admitted as session instructions. */
+export const instructionOriginSql = (origin: string): string => `${origin} IN (${READ_ORIGINS.map(value => `'${value}'`).join(',')})`;
 /** A user prompt without durable coverage, excluding an optional acknowledgement from the check. */
 export const documentPromptUnreadSql = (row: string, exceptAck?: string): string => `(${row}.origin IN ('user','unknown')
   AND NOT EXISTS (SELECT 1 FROM extraction_acks a WHERE a.project_id=${row}.project_id AND a.record_id=${row}.prompt_id

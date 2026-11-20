@@ -8,7 +8,7 @@ import { cn } from '../../lib/cn';
 import { dayHeading } from '../today/words';
 import { isMechanical } from './card-text';
 import type { ConversationQuery } from './ConversationSearch';
-import { promptPreview } from './Turn';
+import { turnOriginLabel, promptPreview } from './Turn';
 import { count } from './words';
 import { clockWords } from '@goondocks/myco-shared/time-words';
 
@@ -71,7 +71,7 @@ function OutlineRow({ turn, to, open, replace, showError, agent, learningAgedOut
         )}
         {firstError !== null && <span className="truncate t-mono text-bad" data-first-error="">{firstError}</span>}
         <span className="mt-s1 flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-faint">
-          {turn.origin === 'agent_dispatch' && <span>Sub-agent</span>}
+          {turn.origin === 'agent_dispatch' && <span>{turnOriginLabel(turn)}</span>}
           {MARK_WORDS.filter(([mark]) => turn.marks?.[mark] === true).map(([mark, word]) => <span key={mark} className="font-medium text-ink-2">{word}</span>)}
           {turn.toolRollup != null && turn.failedTools > 0 && <span className="font-medium text-bad">{turn.failedTools.toLocaleString()} failed</span>}
           {turn.toolRollup != null && turn.mycoCalls > 0 && <span className="font-semibold text-primary">Myco {turn.mycoCalls.toLocaleString()}</span>}

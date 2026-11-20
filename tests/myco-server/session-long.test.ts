@@ -82,7 +82,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     const edited = await get<{ files: unknown[]; shellEditsUnseen: boolean }>('/files?kind=edited');
     expect(edited, target).toMatchObject({ files: [{ path: 'edited.ts', calls: 1, edits: 1, lastTurn: first }], shellEditsUnseen: true });
     expect(await get('/files?kind=read'), target).toMatchObject({ files: [{ path: 'late-read.ts', calls: 1, edits: 0, lastTurn: first }, { path: 'read.ts', calls: 1, edits: 0, lastTurn: first }] });
-    expect(await get(''), target).toMatchObject({ filesEdited: 1, counts: { failedTools: 3, userPrompts: 3, mycoCalls: 2 } });
+    expect(await get(''), target).toMatchObject({ filesEdited: 1, observedFilesEdited: 1, fileEdits: { state: 'unknown', observed: 1 }, reportedErrors: 1, counts: { failedTools: 3, userPrompts: 3, mycoCalls: 2 } });
     expect(await get('/activity'), target).toEqual({ rows: [], cursor: null });
     const card = { ...NONE_CARD('mechanical'), done: 'Ran the build.\nOutcome: quoted inside Done', files: ['src/a, b.ts'], outcome: 'Completed the change', decisions: [{ decision: 'ship', reason: 'ready' }] };
     const current = await db.prepare(`SELECT changes FROM turn_cards WHERE turn_key=?`).bind(first).first<{ changes: number }>();
@@ -107,6 +107,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     await db.prepare(`DELETE FROM session_edit_paths WHERE session_id='long'`).run();
     await db.prepare(`UPDATE session_prompts SET tool_state=NULL,tool_rollup=NULL,rollup_build=NULL,failed_tools=0,myco_calls=0 WHERE session_id='long'`).run();
     await db.prepare(`UPDATE session_documents SET rollup_after=-1,rollup_page=0,myco_build=0,myco_calls=0 WHERE session_id='long'`).run();
+    expect(await get(''), target).toMatchObject({ visibility: { reportedErrors: 'not_visible', nestedToolCalls: 'not_visible' } });
     for (let pass = 0; pass < 10; pass += 1) if (!(await locatePrompts(env, limits())).more) break;
     expect((await list()).rows[0], target).toMatchObject({ toolRollup: rollup, failedTools: 2, mycoCalls: 2, headline: 'Completed the change' });
     expect(await get(''), target).toMatchObject({ counts: { mycoCalls: 2 } });
@@ -149,7 +150,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
       input: `*** Begin Patch\n*** Add File: overflow-${i}.ts\n+ok\n*** End Patch` }) + output(`f${i}`);
     await captureDocumentTranscript(db, blobs, 'long', 'tx_' + 'd'.repeat(32), overflow, now + 3, 0, 'codex');
     for (let pass = 0; pass < 10; pass += 1) if (!(await publishDocuments(env, now + 1_800_003, limits())).more) break;
-    expect(await get(''), target).toMatchObject({ filesEdited: 502 });
+    expect(await get(''), target).toMatchObject({ filesEdited: 502, observedFilesEdited: 502, fileEdits: { state: 'unknown', observed: 502 } });
   });
 }, 60_000);
 

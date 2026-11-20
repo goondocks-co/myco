@@ -1,4 +1,5 @@
 import { heldToolCalls } from '../db/documents/turn-statistics.js';
+import { sessionTurnInvocations, type InvocationProvider } from '../read/session-invocations.js';
 /**
  * A turn as the session page reads it, from the turn's own pages of the live document: the prompt, its steering
  * prompts, replies, plan appearances and tool records. What hooks recorded beside the turn (attachments, context
@@ -20,9 +21,9 @@ import {
 import { receiptPlans } from '../db/context/served-plans.js';
 import { promptLocator } from '../db/documents/prompt-locator.js';
 import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locators.js';
-import { type DocRecord } from './document.js';
+import { TOOL_EVIDENCE_VERSION, type DocRecord } from './document.js';
 import { SESSION_OWNER } from '../db/document-tables.js';
-import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
+import { editedFiles, toolFiles, reportedToolFailure, parseToolState, type ToolRollup, type ToolState } from './tool-rollup.js';
 import { hookCollectionRows, hookRecordPages, HOOK_ROWS } from '../db/documents/turn-hooks.js';
 import { promptCatalogRow, sessionAgent } from '../db/documents/turn-catalog.js';
 import {
@@ -45,8 +46,11 @@ interface ToolUsage { toolName: string; count: number }
  * `complete` is false when its lists cover only the opened pages; catalog rollups supply the full turn's counts.
  */
 interface ToolSummary {
+  evidenceReady: boolean;
   complete: boolean;
   total: number;
+  nested: number;
+  reportedErrors: number;
   failed: number;
   byTool: ToolUsage[];
   failures: ToolCallWireRow[];
@@ -91,19 +95,23 @@ const located = (pages: readonly LocatedPage[], generation: number): Located[] =
   pages.flatMap((page) => page.records.map((record) => ({ record, at: { generation, owner: page.owner, page: page.page, revision: page.revision } })));
 
 /** Summarizes the tool records of one prompt; `complete` says whether they are all of its calls. */
-function toolSummary(tools: readonly Located[], complete: boolean, harness: string | null = null, calls: ToolState['calls'] = {}): ToolSummary {
+function toolSummary(tools: readonly Located[], complete: boolean, harness: string | null = null, calls: ToolState['calls'] = {}, prompt?: DocRecord): ToolSummary {
   const byTool = new Map<string, number>();
   const myco = new Map<string, { tool: string; op: string | null; count: number; failed: number }>();
   const files = new Set<string>();
   const named = new Set<string>();
   const failures: ToolCallWireRow[] = [];
   let failed = 0;
+  let nested = 0;
+  let reportedErrors = 0;
   for (const { record, at } of tools) {
     const facts = Object.hasOwn(calls, record.id) ? calls[record.id] : undefined;
     for (const path of facts?.named ?? toolFiles(record, harness)) named.add(path);
     const row = toolCallRow(facts === undefined ? record : { ...record, tool_name: facts.name, myco_tool: facts.tool, myco_op: facts.op }, at);
+    reportedErrors += Number(reportedToolFailure(record));
+    if (record.nested === true) { nested += 1; continue; }
     byTool.set(row.toolName, (byTool.get(row.toolName) ?? 0) + 1);
-    if (!row.success) {
+    if (record.success === 0) {
       failed += 1;
       if (failures.length < SUMMARY_FAILURES) failures.push(row);
     }
@@ -111,7 +119,7 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
       const key = `${row.mycoTool}\u0000${row.mycoOp ?? ''}`;
       const held = myco.get(key) ?? { tool: row.mycoTool, op: row.mycoOp, count: 0, failed: 0 };
       held.count += 1;
-      if (!row.success) held.failed += 1;
+      if (record.success === 0) held.failed += 1;
       myco.set(key, held);
     }
     for (const path of facts?.files ?? editedFiles(record, harness)) {
@@ -119,7 +127,7 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
     }
   }
   return {
-    complete, total: tools.length, failed, failures, files: [...files], filesNamed: named.size, myco: [...myco.values()],
+    evidenceReady: prompt?.tool_evidence_version === TOOL_EVIDENCE_VERSION && tools.every(({ record }) => record.tool_evidence_version === TOOL_EVIDENCE_VERSION), complete, total: tools.length - nested, nested, reportedErrors, failed, failures, files: [...files], filesNamed: named.size, myco: [...myco.values()],
     byTool: [...byTool].map(([toolName, count]) => ({ toolName, count })).sort((a, b) => b.count - a.count || (a.toolName < b.toolName ? -1 : 1)),
   };
 }
@@ -228,7 +236,7 @@ async function windowBodies(env: ContentStore, scope: ReadScope, sessionId: stri
     const id = held.record.id;
     const tools = of('tool', id);
     const replies = of('reply', id);
-    const summary = toolSummary(tools, window.next === null, agent?.agent ?? null);
+    const summary = toolSummary(tools, window.next === null, agent?.agent ?? null, {}, held.record);
     const lastReply = replies.reduce<number | null>((at, { record }) => Math.max(at ?? 0, record.created_at), null);
     const children = depth > 8 ? [] : prompts.filter(({ record }) => record.parent_prompt_id === id).map((child) => turnChild(body(child, depth + 1)));
     const attachments = hooks.attachments.get(id) ?? { rows: [], cursor: null };
@@ -256,7 +264,7 @@ const turnChild = (body: DocumentTurnDetail): DocumentTurnChild => ({
  * first page when it records none or found no page holding it, and the turn's last page for its closing replies and
  * plans. The pages between are reached through the collection cursors.
  */
-export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string): Promise<DocumentTurnDetail | null> {
+export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string, invocations?: InvocationProvider): Promise<DocumentTurnDetail | null> {
   const first = await promptLocator(env.db, scope.projectId, sessionId, promptId);
   if (first === null) return null;
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
@@ -278,15 +286,17 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   }
   const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
   if (place.turn === promptId) {
+    body.prompt = (await sessionTurnInvocations(env.db, scope, sessionId, invocations)).show(body.prompt);
     const catalog = await promptCatalogRow(env.db, scope.projectId, sessionId, promptId);
     const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
       records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
-    const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
+    const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls, top.record);
+    const state = catalog?.tool_state == null ? null : parseToolState(catalog.tool_state);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
     if (catalog?.partial_reason != null) body.cardPartial = true;
     body.card = catalog?.fields ?? catalog?.card ?? null;
-    body.tools = rollup === null ? shown : { ...shown, total: catalog!.tools, failed: catalog!.failed_tools,
+    body.tools = rollup === null ? shown : { ...shown, evidenceReady: state?.evidenceReady ?? shown.evidenceReady, nested: state?.nested ?? shown.nested, reportedErrors: state?.reportedErrors ?? shown.reportedErrors, total: catalog!.tools, failed: catalog!.failed_tools,
       filesNamed: catalog!.files_named, byTool: rollup.tools.map(row => ({ toolName: row.name, count: row.count })) };
   }
   return body;

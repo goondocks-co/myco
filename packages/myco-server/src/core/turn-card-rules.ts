@@ -8,8 +8,10 @@
  * budget, and the rest are counted by name. No blob is read and no file body is carried.
  */
 import { TURN_INPUT_BUDGETS as B } from './read-window.js';
+import { isInstructionOrigin } from '../read/extraction-origins.js';
 
 interface TurnToolInput {
+  nested?: boolean;
   toolCallId: string;
   toolName: string;
   input: string | null;
@@ -147,9 +149,10 @@ export const CONTROL_REPLY_CHARS = 1_500;
 
 /** Failed calls and plans need cards; other control turns need a file change or a substantial reply. */
 export function triageTurn(turn: TurnInput): string | null {
+  const instruction = isInstructionOrigin(turn.origin);
   if (turn.plans.length > 0 || turn.tools.some(failed)) return null;
   const replies = turn.replies.reduce((total, reply) => total + reply.text.length, 0);
-  const control = (turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt))
+  const control = !instruction || noHumanText(turn.prompt)
     && turn.steering.every(prompt => noHumanText(prompt.text));
   if (control)
     return replies > CONTROL_REPLY_CHARS || turn.tools.some(tool => tool.success && tool.fileChanging === true) ? null : 'no_human_text';

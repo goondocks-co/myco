@@ -4,6 +4,7 @@ import { publicationPolicy } from './publication-policy.js';
 import { dependencyTranslationPending } from './dependencies.js';
 
 export interface DocumentRow {
+  launch_parent_session_id: string | null;
   publication_input_revision: number; publication_after: string | null; publication_scan_due: number | null; publication_wake: string | null;
   generation: number; next_chunk: number; first_prompt: string | null; open_turn_key: string | null;
   prompts: number; token_id: string; ended_at: number | null; working_since: number | null; last_turn_end_at: number | null;
@@ -27,7 +28,7 @@ export const PUBLICATION_QUEUE_PAGE = 200;
 const TRANSCRIPT_PRIORITY = "CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END";
 const policy = publicationPolicy('t.prompt_identity_scheme', 't.agent');
 const control = read<[string, string], DocumentRow>({ name: 'publication.control', sql: `SELECT d.generation,d.next_chunk,d.first_prompt,d.open_turn_key,d.prompts,s.created_by_token_id token_id,
-  d.publication_input_revision,d.publication_after,d.publication_scan_due,d.publication_wake,s.ended_at,s.working_since,s.last_turn_end_at
+  d.publication_input_revision,d.publication_after,d.publication_scan_due,d.publication_wake,s.ended_at,s.working_since,s.last_turn_end_at,s.launch_parent_session_id
   FROM session_documents d JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id
   WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live' AND d.generation IS NOT NULL
     AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=?1 AND session_id=?2)` });

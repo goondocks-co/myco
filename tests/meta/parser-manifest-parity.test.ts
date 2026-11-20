@@ -83,10 +83,11 @@ it('declares the known editing tools and the paths the harness parsers handle', 
     copilot: { replace_string_in_file: 'filePath', create_file: 'filePath', apply_patch: 'filePath', edit: 'path', create: 'path' },
     windsurf: { post_write_code: 'file_path' },
   };
+  expect(CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === 'codex')?.fileTools).toEqual(expect.arrayContaining([{ tool: 'apply_patch', pathField: '', extract: 'patch', mutates: true }, { tool: 'apply_patch', pathField: 'command', extract: 'patch', mutates: true }]));
   for (const [harness, editing] of Object.entries(tools)) {
     const declared = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === harness)?.fileTools ?? [];
     for (const [tool, pathField] of Object.entries(editing)) {
-      expect(declared.find(entry => entry.tool === tool)).toMatchObject({ mutates: true, pathField });
+      expect(declared.find(entry => entry.tool === tool && entry.pathField === pathField)).toMatchObject({ mutates: true, pathField });
       if (harness === 'antigravity' && pathField === 'TargetFile') {
         expect(extractAntigravityFilePath(tool, { TargetFile: 'edited.ts' })).toBe('edited.ts');
       }

@@ -40,7 +40,7 @@ export interface SessionTitleWrite {
   mode: 'first' | 'overwrite';
   by: string | null;
   attribution?: RunWrite;
-  observed?: { runId: string; stamp: number; generation: number; userPrompts: number; materialAt: number };
+  observed?: { runId: string; stamp: number; generation: number; instructionPrompts: number; materialAt: number };
   after?: readonly Bound[];
 }
 
@@ -49,7 +49,7 @@ export async function storeSessionTitle(db: RelationalStore, request: SessionTit
   const { projectId, sessionId, title, summary, mode, by, observed } = request;
   const result = await commitAttributedWrite(db, { projectId },
     storeTitle.bind(projectId, sessionId, title, summary, mode, by, observed?.materialAt ?? null, observed?.runId ?? null, observed?.stamp ?? null, observed?.generation ?? null),
-    request.attribution, [titledPrompts.bind(projectId, sessionId, observed?.generation ?? null, observed?.userPrompts ?? null), ...(request.after ?? [])]);
+    request.attribution, [titledPrompts.bind(projectId, sessionId, observed?.generation ?? null, observed?.instructionPrompts ?? null), ...(request.after ?? [])]);
   return result.results.length > 0;
 }
 
