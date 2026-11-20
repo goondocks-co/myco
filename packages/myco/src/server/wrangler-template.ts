@@ -72,7 +72,7 @@ simple = { limit = 300, period = 60 }
 [assets]
 directory = "ui/dist"
 not_found_handling = "single-page-application"
-run_worker_first = [ "/.well-known/*", "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/import/*", "/mcp", "/members/*", "/register", "/routed-capture/*", "/runners/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*", "/worker/*" ]
+run_worker_first = [ "/.well-known/*", "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/import/*", "/mcp", "/members/*", "/register", "/routed-capture/*", "/runners/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*", "/v1/*", "/worker/*" ]
 
 [triggers]
 crons = [ "*/15 * * * *" ]

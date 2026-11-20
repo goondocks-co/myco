@@ -4,6 +4,7 @@ import { ErrorState, LoadingState, TabLinks } from '../../../design';
 import { useSettings } from '../../../hooks/use-settings';
 import { SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, RowCard, useAnchorScroll } from '../AdminFrame';
+import { TelemetryKeys } from './TelemetryKeys';
 import { GitHubApp } from './GitHubApp';
 import { AccessPointers, PROJECTS_ANCHOR } from './AccessPointers';
 import { groupsOf, LEAF_GROUPS, type LeafGroup } from './catalogue';
@@ -57,7 +58,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
       lede="What this server holds for every member. Each change saves as you make it and says who made it."
     >
       <TabLinks label="Settings sections" items={tabs} className="-mt-s4" />
-      {section === 'access' ? <><AccessPointers /><GitHubApp /></> : (
+      {section === 'access' ? <><AccessPointers /><GitHubApp /><TelemetryKeys /></> : (
         settings.isPending ? <LoadingState label="Loading settings" />
           : settings.isError ? <ErrorState error={settings.error} onRetry={() => void settings.refetch()} />
           : <SectionGroups groups={groupsOf(section)} rows={new Map(settings.data.leaves.map((l) => [l.leaf, l]))} tiers={settings.data.taskTiers} />

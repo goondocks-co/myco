@@ -788,6 +788,11 @@ export function useSessionActivity(projectId: string, sessionId: string, filters
 export type LineageEdgeKind = 'launched' | 'continuation';
 
 export interface LineageEdge {
+  parentProjectId?: string;
+  childProjectId?: string;
+  source?: 'telemetry';
+  serviceName?: string | null;
+  inferred?: boolean;
   parentId: string;
   childId: string;
   kind: LineageEdgeKind;
@@ -797,6 +802,7 @@ export interface LineageEdge {
 
 /** One session of a lineage; `captured` is false for a parent named by a record that the Project holds no session for. */
 export interface LineageNode {
+  projectId?: string;
   sessionId: string;
   captured: boolean;
   label: string | null;

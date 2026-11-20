@@ -19,7 +19,7 @@ export function lineageName(node: LineageNode | undefined): string {
 
 /** How a child stands to one of its parents, in words. */
 export function parentWords(edge: LineageEdge, parent: string): string {
-  if (edge.kind === 'launched') return `Child of ${parent}`;
+  if (edge.kind === 'launched') return `${edge.inferred ? 'Probably started by' : 'Child of'} ${parent}${edge.source === 'telemetry' ? ` · reported by ${edge.serviceName ?? 'an OpenTelemetry sender'}` : ''}`;
   return `Continues ${parent}${edge.reason === null ? '' : ` (${edge.reason})`}`;
 }
 
@@ -41,12 +41,12 @@ export function lineageLanes(lineage: SessionLineage, projectId: string, now: nu
   for (const node of lineage.nodes) {
     const relations = lineage.edges.filter((edge) => edge.childId === node.sessionId).map((edge) =>
       sameEdge(edge, node.placedUnder)
-        ? (edge.kind === 'launched' ? 'Child session' : parentWords(edge, 'its parent'))
+        ? (edge.kind === 'launched' && edge.source !== 'telemetry' ? 'Child session' : parentWords(edge, 'its parent'))
         : parentWords(edge, lineageName(byId.get(edge.parentId))));
     const lane: Lane & { lanes: Lane[] } = {
       key: node.sessionId,
       name: lineageName(node),
-      ...(node.captured && !node.current ? { to: sessionPagePath(projectId, node.sessionId) } : {}),
+      ...(node.captured && !node.current ? { to: sessionPagePath(node.projectId ?? projectId, node.sessionId) } : {}),
       detail: node.captured ? [agentName(node.agent), ...(node.current ? ['This session'] : []), ...relations].join(' · ') : relations.join(' · ') || undefined,
       when: spanWords(node, now),
       start: node.startedAt,

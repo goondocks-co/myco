@@ -81,6 +81,7 @@ export const WAKE_CONTINUATIONS: readonly WakeContinuation[] = [
 
 /** The jobs the tick runs today; each has an implementation in `jobs-run.ts`, which a gate holds. */
 export const SERVER_JOBS: readonly ServerJob[] = [
+  { name: 'telemetry-reconcile', runsThrough: 'sleep', converges: 'bounded traces resolve explicit conversation ids and unambiguous repository and time candidates within seven days; spans and invocation facts expire after thirty days' },
   { name: 'projection-catch-up', runsThrough: 'sleep', converges: "every maintained projection holds exactly its sources' contributions through bounded checkpointed pages; readiness is published at each phase's captured frontier" },
   { name: 'spore-curation', runsThrough: 'idle', converges: 'bounded vector-only pages discover seed groups for opted-in Projects; final-member revision receipts keep unchanged groups settled' },
   { name: 'spend-expiry', runsThrough: 'sleep', converges: 'every settled attempt whose claim left the rolling budget window stops counting, retired oldest first in bounded due pages, so admission never sums an overdue backlog' },

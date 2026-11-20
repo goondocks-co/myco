@@ -654,6 +654,7 @@ describe('versioned schema steps', () => {
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
           : ['document_publication_contributions','document_publication_totals'].includes(t) && c.name === 'kind' ? "'source'"
           : t === 'publication_dependencies' && c.name === 'prerequisite_kind' ? "'read'" : t === 'publication_dependencies' && c.name === 'outcome' ? "'waiting'"
+          : t === 'telemetry_resolutions' && c.name === 'matched_by' ? "'exact'"
           : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
           : t === 'embedding_work_state' && c.name === 'kind' ? `'embedding'`
           : t === 'raw_resources' && c.name === 'provenance' ? `'missing'`
@@ -691,7 +692,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'context_delivery_anchors', 'tool_prompt_links',
+      'telemetry_resolutions', 'context_delivery_anchors', 'tool_prompt_links',
       'publication_dependencies','session_lifecycle_facts','session_title_work','session_statistics','session_attachment_counts','context_placement_days','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',

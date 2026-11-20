@@ -15,6 +15,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 const DEPLOYMENT = 'deployment-a';
 const MEMBER = 'member-a';
 const SUBJECTS: Readonly<Record<string, AuthorizationSubject>> = {
+  telemetry: { kind: 'telemetry', deploymentId: DEPLOYMENT, transport: 'http', live: true },
   owner: { kind: 'member', role: 'owner', memberId: MEMBER, deploymentId: DEPLOYMENT, transport: 'http', live: true },
   admin: { kind: 'member', role: 'admin', memberId: MEMBER, deploymentId: DEPLOYMENT, transport: 'http', live: true },
   member: { kind: 'member', role: 'member', memberId: MEMBER, deploymentId: DEPLOYMENT, transport: 'http', live: true },
@@ -63,6 +64,7 @@ const GRANT_ACTIONS: Readonly<Partial<Record<ResourceKind, readonly Action[]>>> 
 };
 
 function approvedActions(actor: string, transport: Transport, kind: ResourceKind): readonly Action[] {
+  if (actor === 'telemetry') return transport === 'http' && kind === 'telemetry' ? ['append'] : [];
   if (actor === 'internal') return [];
   if (actor === 'run') return RUN_ACTIONS[kind] ?? [];
   if (actor === 'grant') return GRANT_ACTIONS[kind] ?? [];
@@ -216,7 +218,7 @@ describe('Deployment authorization policy', () => {
   });
 
   it('enumerates every approved role × resource × action × transport cell independently of policy implementation', () => {
-    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner', 'legacy-worker'].sort());
+    expect(RESOURCE_KINDS.map(String).sort()).toEqual(['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner', 'legacy-worker', 'telemetry'].sort());
     expect(ACTIONS.map(String).sort()).toEqual(['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'claim', 'lease', 'never'].sort());
     expect(new Set(Object.values(SUBJECTS).map((s) => s.kind))).toEqual(new Set(SUBJECT_KINDS));
     for (const [actor, initial] of Object.entries(SUBJECTS)) {

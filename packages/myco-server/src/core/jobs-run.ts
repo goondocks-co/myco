@@ -1,3 +1,6 @@
+import { telemetryReconciliationDue } from '../db/telemetry/matching.js';
+import { reconcileTelemetry } from './telemetry-matching.js';
+import { pruneTelemetry } from '../db/telemetry/retention.js';
 import { isDirectRunContext } from './run-deadline.js';
 import { deploymentSecretStore } from './secrets.js';
 import { pruneExpiredReservations } from '../db/context/reservations.js';
@@ -299,6 +302,11 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     return { changed, more: await searchBlobsDue(env.db, now) };
   },
   'agent-run-retention': agentRunRetention,
+  'telemetry-reconcile': async (env, now) => {
+    const removed = await pruneTelemetry(env.db, now, JOB_BATCH);
+    const matched = await reconcileTelemetry(env.db, now);
+    return { changed: removed + matched, more: await telemetryReconciliationDue(env.db, now) };
+  },
   'run-hour-retention': (env, now) => pruneRunHours(env.db, now - RUN_HOUR_RETENTION_MS, JOB_BATCH),
   'run-body-move': (env, now) => moveRunBodies(env, now),
   'run-stale-sweep': runStaleSweep,

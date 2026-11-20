@@ -83,6 +83,7 @@
   "session:admin DELETE /api/projects/{projectId}/repository",
   "session:admin DELETE /api/secrets/{name}",
   "session:admin DELETE /api/settings/{leaf}",
+  "session:admin DELETE /api/telemetry/keys/{keyId}",
   "session:admin GET /api/attention",
   "session:admin GET /api/backups",
   "session:admin GET /api/backups/restores/{restoreId}",
@@ -105,6 +106,7 @@
   "session:admin GET /api/recovery/exports",
   "session:admin GET /api/secrets",
   "session:admin GET /api/storage-cleanup",
+  "session:admin GET /api/telemetry/keys",
   "session:admin GET /api/titling-backfill",
   "session:admin GET /api/transcripts/reread/{jobId}",
   "session:admin PATCH /api/projects/{projectId}",
@@ -155,6 +157,8 @@
   "session:admin POST /api/runners/{runnerId}/sign-in",
   "session:admin POST /api/runners/{runnerId}/update",
   "session:admin POST /api/settings/agent.tasks/repair",
+  "session:admin POST /api/telemetry/keys",
+  "session:admin POST /api/telemetry/keys/{keyId}/revoke",
   "session:admin POST /api/transcripts/reread",
   "session:admin POST /api/wake",
   "session:admin PUT /api/agents/{agentId}",
@@ -234,5 +238,8 @@
   "session:member POST /api/projects/{projectId}/runs/{runId}/cancel",
   "session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status",
   "session:member POST /api/uncaptured/{machineId}/{rootKey}/connect",
-  "session:member PUT /api/machines/{machineId}/settings/{leaf}"
+  "session:member PUT /api/machines/{machineId}/settings/{leaf}",
+  "telemetry POST /v1/logs",
+  "telemetry POST /v1/metrics",
+  "telemetry POST /v1/traces"
 ]
