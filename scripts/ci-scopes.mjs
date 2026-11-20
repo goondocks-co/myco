@@ -12,6 +12,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/cli/cutover-projects.test.ts',
   'tests/cli/login-exit.test.ts',
   'tests/install/install-ps1.test.ts',
+  'tests/member/cutover-backup.test.ts',
   'tests/member/legacy-import.test.ts',
   'tests/member/offline-recovery.test.ts',
   'tests/member/prompt-files-killed.test.ts',

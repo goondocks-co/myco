@@ -49,7 +49,7 @@ export const harnessDeploymentActivity: ParityScenario = {
     const marker = Date.now();
     await trust(marker); expect(await repairs()).toHaveLength(1);
     // The harness starts a session after the repair was asked for, which settles it.
-    await Bun.sleep(5);
+    await ageRows(target, { table: 'machine_harness_reports', column: 'since_at', byMs: 1, match: { machine_id: mine.machineId, harness: 'codex' } });
     await expectPersisted(await capture('session.start', { agent: 'codex', startedAt: Date.now() }, crypto.randomUUID()), 'session.start after the repair');
     expect(await repairs()).toEqual([]);
     await trust(marker); expect(await repairs()).toEqual([]);

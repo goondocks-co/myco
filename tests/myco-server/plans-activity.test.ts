@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
@@ -22,10 +22,13 @@ import { drainSessionDeletions } from './helpers/session-deletion.js';
 const PROJECT = 'proj_1';
 const SCOPE = { projectId: PROJECT };
 const opened: Database[] = [];
-afterEach(() => { for (const sqlite of opened.splice(0)) sqlite.close(); });
+let clock: { mockRestore(): void } | undefined;
+afterEach(() => { clock?.mockRestore(); for (const sqlite of opened.splice(0)) sqlite.close(); });
 
 /** A Deployment with an owner reading the dashboard routes and a member saving plans through `myco_plans`, as each client does. */
 async function rig() {
+  let now = Date.now();
+  clock = spyOn(Date, 'now').mockImplementation(() => ++now);
   const e = sqliteEnv();
   opened.push(e.sqlite);
   await bootstrapOwnership(e.db, PRINCIPAL.id, PRINCIPAL.id, '0', Date.now());
@@ -42,7 +45,7 @@ async function rig() {
   const save = async (planKey: string, extra: Record<string, unknown> = {}) =>
     (await plans({ op: 'save', session_id: 'sess_a', plan_key: planKey, title: `Plan ${planKey}`, content: `# ${planKey}\n- [x] one\n- [ ] two`, ...extra })).id as string;
   /** A status edit made after every earlier write, so it is the newest edit by the clock as well as by order. */
-  const setStatus = async (id: string, status: string) => { await Bun.sleep(2); return plans({ op: 'save', id, session_id: 'sess_a', status }); };
+  const setStatus = (id: string, status: string) => plans({ op: 'save', id, session_id: 'sess_a', status });
   return { ...e, get, plans, save, setStatus };
 }
 

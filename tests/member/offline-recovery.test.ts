@@ -592,8 +592,9 @@ describe('the backlog walk', () => {
     const ctx = (id: string) => ({ agent: 'copilot', sessionId: id, stage: spool.stagerFor(id), version: 't' });
     // The last walk ended on sess-a, so the next would start with sess-b; sess-a is the one written to last.
     spool.append('sess-b', promptEvent(ctx('sess-b'), { promptId: mintId(), text: 'b' }));
-    await new Promise((r) => setTimeout(r, 20));
     spool.append('sess-a', promptEvent(ctx('sess-a'), { promptId: mintId(), text: 'a' }));
+    fs.utimesSync(path.join(spool.dir, 'sess-b.jsonl'), 1, 1);
+    fs.utimesSync(path.join(spool.dir, 'sess-a.jsonl'), 2, 2);
     fs.writeFileSync(path.join(spool.dir, '.backlog-cursor'), 'sess-a');
     const client = new ServerClient({ serverUrl: SERVER_URL, token: rig.token, projectId: PROJECT }, rig.fetch);
     const walked = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1', newestFirst: true });

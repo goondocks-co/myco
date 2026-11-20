@@ -2,7 +2,7 @@ import { schemaSqlite } from './helpers/schema-template.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { NEXT_ATTENTION } from '@myco-server-worker/db/schema-vNEXT-attention.js';
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { MEMBER_TOKEN_TTL_MS, SERVER_FEATURES } from '@myco-server-worker/constants.js';
@@ -24,6 +24,8 @@ import { latestHarnessCapture } from '@myco-server-worker/db/runners/harness-hea
 import { readAttention, type AttentionItem } from '@myco-server-worker/core/attention.js';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
+let clock: { mockRestore(): void } | undefined;
+afterEach(() => clock?.mockRestore());
 const NOW = 1_800_000_000_000;
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -157,9 +159,8 @@ describe('provisioned harness health', () => {
     expect(await start.json()).toMatchObject({ persisted: true });
     expect(await r.attention(now)).toEqual([]);
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, Date.now());
-    await Bun.sleep(2);
-    const reportReceivedAt = Date.now();
-    await Bun.sleep(2);
+    const reportReceivedAt = Date.now() + 1;
+    clock = spyOn(Date, 'now').mockReturnValue(reportReceivedAt + 1);
     const overlap = await worker.fetch(memberPost(r.token1, envelope({ eventId: uuid(201), sessionId: 'overlap', kind: 'session.start', createdAt: Date.now(), payload: { agent: 'codex' } })), r.fixture.env);
     expect(await overlap.json()).toMatchObject({ persisted: true });
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Trust Codex.')] }, reportReceivedAt);

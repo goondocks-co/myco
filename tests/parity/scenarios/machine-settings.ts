@@ -129,7 +129,8 @@ export const machineSettings: ParityScenario = {
         .toEqual({ here: ['~/notes/plans', 'docs/plans'], there: ['~/other-deployment'] });
       expect(fs.existsSync(machineSettingsPath(target.url, home))).toBe(true);
 
-      const member = machineMember(target, mine, home);
+      const receivedAt = Date.now();
+      const member = machineMember(target, mine, home, () => receivedAt);
       const automaticWrite = (value: boolean) => fetch(`${target.url}${updates}/update.automatic`, { method: 'PUT', headers: owner, body: JSON.stringify({ value }) });
       const automatic = async () => (await readUpdates()).find(row => row.leaf === 'update.automatic');
       await member.pass();
@@ -155,8 +156,7 @@ export const machineSettings: ParityScenario = {
       expect(member.paths()).toEqual(['/events', '/events']);
       expect(await automatic()).toMatchObject({ application: 'applied', effective: true });
       expect((await automaticWrite(false)).status).toBe(200);
-      await new Promise(resolve => setTimeout(resolve, 5));
-      member.localAutomatic(true);
+      member.localAutomatic(true, receivedAt + 1);
       await member.pass();
       expect(member.automatic()).toBe(true);
       expect(await automatic()).toMatchObject({ application: 'applied', effective: true });

@@ -24,7 +24,8 @@ function rig(options: { key?: boolean } = {}) {
     expect(request.headers.has('authorization')).toBe(false);
     return Response.json(publicPage.current);
   };
-  const server = createServer({ now: Date.now, sourceOf: cloudflareSourceOf, fetchImpl: outbound });
+  let now = Date.now();
+  const server = createServer({ now: () => ++now, sourceOf: cloudflareSourceOf, fetchImpl: outbound });
   const env = () => ({ ...serverEnvFromBindings({ ...fixture.env, ...OWNER_ENV, MYCO_ORIGIN: ORIGIN, ...(options.key === false ? {} : APP_SECRETS) } as never), outbound });
   const call = async (method: string, path: string, body?: unknown) => {
     const request = method === 'GET' ? await asOwner(fixture.db, path) : new Request(await asOwnerPost(fixture.db, path, body ?? {}), { method });
@@ -150,7 +151,6 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
     await r.call('POST', '/api/github-app/accounts', { installationId: STRANGER.installationId });
     await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
-    await Bun.sleep(5);
     for (const id of ['proj_c', 'proj_d']) expect((await r.call('POST', '/api/projects', { projectId: id, name: id.slice(-1) })).status).toBe(201);
     for (const id of ['proj_2', 'proj_c', 'proj_d']) await r.call('PUT', `/api/projects/${id}/repository`, { installationId: STRANGER.installationId, repositoryId: 7770001, branch: 'main', revision: null });
     r.github.state.suspended.add(STRANGER.installationId);

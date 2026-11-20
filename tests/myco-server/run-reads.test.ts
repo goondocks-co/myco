@@ -8,7 +8,7 @@ import { publishFixture } from './helpers/fixtures.js';
  * reads it off the session (the runs that read it, and what came of it) and off the run (what it read, and what it
  * wrote), inside the Project the route names.
  */
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
@@ -27,6 +27,8 @@ import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 
+let clock: { mockRestore(): void } | undefined;
+afterEach(() => clock?.mockRestore());
 const NOW = Date.now();
 const TITLING = 'title-summary';
 const SWEEP = 'extract-curate';
@@ -76,13 +78,15 @@ async function setup() {
 
 describe('recording what a run read', () => {
   it('records a titling run\'s own session when its material is served, over the run\'s credential, once however often it reads', async () => {
+    let now = Date.now();
+    clock = spyOn(Date, 'now').mockImplementation(() => now);
     const { dispatch, call, reads, prompt } = await setup();
     prompt('p1', 'sess_1');
     const harness = await dispatch('run_t', TITLING);
     expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.session_id).toBe('sess_1');
     expect(reads()).toEqual([{ projectId: 'proj_1', runId: 'run_t', sessionId: 'sess_1', tokenId: harness.tokenId, receivedAt: expect.any(Number) }]);
     const first = (reads()[0] as { receivedAt: number }).receivedAt;
-    await Bun.sleep(5);
+    now += 1;
     await call(harness.token, 'myco_run_sessions', { op: 'material' });
     expect(reads()).toEqual([expect.objectContaining({ runId: 'run_t', sessionId: 'sess_1', receivedAt: first })]);
   });
