@@ -182,10 +182,10 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               <CountButton value={answer.turns} onClick={() => openFilter('all')}>{answer.turns === 1 ? 'turn' : 'turns'}</CountButton>
               <CountButton value={answer.personTurns} onClick={() => openFilter('you')}>from you</CountButton>
               <CountButton>{countEvidence(answer, 'toolCalls', 'tool call')}</CountButton>
-              <CountButton tone="bad" value={answer.visibility.failedTools === 'recorded' ? counts.failedTools : undefined} onClick={() => openFilter('failed')}>{answer.visibility.failedTools === 'recorded' ? 'failed' : countEvidence(answer, 'failedTools', 'failed', 'failed')}</CountButton>
+              <CountButton tone={counts.failedTools > 0 ? 'bad' : undefined} value={answer.visibility.failedTools === 'recorded' ? counts.failedTools : undefined} onClick={() => openFilter('failed')}>{answer.visibility.failedTools === 'recorded' ? 'failed' : countEvidence(answer, 'failedTools', 'failed', 'failed')}</CountButton>
               {answer.visibility.reportedErrors === 'not_visible' ? <CountButton>Reported errors: not visible</CountButton> : answer.reportedErrors > 0 && <CountButton>{answer.reportedErrors.toLocaleString()} reported errors</CountButton>}
               {answer.visibility.nestedToolCalls === 'recorded' && answer.nestedToolCalls > 0 && <CountButton value={answer.nestedToolCalls}>{answer.nestedToolCalls === 1 ? 'nested call' : 'nested calls'}</CountButton>}
-              <CountButton tone="primary" value={answer.visibility.mycoCalls === 'recorded' ? counts.mycoCalls : undefined} onClick={() => openFilter('myco')}>{answer.visibility.mycoCalls === 'recorded' ? (counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls') : countEvidence(answer, 'mycoCalls', 'Myco call')}</CountButton>
+              <CountButton tone={counts.mycoCalls > 0 ? 'primary' : undefined} value={answer.visibility.mycoCalls === 'recorded' ? counts.mycoCalls : undefined} onClick={() => openFilter('myco')}>{answer.visibility.mycoCalls === 'recorded' ? (counts.mycoCalls === 1 ? 'Myco call' : 'Myco calls') : countEvidence(answer, 'mycoCalls', 'Myco call')}</CountButton>
               <CountButton onClick={() => setTab('files')}>{fileEditWords(answer.fileEdits)}</CountButton>
               <CountButton onClick={() => setAbout(true)}>About this session</CountButton>
             </div>
