@@ -102,6 +102,7 @@ export const sessionTurns: ParityScenario = {
       const sessionContext = await owner<{ rows: { kind: string }[] }>(`${base}/context-injections`);
       expect(sessionContext.body.rows.map((r) => r.kind)).toContain('cortex');
       expect(sessionAudit.body.metrics).toMatchObject({ tools: [], tokens: null });
+      expect(sessionAudit.body).toMatchObject({ counts: { prompts: 2, promptEntries: 3, userPrompts: 1, toolCalls: 3, failedTools: 1 } });
 
       const calls = await owner<{ rows: { toolCallId: string; toolName: string; success: boolean; errorMessage: string | null; outputPreview: string | null }[] }>(`${base}/turns/${p1}/tool-calls`);
       expect(calls.body.rows.map((t) => [t.toolCallId, t.toolName, t.success, t.errorMessage, t.outputPreview])).toEqual([[UUID(1), 'Read', true, null, 'the file'], [UUID(2), 'Bash', false, 'exit 1', null]]);

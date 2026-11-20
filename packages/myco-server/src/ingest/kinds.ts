@@ -128,6 +128,7 @@ export const KINDS: readonly KindSpec[] = [
       text: str(262_144, 'text'),
       blob: blob('blob_key'),
       origin: { bound: { type: 'enum', values: PROMPT_ORIGINS }, required: true, column: 'origin' },
+      originSessionId: { bound: { type: 'sessionId' } },
       promptKind: str(64, 'prompt_kind'),
       parentPromptId: promptRef('parent_prompt_id'),
       threadId: id('group', 'thread_id'),

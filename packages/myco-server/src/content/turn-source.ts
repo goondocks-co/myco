@@ -22,7 +22,7 @@ export function sourceSegments(record: DocRecord): SourceSegment[] {
 export const sourceBytes = (record: DocRecord) => sourceSegments(record).reduce((sum, segment) => sum + segment.bytes, 0);
 
 const CONTENT_FIELDS = {
-  prompt: ['origin', 'text', 'prompt_kind', 'thread_label'], reply: ['text'],
+  prompt: ['origin', 'origin_session_id', 'text', 'prompt_kind', 'thread_label'], reply: ['text'],
   tool: ['tool_name', 'input', 'output_preview', 'success', 'error_message', 'files_affected'],
   plan: ['title', 'status', 'content'],
 } as const;

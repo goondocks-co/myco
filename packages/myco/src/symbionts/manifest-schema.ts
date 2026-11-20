@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { assertRecordIdentityDeclaration, type RecordIdentityDeclaration } from '@goondocks/myco-shared/record-identity';
 import { assertToolResultDeclaration, type ToolResultDeclaration } from '@goondocks/myco-shared/tool-result';
+import { CompletedToolSchema, TranscriptEvidenceSchema } from '@goondocks/myco-shared/transcript-evidence';
 import path from 'node:path';
 
 import { CaptureRuleSchema } from '@goondocks/myco-shared/capture-rule-schema';
@@ -201,6 +202,8 @@ const SessionContinuationSchema = z.object({
 export type SessionContinuation = z.infer<typeof SessionContinuationSchema>;
 
 const CaptureManifestSchema = z.object({
+  transcriptEvidence: TranscriptEvidenceSchema.optional(),
+  completedTools: z.array(CompletedToolSchema).optional(),
   planDirs: z.array(z.string()).default([]),
   planTags: z.array(z.string()).default([]),
   rules: z.array(CaptureRuleSchema).default([]),
@@ -558,7 +561,8 @@ const CanopyReadToolShellArg = z.strictObject({
 
 const CanopyReadToolPatch = z.strictObject({
   tool: z.string().min(1),
-  pathField: z.string().min(1),
+  /** Empty selects the entire input when the tool takes a raw patch. */
+  pathField: z.string(),
   extract: z.literal('patch'),
   /** See CanopyReadToolStructured.mutates. Patch envelopes are file mutations (codex/opencode `apply_patch`). */
   mutates: z.boolean().default(false),

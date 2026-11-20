@@ -3,14 +3,17 @@ import { read, readSet } from '../index.js';
 import { liveGenerationSql } from './live-generation.js';
 
 export interface DocumentCountersRow {
+  turns: number; user_turns: number;
   prompts: number; user_prompts: number; replies: number; tool_calls: number; failed_tools: number; files_edited: number; myco_calls: number; plans: number;
   last_record_at: number | null; first_prompt: string | null; attachments: number;
 }
 
 const counters = read<[project: string, session: string], DocumentCountersRow>({ name: 'documentCatalog.counters', sql:
-  `SELECT prompts, user_prompts, replies, tool_calls, failed_tools, files_edited, myco_calls, plans, last_record_at, first_prompt,
+  `WITH totals AS (SELECT COUNT(*) AS turns,COALESCE(SUM(origin='user'),0) AS user_turns FROM session_prompts
+      WHERE project_id=?1 AND session_id=?2 AND generation=${liveGenerationSql('?1', '?2')} AND turn_key=prompt_id)
+    SELECT prompts, user_prompts, replies, tool_calls, failed_tools, files_edited, myco_calls, plans, last_record_at, first_prompt,totals.turns,totals.user_turns,
       (SELECT COUNT(*) FROM attachments a WHERE a.project_id = d.project_id AND a.session_id = d.session_id) AS attachments
-    FROM session_documents d WHERE project_id = ?1 AND session_id = ?2 AND state = 'live'` });
+    FROM session_documents d CROSS JOIN totals WHERE project_id = ?1 AND session_id = ?2 AND state = 'live'` });
 const userPrompt = read<[project: string, session: string], { held: number }>({ name: 'documentCatalog.hasUserPrompt', sql:
   `SELECT 1 AS held FROM session_documents WHERE project_id = ?1 AND session_id = ?2 AND state = 'live' AND user_prompts > 0` });
 const anchor = read<[project: string, session: string, prompt: string], { ord: number; created_at: number | null; prompt_id: string }>({ name: 'documentCatalog.turnAnchor', sql:

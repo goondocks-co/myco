@@ -6,6 +6,10 @@ import { getAtPath } from '@goondocks/myco-shared/dot-path';
 export const ROLLUP_TOOLS = 8;
 const ERROR_EXCERPT_CHARS = 240;
 
+/** An absent result is an unknown outcome; only a tool's reported error counts as a failure. */
+export const reportedToolFailure = (record: DocRecord): boolean => record.success === 0
+  && (record.result_reason == null || record.result_reason === 'reported');
+
 export interface ToolRollup {
   tools: { name: string; count: number }[];
   myco: { name: string; count: number; failed: number }[];
@@ -59,6 +63,7 @@ export function toolFiles(record: DocRecord, harness: string | null = null): str
 }
 
 export function editedFiles(record: DocRecord, harness: string | null): string[] {
+  if (record.success === 0) return [];
   harness = typeof record.harness === 'string' ? record.harness : harness;
   const declared = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === harness)?.fileTools ?? [];
   return declared.some(tool => tool.tool === record.tool_name && tool.mutates) ? toolFiles(record, harness) : [];
@@ -82,7 +87,7 @@ export function adjustToolState(state: ToolState, record: DocRecord, harness: st
     if (count === 0) map.delete(name); else map.set(name, count);
     return [...map];
   };
-  const failed = record.success === 0 ? 1 : 0;
+  const failed = reportedToolFailure(record) ? 1 : 0;
   state.total += sign;
   state.failed += sign * failed;
   state.tools = counts(state.tools, call.name);

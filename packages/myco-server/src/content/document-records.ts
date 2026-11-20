@@ -9,6 +9,7 @@
  * the parser minted, and `plan_key` names the canonical plan.
  */
 import { filesNamedByToolInput, mycoToolFields } from '@goondocks/myco-shared/member-protocol';
+import { promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { utf8Preview } from '../hash.js';
 import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../ingest/tool-outcome.js';
 import { DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
@@ -53,9 +54,12 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
   const p = payload;
   if (k === 'prompt') {
     const parent = str(p.parentPromptId);
+    const display = typeof p.text === 'string' ? promptEnvelope(p.text) : null;
     return {
       k, id: String(p.promptId), prompt_id: parent, ...origin, parent_prompt_id: parent, thread_id: str(p.threadId),
-      thread_label: str(p.threadLabel), origin: str(p.origin) ?? 'user', prompt_kind: str(p.promptKind), text: str(p.text),
+      thread_label: str(p.threadLabel), origin: str(p.origin) ?? 'user', prompt_kind: str(p.promptKind), text: display?.text ?? str(p.text),
+      ...(display === null ? {} : { envelope: display.envelope }),
+      origin_session_id: str(p.originSessionId),
       claim: str(p.claim), source_key: str(p.sourceKey), source_thread: str(p.sourceThread), source_record: str(p.sourceRecord),
       prompt_key_hash: str(p.promptKeyHash),
     };

@@ -17,6 +17,12 @@ hookFields:
   toolInput: [tool_input, toolArgs]
   toolOutput: [tool_result, tool_response, toolResult]
 capture:
+  transcriptEvidence:
+    toolCalls: recorded
+    failedTools: recorded
+    mycoCalls: recorded
+    filesEdited: observed
+    commits: member_report_required
   # One directory per session, holding an events log.
   transcriptDiscovery:
     roots: ["~/.copilot/session-state"]

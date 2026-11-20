@@ -347,6 +347,7 @@ class SessionPublication {
       parserContext: context, lastReceivedAt: t.last_received_at, sessionEndedAt: this.doc.ended_at, imported: t.imported_at !== null,
       ...(t.role === 'subagent' || t.role === 'primary' ? { role: t.role } : {}),
       turnEnded: this.doc.working_since === null && Number(this.doc.last_turn_end_at) > Number(context?.mycoParserReplyLatestAt),
+      launchParentSessionId: this.doc.launch_parent_session_id ?? undefined,
     };
   }
 

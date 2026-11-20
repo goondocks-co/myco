@@ -1,4 +1,5 @@
 import { recordMycoFields } from './tool-rollup.js';
+import { promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 /**
  * Request-time reads of a session's live document. Every read names the pages or chunks it wants through bounded
  * directory statements, so a request costs a fixed number of catalog rows and blob GETs whatever the session's size. A chunk
@@ -135,8 +136,11 @@ const locatorOf = (at: PageLocator) => ({ generation: at.generation, owner: at.o
 
 /** A prompt record as the wire carries it; `blobKey` names a body held in its own chunk. */
 export function promptRow(record: DocRecord, at: PageLocator) {
+  const display = record.envelope === undefined && typeof record.text === 'string' && record.bodies?.text === undefined ? promptEnvelope(record.text) : null;
   return {
-    promptId: record.id, text: str(record.text), blobKey: record.bodies?.text?.digest ?? null, origin: str(record.origin) ?? 'user',
+    promptId: record.id, text: display?.text ?? str(record.text), envelope: record.envelope ?? display?.envelope ?? null,
+    blobKey: record.bodies?.text?.digest ?? null, origin: str(record.origin) ?? 'user',
+    originSessionId: str(record.origin_session_id),
     promptKind: str(record.prompt_kind), parentPromptId: str(record.parent_prompt_id), threadLabel: str(record.thread_label),
     createdAt: record.created_at, orderedAt: record.created_at, locator: locatorOf(at),
   };
@@ -159,6 +163,7 @@ export function toolCallRow(record: DocRecord, at: PageLocator) {
     inputBytes: typeof record.input_bytes === 'number' ? record.input_bytes : null,
     inputTruncated: (input?.truncated ?? false) || record.bodies?.input !== undefined, inputBlobKey: record.bodies?.input?.digest ?? null,
     outputPreview: str(record.output_preview), outputBlobKey: null, success: record.success !== 0, errorMessage: str(record.error_message),
+    resultReason: str(record.result_reason),
     durationMs: typeof record.duration_ms === 'number' ? record.duration_ms : null,
     filesAffected: files.length === 0 ? null : JSON.stringify(files), createdAt: record.created_at, orderedAt: record.created_at,
     locator: locatorOf(at),

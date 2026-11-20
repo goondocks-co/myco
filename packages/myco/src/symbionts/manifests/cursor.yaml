@@ -19,6 +19,12 @@ hookFields:
     - '/agent-transcripts/([^/]+)/\1\.jsonl$'
     - '(?:^|/)([^/.]+)\.txt$'
 capture:
+  transcriptEvidence:
+    toolCalls: not_visible
+    failedTools: not_visible
+    mycoCalls: not_visible
+    filesEdited: not_visible
+    commits: member_report_required
   transcriptTimestamps: synthetic
   displayEnvelopeTags: [timestamp, attached_files, user_info, additional_data, pasted_content]
   # Two layouts are in use: a flat `.txt` and a per-session directory holding

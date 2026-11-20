@@ -86,6 +86,8 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
 }
 
 interface DocumentCounters {
+  turns: number;
+  userTurns: number;
   prompts: number;
   userPrompts: number;
   replies: number;
@@ -103,6 +105,7 @@ interface DocumentCounters {
 export async function documentCounters(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<DocumentCounters | null> {
   const row = await documentCountersRow(db, scope.projectId, sessionId);
   return row === null ? null : {
+    turns: Number(row.turns), userTurns: Number(row.user_turns),
     prompts: Number(row.prompts), userPrompts: Number(row.user_prompts), replies: Number(row.replies), toolCalls: Number(row.tool_calls),
     failedTools: Number(row.failed_tools), filesEdited: Number(row.files_edited), mycoCalls: Number(row.myco_calls), plans: Number(row.plans), attachments: Number(row.attachments), lastRecordAt: (row.last_record_at as number | null) ?? null,
     firstPrompt: (row.first_prompt as string | null) ?? null,

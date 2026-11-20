@@ -22,7 +22,7 @@ import { promptLocator } from '../db/documents/prompt-locator.js';
 import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locators.js';
 import { type DocRecord } from './document.js';
 import { SESSION_OWNER } from '../db/document-tables.js';
-import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
+import { editedFiles, toolFiles, reportedToolFailure, type ToolRollup, type ToolState } from './tool-rollup.js';
 import { hookCollectionRows, hookRecordPages, HOOK_ROWS } from '../db/documents/turn-hooks.js';
 import { promptCatalogRow, sessionAgent } from '../db/documents/turn-catalog.js';
 import {
@@ -103,7 +103,7 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
     for (const path of facts?.named ?? toolFiles(record, harness)) named.add(path);
     const row = toolCallRow(facts === undefined ? record : { ...record, tool_name: facts.name, myco_tool: facts.tool, myco_op: facts.op }, at);
     byTool.set(row.toolName, (byTool.get(row.toolName) ?? 0) + 1);
-    if (!row.success) {
+    if (reportedToolFailure(record)) {
       failed += 1;
       if (failures.length < SUMMARY_FAILURES) failures.push(row);
     }
@@ -111,7 +111,7 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
       const key = `${row.mycoTool}\u0000${row.mycoOp ?? ''}`;
       const held = myco.get(key) ?? { tool: row.mycoTool, op: row.mycoOp, count: 0, failed: 0 };
       held.count += 1;
-      if (!row.success) held.failed += 1;
+      if (reportedToolFailure(record)) held.failed += 1;
       myco.set(key, held);
     }
     for (const path of facts?.files ?? editedFiles(record, harness)) {

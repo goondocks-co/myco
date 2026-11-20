@@ -679,12 +679,12 @@ describe('claude-code manifest — structural envelope classification (real conf
     });
     expect(d).toMatchObject({ origin: 'system' });
   });
-  it('unknown claude envelope falls to the system fail-safe', () => {
+  it('an unknown Claude envelope supplies no speaker attribution', () => {
     const d = evaluateUserPromptRules('claude-code', {
       prompt: '<future-thing>y</future-thing>',
       transcriptPath,
     });
-    expect(d).toMatchObject({ origin: 'system' });
+    expect(d).toEqual({ action: 'pass', prompt: '<future-thing>y</future-thing>' });
   });
 });
 
@@ -719,9 +719,9 @@ describe('codex manifest — structural envelope classification (real config)', 
     });
     expect(d).toEqual({ action: 'rewrite', prompt: 'real request', reason: 'codex-desktop-file-preamble' });
   });
-  it('unknown codex envelope falls to the system fail-safe', () => {
+  it('an unknown Codex envelope supplies no speaker attribution', () => {
     const d = evaluateUserPromptRules('codex', { prompt: '<future-thing>y</future-thing>', transcriptPath });
-    expect(d).toMatchObject({ origin: 'system' });
+    expect(d).toEqual({ action: 'pass', prompt: '<future-thing>y</future-thing>' });
   });
 });
 

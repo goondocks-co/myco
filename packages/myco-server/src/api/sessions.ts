@@ -55,6 +55,7 @@ import { lineage_sessionLineage as sessionLineage } from '../read/catalog/lineag
 import { listSessionArtifacts } from '../read/session-artifacts.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
+import { sessionEvidence } from '../read/session-evidence.js';
 
 /** A cursor naming a document generation that is no longer live: the reader restarts from the first page. */
 const staleCursor = (): Response => Response.json({ error: 'stale_cursor' }, { status: 409 });
@@ -160,15 +161,16 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   if (read === null) return notFound();
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   const counters = await documentCounters(env.db, scope, sessionId);
+  const evidence = sessionEvidence(session.agent, counters);
   return ok({
     learningAgedOutAt: await learningAgedOutAt(env.db, scope.projectId, sessionId),
-    filesEdited: counters?.filesEdited ?? 0,
+    filesEdited: evidence.filesEdited, observedFilesEdited: evidence.observedFilesEdited, visibility: evidence.visibility,
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, lifecycle: await sessionLifecycleState(env.db, scope.projectId, sessionId), resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
     counts: {
-      userPrompts: counters?.userPrompts ?? 0, mycoCalls: counters?.mycoCalls ?? 0,
-      prompts: counters?.prompts ?? 0, toolCalls: counters?.toolCalls ?? 0, failedTools: counters?.failedTools ?? 0,
+      userPrompts: counters?.userTurns ?? 0, mycoCalls: evidence.mycoCalls,
+      prompts: counters?.turns ?? 0, promptEntries: counters?.prompts ?? 0, toolCalls: evidence.toolCalls, failedTools: evidence.failedTools,
       responses: counters?.replies ?? 0, plans: counters?.plans ?? 0, attachments: counters?.attachments ?? 0,
     },
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,

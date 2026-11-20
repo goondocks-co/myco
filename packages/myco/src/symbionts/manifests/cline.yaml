@@ -17,6 +17,12 @@ hookFields:
   toolInput: tool_input
   toolOutput: tool_output
 capture:
+  transcriptEvidence:
+    toolCalls: recorded
+    failedTools: recorded
+    mycoCalls: recorded
+    filesEdited: observed
+    commits: member_report_required
   # Cline rewrites two whole-file JSON documents per session in place, so no
   # byte offset survives a turn. The plugin writes an append-only transcript
   # from the events it sees in process, and Myco's retention pass ages it.

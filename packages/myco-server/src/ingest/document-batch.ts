@@ -25,7 +25,7 @@ import { SESSION_OWNER } from '../db/document-tables.js';
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { ensureSessionLifecycle, presentedDatesAfterPublication, settlePublishedTurn } from '../db/documents/lifecycle.js';
-import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
+import { reportedToolFailure, adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { sessionEditPaths } from '../db/documents/edit-paths.js';
 import { adoptVersionWrites, dropSealedRecordsWrite, holdVersionsWrite, releaseHolderWrites, savePagesWrite, saveSealedRecordsWrite, sealPagesWrite, versionsHeldGuard } from '../db/documents/chunk-versions.js';
 import { cardWrites, heldTurnKeys, insertPromptsWrite, placePromptsWrite, priorToolStates, sealedRecordPages, sessionAgentRow, settleTurnsWrite, turnRevisionsHeld } from '../db/documents/prompt-catalog.js';
@@ -254,6 +254,7 @@ export class DocumentBatch {
   private ownerOf(record: DocRecord): string {
     if (record.k === 'prompt') {
       const parent = typeof record.parent_prompt_id === 'string' ? record.parent_prompt_id : null;
+      if (record.claim === 'context' && parent === null) { this.turns.set(record.id, null); return SESSION_OWNER; }
       const turn = this.turns.has(record.id) ? this.turns.get(record.id)! : parent === null ? record.id : (this.turns.get(parent) ?? null);
       this.turns.set(record.id, turn);
       return turn ?? SESSION_OWNER;
@@ -421,7 +422,7 @@ export class DocumentBatch {
         }
       }
       if (placed.outcome === 'merged') {
-        if (record.k === 'tool') this.counts.failed_tools += (placed.record.success === 0 ? 1 : 0) - (placed.held.success === 0 ? 1 : 0);
+        if (record.k === 'tool') this.counts.failed_tools += Number(reportedToolFailure(placed.record)) - Number(reportedToolFailure(placed.held));
         if (record.k === 'tool') this.counts.myco_calls += Number(recordMycoFields(placed.record).tool !== null) - Number(recordMycoFields(placed.held).tool !== null);
         continue;
       }
@@ -454,7 +455,7 @@ export class DocumentBatch {
       else {
         this.counts.tool_calls += 1;
         if (recordMycoFields(record).tool !== null) this.counts.myco_calls += 1;
-        if (record.success === 0) this.counts.failed_tools += 1;
+        if (reportedToolFailure(record)) this.counts.failed_tools += 1;
       }
     }
     for (const owner of this.writer.touched) if (owner !== SESSION_OWNER) await this.writer.readTurnHead(owner);

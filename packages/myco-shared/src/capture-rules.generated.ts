@@ -5,6 +5,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "antigravity",
     "rules": [],
+    "transcriptEvidence": {
+      "toolCalls": "not_visible",
+      "failedTools": "not_visible",
+      "mycoCalls": "not_visible",
+      "filesEdited": "not_visible",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {
@@ -195,19 +202,15 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "reason": "claude-code-compact-continuation-summary",
         "trim": true,
         "set_origin": "system"
-      },
-      {
-        "event": "user_prompt",
-        "scope": "this_agent",
-        "when": {
-          "prompt_is_enclosing_envelope": true
-        },
-        "action": "classify",
-        "reason": "claude-code-unknown-envelope",
-        "trim": true,
-        "set_origin": "system"
       }
     ],
+    "transcriptEvidence": {
+      "toolCalls": "recorded",
+      "failedTools": "recorded",
+      "mycoCalls": "recorded",
+      "filesEdited": "observed",
+      "commits": "member_report_required"
+    },
     "planTags": [
       "ultraplan"
     ],
@@ -366,6 +369,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "trim": true
       }
     ],
+    "transcriptEvidence": {
+      "toolCalls": "recorded",
+      "failedTools": "recorded",
+      "mycoCalls": "recorded",
+      "filesEdited": "observed",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {
@@ -538,7 +548,8 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "when": {
           "prompt_envelope_tag_in": [
             "environment_context",
-            "skill"
+            "skill",
+            "skills_instructions"
           ]
         },
         "action": "classify",
@@ -556,23 +567,58 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "reason": "codex-desktop-file-preamble",
         "extract_after": "## My request for Codex:\n",
         "trim": true
+      }
+    ],
+    "transcriptEvidence": {
+      "toolCalls": "recorded",
+      "failedTools": "recorded",
+      "mycoCalls": "recorded",
+      "filesEdited": "observed",
+      "commits": "member_report_required"
+    },
+    "completedTools": [
+      {
+        "match": {
+          "type": "event_msg",
+          "payload.type": "item_completed",
+          "payload.item.type": "CommandExecution"
+        },
+        "key": "payload.item.id",
+        "name": "exec_command",
+        "inputFields": {
+          "command": "payload.item.command",
+          "cwd": "payload.item.cwd"
+        },
+        "outputAt": "payload.item.aggregated_output",
+        "exitCodeAt": "payload.item.exit_code",
+        "statusAt": "payload.item.status",
+        "failedStatus": "failed"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
-        "when": {
-          "prompt_is_enclosing_envelope": true
+        "match": {
+          "type": "event_msg",
+          "payload.type": "item_completed",
+          "payload.item.type": "McpToolCall"
         },
-        "action": "classify",
-        "reason": "codex-unknown-envelope",
-        "trim": true,
-        "set_origin": "system"
+        "key": "payload.item.id",
+        "nameAt": "payload.item.tool",
+        "serverAt": "payload.item.server",
+        "inputAt": "payload.item.arguments",
+        "outputAt": "payload.item.result",
+        "statusAt": "payload.item.status",
+        "failedStatus": "failed"
       }
     ],
     "planTags": [
       "proposed_plan"
     ],
     "fileTools": [
+      {
+        "tool": "apply_patch",
+        "pathField": "",
+        "mutates": true,
+        "extract": "patch"
+      },
       {
         "tool": "apply_patch",
         "pathField": "command",
@@ -604,12 +650,16 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
               "from": "record",
               "path": [
                 "payload.call_id",
-                "payload.id"
+                "payload.id",
+                "payload.item.id"
               ]
             },
             "resultKey": {
               "from": "record",
-              "path": "payload.call_id"
+              "path": [
+                "payload.call_id",
+                "payload.item.id"
+              ]
             },
             "evidence": "tests/fixtures/record-identity-evidence.json"
           },
@@ -634,12 +684,16 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
               "from": "record",
               "path": [
                 "payload.call_id",
-                "payload.id"
+                "payload.id",
+                "payload.item.id"
               ]
             },
             "resultKey": {
               "from": "record",
-              "path": "payload.call_id"
+              "path": [
+                "payload.call_id",
+                "payload.item.id"
+              ]
             },
             "evidence": "tests/fixtures/record-identity-evidence.json"
           },
@@ -656,6 +710,15 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       }
     },
     "toolResult": {
+      "commandOutput": {
+        "tools": [
+          "exec_command",
+          "write_stdin",
+          "shell",
+          "shell_command"
+        ],
+        "path": "output"
+      },
       "failure": null,
       "evidence": "tests/fixtures/tool-result-evidence.json"
     }
@@ -663,6 +726,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "copilot",
     "rules": [],
+    "transcriptEvidence": {
+      "toolCalls": "recorded",
+      "failedTools": "recorded",
+      "mycoCalls": "recorded",
+      "filesEdited": "observed",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {
@@ -778,6 +848,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "trim": true
       }
     ],
+    "transcriptEvidence": {
+      "toolCalls": "not_visible",
+      "failedTools": "not_visible",
+      "mycoCalls": "not_visible",
+      "filesEdited": "not_visible",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {
@@ -846,6 +923,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "opencode",
     "rules": [],
+    "transcriptEvidence": {
+      "toolCalls": "recorded",
+      "failedTools": "recorded",
+      "mycoCalls": "recorded",
+      "filesEdited": "observed",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {
@@ -915,6 +999,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "pi",
     "rules": [],
+    "transcriptEvidence": {
+      "toolCalls": "recorded",
+      "failedTools": "recorded",
+      "mycoCalls": "recorded",
+      "filesEdited": "observed",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {
@@ -998,6 +1089,13 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
   {
     "name": "windsurf",
     "rules": [],
+    "transcriptEvidence": {
+      "toolCalls": "not_visible",
+      "failedTools": "not_visible",
+      "mycoCalls": "not_visible",
+      "filesEdited": "not_visible",
+      "commits": "member_report_required"
+    },
     "planTags": [],
     "fileTools": [
       {

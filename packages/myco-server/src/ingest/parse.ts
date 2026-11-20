@@ -24,6 +24,7 @@ import { parseSegments, type ParseSegment } from '../db/transcripts/parse-segmen
 import { remainingInvocationBudget } from '../core/content-budget.js';
 
 import { MAX_BLOB_BYTES, SESSION_END_SETTLE_MS } from '../constants.js';
+import { sessionInvocationFacts } from '../core/session-invocations.js';
 
 const PARSER_CHECKPOINT_HEADROOM = 64;
 
@@ -104,6 +105,7 @@ export interface ParsePersistence {
 
 /** The transcript a pass works on. */
 export interface ParseTarget {
+    launchParentSessionId?: string;
     persistence: ParsePersistence;
     projectId: string;
     transcriptId: string;
@@ -501,10 +503,13 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     let keys: ReadonlyMap<string, string> = new Map<string, string>();
   const readOwners = () => target.persistence.owners(keys);
   let owners: PromptOwners | undefined;
+  const sourceTimes = lines.map(line => Date.parse(String(line.value.timestamp))).filter(Number.isFinite);
+  const invocations = sourceTimes.length === 0 ? [] : await sessionInvocationFacts(env.db, { projectId: target.projectId, sessionId: target.sessionId,
+    from: Math.min(...sourceTimes), until: Math.max(...sourceTimes) + 1 });
   const derive = async (): Promise<{ state: ParserState; input: ParserInput; parsed: DerivedEvent[] }> => {
     const state: ParserState = structuredClone(initialState);
     const input: ParserInput = { ...({view:true,identities:new Map<string,readonly string[]>(),toolPrompts:new ToolPromptLinks()}), lines: lines!, sessionId: target.sessionId, transcriptId: target.transcriptId, recordScheme, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
-      ...(target.role === undefined ? {} : { role: target.role }),
+      ...(target.role === undefined ? {} : { role: target.role }), launchParentSessionId: target.launchParentSessionId, invocations,
       terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
     return { state, input, parsed: await parser.parse(input) };
   };
