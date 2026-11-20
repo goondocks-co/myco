@@ -148,7 +148,7 @@ export const codexParser: TranscriptParser = {
           if (decision.action === 'drop') continue;
           const origin = decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin;
           const display = promptEnvelope(decision.prompt);
-          const opensTurn = (display?.text ?? decision.prompt).trim() !== '' && (isInstructionOrigin(origin) || (held.turn !== undefined && !held.turn.opened && decision.opensTurn === true));
+          const opensTurn = decision.opensTurn !== false && (display?.text ?? decision.prompt).trim() !== '' && (isInstructionOrigin(origin) || (held.turn !== undefined && !held.turn.opened && decision.opensTurn === true));
           if (scheme !== 'codex-turn-v1' && opensTurn && held.turn !== undefined) held.turn.opened = true;
           const capturedPromptId = await promptIdUnder(scheme, sessionId, offset,
             () => ({ turnId: held.turn!.id, submission: submissionIn(held.turn!, opensTurn, acceptanceOrder(value), offset) }), input);

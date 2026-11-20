@@ -244,6 +244,7 @@ capture:
         prompt_envelope_tag_in: [user_shell_command]
       action: classify
       set_origin: human
+      opens_turn: false
       reason: codex-person-shell-command
     - event: user_prompt
       scope: this_agent

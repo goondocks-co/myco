@@ -177,18 +177,18 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
             </ul>
           </Disclosure>
         ) : fileWords !== null && <p className="t-small text-ink-2">{fileWords}</p>}
-        <ToolCalls projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} partial={partial || nested > 0} />
+        <ToolCalls projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} nested={nested} partial={partial || nested > 0} />
       </div>
     </section>
   );
 }
 
 /** The tool calls a prompt led to, folded away; nothing is read until they open. `partial` keeps them reachable when `total` may miss some. */
-export function ToolCalls({ projectId, sessionId, promptId, total, partial = false }: { projectId: string; sessionId: string; promptId: string; total: number; partial?: boolean }) {
+export function ToolCalls({ projectId, sessionId, promptId, total, nested = 0, partial = false }: { projectId: string; sessionId: string; promptId: string; total: number; nested?: number; partial?: boolean }) {
   if (total === 0 && !partial) return null;
   return (
-    <Disclosure summary={<span data-testid="tool-calls-toggle">{total === 0 ? 'Tool calls' : total === 1 ? '1 tool call' : `All ${count(total, 'tool call')}`}</span>}>
-      <ToolCallList projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} />
+    <Disclosure summary={<span data-testid="tool-calls-toggle">{nested > 0 ? `${count(total, 'model call')} · ${count(nested, 'nested call')}` : total === 0 ? 'Tool calls' : total === 1 ? '1 tool call' : `All ${count(total, 'tool call')}`}</span>}>
+      <ToolCallList projectId={projectId} sessionId={sessionId} promptId={promptId} total={total + nested} />
     </Disclosure>
   );
 }

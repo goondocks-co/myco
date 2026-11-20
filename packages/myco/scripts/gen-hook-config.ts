@@ -344,7 +344,7 @@ export function renderHookConfigSources(): HookConfigSources {
       const shared = defaults[key];
       const events = key === 'hookEvents' ? '{' + Object.entries(value as Record<string, HookEventEntry>).map(([name, event]) =>
         `${JSON.stringify(name)}: hookEvent(${JSON.stringify(event.hook)}${event.timeout === undefined ? '' : ', ' + event.timeout})`).join(', ') + '}' : undefined;
-      const rules = key === 'captureRules' ? `withCaptureRules(${JSON.stringify((value as CaptureRule[]).map(rule => Object.fromEntries(Object.entries(rule).filter(([field, value]) => !((field === 'event' && value === 'user_prompt') || (field === 'scope' && value === 'this_agent') || (field === 'trim' && value === true))))), null, 2)})` : undefined;
+      const rules = key === 'captureRules' ? `withCaptureRules(${JSON.stringify((value as CaptureRule[]).map(rule => Object.fromEntries(Object.entries(rule).filter(([field, value]) => !((field === 'event' && value === 'user_prompt') || (field === 'scope' && value === 'this_agent') || (field === 'trim' && value === true) || (field === 'action' && value === 'classify'))))), null, 2)})` : undefined;
       const part = parts.get(key + ':' + JSON.stringify(value));
       const rendered = part !== undefined ? `${part.name}()` : events ?? rules ?? (shared === undefined ? JSON.stringify(value, null, 2)
         : `withHook${key === 'capabilities' ? 'Capabilities' : 'Fields'}(${JSON.stringify(Object.fromEntries(
@@ -432,8 +432,8 @@ const fieldDefaults = ${JSON.stringify(defaults.hookFields, null, 2)} satisfies 
 type HookFieldOverrides = Omit<HookConfigEntry['hookFields'], keyof typeof fieldDefaults> & Partial<HookConfigEntry['hookFields']>;
 const withHookCapabilities = (overrides: Partial<HookCapabilities>): HookCapabilities => ({ ...capabilityDefaults, ...overrides });
 const withHookFields = (overrides: HookFieldOverrides): HookConfigEntry['hookFields'] => ({ ...fieldDefaults, ...overrides });
-type RuleOverrides = Omit<CaptureRule, 'event' | 'scope' | 'trim'> & Partial<Pick<CaptureRule, 'event' | 'scope' | 'trim'>>;
-const withCaptureRules = (rules: RuleOverrides[]): CaptureRule[] => rules.map(rule => ({ event: 'user_prompt', scope: 'this_agent', trim: true, ...rule }));
+type RuleOverrides = Omit<CaptureRule, 'event' | 'scope' | 'trim' | 'action'> & Partial<Pick<CaptureRule, 'event' | 'scope' | 'trim' | 'action'>>;
+const withCaptureRules = (rules: RuleOverrides[]): CaptureRule[] => rules.map(rule => ({ event: 'user_prompt', scope: 'this_agent', trim: true, action: 'classify', ...rule }));
 const hookEvent = (hook: string, timeout?: number): HookEventEntry => timeout === undefined ? { hook } : { hook, timeout };
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = ${body} as const;

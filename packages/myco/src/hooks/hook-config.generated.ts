@@ -101,8 +101,8 @@ const fieldDefaults = {
 type HookFieldOverrides = Omit<HookConfigEntry['hookFields'], keyof typeof fieldDefaults> & Partial<HookConfigEntry['hookFields']>;
 const withHookCapabilities = (overrides: Partial<HookCapabilities>): HookCapabilities => ({ ...capabilityDefaults, ...overrides });
 const withHookFields = (overrides: HookFieldOverrides): HookConfigEntry['hookFields'] => ({ ...fieldDefaults, ...overrides });
-type RuleOverrides = Omit<CaptureRule, 'event' | 'scope' | 'trim'> & Partial<Pick<CaptureRule, 'event' | 'scope' | 'trim'>>;
-const withCaptureRules = (rules: RuleOverrides[]): CaptureRule[] => rules.map(rule => ({ event: 'user_prompt', scope: 'this_agent', trim: true, ...rule }));
+type RuleOverrides = Omit<CaptureRule, 'event' | 'scope' | 'trim' | 'action'> & Partial<Pick<CaptureRule, 'event' | 'scope' | 'trim' | 'action'>>;
+const withCaptureRules = (rules: RuleOverrides[]): CaptureRule[] => rules.map(rule => ({ event: 'user_prompt', scope: 'this_agent', trim: true, action: 'classify', ...rule }));
 const hookEvent = (hook: string, timeout?: number): HookEventEntry => timeout === undefined ? { hook } : { hook, timeout };
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
@@ -319,7 +319,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "when": {
           "prompt_starts_with": "<<autonomous-loop"
         },
-        "action": "classify",
         "reason": "claude-code-autonomous-loop",
         "set_origin": "system"
       },
@@ -330,7 +329,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "teammate-message"
           ]
         },
-        "action": "classify",
         "reason": "claude-code-agent-envelope",
         "set_origin": "agent_dispatch"
       },
@@ -345,7 +343,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "local-command-caveat"
           ]
         },
-        "action": "classify",
         "reason": "claude-code-system-envelope",
         "set_origin": "system"
       },
@@ -356,7 +353,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "value": true
           }
         },
-        "action": "classify",
         "reason": "claude-code-compact-continuation-summary",
         "set_origin": "system"
       },
@@ -366,15 +362,14 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "bash-input"
           ]
         },
-        "action": "classify",
         "reason": "claude-code-person-shell-command",
+        "opens_turn": false,
         "set_origin": "human"
       },
       {
         "when": {
           "prompt_is_enclosing_envelope": true
         },
-        "action": "classify",
         "reason": "claude-code-unknown-envelope",
         "set_origin": "system"
       }
@@ -593,7 +588,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "subagent_notification"
           ]
         },
-        "action": "classify",
         "reason": "codex-agent-envelope",
         "set_origin": "agent_dispatch"
       },
@@ -605,7 +599,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "skills_instructions"
           ]
         },
-        "action": "classify",
         "reason": "codex-system-envelope",
         "set_origin": "system"
       },
@@ -623,15 +616,14 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
             "user_shell_command"
           ]
         },
-        "action": "classify",
         "reason": "codex-person-shell-command",
+        "opens_turn": false,
         "set_origin": "human"
       },
       {
         "when": {
           "prompt_is_enclosing_envelope": true
         },
-        "action": "classify",
         "reason": "codex-unknown-envelope",
         "opens_turn": true,
         "set_origin": "system"

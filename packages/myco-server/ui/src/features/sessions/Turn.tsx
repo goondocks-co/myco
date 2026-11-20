@@ -300,7 +300,7 @@ function ChildTurn({ projectId, sessionId, agent, contexts, child }: { projectId
   };
   return (
     <li data-testid={`turn-${prompt.promptId}`} data-child="true" data-origin={prompt.origin} className="flex flex-col gap-s3">
-      <PromptBubble origin={prompt.origin} thread={prompt.threadLabel} at={prompt.createdAt} steering={prompt.origin === 'user'}>
+      <PromptBubble origin={prompt.origin} thread={prompt.threadLabel} at={prompt.createdAt} steering={prompt.origin === 'user' && prompt.claim !== 'context'}>
         <PromptText projectId={projectId} sessionId={sessionId} turn={{ promptId: prompt.promptId, preview: prompt.text, textChars: prompt.text?.length ?? null, blobKey: prompt.blobKey }} text={prompt.text} blobKey={prompt.blobKey} locator={prompt.locator} agent={agent} />
       </PromptBubble>
       <TurnPages projectId={projectId} sessionId={sessionId} promptId={prompt.promptId} collection="attachments" initial={body.attachments} cursor={body.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">

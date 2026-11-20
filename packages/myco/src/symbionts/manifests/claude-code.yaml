@@ -231,6 +231,7 @@ capture:
         prompt_envelope_tag_in: [bash-input]
       action: classify
       set_origin: human
+      opens_turn: false
       reason: claude-code-person-shell-command
     - event: user_prompt
       scope: this_agent

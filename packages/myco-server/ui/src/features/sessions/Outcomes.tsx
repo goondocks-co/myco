@@ -135,7 +135,7 @@ export function SessionOutcomes({ projectId, sessionId, now }: { projectId: stri
   const artifacts = useSessionArtifacts(projectId, sessionId);
   return (
     <div className="flex flex-col gap-s3">
-    {commits.data?.range?.visibility === 'not_visible' && <p className="t-small text-muted">Commits made during this session are not visible. The member’s start and end observations are listed below.</p>}
+    {commits.data?.range?.visibility === 'not_visible' && <p className="t-small text-muted">Commits made during this session are not visible. This view shows any start and end observations the member reported.</p>}
     <SessionEventList
       read={{
         rows: mergeOutcomes(commits.data === undefined ? [] : outcomeRows(commits.data, now), artifacts.rows.map(artifactRow), artifacts.hasMore),

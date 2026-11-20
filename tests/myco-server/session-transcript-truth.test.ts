@@ -199,10 +199,10 @@ test('parent-bearing and person sessions title and learn their three instruction
 test('unrecognized harness wrappers preserve person counts and empty wrappers open no turn', async () => {
   const fixture = sqliteEnv();
   try {
-    for (const [agent, people, wrappers] of [
-      ['claude-code', 5, ['<user-prompt-submit-hook>context</user-prompt-submit-hook>', '<scheduled-task>context</scheduled-task>', '<note/>']],
-      ['codex', 2, ['<turn_aborted>interrupted</turn_aborted>', '<note/>']],
-      ['codex', 1, ['<hc from="planner">Follow up</hc>', '<hc from="planner">Check again</hc>', '<hc from="planner">Finish</hc>']],
+    for (const [agent, people, turns, personEntries, wrappers] of [
+      ['claude-code', 5, 7, 6, ['<bash-input>pwd</bash-input>', '<user-prompt-submit-hook>context</user-prompt-submit-hook>', '<scheduled-task>context</scheduled-task>', '<note/>']],
+      ['codex', 2, 3, 3, ['<user_shell_command>pwd</user_shell_command>', '<turn_aborted>interrupted</turn_aborted>', '<note/>']],
+      ['codex', 1, 4, 1, ['<hc from="planner">Follow up</hc>', '<hc from="planner">Check again</hc>', '<hc from="planner">Finish</hc>']],
     ] as const) {
       const session = `${agent}-${people}`;
       const texts = [...Array.from({ length: people }, (_, i) => `Person instruction ${i}`), ...wrappers];
@@ -211,7 +211,7 @@ test('unrecognized harness wrappers preserve person counts and empty wrappers op
       const env = await captureDocumentTranscript(fixture.db, fixture.bucket, session, `tx_${crypto.randomUUID().replaceAll('-', '')}`, records.map(record => JSON.stringify(record)).join('\n') + '\n', Date.now(), 0, agent, 'proj_1');
       await publishDocuments(env, Date.now() + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
       const response = await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/${session}`), { ...fixture.env, ...OWNER_ENV });
-      expect(await response.json()).toMatchObject({ personTurns: people, turns: people + wrappers.filter(text => text !== '<note/>').length });
+      expect(await response.json()).toMatchObject({ personTurns: people, turns, counts: { userPrompts: personEntries } });
     }
   } finally { fixture.sqlite.close(); }
 });

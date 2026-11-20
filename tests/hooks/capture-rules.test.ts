@@ -818,6 +818,6 @@ describe('resolveSubagentThread', () => {
 });
 
 it('person-initiated shell wrappers have explicit speaker rules', () => {
-  expect(evaluateUserPromptRules('claude-code', { prompt: '<bash-input>pwd</bash-input>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human' });
-  expect(evaluateUserPromptRules('codex', { prompt: '<user_shell_command>pwd</user_shell_command>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human' });
+  expect(evaluateUserPromptRules('claude-code', { prompt: '<bash-input>pwd</bash-input>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human', opensTurn: false });
+  expect(evaluateUserPromptRules('codex', { prompt: '<user_shell_command>pwd</user_shell_command>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human', opensTurn: false });
 });

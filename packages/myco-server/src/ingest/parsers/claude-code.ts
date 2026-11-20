@@ -110,7 +110,7 @@ function envelopeLabel(text: string): ClaudePromptShape | undefined {
 /** What a claude-v2 user record is: one disposition for every record. */
 type V2Disposition =
   | { as: 'none' }
-  | { as: 'context'; thread: string }
+  | { as: 'context'; thread: string; origin?: WirePromptOrigin; kind?: string }
   | { as: 'sibling'; thread: string; kind: string; origin: WirePromptOrigin }
   | { as: 'claimant'; opener: boolean; kind: string; origin: WirePromptOrigin };
 
@@ -148,6 +148,7 @@ function v2Disposition(v: Record<string, unknown>, text: string, role: ParserInp
   const envelope = envelopeLabel(text);
   if (envelope !== undefined) return { as: 'sibling', thread: MAIN_THREAD, kind: envelope, origin: 'agent_dispatch' };
   const origin: WirePromptOrigin = decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin;
+  if (decision.opensTurn === false) return { as: 'context', thread: MAIN_THREAD, origin, kind: 'context' };
   return { as: 'claimant', opener, kind: 'unmarked', origin };
 }
 
@@ -237,7 +238,7 @@ export const claudeCodeParser: TranscriptParser = {
         if (uuid === undefined) continue;
         const thread = disposition.as === 'claimant' ? MAIN_THREAD : disposition.thread;
         const claim: PromptClaim = disposition.as === 'context' ? 'context' : disposition.as === 'claimant' && disposition.opener && key !== undefined ? 'reused' : 'sibling';
-        const label = disposition.as === 'context' ? { kind: 'compact_summary', origin: 'system' as const }
+        const label = disposition.as === 'context' ? { kind: disposition.kind ?? 'compact_summary', origin: disposition.origin ?? 'system' as const }
           : disposition.as === 'claimant' && !disposition.opener ? { kind: envelopeLabel(text) ?? 'unrecognized', origin: envelopeLabel(text) === undefined ? 'system' as const : 'agent_dispatch' as const }
           : { kind: disposition.kind, origin: disposition.origin };
         await v2Prompt({ id: await claudeRecordIdFor(sessionId, { thread, uuid }, input), text, ...label, claim, key, thread, record: uuid }, createdAt, offset, value);
@@ -254,9 +255,11 @@ export const claudeCodeParser: TranscriptParser = {
           const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'claude-code', { prompt: text, transcriptPath: sessionId, record: value });
           if (decision.action === 'drop') continue;
           const origin = shape === 'user_prompt' ? decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin : 'agent_dispatch';
-          promptId = await promptIdFor(sessionId, shape, key, input);
-          events.push({ kind: 'prompt', payload: { promptId, text, origin, promptKind: shape }, createdAt, offset });
-          if (isInstructionOrigin(origin)) events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }));
+          const capturedPromptId = await promptIdFor(sessionId, shape, key, input);
+          const opensTurn = decision.opensTurn !== false;
+          if (opensTurn) promptId = capturedPromptId;
+          events.push({ kind: 'prompt', payload: { promptId: capturedPromptId, text, origin, promptKind: shape }, createdAt, offset, opensTurn });
+          if (opensTurn && isInstructionOrigin(origin)) events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId: capturedPromptId, offset, createdAt }));
         }
         continue;
       }

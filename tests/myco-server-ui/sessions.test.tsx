@@ -2336,6 +2336,10 @@ for (const agent of ['codex', 'cursor'] as const) it(`renders ${agent} evidence 
     const records = agent === 'codex' ? [
       { type: 'event_msg', timestamp: new Date(NOW).toISOString(), payload: { type: 'task_started', turn_id: 'task' } },
       message({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the published evidence' }] }),
+      message({ type: 'message', role: 'user', content: [{ type: 'input_text', text: '<user_shell_command>pwd</user_shell_command>' }] }),
+      message({ type: 'custom_tool_call', call_id: 'wrapper', name: 'exec', input: 'tools.exec_command({cmd:"false"})' }),
+      { type: 'event_msg', timestamp: new Date(NOW).toISOString(), payload: { type: 'item_completed', turn_id: 'task', item: { type: 'CommandExecution', id: 'nested-command', command: 'false', exit_code: 1, status: 'failed', aggregated_output: 'Failed' } } },
+      message({ type: 'custom_tool_call_output', call_id: 'wrapper', output: 'Script completed' }),
       message({ type: 'custom_tool_call', call_id: 'patch', name: 'apply_patch', input: '*** Begin Patch\n*** Add File: evidence.txt\n+evidence\n*** End Patch' }),
       message({ type: 'custom_tool_call_output', call_id: 'patch', output: 'Success' }),
     ] : [{ role: 'user', message: { content: [{ type: 'text', text: '<user_query>Check the published evidence</user_query>' }] } }];
@@ -2344,16 +2348,26 @@ for (const agent of ['codex', 'cursor'] as const) it(`renders ${agent} evidence 
     const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/published'), { ...fixture.env, ...OWNER_ENV });
     expect(response.status).toBe(200);
     const answer = await response.json();
+    const turnResponse = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/published/turns?origins=user'), { ...fixture.env, ...OWNER_ENV });
+    const turnPage = await turnResponse.json() as { rows: { promptId: string }[] };
+    const first = turnPage.rows[0];
+    const body = first === undefined ? null : await (await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/published/turns/${first.promptId}`), { ...fixture.env, ...OWNER_ENV })).json();
     server(base({
       '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], projectId: 'proj_1', name: 'Published project' }] }),
       '/api/projects/proj_1/sessions/published': () => Response.json(answer),
-      '/api/projects/proj_1/sessions/published/turns': () => page([]),
+      '/api/projects/proj_1/sessions/published/turns': () => Response.json(turnPage),
+      ...(first === undefined ? {} : { [`/api/projects/proj_1/sessions/published/turns/${first.promptId}`]: () => Response.json(body) }),
     }));
     mount('/p/proj_1/sessions/published');
     expect(await screen.findByRole('heading', { level: 1, name: /Check the published evidence/ })).toBeTruthy();
     const header = document.querySelector('[data-session-counts]')!;
     expect(header.textContent).toContain(agent === 'codex' ? 'At least 1 file edited' : 'Files edited: not visible');
     if (agent === 'cursor') expect(header.textContent).toContain('tool call: not visible');
+    else {
+      expect(await screen.findByText('pwd', { exact: true })).toBeTruthy();
+      expect(screen.queryByText('Steered while it ran')).toBeNull();
+      expect(screen.getByRole('button', { name: /2 model calls.*1 nested call/ })).toBeTruthy();
+    }
     fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
     const about = await screen.findByRole('dialog', { name: 'About this session' });
     expect(about.textContent).toContain(agent === 'codex' ? 'At least 1 file edited' : 'Files edited: not visible');

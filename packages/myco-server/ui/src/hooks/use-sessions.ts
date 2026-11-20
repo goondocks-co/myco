@@ -263,6 +263,8 @@ export interface ToolRollup {
 }
 
 export interface TurnPrompt {
+  claim?: string | null;
+  claim?: string | null;
   envelope?: { name: string; attributes: string } | null;
   promptId: string;
   origin: string;

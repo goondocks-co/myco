@@ -213,6 +213,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         },
         "action": "classify",
         "reason": "claude-code-person-shell-command",
+        "opens_turn": false,
         "trim": true,
         "set_origin": "human"
       },
@@ -602,6 +603,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         },
         "action": "classify",
         "reason": "codex-person-shell-command",
+        "opens_turn": false,
         "trim": true,
         "set_origin": "human"
       },

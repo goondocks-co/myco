@@ -547,6 +547,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           },
           "action": "classify",
           "reason": "claude-code-person-shell-command",
+          "opens_turn": false,
           "trim": true,
           "set_origin": "human"
         },
@@ -1534,6 +1535,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           },
           "action": "classify",
           "reason": "codex-person-shell-command",
+          "opens_turn": false,
           "trim": true,
           "set_origin": "human"
         },

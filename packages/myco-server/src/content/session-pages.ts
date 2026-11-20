@@ -141,7 +141,7 @@ export function promptRow(record: DocRecord, at: PageLocator) {
     promptId: record.id, text: display?.text ?? str(record.text), envelope: record.envelope ?? display?.envelope ?? null,
     blobKey: record.bodies?.text?.digest ?? null, origin: str(record.origin) ?? 'user',
     originSessionId: str(record.origin_session_id),
-    promptKind: str(record.prompt_kind), parentPromptId: str(record.parent_prompt_id), threadLabel: str(record.thread_label),
+    claim: str(record.claim), promptKind: str(record.prompt_kind), parentPromptId: str(record.parent_prompt_id), threadLabel: str(record.thread_label),
     createdAt: record.created_at, orderedAt: record.created_at, locator: locatorOf(at),
   };
 }

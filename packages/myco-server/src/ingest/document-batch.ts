@@ -443,7 +443,7 @@ export class DocumentBatch {
       }
       if (record.k === 'prompt') {
         this.counts.prompts += 1;
-        const instruction = isInstructionOrigin(record.origin);
+        const instruction = record.claim !== 'context' && isInstructionOrigin(record.origin);
         if (instruction) this.counts.instruction_prompts += 1;
         const turnKey = owner === SESSION_OWNER ? null : owner;
         this.newPrompts.push({ record, turnKey });
@@ -539,7 +539,7 @@ export class DocumentBatch {
       settled.push({
         ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
-        ...(complete ? { tools: input.tools.filter(tool => tool.nested !== true).length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
+        ...(complete ? { tools: input.tools.filter(tool => tool.nested !== true).length, replies: input.replies.length, children: records.filter(record => record.k === 'prompt' && record.id !== owner).length, plans: input.plans.length } : { added }),
         input_hash: hash, source_bytes: complete || fingerprint?.bytes != null ? bytes : null, input_chars: trimmed.text.length,
       });
     }
