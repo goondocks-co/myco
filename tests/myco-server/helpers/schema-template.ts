@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,13 +13,14 @@ import { removeWhenTestsEnd } from '../../support/remove-when-tests-end.js';
 import { DEPLOYMENT_ID_KEY } from './d1.js';
 
 /**
- * Databases holding the current schema, copied from a template each test process builds once.
+ * Databases holding the current schema, copied from a template each test run builds once.
  *
  * Replaying every schema step costs seconds per database, so a test that only needs the current schema gets a private
- * copy of a database that replayed them once in this process: a deserialized image on native SQLite, and a copy of
- * Miniflare's own D1 object file on D1, which Miniflare then opens through its real D1 path. The templates are built
- * from the `SCHEMA_STEPS` this process loaded, so a changed schema is a new template on the next run. Tests about
- * migrations replay the steps they test instead.
+ * copy of a database that replayed them once: a deserialized image on native SQLite, and a copy of Miniflare's own D1
+ * object file on D1, which Miniflare then opens through its real D1 path. The first process of a run to need a template
+ * builds it and leaves it in the run's temp root for the run's later processes, under a name drawn from the
+ * `SCHEMA_STEPS` it replayed, so a changed schema is a new template. Tests about migrations replay the steps they test
+ * instead.
  *
  * A replay leaves exactly four values that depend on when and where it ran: the Deployment's random id, the instants
  * the run ledger and its guard were enabled, and the instant the object store walk arms itself. Every copy draws those
@@ -42,12 +44,34 @@ const RESTAMP_SQL = [
   `UPDATE object_store_reconciliation SET armed_at = (CAST(strftime('%s','now') AS INTEGER) + 1) * 1000 WHERE slot = 1`,
 ];
 
-/** The schema steps every template replays, each as one batch, as `wrangler d1 migrations apply` applies them. */
-export async function replaySchema(db: RelationalStore): Promise<void> {
-  for (const step of SCHEMA_STEPS) await db.batch(step.statements.map((sql) => db.prepare(sql)));
+const LATEST = SCHEMA_STEPS.at(-1)!.version;
+
+/** The schema steps a template replays, through `through`, each as one batch, as `wrangler d1 migrations apply` applies them. */
+export async function replaySchema(db: RelationalStore, through = LATEST): Promise<void> {
+  for (const step of SCHEMA_STEPS) if (step.version <= through) await db.batch(step.statements.map((sql) => db.prepare(sql)));
 }
 
-let nativeImage: Uint8Array | null = null;
+/** Names the schema the templates hold: the same steps give the same name in every process of a run. */
+const SCHEMA_KEY = createHash('sha256').update(JSON.stringify(SCHEMA_STEPS.map((step) => [step.version, step.statements]))).digest('hex').slice(0, 16);
+
+const runImagePath = (kind: string): string | null =>
+  process.env.MYCO_TEST_RUN_ROOT ? path.join(process.env.MYCO_TEST_RUN_ROOT, `myco-schema-${kind}-${SCHEMA_KEY}.sqlite`) : null;
+
+/** A template image an earlier process of this test run left in the run's temp root, or null. The root goes when the run ends. */
+function runImage(kind: string): Uint8Array | null {
+  const file = runImagePath(kind);
+  try { return file === null ? null : fs.readFileSync(file); } catch { return null; }
+}
+
+/** Leaves a built template image for the later processes of this run, whole or not at all. */
+function keepRunImage(kind: string, image: Uint8Array): Uint8Array {
+  const file = runImagePath(kind);
+  if (file === null) return image;
+  const partial = `${file}.${process.pid}.partial`;
+  try { fs.writeFileSync(partial, image); fs.renameSync(partial, file); } catch { fs.rmSync(partial, { force: true }); }
+  return image;
+}
+
 const versionImages = new Map<number, Uint8Array>();
 
 /** Applies schema steps after `from` through `through`, each step in one transaction, as the store's batch applies it. */
@@ -58,8 +82,8 @@ function applySteps(sqlite: Database, from: number, through: number): void {
 
 /** The serialized schema at `through`, built once and continued from the nearest lower version already built. */
 function imageThrough(through: number): Uint8Array {
-  const cached = versionImages.get(through);
-  if (cached !== undefined) return cached;
+  const cached = versionImages.get(through) ?? runImage(`native-${through}`);
+  if (cached) return versionImages.set(through, cached).get(through)!;
   let from = 0;
   let base: Uint8Array | undefined;
   for (const [version, image] of versionImages) if (version < through && version > from) { from = version; base = image; }
@@ -67,7 +91,7 @@ function imageThrough(through: number): Uint8Array {
   try {
     sqlite.exec('PRAGMA foreign_keys = ON');
     applySteps(sqlite, from, through);
-    const image = sqlite.serialize();
+    const image = keepRunImage(`native-${through}`, sqlite.serialize());
     versionImages.set(through, image);
     return image;
   } finally { sqlite.close(); }
@@ -89,30 +113,13 @@ function restampCopy(sqlite: Database): void {
 
 /**
  * A private in-memory database holding the current schema, or the schema through `through`, and nothing else.
- * Each version is built once in this process. Foreign key enforcement is a setting of the connection, not the file:
+ * Each version is built once in this test run. Foreign key enforcement is a setting of the connection, not the file:
  * it is on unless `foreignKeys` is false, for a test that opened a bare connection.
  */
 export function schemaSqlite(options: { foreignKeys?: boolean; through?: number } = {}): Database {
-  const latest = SCHEMA_STEPS.at(-1)!.version;
-  if (options.through !== undefined && options.through < latest) {
-    const sqlite = Database.deserialize(imageThrough(options.through));
-    if (options.foreignKeys !== false) sqlite.exec('PRAGMA foreign_keys = ON');
-    restampCopy(sqlite);
-    return sqlite;
-  }
-  if (nativeImage === null) {
-    const template = new Database(':memory:');
-    try {
-      template.exec('PRAGMA foreign_keys = ON');
-      // Each step in one transaction, as the store's batch applies it.
-      const apply = template.transaction((statements: readonly string[]) => { for (const sql of statements) template.exec(sql); });
-      for (const step of SCHEMA_STEPS) apply(step.statements);
-      nativeImage = template.serialize();
-    } finally { template.close(); }
-  }
-  const sqlite = Database.deserialize(nativeImage);
+  const sqlite = Database.deserialize(imageThrough(Math.min(options.through ?? LATEST, LATEST)));
   if (options.foreignKeys !== false) sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const sql of RESTAMP_SQL) sqlite.exec(sql);
+  restampCopy(sqlite);
   return sqlite;
 }
 
@@ -140,33 +147,32 @@ async function persistD1(root: string, id: string, use: (db: RelationalStore) =>
   return file;
 }
 
-/** Folds the write-ahead log into the database file, so the file alone is the database. */
-function checkpoint(file: string, statements: readonly string[] = []): void {
+/** Folds the write-ahead log into the database file, so the file alone is the database, after `change` if one is given. */
+function checkpoint(file: string, change: (sqlite: Database) => void = () => {}): void {
   const sqlite = new Database(file);
   try {
-    for (const sql of statements) sqlite.exec(sql);
+    change(sqlite);
     sqlite.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   } finally { sqlite.close(); }
 }
 
-let d1Template: Promise<string> | null = null;
+const d1Templates = new Map<number, Promise<Uint8Array>>();
 const objectNames = new Map<string, Promise<string>>();
 
-/** The D1 template's object file, replayed once in this process. */
-function d1TemplateFile(): Promise<string> {
-  d1Template ??= (async () => {
-    const root = persistRoot('myco-schema-d1-');
-    const file = path.join(root, D1_OBJECT_DIR, await persistD1(root, 'myco-schema-template', replaySchema));
-    checkpoint(file);
-    return file;
-  })();
-  // A file removed when an earlier test file ended is built again, once however many callers find it gone.
-  const built = d1Template;
-  return built.then((file) => {
-    if (fs.existsSync(file)) return file;
-    if (d1Template === built) d1Template = null;
-    return d1TemplateFile();
-  });
+/** The D1 template's object file holding the schema through `through`, replayed once in this test run and kept in memory, as the native images are. */
+function d1TemplateImage(through = LATEST): Promise<Uint8Array> {
+  const kind = `d1-${COMPATIBILITY_DATE}-${through}`;
+  if (!d1Templates.has(through)) d1Templates.set(through, (async () => {
+    const kept = runImage(kind);
+    if (kept !== null) return kept;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-d1-'));
+    try {
+      const file = path.join(root, D1_OBJECT_DIR, await persistD1(root, 'myco-schema-template', (db) => replaySchema(db, through)));
+      checkpoint(file);
+      return keepRunImage(kind, fs.readFileSync(file));
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  })());
+  return d1Templates.get(through)!;
 }
 
 /**
@@ -210,18 +216,23 @@ function objectName(id: string): Promise<string> {
 
 /**
  * A fresh Miniflare persistence root holding, for each D1 database id in `ids`, a private database with the current
- * schema and nothing else. Pass it as `resourcePersistencePath` with the same ids bound (a plain binding list binds
+ * schema, or the schema through `through`, and nothing else. Pass it as `resourcePersistencePath` with the same ids bound (a plain binding list binds
  * each name as its own id); the root is removed when the tests end.
  */
-export async function schemaD1Root(ids: readonly string[] = ['DB']): Promise<string> {
-  const template = await d1TemplateFile();
+export async function schemaD1Root(ids: readonly string[] = ['DB'], through = LATEST): Promise<string> {
+  const template = await d1TemplateImage(through);
   await learnObjectNames(ids);
   const root = persistRoot('myco-schema-d1-copy-');
   fs.mkdirSync(path.join(root, D1_OBJECT_DIR), { recursive: true });
   for (const id of ids) {
     const file = path.join(root, D1_OBJECT_DIR, await objectName(id));
-    fs.copyFileSync(template, file);
-    checkpoint(file, RESTAMP_SQL);
+    fs.writeFileSync(file, template);
+    checkpoint(file, restampCopy);
   }
   return root;
 }
+
+// Both templates are taken while the importing test file loads, which no test's time limit covers, so the one process
+// of a run that replays them charges that to no test.
+imageThrough(LATEST);
+await d1TemplateImage();

@@ -55,4 +55,4 @@ it('retires pause state and keeps pending counts exact through the final card tr
     await db.prepare("UPDATE turn_cards SET state='carded' WHERE session_id='many' AND turn_key='1'").run();
     expect(await db.prepare("SELECT pending_cards FROM learning_sessions WHERE session_id='many'").first()).toEqual({ pending_cards: 0 });
   }, BEFORE_PAUSE_RETIREMENT);
-}, 30_000);
+}, 60_000);

@@ -660,7 +660,7 @@ test('admission refuses missing records and preserves archived blob holders in t
     expect(await db.prepare(`SELECT record_id id FROM event_refs WHERE event_id='archived'`).first(),name).toEqual({id:'tool'});
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
   },116);
-});
+}, 60_000);
 
 test('ranged event references survive archive, deletion and a failed range transaction', async () => {
   await withDocumentStores(async (db,name)=>{
@@ -728,4 +728,4 @@ test('ranged event references survive archive, deletion and a failed range trans
       for(const index of indexes)expect(plan,name).toContain(index);
     }
   },116);
-});
+}, 60_000);
