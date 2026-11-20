@@ -22,7 +22,7 @@ import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError
 import { joinSentences } from '@myco/utils/sentences.js';
 import { readProvisionRecord, UnreadableProvisionRecordError } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
-import { folderOriginWords, folderWords, harnessSettingsFolders, missingSettingsFolders, rejectedSettingsFolders, withSettingsFolderSnapshot } from '../symbionts/settings-folders.js';
+import { excludedVariableFolder, folderOriginWords, folderWords, harnessSettingsFolders, missingSettingsFolders, rejectedSettingsFolders, withSettingsFolderSnapshot } from '../symbionts/settings-folders.js';
 import { FORGET_SETTINGS_FOLDER_FLAG, SETTINGS_FOLDER_FLAG } from './flags.js';
 import { getPluginVersion } from '../version.js';
 import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, checkWorkerServices, type DoctorCheck } from './doctor-member.js';
@@ -78,9 +78,17 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
   for (const manifest of loadManifests()) {
     if (!manifest.registration?.hooksTarget && !manifest.registration?.memberHooksTarget) continue;
     const folders = harnessSettingsFolders(manifest, mycoHome);
-    const seen = folders.map(folder => ({ folder, hooks: new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inSettingsFolder(folder).inspectMemberHooks() }));
-    const capturesSomewhere = seen.some(({ hooks }) => hooks.member);
-    for (const { folder, hooks } of seen) {
+    const seen = folders.map(folder => {
+      const installer = new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inSettingsFolder(folder);
+      const refusal = installer.settingsFolderRefusal();
+      return { folder, refusal, hooks: refusal === null ? installer.inspectMemberHooks() : null };
+    });
+    const capturesSomewhere = seen.some(({ hooks }) => hooks?.member);
+    for (const { folder, refusal, hooks } of seen) {
+      if (refusal !== null || hooks === null) {
+        checks.push(row('Capture', 'warn', joinSentences(refusal!.problem, refusal!.remedy)));
+        continue;
+      }
       if (folder.origin !== 'default') {
         const where = `${manifest.displayName}'s settings folder ${folderWords(folder.path)} (${folderOriginWords(folder, manifest.settingsFolder?.variable)})`;
         if (!hooks.readable) checks.push(row('Capture', 'warn', `${where}: its hooks (${hooks.target}) could not be read, so whether it captures is unknown. Restore read access to this file.`));
@@ -207,6 +215,9 @@ function settingsFolderNotes(agents: readonly string[], mycoHome: string, record
     const retired = record?.excludedSettingsFolders?.[manifest.name] ?? [];
     const excluded = retired.length === 0 ? [] : [row('Setup', 'ok',
       `Myco leaves ${name} alone in ${retired.map(folder => folderWords(folder)).join(', ')}, which you retired. To set one up again, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} <folder>\`.`)];
+    const namedRetired = excludedVariableFolder(manifest, mycoHome);
+    const variableRetired = namedRetired === null ? [] : [row('Setup', 'warn',
+      `${variable} names ${folderWords(namedRetired)}, which you retired, so Myco leaves it alone and sessions run from it are not captured. To set it up again, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} ${folderWords(namedRetired)}\`.`)];
     const gone = missingSettingsFolders(manifest, mycoHome).map(folder => row('Setup', 'warn',
       `${name}'s settings folder ${folderWords(folder)}, set up before, no longer exists. If it moved, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} <its new place>\`; to stop setting it up, run \`myco member provision ${manifest.name} ${FORGET_SETTINGS_FOLDER_FLAG} ${folderWords(folder)}\`.`));
     const trust = record?.pendingTrust?.[manifest.name];
@@ -214,7 +225,7 @@ function settingsFolderNotes(agents: readonly string[], mycoHome: string, record
     const review = trust === undefined ? [] : [row('Setup', 'warn', joinSentences(
       `${name} skips Myco's hooks until you review them, in ${folders.map(folder => folderWords(folder.path)).join(', ')}`,
       `${trust.action}${folders.length > 1 && variable !== undefined ? ` in each folder: start ${name} with ${variable} set to that folder for each one other than ${folderWords(folders[0]!.path)}` : ''}`))];
-    return [...rejected, ...excluded, ...gone, ...review];
+    return [...rejected, ...excluded, ...variableRetired, ...gone, ...review];
   });
 }
 

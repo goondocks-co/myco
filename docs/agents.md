@@ -72,7 +72,7 @@ To stop setting up one folder, remove Myco's entries from it and keep it from be
 myco member provision claude-code --forget-settings-folder ~/.claude-old
 ```
 
-Naming the folder with `--settings-folder` later sets it up again.
+Myco leaves a retired folder alone even while the agent's variable names it; naming the folder with `--settings-folder` sets it up again. Myco knows each folder by its real path, so an alias of a folder is the same folder.
 
 Cursor keeps its hooks and tools in `~/.cursor` whatever account is signed in. Antigravity documents no way to move its settings. Myco does not cover moved folders for OpenCode or Windsurf yet.
 

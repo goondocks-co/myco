@@ -3,6 +3,7 @@
  * folder, or one the declaration carries, moves into the folder; any other path stays where the manifest puts it.
  * Reads nothing beyond the provision record and the environment, so the hooks can use it.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { expandHome } from '../paths/home.js';
 import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
@@ -19,6 +20,26 @@ export interface SettingsFolder {
   /** The folder, absolute. */
   path: string;
   origin: SettingsFolderOrigin;
+}
+
+/**
+ * A path's identity on this machine: its deepest existing ancestor resolved through every link, with the rest
+ * appended, so every spelling of one folder or file (an alias, a linked parent) names it the same way, whether or not
+ * it exists yet.
+ */
+export function canonicalFolder(target: string): string {
+  const rest: string[] = [];
+  let probe = path.resolve(target);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(probe), ...rest);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code !== 'ENOENT' && code !== 'ENOTDIR') || path.dirname(probe) === probe) return path.join(probe, ...rest);
+      rest.unshift(path.basename(probe));
+      probe = path.dirname(probe);
+    }
+  }
 }
 
 /** The part of a manifest's `settingsFolder` declaration that places paths. */

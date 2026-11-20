@@ -39,7 +39,7 @@ import { scanLegacyRegistrations, staleRegistrationWords, type LegacyFinding } f
 import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
-import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
+import { canonicalFolder, pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 import { heldTargetEscapes } from './settings-folders.js';
 
 function managedHookGroup(group: Record<string, unknown>, matches = isMycoHookCommand): Record<string, unknown> {
@@ -114,11 +114,14 @@ export class MemberFileReadRefusal extends MemberMcpConflictError {
   override get localRemedy(): string { return this.remedy; }
 }
 
+/** A settings folder other than the default one whose file would lead outside it: nothing in it is read or changed. */
+export class MemberSettingsFolderRefusal extends MemberProvisionConflictError { }
+
 /** Isolate named file refusals while allowing unexpected failures to propagate. */
-export function isolateMemberFileRefusal<T>(operation: () => T, report: (error: MemberFileReadRefusal | MemberRetiredSettingsRefusal) => void): T | null {
+export function isolateMemberFileRefusal<T>(operation: () => T, report: (error: MemberFileReadRefusal | MemberRetiredSettingsRefusal | MemberSettingsFolderRefusal) => void): T | null {
   try { return operation(); }
   catch (error) {
-    if (!(error instanceof MemberFileReadRefusal) && !(error instanceof MemberRetiredSettingsRefusal)) throw error;
+    if (!(error instanceof MemberFileReadRefusal) && !(error instanceof MemberRetiredSettingsRefusal) && !(error instanceof MemberSettingsFolderRefusal)) throw error;
     report(error);
     return null;
   }
@@ -340,9 +343,19 @@ export class SymbiontInstaller {
     return target ? throughLink(this.homeTarget(target)) : null;
   }
 
-  /** A manifest home path for this installer's settings folder. */
+  /**
+   * A manifest home path for this installer's settings folder. Every file the installer reads or writes is named here,
+   * so a folder other than the default one whose files would lead outside it is refused here, before any of them is
+   * touched.
+   */
   private homeTarget(target: string): string {
-    return this.settingsFolder === undefined ? expandHome(target) : pathInSettingsFolder(this.manifest, target, this.settingsFolder);
+    if (this.settingsFolder === undefined) return expandHome(target);
+    const placed = pathInSettingsFolder(this.manifest, target, this.settingsFolder);
+    if (placed !== expandHome(target)) {
+      const refusal = this.settingsFolderRefusal();
+      if (refusal !== null) throw refusal;
+    }
+    return placed;
   }
 
   private resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }> {
@@ -458,7 +471,6 @@ export class SymbiontInstaller {
 
   install(scan = this.scanMemberRegistrations()): InstallResult {
     this.assertMemberProvisionAllowed();
-    this.assertTargetsInSettingsFolder();
     // Ownership and settings are admitted before the first write.
     if (this.isMemberPluginFile()) {
       this.assertMemberMcpWritable(scan);
@@ -1019,19 +1031,14 @@ export class SymbiontInstaller {
    * it once its links are followed. Targets the manifest keeps outside every folder (a shared skills folder) are not
    * the folder's.
    */
-  private assertTargetsInSettingsFolder(): void {
-    const refusal = this.settingsFolderRefusal();
-    if (refusal !== null) throw refusal;
-  }
-
   /** Why this installer's settings folder cannot be written, or null when every target it holds stays inside it. */
-  settingsFolderRefusal(): MemberProvisionConflictError | null {
+  settingsFolderRefusal(): MemberSettingsFolderRefusal | null {
     const folder = this.settingsFolder;
     if (folder === undefined) return null;
     const [escaped] = heldTargetEscapes(this.manifest, folder);
     if (escaped === undefined) return null;
-    return new MemberProvisionConflictError(
-      `${this.manifest.displayName}'s ${escaped} leads outside ${folder.path}, so nothing was written in that folder.`,
+    return new MemberSettingsFolderRefusal(
+      `${this.manifest.displayName}'s ${escaped} leads outside ${folder.path}, so nothing in that folder was changed.`,
       `Replace the link with a file or folder inside ${folder.path}, then run \`myco member provision ${this.manifest.name} ${SETTINGS_FOLDER_FLAG} ${folder.path}\`.`,
     );
   }
@@ -1300,7 +1307,7 @@ export class SymbiontInstaller {
     const target = this.resolveAbsoluteTarget(field);
     const declared = field === 'hooks' ? this.manifest.registration?.globalHooksTarget : this.manifest.registration?.globalSettingsTarget;
     if (target === null || declared == null || target === throughLink(expandHome(declared))) return `${file}.json`;
-    return `${file}-${createHash('sha256').update(path.resolve(target)).digest('hex').slice(0, TARGET_STATE_KEY_LENGTH)}.json`;
+    return `${file}-${createHash('sha256').update(canonicalFolder(target)).digest('hex').slice(0, TARGET_STATE_KEY_LENGTH)}.json`;
   }
 
   private retiredSettingsReported(): RetiredSettingsReport {

@@ -18,7 +18,6 @@ import { setupChecks } from '@myco/cli/member-doctor.js';
 import { planWritePaths } from '@myco/member/plan-files.js';
 import { folderTranscriptDiscovery, harnessSettingsFolders } from '@myco/symbionts/settings-folders.js';
 import { silentRepository } from '@myco/member/auto-join.js';
-import { locateTranscript } from '@myco/member/legacy-import.js';
 import { enumerateTranscripts, sessionIdFromTranscriptPath } from '@myco/symbionts/transcript-discovery.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
@@ -395,9 +394,10 @@ const doctorWords = () => setupChecks(mycoHome).map((check) => `${check.status} 
 const codexHooksSetting = (folder: string) => (parseToml(fs.readFileSync(path.join(folder, 'config.toml'), 'utf8')).features as { hooks?: unknown } | undefined)?.hooks;
 
 /**
- * A person with several accounts for one agent keeps a settings folder per account. Myco writes into the folders the
- * agent's variable names, the person names, or Myco set up before; it only reports a folder it finds in the home
- * folder, keeps each folder's own state, removes its entries from every one, and says in doctor what it knows.
+ * A person with several accounts for one agent keeps a settings folder per account. Myco sets up the folders the
+ * agent's variable names, the person names, Myco set up before, or it finds in the home folder by the agent's markers,
+ * each by its real path; it leaves a folder the person retired alone, keeps each folder's own state, removes its
+ * entries from every one, never touches a file a folder's link leads outside to, and says in doctor what it knows.
  */
 describe('settings folders', () => {
   let variable: string | undefined;
@@ -492,20 +492,60 @@ describe('settings folders', () => {
     const leaking = path.join(root, 'claude-leaking');
     fs.mkdirSync(leaking);
     fs.symlinkSync(outside, path.join(leaking, '.claude.json'));
-    expect(joined(await provision(['claude-code', '--settings-folder', leaking])).out).toContain(`leads outside ${leaking}, so nothing was written in that folder`);
+    expect(joined(await provision(['claude-code', '--settings-folder', leaking])).out).toContain(`leads outside ${leaking}, so nothing in that folder was changed`);
     expect(fs.readFileSync(outside, 'utf8')).toBe('{}\n');
     expect(hooksIn(leaking)).toEqual([]);
   });
 
-  it('puts the tools entry where Claude Code reads it when its variable names the default folder', () => {
-    const own = claudeFolder(path.join(agentHome, '.claude'));
-    process.env.CLAUDE_CONFIG_DIR = own;
+  it('names a folder by its real path, so an alias keeps its prior settings, cannot bring back a retired folder, and a variable naming a retired folder leaves it alone', async () => {
+    const work = path.join(root, 'codex-work');
+    const alias = path.join(root, 'codex-alias');
+    fs.mkdirSync(work);
+    fs.writeFileSync(path.join(work, 'config.toml'), '[features]\nhooks = false\n');
+    fs.symlinkSync(work, alias);
+    provisionGlobally('codex', null, mycoHome, { serverUrl: SERVER, namedFolders: [work] });
+    const codexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = alias;
+      provisionGlobally('codex', null, mycoHome, { serverUrl: SERVER });
+      expect(readProvisionRecord(mycoHome)?.settingsFolders).toEqual({ codex: [work] });
+      await provision(['--remove', 'codex']);
+      expect(codexHooksSetting(work)).toBe(false);
+
+      provisionGlobally('codex', null, mycoHome, { serverUrl: SERVER, namedFolders: [work] });
+      const { out } = joined(await provision(['codex', '--forget-settings-folder', alias]));
+      expect(out).toContain(`Myco no longer sets up Codex in ${work}.`);
+      expect(out).toContain(`CODEX_HOME names this folder where Myco runs; Myco still leaves it alone.`);
+      await provision(['--refresh']);
+      expect(fs.existsSync(path.join(work, 'hooks.json')) ? fs.readFileSync(path.join(work, 'hooks.json'), 'utf8') : '').not.toContain(CREDENTIAL_FLAG);
+      expect(readProvisionRecord(mycoHome)?.excludedSettingsFolders).toEqual({ codex: [work] });
+      expect(readProvisionRecord(mycoHome)?.settingsFolders).toBeUndefined();
+      expect(doctorWords()).toContain(`CODEX_HOME names ${work}, which you retired, so Myco leaves it alone and sessions run from it are not captured.`);
+    } finally { if (codexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = codexHome; }
+
+    const marked = claudeFolder(path.join(agentHome, '.claude-work'));
+    const markedAlias = path.join(root, 'claude-alias');
+    fs.symlinkSync(marked, markedAlias);
     provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER });
-    expect(JSON.parse(fs.readFileSync(path.join(own, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('myco');
-    expect(JSON.parse(fs.readFileSync(path.join(agentHome, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('myco');
-    delete process.env.CLAUDE_CONFIG_DIR;
-    expect(readProvisionRecord(mycoHome)?.settingsFolders).toEqual({ 'claude-code': [own] });
-    expect(memberHarnessStatus('claude-code', mycoHome, SERVER).current).toBe(true);
+    await provision(['claude-code', '--forget-settings-folder', markedAlias]);
+    await provision(['--refresh']);
+    expect(hooksIn(marked)).toEqual([]);
+    expect(harnessSettingsFolders(manifest('claude-code'), mycoHome)).toEqual([{ path: path.join(agentHome, '.claude'), origin: 'default' }]);
+  });
+
+  it('refuses to retire a folder whose tools file leads outside it, changing nothing and keeping it recorded', async () => {
+    const work = claudeFolder(path.join(root, 'claude-work'));
+    provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER, namedFolders: [work] });
+    const outside = path.join(root, 'outside', '.claude.json');
+    fs.mkdirSync(path.dirname(outside));
+    fs.renameSync(path.join(work, '.claude.json'), outside);
+    fs.symlinkSync(outside, path.join(work, '.claude.json'));
+    const before = fs.readFileSync(outside, 'utf8');
+    const hooks = hooksIn(work);
+    expect(joined(await provision(['claude-code', '--forget-settings-folder', work])).err).toContain(`leads outside ${work}, so nothing in that folder was changed`);
+    expect(fs.readFileSync(outside, 'utf8')).toBe(before);
+    expect(hooksIn(work)).toEqual(hooks);
+    expect(readProvisionRecord(mycoHome)?.settingsFolders).toEqual({ 'claude-code': [work] });
   });
 
   it('names the folders and the action while hooks wait for review, without claiming capture', () => {
@@ -518,7 +558,7 @@ describe('settings folders', () => {
     expect(words).not.toContain('captured from');
   });
 
-  it("detects the agent, finds its history and plans, leaves its repository alone and finds legacy transcripts in a folder Myco uses", () => {
+  it('detects the agent, finds its history and plans, and leaves its repository alone in a folder Myco uses', () => {
     const work = claudeFolder(path.join(agentHome, '.claude-work'));
     expect(detectMachineInstalledSymbionts().map((found) => found.name)).toContain('claude-code');
     provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER, namedFolders: [work] });
@@ -530,8 +570,6 @@ describe('settings folders', () => {
     const discovery = folderTranscriptDiscovery('claude-code', mycoHome);
     const found = enumerateTranscripts(discovery, 10, mycoHome).map((item) => [item.sessionId, sessionIdFromTranscriptPath(discovery, item.filePath)]).sort();
     expect(found).toEqual(Object.values(sessions).map((id) => [id, id]).sort());
-    const moved = path.join(work, 'projects', '-repo', `${sessions[work]}.jsonl`);
-    expect(locateTranscript('claude-code', sessions[work]!, moved, undefined, folderTranscriptDiscovery)?.file).toBe(moved);
 
     execFileSync('git', ['init', '-q', work]);
     expect(silentRepository(work, { mycoHome, env: { HOME: agentHome, MYCO_TEMPORARY_FOLDERS: path.join(root, 'other-temp') }, home: agentHome })).toBe(true);

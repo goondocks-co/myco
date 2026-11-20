@@ -62,8 +62,8 @@ import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, prepareMemberSkillRemoval, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
 import { readProvisionRecord, readProvisionRecordStrict, recordProvision, recordSettingsFolder, forgetSettingsFolder, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
-import { folderWords, harnessSettingsFolders, settingsFolderEscapes, withSettingsFolderSnapshot } from '../symbionts/settings-folders.js';
-import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
+import { folderWords, harnessSettingsFolders, withSettingsFolderSnapshot } from '../symbionts/settings-folders.js';
+import { canonicalFolder, pathInSettingsFolder, settingsVariableFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { openDeployment, openDeploymentRequests } from './deployment-reader.js';
@@ -600,8 +600,10 @@ export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: 
   if (manifest === undefined) return { current: false };
   const statuses = harnessSettingsFolders(manifest, mycoHome).map(folder => {
     const installer = globalInstaller(manifest, null, mycoHome, opts, folder).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
+    const refusal = installer.settingsFolderRefusal();
+    if (refusal !== null) return { folder, hooks: false, refusal: refusal.message, status: { current: false, currentExceptStaleTools: false } as ReturnType<typeof inspectMemberHarness> };
     installer.assertMemberProvisionAllowed();
-    return { folder, hooks: installer.inspectMemberHooks().member, refusal: installer.settingsFolderRefusal()?.message, status: inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations(), folder) };
+    return { folder, hooks: installer.inspectMemberHooks().member, refusal: undefined, status: inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations(), folder) };
   });
   const [first] = statuses;
   if (statuses.length === 1) return first!.status;
@@ -645,7 +647,7 @@ export function provisionGlobally(agent: string, root: string | null, mycoHome: 
   if (first.outcome.kind === 'refused') return first.outcome;
   const others = moved.map(folder => {
     const outcome = provisionInFolder(manifest, folder, root, mycoHome, opts);
-    if (outcome.kind !== 'refused') recordSettingsFolder(mycoHome, agent, folder.path, { named: opts.namedFolders?.includes(folder.path) });
+    if (outcome.kind !== 'refused') recordSettingsFolder(mycoHome, agent, folder.path, { named: opts.namedFolders?.some(named => canonicalFolder(named) === folder.path) });
     return { folder, outcome };
   });
   const results = [first, ...others];
@@ -668,6 +670,8 @@ export function provisionGlobally(agent: string, root: string | null, mycoHome: 
 function provisionInFolder(manifest: ReturnType<typeof loadManifests>[number], folder: SettingsFolder, root: string | null, mycoHome: string, opts: GlobalProvisionOptions): ProvisionOutcome {
   const agent = manifest.name;
   const installer = globalInstaller(manifest, root, mycoHome, opts, folder);
+  const refusal = installer.settingsFolderRefusal();
+  if (refusal !== null) return { kind: 'refused', detail: refusal.message };
   if (!opts.legacyHomes?.length) installer.takingOverManagedEntries();
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
@@ -1011,29 +1015,31 @@ function forgetNamedSettingsFolders(agent: string, folders: readonly string[], m
   if (manifest === undefined) return fail(`unknown agent "${agent}"`);
   if (manifest.settingsFolder === undefined) return fail(`${manifest.displayName} keeps its settings in one folder, so ${FORGET_SETTINGS_FOLDER_FLAG} does not apply to it`);
   const own = harnessSettingsFolders(manifest, mycoHome)[0]!.path;
-  if (folders.some(folder => path.resolve(folder) === path.resolve(own))) return fail(`${folderWords(own)} is ${manifest.displayName}'s default folder; disconnect the agent with \`myco member provision --remove ${agent}\``);
+  if (folders.some(folder => canonicalFolder(folder) === canonicalFolder(own))) return fail(`${folderWords(own)} is ${manifest.displayName}'s default folder; disconnect the agent with \`myco member provision --remove ${agent}\``);
+  const named = settingsVariableFolder(manifest);
   try {
     withMemberRepair(mycoHome, `myco member provision ${FORGET_SETTINGS_FOLDER_FLAG}`, () => {
       const provision = readProvisionRecord(mycoHome);
       const server = provision?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
       const shared = new Set(loadManifests().filter(other => other.name !== agent && provision?.agents.includes(other.name)).flatMap(other =>
         harnessSettingsFolders(other, mycoHome).flatMap(folder => { const target = skillsTargetIn(other, folder); return target === null ? [] : [skillsFolder(target)]; })));
-      for (const folder of folders) {
+      for (const folder of folders.map(canonicalFolder)) {
         if (fs.existsSync(folder)) {
           const settingsFolder: SettingsFolder = { path: folder, origin: 'recorded' };
           const installer = globalInstaller(manifest, null, mycoHome, deps, settingsFolder);
           if (server !== undefined) installer.forDeployment(server);
           installer.uninstallMemberRegistration();
           const target = skillsTargetIn(manifest, settingsFolder);
-          if (target !== null && server !== undefined && !shared.has(skillsFolder(target)) && settingsFolderEscapes(folder, [target]).length === 0) prepareMemberSkillRemoval(mycoHome, skillsFolder(target))();
+          if (target !== null && server !== undefined && !shared.has(skillsFolder(target))) prepareMemberSkillRemoval(mycoHome, skillsFolder(target))();
         }
         forgetSettingsFolder(mycoHome, agent, folder);
         out(`Myco no longer sets up ${manifest.displayName} in ${folderWords(folder)}.`);
+        if (named !== null && canonicalFolder(named) === folder) {
+          out(`${manifest.settingsFolder!.variable} names this folder where Myco runs; Myco still leaves it alone. To set it up again, run \`myco member provision ${agent} ${SETTINGS_FOLDER_FLAG} ${folderWords(folder)}\`.`);
+        }
       }
     }, { wait: true });
   } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
-  const variable = manifest.settingsFolder.variable;
-  out(`If ${variable} still names a retired folder where Myco runs, \`myco member provision --refresh\` sets it up again.`);
   return true;
 }
 

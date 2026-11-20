@@ -1035,9 +1035,9 @@ const SettingsFolderSchema = z.object({
   /** The environment variable the harness reads for a moved folder; a relative value is read against its working directory. */
   variable: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
   /**
-   * What the harness writes in a folder on its first run there: files and directories that, all present as that type,
-   * mark a direct child of the home folder as a candidate settings folder of this harness. A candidate is reported,
-   * never written to.
+   * What the harness writes in a folder on its first run there: files and directories that, all present as real entries
+   * of that type with no link along them, mark a direct child of the home folder as a settings folder of this harness,
+   * which Myco sets up like the default one.
    */
   markers: z.object({ files: z.array(MarkerPathSchema).default([]), directories: z.array(MarkerPathSchema).default([]) })
     .refine((markers) => markers.files.length + markers.directories.length > 0, 'A settings folder declares at least one marker'),

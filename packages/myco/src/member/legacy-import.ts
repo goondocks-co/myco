@@ -44,7 +44,7 @@ import { Database } from 'bun:sqlite';
 import { LEGACY_MINTED_ID } from '@goondocks/myco-shared/session-ids';
 import fs from 'node:fs';
 import path from 'node:path';
-import { enumerateTranscripts, manifestTranscriptDiscovery, resolveTranscriptPath, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
+import { enumerateTranscripts, manifestTranscriptDiscovery, findTranscriptFor, sessionIdFromStoredId, sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canonicalPath } from '../symbionts/transcript-attribution.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveMycoHome } from '../paths/home.js';
@@ -57,7 +57,6 @@ import {
 import {
   observedFetch, paced, pause, retryVerdict, retryWaitMs, shipSession, transcriptCandidate, IMPORT_MAX_PASSES, IMPORT_WAIT_CAP_MS, SERVER_FAULT_RETRIES,
   type Candidate,
-  type TranscriptLayouts,
 } from './import.js';
 import { LEGACY_RECONCILIATION_VERSION, LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
@@ -279,32 +278,24 @@ export function legacyIdentity(agent: string, storedId: string, transcriptPath: 
 export const legacySessionId = (agent: string, storedId: string, transcriptPath: string | null): string =>
   legacyIdentity(agent, storedId, transcriptPath).sessionId;
 
-/**
- * The transcript on disk for a session, under the harness that wrote it: the recorded path when it names this session,
- * else wherever any harness's layout puts it. `layouts` names each harness's layout where a caller finds its stores
- * in more than the manifest's own folders.
- */
-export function locateTranscript(
-  agent: string, sessionId: string, recordedPath: string | null, destination?: { route: MemberRoutingIdentity; mycoHome: string }, layouts?: TranscriptLayouts,
-): { agent: string; file: string } | null {
-  const mycoHome = destination?.mycoHome ?? resolveMycoHome();
-  const layout = (harness: string) => layouts === undefined ? manifestTranscriptDiscovery(harness) : layouts(harness, mycoHome);
+/** The transcript on disk for a session, under the harness that wrote it: the recorded path when it names this session, else wherever any harness's layout puts it. */
+export function locateTranscript(agent: string, sessionId: string, recordedPath: string | null, destination?: { route: MemberRoutingIdentity; mycoHome: string }): { agent: string; file: string } | null {
   const accepts = (file: string): boolean => {
-    if (!isMemberOwnedTranscriptPath(file, mycoHome)) return true;
+    if (!isMemberOwnedTranscriptPath(file, destination?.mycoHome ?? resolveMycoHome())) return true;
     if (destination === undefined) return false;
     try { assertMemberTranscriptDestination(file, destination.route, destination.mycoHome); return true; }
     catch (error) { if (error instanceof TranscriptDestinationError && error.kind === 'mismatch') return false; throw error; }
   };
   if (recordedPath !== null && fs.existsSync(recordedPath) && accepts(recordedPath)) {
     for (const harness of harnessesFrom(agent)) {
-      if (sessionIdFromTranscriptPath(layout(harness), recordedPath, process.env, destination?.mycoHome) === sessionId) return { agent: harness, file: recordedPath };
+      if (sessionIdFromTranscriptPath(manifestTranscriptDiscovery(harness), recordedPath, process.env, destination?.mycoHome) === sessionId) return { agent: harness, file: recordedPath };
     }
   }
   for (const harness of harnessesFrom(agent)) {
-    const file = resolveTranscriptPath(layout(harness), sessionId, destination?.mycoHome);
+    const file = findTranscriptFor(harness, sessionId, destination?.mycoHome);
     if (file !== null && accepts(file)) return { agent: harness, file };
     if (file !== null && destination !== undefined) {
-      const scoped = enumerateTranscripts(layout(harness), undefined, destination?.mycoHome).find((item) => item.sessionId === sessionId && accepts(item.filePath));
+      const scoped = enumerateTranscripts(manifestTranscriptDiscovery(harness), undefined, destination?.mycoHome).find((item) => item.sessionId === sessionId && accepts(item.filePath));
       if (scoped !== undefined) return { agent: harness, file: scoped.filePath };
     }
   }
@@ -544,8 +535,6 @@ export interface LegacyImportDeps {
   pace?: number;
   progress?: (line: string) => void;
   signal?: AbortSignal;
-  /** Each agent's transcript layout, where a caller finds its stores in more than the manifest's own folders. */
-  discovery?: TranscriptLayouts;
 }
 
 /** Stops the whole import: the Deployment does not take what this build sends, so nothing more is sent to it. */
@@ -897,7 +886,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       const s = group.winner;
       const client = clientFor(projectId);
       const located = opts.includeTranscripts === false ? null
-        : locateTranscript(group.agent, group.sessionId, s.transcriptPath, { route: { serverUrl, projectId }, mycoHome }, deps.discovery);
+        : locateTranscript(group.agent, group.sessionId, s.transcriptPath, { route: { serverUrl, projectId }, mycoHome });
       const agent = located?.agent ?? group.agent;
       const candidate = located === null ? null : transcriptCandidate(agent, group.sessionId, located.file, root ?? '', deps.machineId, now());
       const planned = candidate === null || candidate === 'active' ? null : await planTranscript(candidate, client);

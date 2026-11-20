@@ -828,7 +828,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
         : '   Importing earlier agent transcripts is optional; use myco cutover --import-transcripts.');
       const importedProjects = new Map<string, LegacyImportReport['projects']>();
       const imported = await withImportInterrupt(deps.signal, async (signal) => {
-        const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE, discovery: folderTranscriptDiscovery };
+        const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
         for (const project of cutover.projects) {
           const dest = project.destination;
           if (dest.kind !== 'destination') continue;
@@ -891,7 +891,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           }
           const transcripts: ImportReport = await importUntilSettled(
             { serverUrl: dest.serverUrl, project: project.projectId, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(deleted) },
-            { ...importDeps, progress: (l) => out(`   ${l}`) },
+            { ...importDeps, discovery: folderTranscriptDiscovery, progress: (l) => out(`   ${l}`) },
           );
           const transcriptsComplete = transcriptImportComplete(transcripts) && transcripts.projects.every((p) => !p.notAttempted);
           if (!transcriptsComplete && completedLegacyVault(receipt?.vault)) {

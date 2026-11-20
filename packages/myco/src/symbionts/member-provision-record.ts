@@ -5,6 +5,7 @@
 import { deploymentUrl, readDeploymentMembershipResult } from '../member/registry.js';
 import { normalizeMemberServerAddress } from '../member/server-url.js';
 import { readHookRepairGeneration, updateProvisionRecord, type ProvisionRecord } from '../member/provision-record.js';
+import { canonicalFolder } from '../member/settings-folder-paths.js';
 export { PROVISION_RECORD, UnreadableProvisionRecordError, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict, recordProvision, type ProvisionRecord } from '../member/provision-record.js';
 
 function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout' | 'settingsFolders' | 'excludedSettingsFolders'> {
@@ -46,18 +47,23 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
 
 type FolderLists = Record<string, string[]> | undefined;
 
-/** `lists` with `folder` added to or removed from `agent`'s list, an emptied list dropped. */
+/**
+ * `lists` with `folder`, a folder's identity (`canonicalFolder`), added to `agent`'s list, or with every spelling of
+ * it removed; an emptied list is dropped.
+ */
 function withFolder(lists: FolderLists, agent: string, folder: string, held: boolean): FolderLists {
   const { [agent]: current = [], ...others } = lists ?? {};
-  const next = held ? [...new Set([...current, folder])].sort() : current.filter(entry => entry !== folder);
+  const kept = current.filter(entry => entry !== folder && canonicalFolder(entry) !== folder);
+  const next = held ? [...kept, folder].sort() : kept;
   return next.length === 0 ? others : { ...others, [agent]: next };
 }
 
 /**
- * Record that `agent` is set up in `folder`, a settings folder beyond its default one, under the record lease. A
- * folder the person names is no longer excluded.
+ * Record that `agent` is set up in `folder`, a settings folder beyond its default one, by its identity, under the
+ * record lease. A folder the person names is no longer excluded.
  */
 export function recordSettingsFolder(mycoHome: string, agent: string, folder: string, opts: { named?: boolean } = {}): void {
+  folder = canonicalFolder(folder);
   updateProvisionRecord(mycoHome, record => {
     if (record === null) return;
     const next = { ...record, settingsFolders: withFolder(record.settingsFolders, agent, folder, true), ...(opts.named ? { excludedSettingsFolders: withFolder(record.excludedSettingsFolders, agent, folder, false) } : {}) };
@@ -70,6 +76,7 @@ export function recordSettingsFolder(mycoHome: string, agent: string, folder: st
  * so the home folder scan does not set it up again.
  */
 export function forgetSettingsFolder(mycoHome: string, agent: string, folder: string): void {
+  folder = canonicalFolder(folder);
   updateProvisionRecord(mycoHome, record => {
     if (record === null) return;
     const next = { ...record, settingsFolders: withFolder(record.settingsFolders, agent, folder, false), excludedSettingsFolders: withFolder(record.excludedSettingsFolders, agent, folder, true) };

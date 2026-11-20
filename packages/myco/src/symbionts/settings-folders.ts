@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expandHome } from '@myco/paths/home.js';
 import { readProvisionRecord } from '../member/provision-record.js';
-import { pathInSettingsFolder, settingsVariableFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
+import { canonicalFolder, pathInSettingsFolder, settingsVariableFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 import type { SymbiontManifest, TranscriptDiscovery } from './manifest-schema.js';
 import { BUNDLED_MANIFESTS } from './manifests.generated.js';
 
@@ -99,43 +99,54 @@ function scanHome(manifest: FolderManifest, home: string): HomeScan {
 }
 
 /**
- * The folders Myco sets up for this harness, its default one first, each an existing directory: the variable's
- * folder, the scanned folders the person has not retired, and the recorded and named ones. One of them at the default
- * folder's place counts only when the harness reads files there differently once its variable names it (`carries`),
- * and then whether or not the default folder exists yet, since provisioning creates it.
+ * The folders Myco sets up for this harness, its default one first: the default folder as the manifest names it, then
+ * the variable's folder, the scanned folders and the recorded and named ones, each an existing directory, each named
+ * by its identity (`canonicalFolder`), never the default folder again, and never one the person retired unless they
+ * name it in this invocation.
  */
 export function harnessSettingsFolders(manifest: FolderManifest, mycoHome: string, context: SettingsFolderContext = {}): SettingsFolder[] {
   const env = context.env ?? process.env;
   const home = homeOf(env, context.homeDir);
   const defaultPath = defaultFolderOf(manifest, home);
   const folders: SettingsFolder[] = [{ path: defaultPath, origin: 'default' }];
-  const declared = manifest.settingsFolder;
-  if (declared === undefined) return folders;
+  if (manifest.settingsFolder === undefined) return folders;
   const record = readProvisionRecord(mycoHome);
-  const excluded = new Set(record?.excludedSettingsFolders?.[manifest.name] ?? []);
-  const defaultReal = realDirectory(defaultPath) ?? path.resolve(defaultPath);
-  const seen = new Set<string>();
+  const excluded = new Set((record?.excludedSettingsFolders?.[manifest.name] ?? []).map(canonicalFolder));
+  const named = new Set((context.named ?? []).map(canonicalFolder));
+  const seen = new Set([canonicalFolder(defaultPath)]);
   const add = (folder: string, origin: SettingsFolder['origin']): void => {
-    const real = realDirectory(folder) ?? (path.resolve(folder) === path.resolve(defaultPath) ? defaultReal : null);
-    if (real === null || seen.has(real) || (real === defaultReal && declared.carries === undefined)) return;
-    seen.add(real);
-    folders.push({ path: path.resolve(folder), origin });
+    if (realDirectory(folder) === null) return;
+    const identity = canonicalFolder(folder);
+    if (seen.has(identity) || (excluded.has(identity) && !named.has(identity))) return;
+    seen.add(identity);
+    folders.push({ path: identity, origin });
   };
   const variable = settingsVariableFolder(manifest, env, context.cwd);
   if (variable !== null) add(variable, 'variable');
-  for (const folder of scanHome(manifest, home).found) if (!excluded.has(folder) || context.named?.includes(folder)) add(folder, 'home');
+  for (const folder of scanHome(manifest, home).found) add(folder, 'home');
   for (const folder of [...record?.settingsFolders?.[manifest.name] ?? [], ...context.named ?? []]) add(folder, 'recorded');
   return folders;
 }
 
-/** Recorded folders of this harness that no longer exist as directories. */
+/** The folder the harness's variable names where Myco runs, when the person retired it. */
+export function excludedVariableFolder(manifest: FolderManifest, mycoHome: string, context: Omit<SettingsFolderContext, 'named'> = {}): string | null {
+  const variable = settingsVariableFolder(manifest, context.env ?? process.env, context.cwd);
+  if (variable === null) return null;
+  const identity = canonicalFolder(variable);
+  return (readProvisionRecord(mycoHome)?.excludedSettingsFolders?.[manifest.name] ?? []).some((folder) => canonicalFolder(folder) === identity) ? identity : null;
+}
+
+/** Recorded folders of this harness that no longer exist as directories, as recorded. */
 export function missingSettingsFolders(manifest: FolderManifest, mycoHome: string): string[] {
   return (readProvisionRecord(mycoHome)?.settingsFolders?.[manifest.name] ?? []).filter((folder) => realDirectory(folder) === null);
 }
 
 /** Direct children of the home folder that hold this harness's markers but fail a check, with the reason. */
 export function rejectedSettingsFolders(manifest: FolderManifest, context: Omit<SettingsFolderContext, 'named'> = {}): RejectedSettingsFolder[] {
-  return manifest.settingsFolder === undefined ? [] : scanHome(manifest, homeOf(context.env ?? process.env, context.homeDir)).rejected;
+  if (manifest.settingsFolder === undefined) return [];
+  const home = homeOf(context.env ?? process.env, context.homeDir);
+  const own = canonicalFolder(defaultFolderOf(manifest, home));
+  return scanHome(manifest, home).rejected.filter(({ folder }) => canonicalFolder(folder) !== own);
 }
 
 /** Where a path really lands: its deepest existing ancestor resolved through every link, with the rest appended. */

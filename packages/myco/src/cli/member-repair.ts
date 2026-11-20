@@ -33,6 +33,7 @@ export function reconcileProjectMcp(root: string, mycoHome: string, opts: { pack
     for (const manifest of loadManifests().filter(manifest => record?.agents.includes(manifest.name) && manifest.registration?.memberMcpRouting !== undefined)) {
       const local = harnessSettingsFolders(manifest, mycoHome).map(folder => {
         const installer = new SymbiontInstaller(manifest, root, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome).inSettingsFolder(folder);
+        if (installer.settingsFolderRefusal() !== null) return false;
         installer.reconcileMemberProjectMcp();
         return installer.inspectMemberMcp().some(scope => scope.readable && scope.present && scope.scope === 'local');
       });
