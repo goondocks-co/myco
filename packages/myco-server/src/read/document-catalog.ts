@@ -9,11 +9,9 @@ import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
 import { documentCountersRow, liveDocumentHasInstruction, turnAnchor } from '../db/documents/catalog-reads.js';
 import { promptLocator } from '../db/documents/prompt-locator.js';
-import { turnPageRows, type OriginScope } from '../db/documents/turn-pages.js';
-import { sessionTurnInvocations, type InvocationProvider, type SessionInvocation } from './session-invocations.js';
+import { turnPageRows, type OriginScope, type OriginView } from '../db/documents/turn-pages.js';
 
 export interface CatalogTurnRow {
-  invocation?: SessionInvocation;
   promptId: string;
   origin: string;
   promptKind: string | null;
@@ -45,7 +43,7 @@ interface TurnOptions {
 }
 
 export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, sessionId: string,
-  opts: TurnOptions): Promise<Page<CatalogTurnRow>> {
+  opts: TurnOptions, originView: OriginView = 'captured'): Promise<Page<CatalogTurnRow>> {
   const limit = clampLimit(opts.limit);
   const direction = opts.order ?? 'ASC';
   if (opts.origins.length === 0) return { rows: [], cursor: null };
@@ -59,7 +57,7 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   if (exact === null || (exact !== undefined && exact.turn === null)) return { rows: [], cursor: null };
   const exactTurn = exact?.turn ?? undefined;
   const read = async (take: number, order: 'ASC' | 'DESC', boundary: { createdAt: number; id: string } | null, inclusive = false, exact = false) => {
-    const results = await turnPageRows(db, { project: scope.projectId, session: sessionId, filter: opts.filter, origins, turn: exactTurn, order,
+    const results = await turnPageRows(db, { project: scope.projectId, session: sessionId, filter: opts.filter, origins, originView, turn: exactTurn, order,
       boundary: boundary === null ? null : { ...boundary, inclusive }, limit: take + (exact ? 0 : 1) });
     return results.map(r => ({
       promptId: String(r.prompt_id), origin: String(r.origin ?? 'user'), promptKind: (r.prompt_kind as string | null) ?? null,
@@ -87,14 +85,9 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   return { cursor: paged.cursor, rows: paged.rows.map(({ position: _position, ...row }) => row) };
 }
 
-/** Display attribution qualifies turn heads without changing the catalog material other readers consume. */
-export async function listSessionTurns(db: RelationalStore, scope: ReadScope, sessionId: string,
-  opts: TurnOptions & { invocations?: InvocationProvider }): Promise<Page<CatalogTurnRow>> {
-  if (opts.origins.length === 0) return { rows: [], cursor: null };
-  const overlay = await sessionTurnInvocations(db, scope, sessionId, opts.invocations);
-  const result = await listCatalogTurns(db, scope, sessionId, { ...opts, origins: overlay.active ? PROMPT_ORIGINS : opts.origins });
-  return { cursor: result.cursor, rows: result.rows.map(overlay.show).filter(row => opts.origins.includes(row.origin)) };
-}
+/** Session display turns apply captured launch lineage. */
+export const listSessionTurns = (db: RelationalStore, scope: ReadScope, sessionId: string, opts: TurnOptions): Promise<Page<CatalogTurnRow>> =>
+  listCatalogTurns(db, scope, sessionId, opts, 'launch');
 
 interface DocumentCounters {
   toolEvidenceReady: boolean;
@@ -117,11 +110,10 @@ interface DocumentCounters {
 }
 
 /** A session's document counters and attachment count, or null while it has no live document. */
-export async function documentCounters(db: RelationalStore, scope: ReadScope, sessionId: string, invocations?: InvocationProvider): Promise<DocumentCounters | null> {
-  const overlay = await sessionTurnInvocations(db, scope, sessionId, invocations);
-  const row = await documentCountersRow(db, scope.projectId, sessionId, overlay.window);
+export async function documentCounters(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<DocumentCounters | null> {
+  const row = await documentCountersRow(db, scope.projectId, sessionId);
   return row === null ? null : {
-    toolEvidenceReady: Number(row.tool_evidence_ready) === 1, nestedToolCalls: Number(row.nested_tools), reportedErrors: Number(row.reported_errors), turns: Number(row.turns), userTurns: Number(row.user_turns) - overlay.invokedPersonTurns(JSON.parse(row.invocation_heads) as { createdAt: number; origin: string }[]),
+    toolEvidenceReady: Number(row.tool_evidence_ready) === 1, nestedToolCalls: Number(row.nested_tools), reportedErrors: Number(row.reported_errors), turns: Number(row.turns), userTurns: Number(row.user_turns),
     prompts: Number(row.prompts), instructionPrompts: Number(row.instruction_prompts), userPrompts: Number(row.person_entries), replies: Number(row.replies), toolCalls: Number(row.tool_calls),
     failedTools: Number(row.failed_tools), filesEdited: Number(row.files_edited), mycoCalls: Number(row.myco_calls), plans: Number(row.plans), attachments: Number(row.attachments), lastRecordAt: (row.last_record_at as number | null) ?? null,
     firstPrompt: (row.first_prompt as string | null) ?? null,

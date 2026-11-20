@@ -31,7 +31,7 @@ function setup(answer: (url: URL, init?: RequestInit) => Response | Promise<Resp
   return { client, wrapper };
 }
 const empty = () => Response.json({ rows: [], cursor: null, members: [], projects: [], items: [] });
-const session = { sessionId: 's', projectId: 'p', title: 'Retained session', summary: 'Saved summary', firstReceivedAt: 1, lastReceivedAt: 2, startedAt: 1, endedAt: 2, agent: null, branch: null };
+const session = { sessionId: 's', projectId: 'p', launchParentSessionId: null, title: 'Retained session', summary: 'Saved summary', firstReceivedAt: 1, lastReceivedAt: 2, startedAt: 1, endedAt: 2, agent: null, branch: null };
 const detail = () => ({ ...sessionEvidence(null, null), session: { ...session, launchParentSessionId: null }, outcome: { runs: [], spores: { total: 0, items: [] } }, turnContexts: {} });
 
 it('reconciles linked membership before opening Projects', async () => {

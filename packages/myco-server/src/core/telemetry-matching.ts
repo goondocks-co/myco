@@ -4,13 +4,11 @@ import { withTelemetryInputs, telemetryTraceSnapshot } from '../db/telemetry/inp
 import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 import type { RelationalStore } from './adapters.js';
 import {
-  inferTelemetrySessions,
   finishTelemetryWait,
   telemetrySessionsNamed,
   telemetryTraceSpans,
   telemetryTracesDue,
   telemetrySnapshotChanged,
-  type InferenceMatch,
   type Resolution,
   type SessionIdentity,
   type StoredSpan,
@@ -53,24 +51,7 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
   const namedIds = [
     ...new Set(spans.flatMap((span) => (span.conversation_id === null ? [] : [span.conversation_id]))),
   ];
-  const dependencies = {
-    ids: expired ? [] : namedIds,
-    windows: expired
-      ? []
-      : owned.flatMap((span) => {
-          const attrs = JSON.parse(span.attributes) as Record<string, unknown>;
-          const remote =
-            typeof attrs['vcs.repository.url.full'] === 'string'
-              ? normalizeRemote(attrs['vcs.repository.url.full'])
-              : null;
-          return span.conversation_id === null &&
-            span.operation === 'invoke_agent' &&
-            remote !== null &&
-            typeof attrs['vcs.ref.head.name'] === 'string'
-            ? [{ spanId: span.span_id, remote, ref: attrs['vcs.ref.head.name'], start: span.start_ms }]
-            : [];
-        }),
-  };
+  const dependencies = { ids: expired ? [] : namedIds };
   try {
     return await withTelemetryInputs(db, { trace, now, dependencies }, async () => {
       const named = await telemetrySessionsNamed(db, namedIds);
@@ -94,48 +75,24 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
           ];
         }),
       );
-      const matches: InferenceMatch[] = [];
-      for (const span of owned) {
-        if (span.conversation_id !== null || span.operation !== 'invoke_agent') continue;
-        const parent = exact(ancestors.get(span.span_id)?.conversation_id ?? null);
-        if (parent === null) continue;
-        const detail = details.get(span.span_id)!;
-        if (detail.repository !== null && detail.ref !== null && detail.ref !== '')
-          matches.push({
-            keyId: span.key_id,
-            traceId: span.trace_id,
-            spanId: span.span_id,
-            remote: detail.repository,
-            branch: detail.ref,
-            start: span.start_ms,
-            parent: parent.session_id,
-            parentProject: parent.project_id,
-            agent: span.agent_name,
-          });
-      }
-      const inferred = await inferTelemetrySessions(db, matches);
-      const remotes = new Map(matches.map((match) => [match.spanId, match.remote]));
       const resolutions: Resolution[] = [];
       for (const span of owned) {
         const ancestry = ancestors.get(span.span_id) ?? null,
           parentSpan = ancestry ?? undefined,
           parent = exact(parentSpan?.conversation_id ?? null);
         const invocation = span.operation === 'invoke_agent';
-        const matchedBy = span.conversation_id === null ? 'inferred' : 'exact';
-        const session =
-          span.conversation_id === null ? (inferred.get(span.span_id) ?? null) : exact(span.conversation_id);
+        const session = exact(span.conversation_id);
         if (session === null || (!invocation && parent === null)) continue;
         resolutions.push({
           ...session,
           ...details.get(span.span_id)!,
           agent_name: span.agent_name,
-          ...(remotes.has(span.span_id) ? { inferenceRemote: remotes.get(span.span_id)! } : {}),
           span_id: span.span_id,
           key_id: span.key_id,
           parent_span_id: parent === null ? null : (parentSpan?.span_id ?? null),
           parent_project_id: parent?.project_id ?? null,
           parent_session_id: parent?.session_id ?? null,
-          matched_by: matchedBy,
+          matched_by: 'exact',
           invocation: invocation ? 1 : 0,
         });
       }
@@ -143,8 +100,7 @@ async function reconcileTelemetryTrace(db: RelationalStore, trace: TraceRef, now
         resolutions,
         pending:
           !expired &&
-          (owned.some((span) => span.conversation_id !== null && exact(span.conversation_id) === null) ||
-            matches.some((match) => !inferred.has(match.spanId))),
+          owned.some((span) => span.conversation_id !== null && exact(span.conversation_id) === null),
       };
     });
   } catch (error) {

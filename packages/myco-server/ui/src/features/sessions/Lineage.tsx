@@ -1,10 +1,11 @@
-import { EmptyState, ErrorState, LaneTimeline, LoadingState, type Lane } from '../../design';
+import { ItemLink, EmptyState, ErrorState, LaneTimeline, LoadingState, type Lane } from '../../design';
 import {
   useSessionLineage,
   type LineageEdge,
   type LineageNode,
   type SessionLineage,
 } from '../../hooks/use-sessions';
+import { SessionInvocations } from './Invocations';
 import { projectPath } from '../../routes/nav';
 import { agentName } from './words';
 import { clockWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
@@ -25,9 +26,9 @@ export function lineageName(node: LineageNode | undefined): string {
 const reportedBy = (edge: LineageEdge) =>
   `reported by ${edge.keyLabel ?? 'an OpenTelemetry key'}${edge.serviceName ? ` (sender claims ${edge.serviceName})` : ''}`;
 /** How a child stands to one of its parents, in words. */
-export function parentWords(edge: LineageEdge, parent: string): string {
+function parentWords(edge: LineageEdge, parent: string): string {
   if (edge.kind === 'launched')
-    return `${edge.inferred ? 'Probably started by' : 'Child of'} ${parent}${edge.source === 'telemetry' ? ` · ${reportedBy(edge)}` : ''}`;
+    return `Child of ${parent}${edge.source === 'telemetry' ? ` · ${reportedBy(edge)}` : ''}`;
   return `Continues ${parent}${edge.reason === null ? '' : ` (${edge.reason})`}`;
 }
 
@@ -97,7 +98,7 @@ export function lineageLanes(lineage: SessionLineage, projectId: string, now: nu
 }
 
 /** The session's family over its parent and child sessions, the session itself marked. */
-export function SessionLineageTab({
+function SessionFamily({
   projectId,
   sessionId,
   now,
@@ -128,7 +129,7 @@ export function SessionLineageTab({
             {lineage.data.reports.map((report, index) => (
               <li key={index}>
                 {labelFor(report.childId, report.childProjectId)}:{' '}
-                {report.inferred ? 'probable parent' : 'reported parent'}{' '}
+                reported parent{' '}
                 {labelFor(report.parentId, report.parentProjectId)} · {reportedBy(report)}
               </li>
             ))}
@@ -143,4 +144,21 @@ export function SessionLineageTab({
       )}
     </div>
   );
+}
+
+/** Session-level reports accompany the family rather than individual turns. */
+export function SessionLineageTab(props: { projectId: string; sessionId: string; now: number }) {
+  return <div className="flex flex-col gap-s3"><SessionFamily {...props} /><SessionInvocations {...props} /></div>;
+}
+
+/** The scoped family read decides whether a captured launch parent is linkable. */
+export function LaunchParent({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+  const family = useSessionLineage(projectId, sessionId);
+  const edge = family.data?.edges.find(edge => edge.childId === sessionId && edge.kind === 'launched' && edge.source !== 'telemetry');
+  const parent = edge === undefined ? undefined : family.data?.nodes.find(node => node.sessionId === edge.parentId && (node.projectId ?? projectId) === (edge.parentProjectId ?? projectId));
+  return <p className="t-small text-muted">Launched by another agent · {family.error
+    ? <span>Launch session could not be read.</span>
+    : parent?.captured
+      ? <ItemLink to={sessionPagePath(parent.projectId ?? projectId, parent.sessionId)}>{lineageName(parent)}</ItemLink>
+      : family.isPending ? 'Reading launch session…' : NOT_CAPTURED_NAME}</p>;
 }

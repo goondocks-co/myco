@@ -1,3 +1,4 @@
+import type { Database } from 'bun:sqlite';
 import { expect } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
@@ -6,8 +7,8 @@ import { seedCredential } from './d1.js';
 import { sqliteEnv, envelope, noOutboundFetch, uuid } from './fixtures.js';
 import { OWNER_ENV, ownerCookie } from './owner.js';
 const NOW = 1_800_000_000_000;
-export async function telemetryFixture() {
-  const e = sqliteEnv();
+export async function telemetryFixture(sqlite?: Database) {
+  const e = sqliteEnv({ sqlite });
   Object.assign(e.env, OWNER_ENV);
   const env = e.serverEnv;
   let now = NOW;

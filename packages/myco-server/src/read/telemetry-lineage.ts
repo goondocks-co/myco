@@ -101,7 +101,6 @@ export async function extendTelemetryLineage(
         keyId: edge.keyId,
         keyLabel: edge.keyLabel,
         serviceName: edge.serviceName,
-        inferred: edge.inferred === 1,
         ...(parentPair.project === projectId ? {} : { parentProjectId: parentPair.project }),
         ...(childPair.project === projectId ? {} : { childProjectId: childPair.project }),
       };

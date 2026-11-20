@@ -27,12 +27,9 @@ export const ORIGIN_LABEL: Record<string, string> = {
   hook_injected: 'Added by a hook',
 };
 
-/** Invocation confidence and labels qualify the turn's displayed speaker. */
-export function turnOriginLabel(turn: Pick<TurnRow, 'origin' | 'invocation'>): string {
-  if (turn.invocation === undefined) return ORIGIN_LABEL[turn.origin] ?? 'Added';
-  const fact = turn.invocation;
-  const label = [fact.keyLabel, fact.serviceName, fact.agentName].filter(Boolean).join(' · ');
-  return `${fact.matchedBy === 'inferred' ? 'Probably invoked' : 'Invoked'} by another program${label === '' ? '' : ` · ${label}`}`;
+/** The captured origin identifies the turn's speaker. */
+export function turnOriginLabel(turn: Pick<TurnRow, 'origin'>): string {
+  return ORIGIN_LABEL[turn.origin] ?? 'Added';
 }
 
 /** A prompt's opening on one line, as the list row carries it. */

@@ -26,8 +26,6 @@ export const TELEMETRY_HOUR_MS = 3_600_000;
 export const TELEMETRY_RETENTION_DAYS = 30;
 export const TELEMETRY_RETENTION_MS = TELEMETRY_RETENTION_DAYS * TELEMETRY_DAY_MS;
 export const TELEMETRY_MATCH_WAIT_MS = 7 * TELEMETRY_DAY_MS;
-/** Turn starts within two seconds of an invocation start are eligible. */
-export const TELEMETRY_CLOCK_TOLERANCE_MS = 2_000;
 export const TELEMETRY_TRACE_PAGE = 8;
 export const TELEMETRY_ANCESTOR_LIMIT = 32;
 
@@ -41,7 +39,6 @@ export const TELEMETRY_TABLES = [
   'telemetry_resolutions',
   'telemetry_lineage_reports',
   'telemetry_dependency_ids',
-  'telemetry_dependency_windows',
   'telemetry_session_changes',
   'telemetry_counts',
 ] as const;

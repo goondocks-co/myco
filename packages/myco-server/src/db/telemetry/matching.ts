@@ -1,9 +1,7 @@
-import { liveResolution } from './authority.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, commit, read, readSet, rows, write, refused, refusalCode } from '../index.js';
 import { notTombstonedSql } from '../session-read-model.js';
 import {
-  TELEMETRY_CLOCK_TOLERANCE_MS,
   TELEMETRY_MATCH_WAIT_MS,
   TELEMETRY_RESOLUTION_PAGE,
   TELEMETRY_TRACE_PAGE,
@@ -41,12 +39,11 @@ export interface Resolution extends SessionIdentity {
   parent_span_id: string | null;
   parent_project_id: string | null;
   parent_session_id: string | null;
-  matched_by: 'exact' | 'inferred';
+  matched_by: 'exact';
   invocation: number;
   repository: string | null;
   ref: string | null;
   agent_name: string | null;
-  inferenceRemote?: string;
 }
 const due = read<[now: number, limit: number], TraceRef>({
   name: 'telemetryMatching.due',
@@ -68,79 +65,6 @@ const sessions = read<[ids: string], SessionIdentity>({
     WHERE ${notTombstonedSql('s')} ORDER BY s.session_id,s.project_id`,
 });
 
-/** The turn range stops at one more than the evidence bound; overflow can only refuse an inference. */
-export const TELEMETRY_CANDIDATE_LIMIT = 512;
-interface CandidateSlots {
-  remote: string;
-  branch: string;
-  after: string;
-  before: string;
-  parent: string;
-  parentProject: string;
-  agent: string;
-  key: string;
-  trace: string;
-  span: string;
-  limit: string;
-}
-const candidateRows = (
-  slot: CandidateSlots,
-): string => `WITH project AS (SELECT project_id FROM project_remotes WHERE remote=${slot.remote}),
-  starts AS (SELECT s.project_id,s.session_id,'session' AS source FROM project r JOIN sessions s INDEXED BY idx_sessions_telemetry_start
-    ON s.project_id=r.project_id AND s.branch=${slot.branch} AND s.started_at BETWEEN ${slot.after} AND ${slot.before}
-    WHERE s.session_id<>${slot.parent} AND ${notTombstonedSql('s')} LIMIT 3),
-  turns AS (SELECT p.project_id,p.session_id,p.generation,p.prompt_id FROM project r
-    JOIN session_prompts p INDEXED BY idx_session_prompts_telemetry_time ON p.project_id=r.project_id AND p.created_at BETWEEN ${slot.after} AND ${slot.before}
-    WHERE p.turn_key=p.prompt_id ORDER BY p.created_at,p.session_id,p.prompt_id LIMIT ${slot.limit})
-  SELECT project_id,session_id,source FROM starts UNION ALL
-  SELECT p.project_id,p.session_id,CASE WHEN s.branch=${slot.branch} AND s.session_id<>${slot.parent} AND ${notTombstonedSql('s')}
-    AND p.generation=(SELECT generation FROM session_documents d WHERE d.project_id=p.project_id AND d.session_id=p.session_id AND d.state='live')
-    THEN 'turn' ELSE 'excluded' END AS source FROM turns p JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id`;
-const uniqueCandidate = (slots: CandidateSlots): string => `WITH candidates AS (${candidateRows(slots)}),
- live AS (SELECT DISTINCT project_id,session_id FROM candidates WHERE source<>'excluded'),
- linked AS (SELECT DISTINCT r.project_id,r.session_id FROM telemetry_resolutions r INDEXED BY idx_telemetry_resolutions_invoker
- JOIN telemetry_keys k ON k.id=r.key_id AND k.revoked_at IS NULL
- JOIN live ON live.project_id=r.project_id AND live.session_id=r.session_id
- JOIN telemetry_lineage_reports current ON current.key_id=r.key_id AND current.project_id=r.project_id AND current.session_id=r.session_id
- AND current.parent_project_id=r.parent_project_id AND current.parent_session_id=r.parent_session_id
- WHERE r.key_id=${slots.key} AND r.parent_project_id=${slots.parentProject} AND r.parent_session_id=${slots.parent} AND r.agent_name=${slots.agent}
- AND r.repository=${slots.remote} AND r.ref=${slots.branch} AND ${liveResolution('r')}
- AND (r.trace_id<>${slots.trace} OR r.span_id<>${slots.span}) LIMIT 2)
- SELECT project_id,session_id FROM live WHERE (SELECT COUNT(*) FROM live)=1
- AND (SELECT COUNT(*) FROM candidates WHERE source<>'session')<=${TELEMETRY_CANDIDATE_LIMIT}
- UNION ALL SELECT linked.project_id,linked.session_id FROM linked WHERE (SELECT COUNT(*) FROM live)>1 AND (SELECT COUNT(*) FROM linked)=1
- AND (SELECT COUNT(*) FROM candidates WHERE source<>'session')<=${TELEMETRY_CANDIDATE_LIMIT}`;
-const candidates = read<[matches: string], { span_id: string; candidate: string | null }>({
-  name: 'telemetryMatching.candidates',
-  sql: `SELECT json_extract(j.value,'$.spanId') AS span_id,(SELECT json_object('project_id',project_id,'session_id',session_id)
-    FROM (${uniqueCandidate({
-      remote: "json_extract(j.value,'$.remote')",
-      branch: "json_extract(j.value,'$.branch')",
-      after: `json_extract(j.value,'$.start')-${TELEMETRY_CLOCK_TOLERANCE_MS}`,
-      before: `json_extract(j.value,'$.start')+${TELEMETRY_CLOCK_TOLERANCE_MS}`,
-      parent: "json_extract(j.value,'$.parent')",
-      parentProject: "json_extract(j.value,'$.parentProject')",
-      agent: "json_extract(j.value,'$.agent')",
-      key: "json_extract(j.value,'$.keyId')",
-      trace: "json_extract(j.value,'$.traceId')",
-      span: "json_extract(j.value,'$.spanId')",
-      limit: String(TELEMETRY_CANDIDATE_LIMIT + 1),
-    })})) AS candidate FROM json_each(?1) j`,
-});
-const inferenceStillUnique = `EXISTS(SELECT 1 FROM (${uniqueCandidate({
-  remote: "json_extract(j.value,'$.inferenceRemote')",
-  branch: 'json_extract(span.attributes,\'$."vcs.ref.head.name"\')',
-  after: `span.start_ms-${TELEMETRY_CLOCK_TOLERANCE_MS}`,
-  before: `span.start_ms+${TELEMETRY_CLOCK_TOLERANCE_MS}`,
-  parent: "json_extract(j.value,'$.parent_session_id')",
-  parentProject: "json_extract(j.value,'$.parent_project_id')",
-  agent: 'span.agent_name',
-  key: 'span.key_id',
-  trace: 'span.trace_id',
-  span: 'span.span_id',
-  limit: String(TELEMETRY_CANDIDATE_LIMIT + 1),
-})}) chosen
-  WHERE chosen.project_id=s.project_id AND chosen.session_id=s.session_id)`;
 const uniqueSession = (
   id: string,
 ) => `(SELECT COUNT(*) FROM (SELECT s.project_id FROM sessions s INDEXED BY idx_sessions_telemetry_id
@@ -153,13 +77,12 @@ const put = write<[trace: string, key: string, payload: string]>({
   name: 'telemetryMatching.put',
   sql: `INSERT INTO telemetry_resolutions(trace_id,span_id,key_id,project_id,session_id,parent_project_id,parent_session_id,parent_span_id,matched_by,invocation,repository,ref,agent_name,service_name,reported_at,started_at)
     SELECT ?1,json_extract(j.value,'$.span_id'),span.key_id,s.project_id,s.session_id,
-      json_extract(j.value,'$.parent_project_id'),json_extract(j.value,'$.parent_session_id'),json_extract(j.value,'$.parent_span_id'),json_extract(j.value,'$.matched_by'),json_extract(j.value,'$.invocation'),json_extract(j.value,'$.repository'),json_extract(j.value,'$.ref'),span.agent_name,span.service_name,span.received_at,span.start_ms
+      json_extract(j.value,'$.parent_project_id'),json_extract(j.value,'$.parent_session_id'),json_extract(j.value,'$.parent_span_id'),'exact',json_extract(j.value,'$.invocation'),json_extract(j.value,'$.repository'),json_extract(j.value,'$.ref'),span.agent_name,span.service_name,span.received_at,span.start_ms
     FROM json_each(?3) j JOIN telemetry_spans span ON span.trace_id=?1 AND span.key_id=?2 AND span.span_id=json_extract(j.value,'$.span_id') AND span.key_id=json_extract(j.value,'$.key_id')
     JOIN telemetry_keys k ON k.id=span.key_id AND k.revoked_at IS NULL
     JOIN sessions s ON s.project_id=json_extract(j.value,'$.project_id') AND s.session_id=json_extract(j.value,'$.session_id')
     WHERE ${notTombstonedSql('s')}
-      AND ((json_extract(j.value,'$.matched_by')='exact' AND span.conversation_id=s.session_id AND ${uniqueSession('span.conversation_id')})
-        OR (json_extract(j.value,'$.matched_by')='inferred' AND span.conversation_id IS NULL AND (${inferenceStillUnique})))
+      AND span.conversation_id=s.session_id AND ${uniqueSession('span.conversation_id')}
       AND (json_extract(j.value,'$.parent_session_id') IS NULL OR EXISTS(
       SELECT 1 FROM sessions parent JOIN telemetry_spans ancestor ON ancestor.trace_id=span.trace_id AND ancestor.key_id=span.key_id
         AND ancestor.span_id=json_extract(j.value,'$.parent_span_id') AND ancestor.conversation_id=parent.session_id
@@ -190,28 +113,6 @@ export const telemetrySessionsNamed = async (
     pages.push(sessions.bind(JSON.stringify(ids.slice(offset, offset + SESSION_LOOKUP_PAGE))));
   return pages.length === 0 ? [] : (await readSet(db, ...pages)).flat();
 };
-export interface InferenceMatch {
-  keyId: string;
-  traceId: string;
-  spanId: string;
-  remote: string;
-  branch: string;
-  start: number;
-  parent: string;
-  parentProject: string;
-  agent: string | null;
-}
-export async function inferTelemetrySessions(
-  db: RelationalStore,
-  matches: readonly InferenceMatch[],
-): Promise<Map<string, SessionIdentity>> {
-  const matched = new Map<string, SessionIdentity>();
-  if (matches.length === 0) return matched;
-  for (const row of await rows(db, candidates.bind(JSON.stringify(matches)))) {
-    if (row.candidate !== null) matched.set(row.span_id, JSON.parse(row.candidate) as SessionIdentity);
-  }
-  return matched;
-}
 export async function settleTelemetryTrace(
   db: RelationalStore,
   trace: TraceRef,

@@ -16,7 +16,6 @@ export interface TelemetryLineageEdge {
   keyId: string;
   keyLabel: string;
   serviceName: string | null;
-  inferred: number;
   disputed: number;
 }
 const disagreement = `(SELECT COUNT(*) FROM (SELECT DISTINCT other.parent_project_id,other.parent_session_id FROM telemetry_lineage_reports other
@@ -27,7 +26,7 @@ const incident = (name: string, on: string) =>
   read<[pairs: string, limit: number], TelemetryLineageEdge>({
     name,
     sql: `SELECT r.parent_project_id AS parentProjectId,r.parent_session_id AS parentId,r.project_id AS childProjectId,r.session_id AS childId,
- r.key_id AS keyId,k.label AS keyLabel,NULLIF(r.service_name,'') AS serviceName,(r.matched_by='inferred') AS inferred,(${disagreement}) AS disputed
+ r.key_id AS keyId,k.label AS keyLabel,NULLIF(r.service_name,'') AS serviceName,(${disagreement}) AS disputed
  FROM (${keys}) key CROSS JOIN telemetry_lineage_reports r ON ${on}
  JOIN sessions child ON child.project_id=r.project_id AND child.session_id=r.session_id
  JOIN sessions parent ON parent.project_id=r.parent_project_id AND parent.session_id=r.parent_session_id

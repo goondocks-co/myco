@@ -73,19 +73,17 @@ export const otlpReceiver: ParityScenario = {
       expect.objectContaining({ agentName: 'worker', keyLabel: 'parity sender', matchedBy: 'exact' }),
     ]);
     const turns = await owner<{
-      rows: { promptId: string; origin: string; invocation?: { keyLabel: string } }[];
+      rows: { promptId: string; origin: string }[];
     }>(target, turnListPath);
     expect(turns.body.rows.find((row) => row.promptId === promptId)).toMatchObject({
-      origin: 'agent_dispatch',
-      invocation: { keyLabel: 'parity sender' },
+      origin: 'user',
     });
-    const detail = await owner<{ prompt: { origin: string; invocation?: { keyLabel: string } } }>(
+    const detail = await owner<{ prompt: { origin: string } }>(
       target,
       `${turnPath}/${promptId}`,
     );
     expect(detail.body.prompt).toMatchObject({
-      origin: 'agent_dispatch',
-      invocation: { keyLabel: 'parity sender' },
+      origin: 'user',
     });
     const listed = await owner<{ keys: { id: string; accepted: number; lastUsedAt: number | null }[] }>(
       target,
@@ -104,5 +102,17 @@ export const otlpReceiver: ParityScenario = {
     expect((await post(payload)).status).toBe(401);
     expect((await owner<{ edges: unknown[] }>(target, path)).body.edges).toEqual([]);
     expect((await owner<{ rows: { origin: string }[] }>(target, turnListPath)).body.rows[0]!.origin).toBe('user');
+    const launched = `otel-launched-${Date.now()}`;
+    await event(target, launched, 'session.start', { agent: 'windsurf', launchParentSessionId: lead });
+    const opening = crypto.randomUUID(), followup = crypto.randomUUID(), openedAt = Date.now();
+    await event(target, launched, 'prompt', { promptId: opening, text: 'Read the task', origin: 'user' }, openedAt);
+    await event(target, launched, 'prompt', { promptId: followup, text: 'A person follows up', origin: 'user' }, openedAt + 1);
+    const launchedPath = `/api/projects/${target.projectId}/sessions/${launched}`;
+    const opened = await untilPublished(target,
+      async () => (await owner<{ rows: { promptId: string; origin: string }[] }>(target, `${launchedPath}/turns?origins=user,agent_dispatch`)).body,
+      page => page.rows.some(row => row.promptId === followup));
+    expect(opened.rows.map(row => row.origin)).toEqual(['agent_dispatch', 'user']);
+    expect((await owner(target, `${launchedPath}/turns/${opening}`)).body).toMatchObject({ prompt: { origin: 'agent_dispatch' } });
+    expect((await owner(target, launchedPath)).body).toMatchObject({ personTurns: 1, turns: 2 });
   },
 };

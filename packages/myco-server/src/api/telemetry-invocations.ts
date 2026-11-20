@@ -3,7 +3,7 @@ import type { OwnerContext } from '../context.js';
 import { invocationsForSession, type InvocationCursor } from '../core/telemetry-invocations.js';
 import { badRequest, notFound, resolveProjectScope, sessionInScope } from './scope.js';
 
-/** Project-scoped invocation windows use the same read as turn-origin attribution. */
+/** Project-scoped exact invocation reports retain their own sender times. */
 export async function handleSessionInvocations(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   let sessionId: string;
   try {
