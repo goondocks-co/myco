@@ -19,7 +19,7 @@
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import {
-  callForResult, recordId, recordSource, optionalRecordSource, legacyRecordId, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  recordedPromptLabel, callForResult, recordId, recordSource, optionalRecordSource, legacyRecordId, promptIdAtOffset, parserContinuation, blocksOf, isBlock, lineTime, plansInText, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -79,9 +79,10 @@ export const piParser: TranscriptParser = {
         const text = textOf(message.content);
         if (text.trim() === '') continue;
         promptId = await promptIdAtOffset('pi-prompt', input.sessionId, offset, input);
+        const label = recordedPromptLabel({ agent: this.agent, input, record: value, text, label: { origin: 'user', kind: 'user_prompt' } });
         events.push({
           kind: 'prompt',
-          payload: { promptId, text, origin: 'user', promptKind: 'user_prompt' },
+          payload: { promptId, text, origin: label.origin, promptKind: label.kind },
           createdAt,
           offset,
         });

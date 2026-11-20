@@ -26,8 +26,8 @@ import { isInstructionOrigin } from '../../read/extraction-origins.js';
  * delegated agent's record and a compaction summary are each keyed on their own
  * thread and uuid. Which record owns a key is a stored fact the pass is handed
  * (`ParserInput.owners`), so a reread or a prefix replay decides as the first
- * read did. What a record is comes from the harness's own fields before any text
- * test, and what is not recognized is kept and labelled, never dropped.
+ * read did. The harness's fields label nonhuman records; a human-labelled record
+ * wholly inside an unknown envelope is system input. Unrecognized records are kept, never dropped.
  */
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { MAIN_THREAD, type ClaudePromptShape, type PromptClaim } from '@goondocks/myco-shared/prompt-identity';
@@ -35,7 +35,7 @@ import { evaluatePromptRules, notificationEnvelopes, promptEnvelope } from '@goo
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import {
-  callForResult, recordId, recordSource, optionalRecordSource, claudeRecordIdFor, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, pastedPlansInPrompt, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
+  recordedPromptLabel, callForResult, recordId, recordSource, optionalRecordSource, claudeRecordIdFor, parserContinuation, blocksOf, isBlock, lineTime, ownedLines, plansInText, pastedPlansInPrompt, promptIdFor, str, textOf, TOOL_OUTPUT_PREVIEW_CHARS,
   type ReplyPart, type DerivedEvent, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -120,7 +120,8 @@ type V2Disposition =
  * that is no summary is unrecognized; a meta record without a turn opener's fields, an interrupt marker without them,
  * a line the capture rules drop and an empty line are no prompt; anything else claims its key.
  */
-function v2Disposition(v: Record<string, unknown>, text: string, role: ParserInput['role'], sessionId: string): V2Disposition {
+function v2Disposition(v: Record<string, unknown>, text: string, input: ParserInput): V2Disposition {
+  const { role, sessionId } = input;
   const agentId = str(v.agentId);
   const sidechain = v.isSidechain === true;
   if (role === 'subagent' || sidechain || agentId !== undefined) {
@@ -141,7 +142,11 @@ function v2Disposition(v: Record<string, unknown>, text: string, role: ParserInp
   if (v.isVisibleInTranscriptOnly === true) return { as: 'sibling', thread: MAIN_THREAD, kind: 'unrecognized', origin: 'system' };
   const opener = hasOpener(v);
   if ((promptEnvelope(text)?.text ?? text).trim() === '') return { as: 'none' };
-  if (opener) return { as: 'claimant', opener, ...openerLabel(v) };
+  if (opener) {
+    const label = openerLabel(v);
+    return { as: 'claimant', opener, ...(label.kind === 'user_prompt'
+      ? recordedPromptLabel({ agent: 'claude-code', input, record: v, text, label }) : label) };
+  }
   if (v.isMeta === true || INTERRUPT_MARKERS.has(text.trim())) return { as: 'none' };
   const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'claude-code', { prompt: text, transcriptPath: sessionId, record: v });
   if (decision.action === 'drop') return { as: 'none' };
@@ -222,7 +227,7 @@ export const claudeCodeParser: TranscriptParser = {
 
       if (v2 && type === 'user' && !blocksOf(message?.content).some((b) => b.type === 'tool_result')) {
         const text = textOf(message?.content);
-        const disposition = v2Disposition(value, text, input.role, sessionId);
+        const disposition = v2Disposition(value, text, input);
         const uuid = str(value.uuid);
         const key = str(value.promptId);
         if (disposition.as === 'none') continue;
@@ -268,12 +273,13 @@ export const claudeCodeParser: TranscriptParser = {
         await flushReply();
         const text = textOf(value.attachment.prompt);
         const key = str(value.uuid);
+        const label = recordedPromptLabel({ agent: this.agent, input, record: value, text, label: { origin: 'user', kind: 'queued_command' } });
         if (text.trim() !== '' && key !== undefined && v2) {
-          await v2Prompt({ id: await claudeRecordIdFor(sessionId, { queued: key }, input), text, origin: 'user', kind: 'queued_command',
+          await v2Prompt({ id: await claudeRecordIdFor(sessionId, { queued: key }, input), text, ...label,
             claim: 'owner', key, thread: str(value.agentId) ?? MAIN_THREAD, record: key }, createdAt, offset, value);
         } else if (text.trim() !== '' && key !== undefined) {
           promptId = await promptIdFor(sessionId, 'queued_command', key, input);
-          events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'queued_command' }, createdAt, offset });
+          events.push({ kind: 'prompt', payload: { promptId, text, origin: label.origin, promptKind: label.kind }, createdAt, offset });
           events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }));
         }
         continue;

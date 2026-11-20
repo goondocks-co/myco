@@ -116,14 +116,25 @@ export type SessionStartDecision =
   | { action: 'drop'; reason?: string };
 
 export function evaluatePromptRules(bundles: readonly RuleSource[], detectedAgent: string, ctx: UserPromptRuleContext): UserPromptDecision {
+  const rule = matchingPromptRule(bundles, detectedAgent, ctx);
+  if (rule === undefined) return { action: 'pass', prompt: ctx.prompt };
+  const decision = applyAction(rule, ctx);
+  return decision.action === 'drop' || rule.opens_turn === undefined ? decision : { ...decision, opensTurn: rule.opens_turn };
+}
+
+/** An envelope no harness rule recognizes carries no evidence of human authorship. */
+export function isUnrecognizedPromptEnvelope(bundles: readonly RuleSource[], detectedAgent: string, ctx: UserPromptRuleContext): boolean {
+  const rule = matchingPromptRule(bundles, detectedAgent, ctx);
+  return rule === undefined ? isEnclosingEnvelope(ctx.prompt)
+    : rule.when.prompt_is_enclosing_envelope === true && rule.action === 'classify' && rule.set_origin === 'system';
+}
+
+function matchingPromptRule(bundles: readonly RuleSource[], detectedAgent: string, ctx: UserPromptRuleContext): CaptureRule | undefined {
   for (const bundle of bundles) {
-    for (const rule of bundle.rules) {
-      if (rule.event !== 'user_prompt' || !scopePermits(rule, bundle.name, detectedAgent) || !whenMatches(rule, ctx)) continue;
-      const decision = applyAction(rule, ctx);
-      return decision.action === 'drop' || rule.opens_turn === undefined ? decision : { ...decision, opensTurn: rule.opens_turn };
-    }
+    const rule = bundle.rules.find(rule => rule.event === 'user_prompt' && scopePermits(rule, bundle.name, detectedAgent) && whenMatches(rule, ctx));
+    if (rule !== undefined) return rule;
   }
-  return { action: 'pass', prompt: ctx.prompt };
+  return undefined;
 }
 
 export function evaluateStartRules(bundles: readonly RuleSource[], detectedAgent: string, ctx: SessionStartRuleContext): SessionStartDecision {

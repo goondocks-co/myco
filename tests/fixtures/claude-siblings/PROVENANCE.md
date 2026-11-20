@@ -31,3 +31,5 @@ extraction's own report: what was searched, the counts behind every shape, and t
 - **Pairs are samples, not transcripts.** Never concatenate pairs as one transcript. A record uuid can recur across pairs, and across files under different sessions.
 - **Windows are in source order but elide records.** A test that needs tool continuity across a window supplies its own records.
 - **Under `claude-v2`** the first record that claims a `promptId` owns it, and every other kept record is keyed on its own thread and uuid (`packages/myco-server/src/ingest/parsers/claude-code.ts`). `tests/meta/claude-v2-identity.test.ts` gives every record here a disposition.
+
+`typed-wrapper.jsonl` is synthetic: human/typed terminal input, ordinary and inline-tag prompts, a declared notification, a scheduled turn and a declared shell envelope. It contains no source transcript content.
