@@ -28,9 +28,9 @@ export const otlpReceiver: ParityScenario = {
     const path = `/api/projects/${target.projectId}/sessions/${child}/lineage`;
     const lineage = await untilPublished(target, async () => (await owner<{ edges: { source?: string; parentId: string; childId: string; serviceName?: string }[] }>(target, path)).body,
       family => family.edges.some(edge => edge.source === 'telemetry'));
-    expect(lineage.edges).toContainEqual(expect.objectContaining({ parentId: lead, childId: child, source: 'telemetry', serviceName: 'dispatch-service' }));
+    expect(lineage.edges).toContainEqual(expect.objectContaining({ parentId: lead, childId: child, source: 'telemetry', keyLabel:'parity sender', serviceName: 'dispatch-service' }));
     const invocations = await owner<{ rows: { agentName: string; matchedBy: string }[] }>(target, `/api/projects/${target.projectId}/sessions/${child}/invocations`);
-    expect(invocations.body.rows).toEqual([expect.objectContaining({ agentName: 'worker', matchedBy: 'exact' })]);
+    expect(invocations.body.rows).toEqual([expect.objectContaining({ agentName: 'worker',keyLabel:'parity sender', matchedBy: 'exact' })]);
     const listed = await owner<{ keys: { id: string; accepted: number; lastUsedAt: number | null }[] }>(target, '/api/telemetry/keys');
     expect(listed.body.keys.find(row => row.id === id)).toMatchObject({ accepted: 3, lastUsedAt: expect.any(Number) });
     expect((await fetch(`${target.url}/api/projects`, { headers: { authorization: `Bearer ${key}` } })).status).toBe(401);

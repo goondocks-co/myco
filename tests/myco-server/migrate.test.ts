@@ -591,6 +591,7 @@ describe('versioned schema steps', () => {
     const source = sqliteEnv();
     const promptId = crypto.randomUUID();
     const writerRows = new Map<string, Record<string, unknown>>();
+    writerRows.set('telemetry_lineage_reports', { session_id: 'grammar-session', parent_project_id: 'proj_test', parent_session_id: 'parent', key_id: 'key', matched_by: 'exact', evidence: '[]', service_name: 'sender', claims: 1 });
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
     writerRows.set('session_title_work', { session_id: 'grammar-session', mode: 'claim' });
     writerRows.set('release_check_due', { next_at: 0, revision: 'r' });
@@ -692,7 +693,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'telemetry_resolutions', 'context_delivery_anchors', 'tool_prompt_links',
+      'telemetry_lineage_reports', 'telemetry_session_changes', 'telemetry_resolutions', 'context_delivery_anchors', 'tool_prompt_links',
       'publication_dependencies','session_lifecycle_facts','session_title_work','session_statistics','session_attachment_counts','context_placement_days','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',

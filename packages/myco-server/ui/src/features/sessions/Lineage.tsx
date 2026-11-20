@@ -19,7 +19,7 @@ export function lineageName(node: LineageNode | undefined): string {
 
 /** How a child stands to one of its parents, in words. */
 export function parentWords(edge: LineageEdge, parent: string): string {
-  if (edge.kind === 'launched') return `${edge.inferred ? 'Probably started by' : 'Child of'} ${parent}${edge.source === 'telemetry' ? ` · reported by ${edge.serviceName ?? 'an OpenTelemetry sender'}` : ''}`;
+  if (edge.kind === 'launched') return `${edge.inferred ? 'Probably started by' : 'Child of'} ${parent}${edge.source === 'telemetry' ? ` · reported by ${edge.keyLabel ?? 'an OpenTelemetry key'}${edge.serviceName ? ` (sender claims ${edge.serviceName})` : ''}` : ''}`;
   return `Continues ${parent}${edge.reason === null ? '' : ` (${edge.reason})`}`;
 }
 
@@ -66,9 +66,10 @@ export function SessionLineageTab({ projectId, sessionId, now }: { projectId: st
   const lineage = useSessionLineage(projectId, sessionId);
   if (lineage.isPending) return <LoadingState label="Loading the lineage" count={3} />;
   if (lineage.error) return <ErrorState error={lineage.error} onRetry={() => void lineage.refetch()} />;
-  if (lineage.data.nodes.length <= 1) return <EmptyState title="No parent or child sessions were recorded for this session." />;
+  if (lineage.data.nodes.length <= 1&&!lineage.data.reports?.length) return <EmptyState title="No parent or child sessions were recorded for this session." />;
   return (
     <div className="flex flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s3" data-lineage="">
+      {lineage.data.reports?.length ? <div><p>Reports disagree about the parent. No reported parent is selected.</p><ul>{lineage.data.reports.map((report,index)=><li key={index}>{lineageName(lineage.data.nodes.find(node=>node.sessionId===report.parentId))} · reported by {report.keyLabel}{report.serviceName ? ` (sender claims ${report.serviceName})` : ''}</li>)}</ul></div> : null}
       <LaneTimeline lanes={lineageLanes(lineage.data, projectId, now)} label="Lineage" now={now} />
       {lineage.data.truncated && <p className="px-s3 t-small text-muted">Only part of this family is shown: it reaches past what one page reads.</p>}
     </div>

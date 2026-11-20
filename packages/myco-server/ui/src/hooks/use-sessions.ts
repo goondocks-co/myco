@@ -791,6 +791,8 @@ export interface LineageEdge {
   parentProjectId?: string;
   childProjectId?: string;
   source?: 'telemetry';
+  keyId?:string;
+  keyLabel?:string;
   serviceName?: string | null;
   inferred?: boolean;
   parentId: string;
@@ -820,6 +822,7 @@ export interface LineageNode {
 export interface SessionLineage {
   nodes: LineageNode[];
   edges: LineageEdge[];
+  reports?:LineageEdge[];
   truncated: boolean;
 }
 

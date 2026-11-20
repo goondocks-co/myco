@@ -1,40 +1,68 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { commit, first, read, rows, write } from '../index.js';
-import { TELEMETRY_KEY_LIMIT } from '../../core/telemetry-policy.js';
+import { first, read, rows, write } from '../index.js';
+import {
+  TELEMETRY_KEY_LIMIT,
+  TELEMETRY_REQUESTS_PER_KEY,
+  TELEMETRY_RATE_WINDOW_MS,
+} from '../../core/telemetry-policy.js';
 
 export interface TelemetryKeyRow {
-  id: string; label: string; created_by: string; created_at: number; last_used_at: number | null; revoked_at: number | null;
+  id: string;
+  label: string;
+  created_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+  spans: number;
+  cleanup_done: number;
 }
-const list = read<[], TelemetryKeyRow>({ name: 'telemetryKeys.list', sql:
-  'SELECT id,label,created_by,created_at,last_used_at,revoked_at FROM telemetry_keys ORDER BY created_at DESC,id' });
-const issue = write<[id: string, hash: string, label: string, actor: string, now: number, limit: number], { id: string }>({ name: 'telemetryKeys.issue', sql:
-  `INSERT INTO telemetry_keys(id,key_hash,label,created_by,created_at)
-    SELECT ?1,?2,?3,?4,?5 WHERE (SELECT COUNT(*) FROM telemetry_keys)<?6 RETURNING id` });
-const authenticate = read<[hash: string], { id: string }>({ name: 'telemetryKeys.authenticate', sql:
-  'SELECT id FROM telemetry_keys WHERE key_hash=?1 AND revoked_at IS NULL' });
-const revoke = write<[id: string, actor: string, now: number], { id: string }>({ name: 'telemetryKeys.revoke', sql:
-  'UPDATE telemetry_keys SET revoked_at=?3,revoked_by=?2 WHERE id=?1 AND revoked_at IS NULL RETURNING id' });
-const purgeSpans = write<[id: string]>({ name: 'telemetryKeys.purgeSpans', sql:
-  'DELETE FROM telemetry_spans WHERE key_id=?1 AND EXISTS(SELECT 1 FROM telemetry_keys WHERE id=?1 AND revoked_at IS NOT NULL)' });
-const purgeLiveSpans = write<[id: string]>({ name: 'telemetryKeys.purgeLiveSpans', sql:
-  'DELETE FROM telemetry_spans WHERE key_id=?1 AND EXISTS(SELECT 1 FROM telemetry_keys WHERE id=?1 AND revoked_at IS NULL)' });
-const purgeCounts = write<[id: string]>({ name: 'telemetryKeys.purgeCounts', sql:
-  'DELETE FROM telemetry_counts WHERE key_id=?1 AND EXISTS(SELECT 1 FROM telemetry_keys WHERE id=?1 AND revoked_at IS NOT NULL)' });
-const forget = write<[id: string], { id: string }>({ name: 'telemetryKeys.forget', sql:
-  'DELETE FROM telemetry_keys WHERE id=?1 AND revoked_at IS NOT NULL RETURNING id' });
+const list = read<[], TelemetryKeyRow>({
+  name: 'telemetryKeys.list',
+  sql: 'SELECT id,label,created_by,created_at,last_used_at,revoked_at,spans,cleanup_done FROM telemetry_keys ORDER BY created_at DESC,id',
+});
+const issue = write<
+  [id: string, hash: string, label: string, actor: string, now: number, limit: number],
+  { id: string }
+>({
+  name: 'telemetryKeys.issue',
+  sql: `INSERT INTO telemetry_keys(id,key_hash,label,created_by,created_at)
+    SELECT ?1,?2,?3,?4,?5 WHERE (SELECT COUNT(*) FROM telemetry_keys)<?6 RETURNING id`,
+});
+const authenticate = read<[hash: string], { id: string }>({
+  name: 'telemetryKeys.authenticate',
+  sql: 'SELECT id FROM telemetry_keys WHERE key_hash=?1 AND revoked_at IS NULL',
+});
+const revoke = write<[id: string, actor: string, now: number], { id: string }>({
+  name: 'telemetryKeys.revoke',
+  sql: 'UPDATE telemetry_keys SET revoked_at=?3,revoked_by=?2 WHERE id=?1 AND revoked_at IS NULL RETURNING id',
+});
+const forget = write<[id: string], { id: string }>({
+  name: 'telemetryKeys.forget',
+  sql: 'DELETE FROM telemetry_keys WHERE id=?1 AND revoked_at IS NOT NULL AND cleanup_done=1 RETURNING id',
+});
 
 export const telemetryKeys = (db: RelationalStore) => rows(db, list.bind());
 export const telemetryKeyForHash = (db: RelationalStore, hash: string) => first(db, authenticate.bind(hash));
-export async function insertTelemetryKey(db: RelationalStore, key: { id: string; hash: string; label: string; actor: string; now: number }): Promise<boolean> {
-  return await first(db, issue.bind(key.id, key.hash, key.label, key.actor, key.now, TELEMETRY_KEY_LIMIT)) !== null;
+export async function insertTelemetryKey(
+  db: RelationalStore,
+  key: { id: string; hash: string; label: string; actor: string; now: number },
+): Promise<boolean> {
+  return (await first(db, issue.bind(key.id, key.hash, key.label, key.actor, key.now, TELEMETRY_KEY_LIMIT))) !== null;
 }
-/** Revocation and removal of every assertion it supplied share one transaction. */
-export async function revokeTelemetryKey(db: RelationalStore, key: { id: string; actor: string; now: number }): Promise<boolean> {
-  const [, ended] = await commit(db, purgeLiveSpans.bind(key.id), revoke.bind(key.id, key.actor, key.now));
-  return ended.results.length > 0;
+/** Ending authority changes only its key row; housekeeping owns bounded cleanup. */
+export async function revokeTelemetryKey(
+  db: RelationalStore,
+  key: { id: string; actor: string; now: number },
+): Promise<boolean> {
+  return (await first(db, revoke.bind(key.id, key.actor, key.now))) !== null;
 }
-/** Only a revoked key's record can be removed; its state transition is the final statement. */
 export async function forgetTelemetryKey(db: RelationalStore, id: string): Promise<boolean> {
-  const [, , removed] = await commit(db, purgeSpans.bind(id), purgeCounts.bind(id), forget.bind(id));
-  return removed.results.length > 0;
+  return (await first(db, forget.bind(id))) !== null;
 }
+const admit = write<[id: string, window: number, limit: number], { id: string }>({
+  name: 'telemetryKeys.admit',
+  sql: `UPDATE telemetry_keys SET requests=CASE WHEN rate_window=?2 THEN requests+1 ELSE 1 END,rate_window=?2
+    WHERE id=?1 AND revoked_at IS NULL AND (rate_window<>?2 OR requests<?3) RETURNING id`,
+});
+export const admitTelemetryRequest = async (db: RelationalStore, id: string, now: number): Promise<boolean> =>
+  (await first(db, admit.bind(id, Math.floor(now / TELEMETRY_RATE_WINDOW_MS), TELEMETRY_REQUESTS_PER_KEY))) !== null;
