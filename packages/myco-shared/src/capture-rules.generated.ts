@@ -584,6 +584,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           "payload.item.type": "CommandExecution"
         },
         "key": "payload.item.id",
+        "turnAt": "payload.turn_id",
         "name": "exec_command",
         "inputFields": {
           "command": "payload.item.command",
@@ -601,6 +602,7 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
           "payload.item.type": "McpToolCall"
         },
         "key": "payload.item.id",
+        "turnAt": "payload.turn_id",
         "nameAt": "payload.item.tool",
         "serverAt": "payload.item.server",
         "inputAt": "payload.item.arguments",

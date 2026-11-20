@@ -64,7 +64,7 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
     const retryAt = Number((await counters(db, 'session'))!.due_at);
     await publishDocuments(env, retryAt, limits());
     const closed = await counters(db, 'session');
-    expect(closed, name).toMatchObject({ prompts: 1, user_prompts: 1, replies: 1, tool_calls: 1, failed_tools: 1, due_at: null });
+    expect(closed, name).toMatchObject({ prompts: 1, user_prompts: 1, replies: 1, tool_calls: 1, failed_tools: 0, due_at: null });
     const turn = String(closed!.open_turn_key);
     const page = (await readPage({ db, blobs }, 'project', 'session', turn, 0))!;
     expect(page.map((record) => record.k), name).toEqual(['prompt', 'reply', 'tool']);

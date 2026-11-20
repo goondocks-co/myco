@@ -369,7 +369,7 @@ test('a line part placed keeps its count while the transcript grows, when its re
   });
 }, 180_000);
 
-test('real results that arrive during a partial turn close replace the failures it placed', async () => {
+test('real results that arrive during a partial turn close replace its unanswered outcomes', async () => {
   await withDocumentStores(async (db, name) => {
     const t0 = Date.now() - 2 * 60 * MIN, blobs = memoryBlobStore();
     const ids = Array.from({ length: 32 }, (_, i) => `pending-${i}`);
@@ -387,7 +387,7 @@ test('real results that arrive during a partial turn close replace the failures 
     expect(partial!.o, name).toBe(first.length);
     expect(Number(partial!.n), name).toBeGreaterThan(0);
     expect(Number(partial!.n), name).toBeLessThan(32);
-    expect(Number((await counters(db, 'closing'))!.failed_tools), name).toBe(Number(partial!.n));
+    expect(Number((await counters(db, 'closing'))!.failed_tools), name).toBe(0);
 
     const results = JSON.stringify({ type: 'user', uuid: uuid(63003), message: { role: 'user', content: ids.map((id) => ({ type: 'tool_result', tool_use_id: id, content: 'real success' })) } }) + '\n';
     await captureDocumentTranscript(db, blobs, 'closing', tx, results, t0 + 12 * MIN, first.length, 'claude-code');

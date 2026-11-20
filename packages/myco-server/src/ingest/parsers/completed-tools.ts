@@ -3,7 +3,7 @@ import { getAtPath } from '@goondocks/myco-shared/dot-path';
 import { lineTime, optionalRecordSource, recordId, str, type DerivedEvent, type ParsedLine, type ParserInput } from './index.js';
 
 /** Completed calls with their own source ids, including tools invoked inside an orchestration call. */
-export async function completedTool(input: ParserInput, agent: string, line: ParsedLine, promptId?: string): Promise<DerivedEvent | null> {
+export async function completedTool(input: ParserInput, agent: string, line: ParsedLine, owner: { promptId?: string; turnId?: string }): Promise<DerivedEvent | null> {
   const { value, offset, undatedAt } = line;
   const shape = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)?.completedTools
     ?.find(rule => Object.entries(rule.match).every(([path, expected]) => getAtPath(value, path) === expected));
@@ -22,6 +22,8 @@ export async function completedTool(input: ParserInput, agent: string, line: Par
     ? Object.fromEntries(Object.entries(shape.inputFields ?? {}).map(([field, path]) => [field, getAtPath(value, path)]))
     : getAtPath(value, shape.inputAt);
   const text = typeof output === 'string' ? output : JSON.stringify(output) ?? '';
+  const sourceTurn = shape.turnAt === undefined ? undefined : str(getAtPath(value, shape.turnAt));
+  const promptId = sourceTurn === undefined || sourceTurn === owner.turnId ? owner.promptId : undefined;
   return {
     kind: failed ? 'tool.failure' : 'tool.use', source, offset, callOffset: offset, outcomeOffset: offset,
     createdAt: lineTime(value, input.now, undatedAt),

@@ -13,13 +13,13 @@ const message = (role: string, text: string) => row('response_item', { type: 'me
 const codex = [
   row('event_msg', { type: 'task_started', turn_id: 'turn-a' }), message('user', '<relay sender="planner">Read the task</relay>'),
   row('response_item', { type: 'custom_tool_call', call_id: 'wrapper', name: 'exec', input: 'tools.exec_command({cmd:"false"})' }),
-  row('event_msg', { type: 'item_completed', item: { type: 'CommandExecution', id: 'command', command: 'false', status: 'failed', exit_code: 1, aggregated_output: 'command failed' } }),
+  row('event_msg', { type: 'item_completed', turn_id: 'turn-a', item: { type: 'CommandExecution', id: 'command', command: 'false', status: 'failed', exit_code: 1, aggregated_output: 'command failed' } }),
   row('response_item', { type: 'custom_tool_call_output', call_id: 'wrapper', output: [{ type: 'text', text: 'Script completed' }] }),
   row('response_item', { type: 'custom_tool_call', call_id: 'patch', name: 'apply_patch', input: '*** Begin Patch\n*** Add File: alpha.txt\n+alpha\n*** Add File: beta.txt\n+beta\n*** End Patch' }),
   row('response_item', { type: 'custom_tool_call_output', call_id: 'patch', output: 'Success' }), message('assistant', 'Added the files'),
   row('event_msg', { type: 'task_complete', turn_id: 'turn-a' }), row('compacted', { message: 'compact context' }),
   row('event_msg', { type: 'task_started', turn_id: 'turn-b' }), message('user', '<relay sender="reviewer">Check the result</relay>'),
-  row('event_msg', { type: 'item_completed', item: { type: 'McpToolCall', id: 'search', server: 'myco', tool: 'myco_search', arguments: { query: 'result' }, status: 'completed', result: { content: [] } } }),
+  row('event_msg', { type: 'item_completed', turn_id: 'turn-b', item: { type: 'McpToolCall', id: 'search', server: 'myco', tool: 'myco_search', arguments: { query: 'result' }, status: 'completed', result: { content: [] } } }),
   message('assistant', 'Checked'), row('event_msg', { type: 'task_complete', turn_id: 'turn-b' }),
 ];
 const claude = [

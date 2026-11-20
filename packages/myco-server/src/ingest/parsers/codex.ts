@@ -123,9 +123,9 @@ export const codexParser: TranscriptParser = {
     };
 
     for (const { value, offset, undatedAt } of lines) {
-      const opened = scheme === 'codex-turn-v1' ? turnOpened(value) : undefined;
+      const opened = turnOpened(value);
       if (opened !== undefined && held.turn?.id !== opened) held.turn = { id: opened, opened: false };
-      const completed = await completedTool(input, this.agent, { value, offset, undatedAt }, promptId);
+      const completed = await completedTool(input, this.agent, { value, offset, undatedAt }, { promptId, turnId: held.turn?.id });
       if (completed !== null) { events.push(completed); continue; }
       if (str(value.type) !== 'response_item' || !isBlock(value.payload)) continue;
       const payload = value.payload;
