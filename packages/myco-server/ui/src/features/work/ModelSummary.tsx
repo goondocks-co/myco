@@ -28,7 +28,7 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
   }
   return (
     <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary="">
-      {(run.requested !== null || variant === 'details') && <span>Requested: {run.requested === null ? 'Not recorded' : `${run.requested.tier} · ${run.requested.model}${run.requested.effort === null ? '' : ` · ${run.requested.effort} effort`}`}</span>}
+      {(run.requested !== null || variant === 'details') && <span>Requested: {run.requested === null ? 'Not recorded' : `${run.requested.model}${run.requested.effort === null ? '' : ` · ${run.requested.effort} effort`}`}</span>}
       {(known || variant === 'details') && <span>{known ? `${identity.status === 'reported' ? 'Actual' : 'Launched'}: ${models.join(', ')}` : 'Model not recorded'}</span>}
       {different}
       {effortSkipped}

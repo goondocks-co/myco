@@ -20,6 +20,7 @@ import {
 import { commandShape } from '@goondocks/myco-shared/command-shape';
 import type { RunAttempt, RunAudit, RunCall, RunStep } from '../../packages/myco-server/ui/src/features/work/wire';
 import { ADMIN, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, TASK_RUNS, WEEK_WORK } from '../helpers/work-fixture';
+import { CURATION_BODY_OVER_LIMIT } from '@goondocks/myco-shared/call-words';
 import { TASK_DESCRIPTIONS } from './task-fixture';
 import { MECHANISM_WORDS } from '../helpers/reader-vocabulary';
 import { rawIdsIn } from '../helpers/raw-ids';
@@ -383,6 +384,12 @@ describe('the summary line', () => {
     expect(files).toEqual({ paths: ['a.ts'], unnamed: 1 });
     expect(summaryWords(rows, true, files)).toBe('Read 2 files, ran 3 commands, edited 1 file and saved 2 spores; 2 steps failed, 1 of them retried.');
   });
+});
+
+it('reads a curation answer refused twice, never accepted, as two failed calls', () => {
+  const refused = `Not saved: curation answer; notes[0].content ${CURATION_BODY_OVER_LIMIT}: it has 1630 characters.`;
+  const rows = attemptActivity([call(1, 'myco_run_curation', 'answer', T0, refused), call(2, 'myco_run_curation', 'answer', T0 + 1, refused)], []);
+  expect(summaryWords(rows, false, { paths: [], unnamed: 0 })).toBe('Called Myco twice; 2 calls failed.');
 });
 
 it('never counts a command the agent wasn’t allowed to run as run, and names the refusal as one', () => {

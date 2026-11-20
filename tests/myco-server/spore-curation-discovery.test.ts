@@ -200,9 +200,24 @@ test('preview discovery walks a fixed page budget, validates and resumes Project
     const first = await start(); expect(first).toMatchObject({ status: 200, body: { outcome: 'no_qualifying_group', continuation: { projectId: 'proj_1' } } });
     expect(await start({ ...first.body.continuation, projectId: 'proj_2' })).toMatchObject({ status: 400, body: { error: 'invalid_curation_continuation' } });
     expect(await start({ version: 1 })).toMatchObject({ status: 400, body: { error: 'invalid_curation_continuation' } });
+    expect(await start({ ...first.body.continuation, shown: ['pair-a', 'pair-a'] })).toMatchObject({ status: 400, body: { error: 'invalid_curation_continuation' } });
     expect(await start(first.body.continuation)).toMatchObject({ status: 200, body: { outcome: 'group_found', continuation: { projectId: 'proj_1' } } });
     const claim = await f.poll(); if (!claim.claimed) throw new Error('continued preview not claimed');
     expect(curationAssignment((await getRun(f.db, scope, claim.run.id))!.runContext)!.members.map(member => member.id)).toEqual(['pair-a', 'pair-b']);
+  } finally { f.sqlite.close(); }
+});
+
+test('a preview sitting skips a group whose notes it has shown, and a sitting that starts again offers it again', async () => {
+  const f = await fixture();
+  try {
+    await f.add('pair-a', [1, 0], 1); await f.add('pair-b', [1, 0], 2); await f.add('pair-c', [0, 1], 3); await f.add('pair-d', [0, 1], 4);
+    const members = (preview: Awaited<ReturnType<typeof discoverCurationPreview>>) =>
+      (preview.input!.context!.curation as { members: { id: string }[] }).members.map(member => member.id).sort();
+    const first = await discoverCurationPreview(f.env, { projectId: 'proj_1', now: f.now });
+    expect(members(first)).toEqual(['pair-a', 'pair-b']);
+    const next = await discoverCurationPreview(f.env, { projectId: 'proj_1', now: f.now, continuation: first.continuation });
+    expect(members(next)).toEqual(['pair-c', 'pair-d']);
+    expect(members(await discoverCurationPreview(f.env, { projectId: 'proj_1', now: f.now, continuation: { ...first.continuation, shown: [] } }))).toEqual(['pair-a', 'pair-b']);
   } finally { f.sqlite.close(); }
 });
 

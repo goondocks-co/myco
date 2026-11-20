@@ -301,7 +301,7 @@ for (const viewport of ['desktop', 'phone'] as const) for (const mode of ['light
     const { context, page, watch } = await openPage(browser, { path: `${workPath()}/runs/run_c19f7a0e55`, viewport, mode, cookie: screensEnv('ownerCookie') });
     try {
       const panel = page.locator('[data-slide-over]');
-      await expect(panel.locator('header [data-model-summary]')).toContainText('Requested: high · opus · high effort');
+      await expect(panel.locator('header [data-model-summary]')).toContainText('Requested: opus · high effort');
       await expect(panel.locator('header [data-model-summary]')).toContainText('Actual: claude-sonnet-4-6');
       await expect(panel.locator('header [data-model-mismatch]')).toBeVisible();
       await expect(panel.locator('[data-run-summary]')).toHaveText('Read 2 files, searched once, ran 1 command and saved the code map; 1 step failed.');

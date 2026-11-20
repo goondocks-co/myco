@@ -123,8 +123,8 @@ describe('a project\'s settings', () => {
   });
 
   it('lets an admin preview curation while it is off, reading each outcome and refusal and continuing from where the last answer left off', async () => {
-    const first = { version: 1, projectId: P, position: { after_at: 1 } };
-    const further = { version: 1, projectId: P, position: { after_at: 2 } };
+    const first = { version: 2, projectId: P, position: { after_at: 1 }, shown: ['decision-a'] };
+    const further = { version: 2, projectId: P, position: { after_at: 2 }, shown: [] };
     const answers: Array<() => Response> = [
       () => Response.json({ outcome: 'group_found', runId: 'run_preview01', projectId: P, queued: true, continuation: first }),
       () => Response.json({ error: 'invalid_curation_continuation', message: 'Invalid curation continuation.' }, { status: 400 }),
@@ -146,7 +146,10 @@ describe('a project\'s settings', () => {
     };
     await press('Preview a group', 'Preview queued. It starts when a machine is free.');
     expect(within(row).getByRole('link', { name: /Open the preview/ }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_preview01`);
+    const sitting = 'The next preview skips a group whose spores were all shown here already. A preview records nothing, so leaving this page starts again from the first group.';
+    expect(row.textContent).toContain(sitting);
     await press('Preview the next group', 'The place to look further from is no longer valid. Preview again to start from the beginning.');
+    expect(row.textContent).not.toContain(sitting);
     await press('Preview a group', 'No group in this stretch of spores needs curation. Look further to check the next stretch.');
     await press('Look further', 'The spores checked aren’t searchable for similarity yet, so no group could be found.');
     await press('Preview a group', 'Your previews in this Project are used up (5 in 24 hours). You can preview again once an earlier preview is a day old.');
