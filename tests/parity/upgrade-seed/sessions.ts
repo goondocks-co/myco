@@ -33,6 +33,12 @@ export async function seedSessions(target: SeedTarget, stamp: number): Promise<S
   const word = `upgradeword${stamp}`;
   const captured = { sessionId: `upgrade-captured-${stamp}`, promptIds: [crypto.randomUUID(), crypto.randomUUID()], attachmentId: crypto.randomUUID(), planKey: '' };
   await event(target, captured.sessionId, 'session.start', { agent: 'claude-code', branch: 'upgrade', startedAt: stamp }, stamp);
+  const context = await fetch(`${target.url}/context/session`, {
+    method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: captured.sessionId, kind: 'start', remote: `https://example.test/upgrade/repo-${stamp}.git` }),
+  });
+  expect(context.status).toBe(200);
+
   await event(target, captured.sessionId, 'prompt', { promptId: captured.promptIds[0], text: `Plan the upgrade ${word}`, origin: 'user' }, stamp + 1);
   await event(target, captured.sessionId, 'attachment', { attachmentId: captured.attachmentId, promptId: captured.promptIds[0], blob: await blob(target, PNG, 'image/png'), description: 'a screenshot' }, stamp + 2);
   await event(target, captured.sessionId, 'response', { responseId: crypto.randomUUID(), promptId: captured.promptIds[0], text: 'Planned it.' }, stamp + 3);
