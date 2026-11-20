@@ -19,10 +19,14 @@ const JWT_LIFETIME_SECONDS = 9 * 60;
 const REQUEST_TIMEOUT_MS = 10_000;
 const RSA = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' } as const;
 
+/** The account that owns an App, or holds one of its installations. */
+export interface GitHubAppOwner { login: string; type: 'User' | 'Organization' }
 export interface GitHubAppIdentity {
   id: number;
   clientId: string;
   slug: string;
+  name: string;
+  owner: GitHubAppOwner | null;
   permissions: Record<string, string>;
 }
 export type GitHubAppStatus =
@@ -66,12 +70,22 @@ export function githubAppAccess(options: { clientId: string; privateKey: string;
         || !Object.values(identity.permissions).every((v) => typeof v === 'string')) {
         throw new GitHubAppError('GitHub did not confirm this server’s App client id and permissions. Nothing was saved; check the App and run the import again.');
       }
-      return { id: Number(identity.id), clientId: options.clientId, slug: identity.slug, permissions: identity.permissions as Record<string, string> };
+      return {
+        id: Number(identity.id), clientId: options.clientId, slug: identity.slug, name: typeof identity.name === 'string' ? identity.name : identity.slug,
+        owner: ownerOf(identity.owner), permissions: identity.permissions as Record<string, string>,
+      };
     },
   };
 }
 
-export function gitHubAppPermissionIssues(app: GitHubAppIdentity): string[] {
+/** An App's owner as GitHub names it, when it is an account. */
+export function ownerOf(value: unknown): GitHubAppOwner | null {
+  if (value === null || typeof value !== 'object') return null;
+  const { login, type } = value as Record<string, unknown>;
+  return typeof login === 'string' && (type === 'User' || type === 'Organization') ? { login, type } : null;
+}
+
+export function gitHubAppPermissionIssues(app: Pick<GitHubAppIdentity, 'permissions'>): string[] {
   const required = Object.keys(GITHUB_APP_PERMISSIONS)
     .filter((permission) => app.permissions[permission] !== 'read')
     .map((permission) => `${permission} must be read-only (currently ${app.permissions[permission] ?? 'absent'})`);

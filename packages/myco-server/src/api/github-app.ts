@@ -1,6 +1,7 @@
 import type { OwnerContext } from '../context.js';
 import type { ServerEnv } from '../core/adapters.js';
-import { GitHubAccessRefused, githubAppProjects, githubAppStatus, MAX_REPOSITORY_PAGE } from '../core/github-app.js';
+import { GitHubAccessRefused, githubAppProjects, MAX_REPOSITORY_PAGE } from '../core/github-app.js';
+import { githubAppSetup, repositorySuggestions } from '../core/github-app-setup.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -17,8 +18,15 @@ const positiveId = (raw: unknown): number | null => {
   return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : null;
 };
 
+/** The live facts the dashboard's setup checklist is derived from, asked of GitHub on an admin's check. */
 export async function handleGitHubApp(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return Response.json(await githubAppStatus(env, ctx.now), { headers: NO_STORE });
+  return Response.json(await githubAppSetup(env, ctx.now), { headers: NO_STORE });
+}
+
+/** A repository proposed for each Project with none, by equal name across approved installations; nothing is connected. */
+export async function handleRepositorySuggestions(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  try { return Response.json(await repositorySuggestions(env, ctx.now), { headers: NO_STORE }); }
+  catch (error) { return githubRefusal(error); }
 }
 
 /** One page of the App's installations and which accounts this server approved: asked of GitHub on an admin's refresh. */

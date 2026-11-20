@@ -59,6 +59,8 @@ const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
     'REJOIN_HINT is the CLI\'s line, printed in a terminal; the dashboard imports only the controls it names',
   'myco-shared/member-protocol.ts:A machine belongs to one member of a Deployment: every home on it signs in as the same machine':
     'MACHINE_IDENTITY_NOTE is the CLI\'s line; the dashboard shows MEMBER_KEEPS_MACHINES instead',
+  'myco-shared/github-app-setup.ts:On the App’s settings page, generate a private key. Look for the App’s private keys: today under Credentials → Key pairs → New key. GitHub downloads a .pem file.':
+    'GitHub labels the page holding an App’s private keys "Credentials"; the reader looks for that label on GitHub',
   'myco-shared/repository.ts:Repository URL must be HTTPS, with a repository path and no credentials, query, or fragment.':
     'the refusal of a URL that carries a user name and password, where "credentials" names exactly the part to take out',
 };

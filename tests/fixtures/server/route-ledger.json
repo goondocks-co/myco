@@ -92,6 +92,7 @@
   "session:admin GET /api/github-app",
   "session:admin GET /api/github-app/installations",
   "session:admin GET /api/github-app/installations/{installationId}/repositories",
+  "session:admin GET /api/github-app/suggestions",
   "session:admin GET /api/maintenance",
   "session:admin GET /api/projects/{projectId}/curation/answers/{runId}",
   "session:admin GET /api/projects/{projectId}/curation/coverage",

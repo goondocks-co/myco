@@ -16,7 +16,7 @@ import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { askCreateTarget, conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
-import { APP_NAME_MAX } from '@myco/server/github-app.js';
+import { APP_NAME_MAX } from '@goondocks/myco-shared/github-app-setup';
 import { parseArgs as parseCutoverArgs } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { requireNativeDeps } from '@myco/runtime/native-deps.js';

@@ -116,24 +116,33 @@ To watch a local server in this terminal, use `myco server run --target local`. 
 
 A home holding `server/` or a Cloudflare operator record refuses purge unless you also pass `--allow-deployment-loss`. Back up the Deployment first; the override admits deletion of `server/`, including its data and operator records. An installed native Deployment service blocks purge even with the override: run `myco server uninstall --target local` first. After `myco cutover` reports the move complete, check retained 1.4 backups before deleting legacy files by hand. In every other migration state, run `myco cutover --dry-run` and keep those files.
 
-## Extend or replace the GitHub App key
+## Set up repository access
 
-An already configured `myco server github-app --target local|cloudflare --url <address>` extends the existing sign-in App. To install or rotate a sign-in pair, explicitly use `--existing --client-id <id> --client-secret-stdin`; this installs the supplied pair even when sign-in is already configured. Fresh registration and explicit credential installation finish sign-in before attempting repository-key setup. An absent, invalid or unverifiable key leaves sign-in installed and prints the command to finish repository access. Follow the command’s instructions:
+Dashboard **Settings → Sign-in and access → GitHub App** carries the whole setup as a checklist. Each step is read live from GitHub and this server when the section opens and when you press **Check again**; nothing is marked done by hand. It names this server's App and its owner, links straight to the App's own pages, and shows the one command that needs the operator's machine with this Deployment's target and address filled in:
 
-1. In GitHub → Settings → Developer settings → GitHub Apps (or the owning organization’s settings), open the App whose Client ID matches this Deployment. Under Permissions & events, set repository Contents, Pull requests and Metadata to Read-only and save. Leave account permissions and the callback unchanged.
-2. Approve the additional permissions for existing installations under Settings → Applications → Installed GitHub Apps → Configure.
-3. Under the App’s General page → Private keys, generate a key. Import the downloaded file:
+1. **Sign-in works through this App.**
+2. **Repository permissions are read-only.** The step names each missing permission and links to the App's permissions page: set repository Contents, Pull requests and Metadata to Read-only and save; leave account permissions and the callback URL unchanged. GitHub then asks each account the App is installed on to accept the change. An App installed nowhere yet has nothing to accept.
+3. **The private key is imported.** On the App's settings page, generate a private key. GitHub moves its settings pages: look for the App's private keys, today under Credentials → Key pairs → New key. GitHub downloads a `.pem` file; import it with the command the step shows, for example:
 
    ```sh
-   myco server github-app --target cloudflare --url <address> --private-key-file <downloaded.pem>
-   # For native, stop its service, import with --target local, then start it:
+   myco server github-app --target cloudflare --url https://myco.example.com --private-key-file <downloaded.pem>
+   # A native server is stopped around the import:
    myco server uninstall --target local
-   myco server github-app --target local --url <address> --private-key-file <downloaded.pem>
+   myco server github-app --target local --url http://127.0.0.1:8787 --private-key-file <downloaded.pem>
    myco server install --target local
    ```
 
-   Piped PEM input uses `--private-key-stdin`; key bytes never belong in command arguments. The command signs an App JWT with the existing Client ID and checks `GET /app` for matching identity and all three reads before storing anything. A wrong key or missing permission leaves sign-in untouched. An interrupted or unacknowledged write can be replayed by rerunning without a key input; an unfinished import remains in the private operator journal until completion or `--discard-pending`.
-4. In dashboard Settings → Sign-in and access → GitHub App, press **Check again**. It reports key absent, repository access ready, missing permissions by name, or a verification failure. Verify browser sign-in before changing Project repository access. Remove the downloaded PEM after a successful check; the command leaves it on disk and names its path. After verifying a rotated key, delete the old key in GitHub.
+4. **Installed on an account.** Install the App, from the step's link, on each account that owns repositories code tasks should read, choosing **Only select repositories**. An organization owner may need to approve the installation.
+5. **Approved here.** The App is public so anyone can sign in with it, which also means anyone can install it. The step lists installations by accounts this server has not approved, each with **Approve**. Approve only accounts you own or trust.
+6. **A Project reads its repository.** Connect a repository to a Project (below). The section says "Repository access is set up" only once GitHub lets the App read a connected Project's repository; until then it says how many steps remain and which is next.
+
+GitHub may ask you to confirm access (your password, passkey or two-factor code) before it opens an App's settings; confirm, and the page opens.
+
+Before the key is imported, the server identifies its App by the name registration gives it, derived from the server's address, and GitHub's public page for that App, kept only when its Client ID matches this server's. An App renamed on GitHub, or a server reached only at a loopback address, is not identified until the key is imported: the section then names the expected App name and Client ID and links to your Apps and your organizations.
+
+`myco server github-app --target local|cloudflare --url <address>` on an already configured server prints the same steps in the terminal: the App's name and owner, direct links, the exact import command and, after a successful import, the steps that remain (install, connect). To install or rotate a sign-in pair, explicitly use `--existing --client-id <id> --client-secret-stdin`; this installs the supplied pair even when sign-in is already configured. Fresh registration and explicit credential installation finish sign-in before attempting repository-key setup. An absent, invalid or unverifiable key leaves sign-in installed and prints the command to finish repository access.
+
+Piped PEM input uses `--private-key-stdin`; key bytes never belong in command arguments. The command signs an App JWT with the existing Client ID and checks `GET /app` for matching identity and all three reads before storing anything. A wrong key or missing permission leaves sign-in untouched. An interrupted or unacknowledged write can be replayed by rerunning without a key input; an unfinished import remains in the private operator journal until completion or `--discard-pending`. Remove the downloaded PEM after the dashboard shows the key step done; the command leaves it on disk and names its path. After verifying a rotated key, delete the old key in GitHub.
 
 Cloudflare stores `GITHUB_APP_PRIVATE_KEY` as a Worker secret, installed through the existing secret-bulk stdin route. Native stores the same single-line base64 PKCS#8 value in owner-only `server/local/secrets.env`; its private `.bak` can retain the prior key after rotation. An interrupted command holds the key only in its protected pending journal (0600 inside the target’s 0700 directory). No key is stored in the database or sent to members or runners. A native runner sharing the server’s OS user can read that user’s secret files; use separate OS users when that boundary is needed.
 
@@ -143,11 +152,13 @@ The App key is replaceable, not recovery material: backups do not require it, an
 
 Myco reads Project repositories only through this Deployment's App. Nothing else gives it repository access: there is no per-Project token and no other Git host.
 
-1. Install the App on the account that owns the repository: open `https://github.com/apps/<app-slug>/installations/new` (the slug is shown under Settings → Sign-in and access → GitHub App after **Check again**), choose the account, choose **Only select repositories**, select the repositories code tasks should read, and install. An organization owner may need to approve the installation.
-2. In the dashboard, open the Project's **Settings → Repository** and press **Connect repository**. The dialog lists every installation of the App. The App is public so anyone can sign in with it, which also means anyone can install it: an installation by an account this server has not approved is shown as "Installed by an account this server has not approved", with its login and whether it is an organization or a personal account, and an **Approve** action. Approve only accounts you own or trust.
-3. Choose an approved account, then one of the repositories its installation selected, and the branch. **Save repository**. The server confirms the choice with GitHub before storing it, by GitHub's numeric repository and installation ids.
+1. In the dashboard, open the Project's **Settings → Repository** and press **Connect repository**. The dialog lists every installation of the App. An installation by an account this server has not approved is shown as "Installed by an account this server has not approved", with its login and whether it is an organization or a personal account, and an **Approve** action.
+2. Choose an approved account, then one of the repositories its installation selected, and the branch. **Save repository**. The server confirms the choice with GitHub before storing it, by GitHub's numeric repository and installation ids.
+3. When the App is installed nowhere, or the repository is not listed, the dialog links to the App's install page and to the chosen account's installation settings in GitHub. Install it or add the repository there, return, and press **Refresh GitHub access**.
 
-Settings → Sign-in and access → GitHub App lists the approved accounts after **Check again**; **Remove approval** stops new tokens for that account's installations. Release tracking reads the same connected repository; it has no repository or token of its own.
+**Find repositories for my Projects**, in the GitHub App section, proposes for each Project with no repository the one repository, across approved accounts' installations, whose name equals the Project's (ignoring case), with its default branch. A Project with no such repository, or more than one, gets no proposal. Nothing is connected until you press **Connect** on a row or **Connect all**; each connection is saved and checked with GitHub exactly as the dialog saves it.
+
+The GitHub App section lists the approved accounts; **Remove approval** stops new tokens for that account's installations. Release tracking reads the same connected repository; it has no repository or token of its own.
 
 Updating to the release that brings this removes every per-Project token and connection and drops release tracking's own repository. Before updating, note each Project's repository and branch, and turn **Work on a schedule** off. Between the schema change and the new server going live, the previous server answers repository and release settings, code-task starts, member capture delivery and runner claims with "unavailable, retry later" (members keep their capture and deliver it afterwards), its release checks and scheduled code work fail on each wake, and sign-in keeps working. Finish the update so the new server goes live, then connect each Project again. A key a previous server saved under a retired name during that window is removed by the new server's own housekeeping.
 

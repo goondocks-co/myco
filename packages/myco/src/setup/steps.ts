@@ -241,7 +241,7 @@ const signInTarget = (ctx: Context): SignInTarget => {
 };
 async function signInOptions(ctx: Context): Promise<RegisterOptions> {
   const answers = chosen(ctx);
-  const name = answers.appName ?? defaultAppName(answers.url);
+  const name = answers.appName ?? await defaultAppName(answers.url);
   const owner = answers.org ?? 'your account';
   await consent(ctx, 'signin', { url: answers.url, owner, name }, `Register a GitHub sign-in app named ${JSON.stringify(name)}, owned by ${owner}?`);
   if (!ctx.yes && !hasPendingSignIn(signInTarget(ctx), answers.url) && await confirm(ctx.ask, 'Do you already have a GitHub sign-in app for this address?', '--yes to register a new app')) {

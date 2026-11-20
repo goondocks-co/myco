@@ -182,7 +182,11 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
   { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectCaptureSettings(page) },
   { name: 'settings-backups', path: () => '/settings/backups', rendered: (page) => expectSection(page, 'Backups', 'Store checks') },
-  { name: 'settings-access', path: () => '/settings/access', rendered: (page) => expectSection(page, 'Sign-in and access', 'Who can sign in') },
+  { name: 'settings-access', path: () => '/settings/access', rendered: async (page) => {
+    await expectSection(page, 'Sign-in and access', 'Who can sign in');
+    await expect(page.locator('[data-setup-headline]')).toHaveText('Repository access is not set up yet: 5 of 6 steps remain. Next: Set the App’s repository permissions.');
+    await expect(page.locator('[data-step="key"] code')).toHaveText(['myco server uninstall --target local', /^myco server github-app --target local --url http:\/\/127\.0\.0\.1:\d+ --private-key-file <downloaded\.pem>$/, 'myco server install --target local']);
+  } },
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
   { name: 'health', path: () => '/status/health', rendered: (page) => expectHealth(page) },
 ];

@@ -5,14 +5,26 @@ import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/sour
 import { GitHubAccessRefused, githubAppProjects } from '@myco-server-worker/core/github-app.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
-import { APP_SECRETS, githubFixture, OPERATOR, SOURCE, SOURCE_URL, STRANGER } from './helpers/github-app.js';
+import { githubAppChecklist, githubAppHeadline, type GitHubAppSetup } from '@goondocks/myco-shared/github-app-setup';
+import { APP, APP_SECRETS, githubFixture, OPERATOR, SOURCE, SOURCE_URL, STRANGER } from './helpers/github-app.js';
+
+const ORIGIN = 'https://myco.example.com';
+/** GitHub's public page for an App at the slug `Myco (myco.example.com)` implies. https://docs.github.com/en/rest/apps/apps#get-an-app */
+const PUBLIC_PATH = '/apps/myco-myco-example-com';
 
 function rig(options: { key?: boolean } = {}) {
   const fixture = sqliteEnv();
   seedMemberRoleAccount(fixture.sqlite);
   const github = githubFixture();
-  const server = createServer({ now: Date.now, sourceOf: cloudflareSourceOf, fetchImpl: github.fetchImpl });
-  const env = () => ({ ...serverEnvFromBindings({ ...fixture.env, ...OWNER_ENV, ...(options.key === false ? {} : APP_SECRETS) } as never), outbound: github.fetchImpl });
+  const publicPage = { current: { ...APP, slug: 'myco-myco-example-com', name: 'Myco (myco.example.com)', permissions: { metadata: 'read' } } as Record<string, unknown> };
+  const outbound: typeof github.fetchImpl = async (input, init) => {
+    const request = new Request(input, init);
+    if (new URL(request.url).pathname !== PUBLIC_PATH) return github.fetchImpl(input, init);
+    expect(request.headers.has('authorization')).toBe(false);
+    return Response.json(publicPage.current);
+  };
+  const server = createServer({ now: Date.now, sourceOf: cloudflareSourceOf, fetchImpl: outbound });
+  const env = () => ({ ...serverEnvFromBindings({ ...fixture.env, ...OWNER_ENV, MYCO_ORIGIN: ORIGIN, ...(options.key === false ? {} : APP_SECRETS) } as never), outbound });
   const call = async (method: string, path: string, body?: unknown) => {
     const request = method === 'GET' ? await asOwner(fixture.db, path) : new Request(await asOwnerPost(fixture.db, path, body ?? {}), { method });
     const response = await server.handleRequest(request, env());
@@ -22,7 +34,13 @@ function rig(options: { key?: boolean } = {}) {
   const asMember = async (method: string, path: string) => (await server.handleRequest(new Request(`https://s${path}`, { method,
     headers: { cookie: await ownerCookie(fixture.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
     body: method === 'GET' ? undefined : '{}' }), env())).status;
-  return { ...fixture, github, env, call, asMember };
+  /** The setup facts, and the checklist and headline the dashboard derives from them. */
+  const setup = async () => {
+    const answer = await call('GET', '/api/github-app');
+    const steps = githubAppChecklist(answer.body as GitHubAppSetup, ORIGIN);
+    return { ...answer, headline: githubAppHeadline(steps), step: Object.fromEntries(steps.map(step => [step.id, step])) };
+  };
+  return { ...fixture, github, env, call, asMember, setup, publicPage };
 }
 
 const REPOSITORY = '/api/projects/proj_1/repository';
@@ -87,6 +105,54 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     const refused = await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
     expect(refused).toMatchObject({ status: 409, body: { failure: 'access_refused' } });
     expect(refused.text).not.toContain('upstream validation detail');
+  });
+
+  it('derives each setup step live: finds the App before its key, names what remains, and says set up only once a Project reads its repository', async () => {
+    const keyless = rig({ key: false });
+    const before = await keyless.setup();
+    expect(before.body).toMatchObject({ target: 'cloudflare', origin: ORIGIN, key: { state: 'key_absent' }, installations: null, repository: null,
+      app: { slug: 'myco-myco-example-com', owner: { login: 'operator-org', type: 'Organization' }, source: 'public' } });
+    expect(before.step.permissions).toMatchObject({ state: 'todo', title: 'Repository permissions need changes: contents must be read-only (currently absent); pull_requests must be read-only (currently absent).',
+      links: [{ label: 'Open the App’s permissions', href: 'https://github.com/organizations/operator-org/settings/apps/myco-myco-example-com/permissions' }] });
+    expect(before.step.key).toMatchObject({ state: 'todo', commands: [`myco server github-app --target cloudflare --url ${ORIGIN} --private-key-file <downloaded.pem>`] });
+    expect(before.step.installed).toMatchObject({ state: 'waiting', links: [{ href: 'https://github.com/apps/myco-myco-example-com/installations/new' }] });
+    expect(before.headline).toBe('Repository access is not set up yet: 5 of 6 steps remain. Next: Repository permissions need changes: contents must be read-only (currently absent); pull_requests must be read-only (currently absent).');
+    keyless.publicPage.current = { ...keyless.publicPage.current, client_id: 'another-app' };
+    expect((await keyless.setup()).body).toMatchObject({ app: null, expectedName: 'Myco (myco.example.com)' });
+
+    const r = rig();
+    const installed = await r.setup();
+    expect(installed.step.installed.title).toBe('Installed on operator-org (an organization), operat0r-org (an organization).');
+    expect(installed.step.approved.state).toBe('todo');
+    expect(installed.headline).toBe('Repository access is not set up yet: 2 of 6 steps remain. Next: Approve an account that installed the App.');
+    await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
+    expect((await r.setup()).step.connected).toMatchObject({ state: 'todo', title: 'Connect a repository to a Project.' });
+    await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
+    const done = await r.setup();
+    expect(done.headline).toBe('Repository access is set up: a reads example/source.');
+    r.github.state.suspended.add(OPERATOR.installationId);
+    expect((await r.setup()).step.connected).toMatchObject({ state: 'failed', title: expect.stringContaining('a’s repository can’t be read: The App installation was removed or suspended') });
+    expect(r.github.state.revoked).toEqual(r.github.state.issued.map(entry => entry.token));
+    for (const { token } of r.github.state.issued) expect(done.text).not.toContain(token);
+    expect(done.text).not.toContain(APP_SECRETS.GITHUB_APP_PRIVATE_KEY);
+    expect(await r.asMember('GET', '/api/github-app')).toBe(403);
+  });
+
+  it('proposes the one same-named repository for each Project with none, and connects nothing itself', async () => {
+    const r = rig();
+    expect((await r.call('POST', '/api/projects', { projectId: 'proj_source', name: 'Source' })).status).toBe(201);
+    const proposals = () => r.call('GET', '/api/github-app/suggestions');
+    expect((await proposals()).body).toEqual({ suggestions: [], complete: true });
+    await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
+    const proposal = { projectId: 'proj_source', project: 'Source', installationId: OPERATOR.installationId, repositoryId: SOURCE.id, fullName: 'example/source', defaultBranch: 'main' };
+    expect((await proposals()).body).toEqual({ suggestions: [proposal], complete: true });
+    expect((await r.call('GET', '/api/projects/proj_source/repository')).body.repository).toBeNull();
+    await r.call('POST', '/api/github-app/accounts', { installationId: STRANGER.installationId });
+    expect((await proposals()).body.suggestions).toEqual([]);
+    await r.call('DELETE', `/api/github-app/accounts/${STRANGER.account.id}`);
+    await r.call('PUT', '/api/projects/proj_source/repository', { installationId: proposal.installationId, repositoryId: proposal.repositoryId, branch: proposal.defaultBranch, revision: null });
+    expect((await proposals()).body.suggestions).toEqual([]);
+    expect(await r.asMember('GET', '/api/github-app/suggestions')).toBe(403);
   });
 
   it('refuses the token-era body by name, a stale writer and a keyless Deployment, and disconnects only the current revision', async () => {

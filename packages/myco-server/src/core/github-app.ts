@@ -1,5 +1,5 @@
 import { GITHUB_ACCESS_FAILURES, type GitHubAccessFailure } from '@goondocks/myco-shared/repository';
-import { GITHUB_TOKEN_PERMISSIONS, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppStatus, type GitHubTokenPurpose } from '@goondocks/myco-shared/github-app';
+import { GITHUB_TOKEN_PERMISSIONS, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppIdentity, type GitHubAppOwner, type GitHubAppStatus, type GitHubTokenPurpose } from '@goondocks/myco-shared/github-app';
 import { GitHubAppError, githubApi, revokeInstallationToken } from '@goondocks/myco-shared/github-api';
 import { approveAccount, approvedAccount, approvedAccounts, withdrawAccount, type ApprovedAccount } from '../db/github-app/accounts.js';
 import type { ServerEnv } from './adapters.js';
@@ -32,9 +32,9 @@ export class GitHubAccessRefused extends Error {
   constructor(readonly failure: GitHubAccessFailure) { super(GITHUB_ACCESS_FAILURES[failure]); }
 }
 
-export interface InstallationAccount { id: number; login: string; type: 'User' | 'Organization' }
-/** One page of the App's installations, and whether GitHub holds another after it. */
-export interface InstallationsPage { installations: InstallationView[]; accounts: ApprovedAccount[]; page: number; more: boolean }
+export interface InstallationAccount extends GitHubAppOwner { id: number }
+/** One page of the App's installations, whether GitHub holds another after it, and the App they install. */
+export interface InstallationsPage { installations: InstallationView[]; accounts: ApprovedAccount[]; page: number; more: boolean; app: { slug: string; owner: GitHubAppOwner | null } }
 export interface InstallationView {
   installationId: number;
   account: InstallationAccount;
@@ -208,11 +208,14 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
 
   return {
     /**
-     * One page of the App's installations, with each account's approval here. Admin refresh only. The next page is
-     * asked for by number on the fixed origin; GitHub's own link only says whether one exists.
-     * https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
+     * One page of the App's installations, with each account's approval here, and the App's slug and owner, which name
+     * its install page. Admin refresh only. The next page is asked for by number on the fixed origin; GitHub's own link
+     * only says whether one exists. https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
      */
     async installations(page = 1): Promise<InstallationsPage> {
+      let identity: GitHubAppIdentity;
+      try { identity = await app().identity(); }
+      catch (error) { if (error instanceof GitHubAppError) throw new GitHubAccessRefused('github_unavailable'); throw error; }
       const response = await asApp(`/app/installations?per_page=${GITHUB_PAGE_SIZE}&page=${page}`);
       if (response.status !== 200) throw await refusalOf(response, 'github_unavailable');
       const body = await bodyOf(response);
@@ -222,6 +225,7 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
       return {
         installations: body.map(installationOf).map(installation => ({ ...viewOf(installation), approved: approved.has(installation.account.id) })),
         accounts, page, more: /rel="next"/.test(response.headers.get('link') ?? '') && page < MAX_REPOSITORY_PAGE,
+        app: { slug: identity.slug, owner: identity.owner },
       };
     },
     /** Approves the account that holds `installationId`, as GitHub names it now; the request names only the installation. */

@@ -71,7 +71,7 @@ it('dispatches --existing to the sign-in operation and never prints its secret',
   const output = await drive(['--existing', '--client-id', 'existing-client', '--client-secret-stdin', '--private-key-file', keyFile]);
   expect(reads).toBe(1);
   expect(installs).toEqual([{ GITHUB_CLIENT_ID: 'existing-client', GITHUB_CLIENT_SECRET: SECRET }, { GITHUB_APP_PRIVATE_KEY: APP_KEY }]);
-  expect(output).toContain('Owner: not checked');
+  expect(output).toContain('Owner:       not checked');
   expect(output).toContain(`${URL_}/auth/callback must be listed in the app`);
   expect(output).toContain('sends sign-in to GitHub with client existing-client; sign in once to confirm');
   expect(output).not.toContain('owned by your account');

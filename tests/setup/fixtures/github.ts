@@ -8,6 +8,9 @@ export const APP_KEY = createPrivateKey(APP_PEM).export({ type: 'pkcs8', format:
 // https://docs.github.com/en/rest/apps/apps#get-the-authenticated-app
 export const APP_RESPONSE = { id: 12345, client_id: 'setup-fixture-client', slug: 'setup-fixture', permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' } };
 
+/** The App's public page, owned by an organization. */
+export const PUBLIC_APP = { ...APP_RESPONSE, slug: 'myco-setup-invalid', name: 'Myco (setup.invalid)', owner: { login: 'setup-org', type: 'Organization' } };
+
 export const SETUP_APP: RegisteredApp = {
   clientId: 'setup-fixture-client', clientSecret: 'setup-fixture-secret', privateKey: APP_KEY,
   slug: 'setup-fixture', htmlUrl: 'https://github.com/apps/setup-fixture',
@@ -27,6 +30,8 @@ export function fakeGitHub() {
     const request = new Request(input, init);
     calls.push(request.clone());
     if (request.url === 'https://api.github.com/app') return Response.json(APP_RESPONSE);
+    // https://docs.github.com/en/rest/apps/apps#get-an-app: the public page at the slug `Myco (setup.invalid)` implies.
+    if (request.url === 'https://api.github.com/apps/myco-setup-invalid') return Response.json(PUBLIC_APP);
     // https://docs.github.com/en/rest/apps/apps#create-a-github-app-from-a-manifest
     if (request.url === 'https://api.github.com/app-manifests/setup-conversion/conversions' && request.method === 'POST') {
       return Response.json({

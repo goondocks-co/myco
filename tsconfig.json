@@ -32,6 +32,7 @@
       "@goondocks/myco-shared/recall": ["./packages/myco-shared/src/recall.ts"],
       "@goondocks/myco-shared/github-api": ["./packages/myco-shared/src/github-api.ts"],
       "@goondocks/myco-shared/github-app": ["./packages/myco-shared/src/github-app.ts"],
+      "@goondocks/myco-shared/github-app-setup": ["./packages/myco-shared/src/github-app-setup.ts"],
       "@goondocks/myco-shared/repository": ["./packages/myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/budget-status": ["./packages/myco-shared/src/budget-status.ts"],
       "@goondocks/myco-shared/worker-usage": ["./packages/myco-shared/src/worker-usage.ts"],

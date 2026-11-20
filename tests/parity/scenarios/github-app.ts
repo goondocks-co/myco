@@ -7,7 +7,12 @@ export const githubApp: ParityScenario = {
   async run(target) {
     // Both targets hold a generated App key and reach the controlled GitHub, which confirms the App's reads.
     const status = await browser(target, '/api/github-app', target.ownerHeaders());
-    expect(status).toEqual({ status: 200, body: { state: 'ready', app: { id: 12345, clientId: 'parity-client', slug: 'parity-app', permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' } }, missing: [] } });
+    const permissions = { contents: 'read', pull_requests: 'read', metadata: 'read' };
+    expect(status).toMatchObject({ status: 200, body: {
+      target: target.name === 'cloudflare' ? 'cloudflare' : 'local', clientId: 'parity-client',
+      key: { state: 'ready', app: { id: 12345, clientId: 'parity-client', slug: 'parity-app', permissions }, missing: [] },
+      app: { slug: 'parity-app', permissions, source: 'key' }, installations: { list: expect.any(Array) },
+    } });
     expect((await browser(target, '/api/github-app', target.memberHeaders())).status).toBe(401);
     const login = await fetch(`${target.url}/auth/login`, { redirect: 'manual', headers: { 'cf-connecting-ip': '1.2.3.4' } });
     expect(login.status).toBe(302);

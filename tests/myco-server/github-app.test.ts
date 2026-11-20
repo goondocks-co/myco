@@ -14,6 +14,8 @@ it('answers App readiness only to an admin, signs with the existing client id, a
   let upstream: Omit<typeof APP_RESPONSE, 'permissions'> & { permissions: Record<string, string> } = { ...APP_RESPONSE, client_id: OWNER_ENV.GITHUB_CLIENT_ID };
   const fetchImpl: OutboundFetch = async (input, init) => {
     const request = new Request(input, init);
+    // https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
+    if (request.url.startsWith('https://api.github.com/app/installations?')) return Response.json([]);
     expect(request.url).toBe('https://api.github.com/app');
     const jwt = request.headers.get('authorization')!.slice('Bearer '.length);
     const [header, payload, signature] = jwt.split('.');
@@ -29,19 +31,19 @@ it('answers App readiness only to an admin, signs with the existing client id, a
   const env = (key?: string) => ({ ...serverEnvFromBindings({ ...fixture.env, ...OWNER_ENV, GITHUB_APP_PRIVATE_KEY: key } as never), outbound: fetchImpl });
   const request = () => asOwner(fixture.db, '/api/github-app');
   const absent = await server.handleRequest(await request(), env());
-  expect(await absent.json()).toEqual({ state: 'key_absent' });
+  expect(await absent.json()).toMatchObject({ key: { state: 'key_absent' }, installations: null });
   const ready = await server.handleRequest(await request(), env(APP_KEY));
   expect(ready.headers.get('cache-control')).toBe('no-store');
   const text = await ready.text();
-  expect(JSON.parse(text)).toMatchObject({ state: 'ready', app: { clientId: OWNER_ENV.GITHUB_CLIENT_ID }, missing: [] });
+  expect(JSON.parse(text)).toMatchObject({ key: { state: 'ready', app: { clientId: OWNER_ENV.GITHUB_CLIENT_ID }, missing: [] }, installations: { list: [] } });
   for (const secret of [APP_KEY, APP_PEM, OWNER_ENV.GITHUB_CLIENT_SECRET]) expect(text).not.toContain(secret);
   upstream = { ...upstream, permissions: Object.fromEntries(Object.entries(upstream.permissions).filter(([name]) => name !== 'pull_requests')) };
-  expect(await (await server.handleRequest(await request(), env(APP_KEY))).json()).toMatchObject({ state: 'permissions_missing', missing: ['pull_requests must be read-only (currently absent)'] });
+  expect(await (await server.handleRequest(await request(), env(APP_KEY))).json()).toMatchObject({ key: { state: 'permissions_missing', missing: ['pull_requests must be read-only (currently absent)'] } });
   const member = new Request('https://s/api/github-app', { headers: { cookie: await ownerCookie(fixture.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4' } });
   expect((await server.handleRequest(member, env(APP_KEY))).status).toBe(403);
   expect((await server.handleRequest(new Request('https://s/api/github-app', { headers: { 'cf-connecting-ip': '1.2.3.4' } }), env(APP_KEY))).status).toBe(401);
   upstream = { ...upstream, client_id: 'different-app' };
-  expect(await (await server.handleRequest(await request(), env(APP_KEY))).json()).toMatchObject({ state: 'unavailable' });
+  expect(await (await server.handleRequest(await request(), env(APP_KEY))).json()).toMatchObject({ key: { state: 'unavailable' }, installations: null });
   const login = new Request('https://s/auth/login', { headers: { 'cf-connecting-ip': '1.2.3.4' } });
   for (const key of [undefined, APP_KEY]) {
     const response = await server.handleRequest(new Request(login.url, { headers: login.headers }), env(key));

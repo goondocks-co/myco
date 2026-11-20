@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync, existsSync } from "
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
-  convertManifestCode, installSignInSecrets, isDeploymentUrl, manifestFor, manifestFormAction, manifestPage,
+  convertManifestCode, defaultAppName, installSignInSecrets, isDeploymentUrl, manifestFor, manifestFormAction, manifestPage,
   registerGitHubApp, RegistrationRefused, resolveSignInTarget, verifySignIn, signInPendingPath,
 } from '@myco/server/github-app.js';
 import { deploymentRecordPath, putWorkerSecrets, writeDeploymentRecord, WranglerAbsent } from '@myco/server/cloudflare.js';
@@ -35,8 +35,8 @@ const ACCOUNT = 'b134c2135129c4800082e677fbffb286';
 const RECORD = { accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: '2026-08-29T00:00:00Z' };
 
 describe('the manifest', () => {
-  it('asks GitHub for a public app with the Deployment callback, read-only repository permissions and no webhook delivery', () => {
-    const manifest = manifestFor({ url: `${URL_}/`, redirectUrl: 'http://127.0.0.1:4242/callback' });
+  it('asks GitHub for a public app with the Deployment callback, read-only repository permissions and no webhook delivery', async () => {
+    const manifest = manifestFor({ url: `${URL_}/`, name: await defaultAppName(`${URL_}/`), redirectUrl: 'http://127.0.0.1:4242/callback' });
     expect(manifest).toEqual({
       name: 'Myco (myco.example.co)', url: URL_, redirect_url: 'http://127.0.0.1:4242/callback',
       callback_urls: [`${URL_}/auth/callback`], public: true, default_permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' }, hook_attributes: { active: false },
@@ -51,7 +51,7 @@ describe('the manifest', () => {
   });
 
   it('renders one form whose manifest field is the JSON, escaped for the attribute', () => {
-    const manifest = manifestFor({ url: URL_, redirectUrl: 'http://127.0.0.1:1/callback' });
+    const manifest = manifestFor({ url: URL_, name: 'Myco (myco.example.co)', redirectUrl: 'http://127.0.0.1:1/callback' });
     const page = manifestPage(manifest, manifestFormAction(undefined, 's'));
     expect(page).toContain('action="https://github.com/settings/apps/new?state=s"');
     expect(page).toContain('name="manifest"');

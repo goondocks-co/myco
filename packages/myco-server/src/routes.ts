@@ -16,7 +16,7 @@ import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, han
 import type { RawAction, RawResource } from './core/raw-resources.js';
 import { handleProcessedBody } from './api/processed.js';
 import { handleReleaseProvenance, handleRequestReleaseCheck, handleSaveReleaseProvenance } from './api/release-provenance.js';
-import { handleApproveGitHubAccount, handleGitHubApp, handleGitHubAppInstallations, handleGitHubAppRepositories, handleWithdrawGitHubAccount } from './api/github-app.js';
+import { handleApproveGitHubAccount, handleGitHubApp, handleGitHubAppInstallations, handleGitHubAppRepositories, handleRepositorySuggestions, handleWithdrawGitHubAccount } from './api/github-app.js';
 import { handleRepository, handleSaveRepository, handleRemoveRepository } from './api/repositories.js';
 import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
@@ -345,6 +345,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/github-app', auth: 'session', authority: 'admin', handler: handleGitHubApp },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/github-app/installations', auth: 'session', authority: 'admin', handler: handleGitHubAppInstallations },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/github-app/suggestions', auth: 'session', authority: 'admin', handler: handleRepositorySuggestions },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/github-app/installations/{installationId}/repositories', pattern: /^\/api\/github-app\/installations\/(?<installationId>[A-Za-z0-9._-]{1,64})\/repositories$/, auth: 'session', authority: 'admin', handler: handleGitHubAppRepositories },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/github-app/accounts', auth: 'session', authority: 'admin', handler: handleApproveGitHubAccount },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'DELETE', path: '/api/github-app/accounts/{accountId}', pattern: /^\/api\/github-app\/accounts\/(?<accountId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleWithdrawGitHubAccount },

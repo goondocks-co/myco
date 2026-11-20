@@ -12,6 +12,9 @@ export const SOURCE = { id: 1296269, full_name: 'example/source', default_branch
 export const SOURCE_URL = 'https://github.com/example/source';
 const STRANGER_SOURCE = { id: 7770001, full_name: 'operat0r-org/source', default_branch: 'main', private: false };
 
+/** The App GitHub answers for, owned by the operator's organization. */
+export const APP = { id: 12345, slug: 'myco-operator', name: 'Myco (operator)', client_id: OWNER_ENV.GITHUB_CLIENT_ID, owner: { login: OPERATOR.account.login, type: 'Organization' } };
+
 /** The secrets a Deployment with an App key holds. */
 export const APP_SECRETS = { GITHUB_CLIENT_ID: OWNER_ENV.GITHUB_CLIENT_ID, GITHUB_APP_PRIVATE_KEY: APP_KEY };
 
@@ -50,6 +53,8 @@ export function githubFixture() {
     // https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app
     const installationBody = (entry: typeof OPERATOR) => ({ id: entry.installationId, account: entry.account, repository_selection: 'selected',
       permissions: state.granted, suspended_at: state.suspended.has(entry.installationId) ? '2026-11-01T00:00:00Z' : null });
+    // https://docs.github.com/en/rest/apps/apps#get-the-authenticated-app
+    if (request.method === 'GET' && url.pathname === '/app') return Response.json({ ...APP, permissions: state.granted });
     // https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
     if (request.method === 'GET' && url.pathname === '/app/installations') {
       const later = url.searchParams.get('page') === '2';

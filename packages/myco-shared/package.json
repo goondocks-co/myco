@@ -49,6 +49,7 @@
     },
     "./github-api": { "import": "./dist/github-api.js", "types": "./dist/github-api.d.ts" },
     "./github-app": { "import": "./dist/github-app.js", "types": "./dist/github-app.d.ts" },
+    "./github-app-setup": { "import": "./dist/github-app-setup.js", "types": "./dist/github-app-setup.d.ts" },
     "./repository": {
       "import": "./dist/repository.js",
       "types": "./dist/repository.d.ts"
