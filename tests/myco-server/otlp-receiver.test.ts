@@ -274,10 +274,21 @@ describe('OpenTelemetry receiver', () => {
       telemetrySpan(1, { conversation: 'lead' }),
       telemetrySpan(3, { parent: 1, conversation: 'exact-child', operation: 'invoke_agent' }),
       telemetrySpan(4, { parent: 1, conversation: 'inferred-child', operation: 'invoke_agent' }),
+      telemetrySpan(5, { parent: 1, conversation: 'later', operation: 'invoke_agent' }),
     ]));
     await reconcileTelemetry(f.e.db, NOW);
     f.e.sqlite.query("UPDATE telemetry_resolutions SET matched_by='inferred' WHERE session_id=?").run('inferred-child');
+    await f.start('later');
+    const retained = () => [f.e.sqlite.query("SELECT * FROM telemetry_resolutions WHERE matched_by='exact' ORDER BY span_id").all(),
+      f.e.sqlite.query("SELECT * FROM telemetry_lineage_reports WHERE matched_by='exact' ORDER BY session_id").all(),
+      f.e.sqlite.query("SELECT * FROM telemetry_session_changes WHERE scope='session' ORDER BY session_id").all()];
+    const exact = retained();
+    expect(exact.every(rows => rows.length > 0)).toBe(true);
+    f.e.sqlite.query("INSERT INTO telemetry_session_changes(project_id,session_id,scope,revision) VALUES(?,'','project',1)").run('proj_1');
     await applySchemaSteps(sqliteD1(f.e.sqlite), TELEMETRY_EXACT_STEPS);
+    expect(retained()).toEqual(exact);
+    const projectChanges = f.e.sqlite.query("SELECT * FROM telemetry_session_changes WHERE scope='project'").all();
+    expect(projectChanges).toEqual([]);
     expect((await invocationsForSession(f.e.db, 'proj_1', 'exact-child')).rows).toMatchObject([{ matchedBy: 'exact' }]);
     expect((await invocationsForSession(f.e.db, 'proj_1', 'inferred-child')).rows).toEqual([]);
     expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'inferred-child'))?.edges).toEqual([]);

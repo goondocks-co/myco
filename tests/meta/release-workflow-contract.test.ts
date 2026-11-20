@@ -226,8 +226,7 @@ function assertPublication(workflow: typeof release): void {
     expect(workflow.jobs[job].needs).toContain('full-ci');
     expect(workflow.jobs[job].if).toContain("needs.full-ci.result == 'success'");
   }
-  expect(workflow.jobs['full-ci']).toMatchObject({ uses: './.github/workflows/ci.yml', with: { full: true } });
-  expect(workflow.jobs['full-ci'].with).toEqual({ full: true });
+  expect(workflow.jobs['full-ci']).toMatchObject({ if: "github.event_name != 'pull_request'", uses: './.github/workflows/ci.yml', with: { full: "${{ github.event_name == 'push' }}" } });
 }
 
 test('the canonical CI aggregate requires every verification job, including parity and shipped runtimes', () => {

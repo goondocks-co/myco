@@ -1,6 +1,7 @@
+import { event, mcp, owner } from '../clients/requests.ts';
 import { expect } from 'bun:test';
 import { documentsPublished } from '../harness.ts';
-import { event, mcp, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
+import { pick, type RouteTarget, type SeedTarget } from './requests.ts';
 
 const BACKGROUND = ['the lunch menu has tacos and salsa', 'water the garden tomatoes at dawn', 'oil the bicycle chain weekly', 'tune the guitar strings before practice',
   'set the coffee grinder burr finer', 'pack hiking boots for the mountain trail', 'practice piano scales slowly', 'sharpen kitchen knives on the stone'];

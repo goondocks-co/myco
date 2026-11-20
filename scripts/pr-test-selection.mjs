@@ -46,10 +46,12 @@ export function affectedTests({ root, files, changed }) {
   // A test that imports a changed JSON file (a duration table, a recorded workload) runs with the changed tests.
   const data = new Set(changed.filter(file => file.endsWith('.json')));
   const affected = new Set([...direct, ...throughIndex]);
+  // Populated upgrades consume schema steps through the migrator, beyond static import depth.
+  const schemaChanged = changed.some(file => /^packages\/myco-server\/(?:src\/db\/|migrations\/)/.test(file));
   const helpers = new Set([...dependencies].filter(([file, imports]) => file.startsWith('tests/') && !isTestFile(file) && intersects(imports, affected)).map(([file]) => file));
   return [...dependencies].flatMap(([file, imports]) => {
     if (!isTestFile(file)) return [];
-    const tier = changedSet.has(file) || intersects(imports, data) ? 0 : intersects(imports, direct) ? 1
+    const tier = changedSet.has(file) || intersects(imports, data) ? 0 : intersects(imports, direct) || (schemaChanged && file === 'tests/parity/parity.test.ts') ? 1
       : intersects(imports, throughIndex) || intersects(imports, helpers) ? 2 : null;
     return tier === null ? [] : [{ file, tier }];
   });

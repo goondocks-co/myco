@@ -2,6 +2,9 @@ The CI workflow has two scopes, and the `check` job is the one required result o
 
 **Every pull request and main push:** lint and types, the native build, 17 Node test shards, two DOM test shards,
 a parity smoke (`scripts/ci-scopes.mjs`), a small UI smoke, a Windows smoke, hook startup checks and container checks.
+The smoke includes both populated schema upgrades. Its seed coverage includes tables created by one upgrade step
+and changed by a later one. Database changes also select this consumer in `check:pr`, regardless of import depth.
+Manual publish dry runs invoke this same CI scope, including the smoke on both stores, before a tag exists.
 Darwin release-recipe build and verification jobs run when build or release inputs change. The build job also runs
 `npm run check:test-budget`. That fails a change whose pull request plan is over the node runner budget in
 `scripts/check-test-budget.mjs`, or whose test-to-product line ratio rises while the ratio is above 1.0. Each plan

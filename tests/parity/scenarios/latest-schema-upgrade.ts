@@ -2,10 +2,9 @@ import { expect } from 'bun:test';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/db/maintenance/store-checks.js';
 import { type ParityScenario } from '../harness.ts';
-import { untilPublished } from '../clients/requests.ts';
+import { event, mcp, owner, untilPublished } from '../clients/requests.ts';
 import { freshSchemaObjects, SCHEMA_OBJECTS_SQL } from '../schema-upgrade.ts';
 import { observe, seededDeployment } from '../upgrade-seed/index.ts';
-import { event, mcp, owner } from '../upgrade-seed/requests.ts';
 
 /**
  * A Deployment its users populated through its routes, carried to the last release's schema and upgraded with every

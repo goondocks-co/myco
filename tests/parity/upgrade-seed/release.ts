@@ -1,6 +1,7 @@
+import { event, owner } from '../clients/requests.ts';
 import { expect } from 'bun:test';
 import { A, B } from '../../myco-server/helpers/github-fake.ts';
-import { event, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
+import { pick, type RouteTarget, type SeedTarget } from './requests.ts';
 import { repository } from '../clients/runs.ts';
 
 /** The session release tracking classified, by the id its member captured. */

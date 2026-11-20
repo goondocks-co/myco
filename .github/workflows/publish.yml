@@ -47,13 +47,13 @@ jobs:
         if: github.event_name != 'push'
         run: echo 'Dry run verifies release artifacts; publication requires the exact-SHA main CI aggregate.'
 
-  # Runs the full suite on the tagged commit itself, so no release depends on a nightly having covered it.
+  # Tagged candidates run the full suite; manual candidates run the PR gate, including populated upgrades on both stores.
   full-ci:
-    name: Full CI for tagged commit
-    if: github.event_name == 'push'
+    name: CI for release candidate
+    if: github.event_name != 'pull_request'
     uses: ./.github/workflows/ci.yml
     with:
-      full: true
+      full: ${{ github.event_name == 'push' }}
 
   validate-tag:
     name: Validate Release Tag

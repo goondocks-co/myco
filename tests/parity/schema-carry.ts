@@ -37,7 +37,8 @@ const placeholder = (column: Column): string => /INT|REAL|NUMERIC/i.test(column.
 
 /**
  * What the upgrade does to the release's store: the keys of rows it inserts into tables the release already holds, and
- * the steps that change each such table: its definition, indexes or triggers, or its rows, as the tables a statement
+ * the steps that change an existing table, including one an earlier upgrade step creates: its definition, indexes,
+ * triggers or rows, as the tables a statement
  * opens for writing (its program's OpenWrite root pages, mapped through sqlite_master).
  */
 function upgradeEffects(previousFile: string, upgrade: readonly SchemaStep[]): { born: Map<string, string>; changedBy: Map<string, number[]> } {
@@ -55,10 +56,9 @@ function upgradeEffects(previousFile: string, upgrade: readonly SchemaStep[]): {
     const keyRows = (table: string, keys: readonly string[]) => (db.query(`SELECT json_array(${keys.map(quote).join(', ')}) AS key FROM ${quote(table)}`).all() as Array<{ key: string }>).map((row) => row.key);
     const before = new Map(keyed.map((table) => [table.name, new Set(keyRows(table.name, table.keys))]));
     const changedBy = new Map<string, number[]>();
-    const releasedNames = new Set(released.map((table) => table.name));
     const changed = (name: string, version: number) => {
       const versions = changedBy.get(name) ?? [];
-      if (releasedNames.has(name) && !versions.includes(version)) changedBy.set(name, [...versions, version]);
+      if (!versions.includes(version)) changedBy.set(name, [...versions, version]);
     };
     // Each read is finalized at once: a statement left open would hold the step's transaction from committing.
     const once = <T,>(sql: string): T[] => {
@@ -75,9 +75,11 @@ function upgradeEffects(previousFile: string, upgrade: readonly SchemaStep[]): {
     };
     for (const step of upgrade) {
       const prior = shape();
-      applySteps(db, [step], { beforeStatement: (_, statement) => { for (const name of written(statement)) changed(name, step.version); } });
+      const existing = tables(db, 'main');
+      const names = new Set(existing.map(table => table.name));
+      applySteps(db, [step], { beforeStatement: (_, statement) => { for (const name of written(statement)) if (names.has(name)) changed(name, step.version); } });
       const after = shape();
-      for (const { name } of released) {
+      for (const { name } of existing) {
         if (prior.has(name) && prior.get(name) !== after.get(name)) changed(name, step.version);
       }
     }
@@ -110,6 +112,7 @@ export function carryToPreviousSchema(input: { source: string; previous: string;
   try {
     db.exec('PRAGMA foreign_keys = OFF');
     db.query('ATTACH DATABASE ? AS source').run(input.source);
+    for (const { name } of tables(db, 'source')) seeded.set(name, (db.query(`SELECT COUNT(*) AS n FROM source.${quote(name)}`).get() as { n: number }).n);
     // The source's derived rows are carried as they stand, so no trigger maintains them a second time.
     const triggers = db.query(`SELECT name, sql FROM main.sqlite_master WHERE type = 'trigger'`).all() as Array<{ name: string; sql: string }>;
     // What the Deployment created at runtime rather than from a step (the budget activation's indexes) is carried as it stands.
@@ -125,7 +128,7 @@ export function carryToPreviousSchema(input: { source: string; previous: string;
       const sourceTables = new Map(tables(db, 'source').map((table) => [table.name, table]));
       for (const table of tables(db, 'main')) {
         const source = sourceTables.get(table.name);
-        if (source === undefined) { seeded.set(table.name, 0); continue; }
+        if (source === undefined) continue;
         const outcome = carryTable(db, { ...table, sourceRowid: !source.withoutRowid }, { born: born.get(table.name), changedBy: changedBy.get(table.name), retired });
         seeded.set(table.name, outcome.offered);
         for (const [constraint, count] of outcome.refused) leftBehind.push(`${table.name}: ${count} refused by ${constraint}`);
