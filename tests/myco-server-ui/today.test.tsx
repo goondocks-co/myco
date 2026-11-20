@@ -1027,3 +1027,18 @@ it('tells an administrator which sign-ins could not save a name without inventin
   expect(attentionWords({ kind: 'member_naming_failed', tone: 'warn', members: [failed(1), failed(2)], hasMore: false }, NOW, () => null).title).toBe('2 members’ names couldn’t be saved');
   expect(attentionWords({ kind: 'member_naming_failed', tone: 'warn', members: [failed(1), failed(2)], hasMore: true }, NOW, () => null).title).toBe('More than 2 members’ names couldn’t be saved');
 });
+
+it('names the Project and remedy and offers the existing hand-start when repository preparation repeatedly fails', async () => {
+  const item = { kind: 'repository_preparation_failed', tone: 'warn', projectId: P_MYCO, runId: 'attempt',
+    failure: { code: 'access_refused' }, failures: 2, latestAt: NOW - HOUR, retryAt: NOW + HOUR, task: 'canopy-map', backoff: true } as const;
+  const words = attentionWords(item, NOW, () => 'Myco');
+  expect(words.title).toBe('Repository preparation keeps failing in Myco');
+  expect(words.detail).toContain('Check in GitHub that the installation includes it and its requested permissions are approved, then check again.');
+  expect(words.detail).toContain('Scheduled retries are slowed down.');
+  expect(words.action?.label).toBe('See the last attempt');
+  expect(words.detail).toContain('Next retry in 1 hour');
+  expect(words.retryTask).toEqual({ projectId: P_MYCO, task: 'canopy-map' });
+  server(day({ attention: { items: [item], unavailable: [] } }));
+  mount('/');
+  expect((await screen.findAllByRole('button', { name: 'Try now' })).length).toBeGreaterThan(0);
+});

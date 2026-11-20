@@ -7,10 +7,12 @@ import type { RelationalStore } from '../../core/adapters.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet } from '../index.js';
 import { runNotRetiring } from './evidence-schema.js';
-import type { RunResult } from './run-output.js';
+import type { RunResult as OutputResult } from './run-output.js';
 import { RUN_HOUR_PROJECTION, type FactFilter } from './run-hours.js';
 import { contactHourReads } from '../runners/contact-hours.js';
 import { waitHourReads } from './wait-hours.js';
+
+export type RunResult = OutputResult | 'interrupted';
 
 /** One hour's count for one Project-less combination of task, runner, agent, result and error code. */
 export interface RunHourRow { hour: number; task: string; runner_id: string; harness: string; result: RunResult; error_code: string; runs: number; wait_ms: number }
@@ -44,7 +46,7 @@ export async function runHourWindow(db: RelationalStore, set: ProjectSet, { sinc
 }
 
 /** How a finished run reads on the Runs page: it changed something, changed nothing, or failed. */
-export const RUN_OUTCOMES = ['worked', 'unchanged', 'failed'] as const;
+export const RUN_OUTCOMES = ['worked', 'unchanged', 'failed', 'interrupted'] as const;
 export type RunOutcome = typeof RUN_OUTCOMES[number];
 /**
  * What narrows the page of finished runs: an absent filter keeps every run; '' keeps the runs that recorded none

@@ -532,14 +532,30 @@ export function diagnosticDetail(value: string, max: number): string {
 }
 
 /** Closed reasons and bounded Git summaries; credentials are removed before any display projection or truncation. */
-export function parseRepositoryFailure(value: unknown, secrets: readonly string[] = []): RepositoryFailure | null {
+export function parseRepositoryFailure(value: unknown, secrets: readonly string[] = [], checkoutRoot?: string): RepositoryFailure | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const code = Reflect.get(value, 'code');
   if (typeof code !== 'string' || !(REPOSITORY_FAILURE_CODES as readonly string[]).includes(code)) return null;
-  let summary = code === 'fetch_failed' && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
-  summary = maskDiagnosticSecrets(summary, secrets);
+  let summary = !['submodules','lfs','too_large','commit_mismatch'].includes(code) && typeof Reflect.get(value, 'summary') === 'string' ? String(Reflect.get(value, 'summary')) : '';
+  summary = maskDiagnosticSecrets(summary, secrets).trim().split(/\r?\n/).at(-1) ?? '';
+  const installationAuth = new RegExp(btoa('x-access-token:') + '[A-Za-z0-9+/_=-]+', 'g');
+  summary = summary.replace(installationAuth, '[REDACTED]');
+  summary = summary.replace(/https?:\/\/[^\s'"<>]+/g, '<url>');
+  const placeholder = (path: string): string => {
+    const normalized = path.replaceAll('\\', '/');
+    const root = checkoutRoot?.replaceAll('\\', '/').replace(/\/+$/, '');
+    return root !== undefined && (normalized === root || normalized.startsWith(root + '/')) ? '<checkout>' : '<path>';
+  };
+  summary = summary.replace(/(['"])((?:[A-Za-z]:[\\/]|\/|\\\\).*?)\1/g, (_match, quote: string, path: string) => quote + placeholder(path) + quote);
+  summary = summary.replace(/(?:[A-Za-z]:[\\/]|\\\\|(?<![\w<>])\/(?!\/))(?:(?!: )[\s\S])*?(?=: |$)/g, path => placeholder(path));
   const safe = agentProse(summary, MAX_REPOSITORY_FAILURE_SUMMARY_CHARS, { singleLine: true });
   return { code: code as RepositoryFailureCode, ...(safe === null ? {} : { summary: safe }) };
+}
+
+/** A v1 Deployment retains Git's line under the reason codes it knows. */
+export function repositoryFailureForVersion(value: RepositoryFailure, version: 1 | 2): RepositoryFailure {
+  if (version === 2 || ['fetch_failed','checkout_failed','submodules','lfs','too_large','commit_mismatch'].includes(value.code)) return value;
+  return { ...value, code: 'fetch_failed' };
 }
 
 /** Remove the caller's known credentials before prose projection or truncation. */

@@ -1,6 +1,6 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { LAST_GITHUB_APP_PROJECTS } from './db/schema-vNEXT-github-app-projects.js';
-export const SERVER_SCHEMA_VERSION = LAST_GITHUB_APP_PROJECTS;
+import { LAST_RUN_INTERRUPTION } from './db/schema-vNEXT-run-interruptions.js';
+export const SERVER_SCHEMA_VERSION = LAST_RUN_INTERRUPTION;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** How long an unrefreshed credential lineage stays renewable. */
@@ -61,9 +61,9 @@ import { MEMBER_FEATURES, MACHINE_SETTINGS_FEATURE } from '@goondocks/myco-share
 import { WORKER_ACCOUNTING_FEATURE } from '@goondocks/myco-shared/worker-usage';
 import { EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
-import { REPOSITORY_FAILURE_FEATURE } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_FAILURE_FEATURE } from '@goondocks/myco-shared/repository';
 import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
-export const SERVER_FEATURES = [...MEMBER_FEATURES, MACHINE_SETTINGS_FEATURE, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE, WORKER_STEPS_FEATURE, HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, REPOSITORY_FAILURE_FEATURE, HARNESS_STOP_FEATURE] as const;
+export const SERVER_FEATURES = [...MEMBER_FEATURES, MACHINE_SETTINGS_FEATURE, WORKER_ACCOUNTING_FEATURE, EXECUTION_PROFILE_FEATURE, PROFILE_OUTCOME_FEATURE, MODEL_CATALOG_FEATURE, WORKER_STEPS_FEATURE, HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_FAILURE_FEATURE, HARNESS_STOP_FEATURE] as const;
 /** The Project a member request acts on. A credential is Deployment-wide, so the Project travels per request. It rides a header rather than the envelope: an envelope field is a protocol bump, and a member whose spool holds records of the older protocol stops draining them entirely. */
 export const PROJECT_HEADER = 'x-myco-project';
 /**

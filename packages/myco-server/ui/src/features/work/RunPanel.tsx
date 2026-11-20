@@ -1,3 +1,4 @@
+import { interruptionWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
@@ -82,6 +83,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const kind = kindOf(run.task);
   const name = useStarterNames();
   const admin = useIsAdmin();
+  const interrupted = interruptionWords(run.errorCode, ranOn(run.worker, name)?.machine ?? null, run.status);
   const failed = run.status === 'failed';
   const finished = run.status === 'completed' || failed;
   const live = runIsLive(run.status);
@@ -118,7 +120,8 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{queuedWords(run, now)}</p>}
         {fleetWait !== null && <p className="t-small text-muted" data-fleet-wait={run.fleetWait?.reason}>{fleetWait}</p>}
-        {run.status === 'skipped' && <p className="t-small text-ink-2">{isCarriedMap(kind, run)
+        {interrupted !== null && <p className="t-small text-ink-2" data-run-interruption="">{interrupted}</p>}
+        {run.status === 'skipped' && interrupted === null && <p className="t-small text-ink-2">{isCarriedMap(kind, run)
           ? 'The code map was already current. Nothing ran, and nothing was spent.'
           : <>Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</>}</p>}
         {live && (canCancel
@@ -233,6 +236,7 @@ function WhatItRead({ answer, projectId, now, latest }: { answer: RunDetailAnswe
 /** The run's headline: what came of it, or where it stands while it has not finished. */
 function headlineOf({ run, read, produced }: RunDetailAnswer): string {
   if (run.dryRun) return 'Preview: nothing was changed';
+  if (run.status === 'skipped' && interruptionWords(run.errorCode, null, run.status) !== null) return 'Interrupted';
   if (run.errorCode === 'run_cancelled') return 'Cancelled';
   if (run.status === 'skipped') return 'Held off';
   if (run.status === 'queued') return 'Waiting to start';

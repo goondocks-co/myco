@@ -4,6 +4,7 @@
  * ceiling is met, and nothing at all where the switch is off.
  */
 import { describe, expect, it } from 'bun:test';
+import { readAttention } from '@myco-server-worker/core/attention.js';
 import { UNSIGNED_APP } from './helpers/github-app.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
@@ -529,4 +530,41 @@ it('floors a stored fractional daily cap even when a task declares no cap', () =
     expect(resolveSchedule(declared, { maxRunsPerDay: 2.5 }).maxRunsPerDay).toBe(2);
     expect(resolveSchedule(declared, { maxRunsPerDay: 0.5 }).maxRunsPerDay).toBe(0);
   }
+});
+
+it('slows repeated repository failures for only their Project and clears the notice on success', async () => {
+  const f = fixture();
+  try {
+    f.capability('proj_1', 'canopy', true);
+    f.capability('proj_2', 'canopy', true);
+    f.sqlite.run(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,1)`);
+    const ended = (id: string, status: string, at: number, code = 'access_refused') => f.sqlite.run(
+      `INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,error,error_code,run_context,dispatch_spec)
+       VALUES('proj_1',?,'myco-agent','canopy-map',?,?,?,?,?,?,?)`,
+      [id,status,at,at+1000,status === 'failed' ? 'the worker failed while driving the run (repository_unprepared)' : null,
+        status === 'failed' ? 'repository_unprepared' : null,JSON.stringify({repositoryFailureCode:code}),JSON.stringify({actor:'clock'})]);
+    const notices = async () => (await readAttention(f.env, NOW)).items.filter(item => item.kind === 'repository_preparation_failed');
+    ended('first', 'failed', NOW - 10_000);
+    expect(await notices()).toEqual([]);
+    ended('second', 'failed', NOW - 5000);
+    expect(await notices()).toMatchObject([{projectId:'proj_1',failure:{code:'access_refused'},failures:2}]);
+    ended('knowledge-only', 'completed', NOW - 2000);
+    f.sqlite.run("UPDATE agent_runs SET task='extract-curate' WHERE id='knowledge-only'");
+    expect(await notices()).toMatchObject([{projectId:'proj_1',failure:{code:'access_refused'}}]);
+    const schedule = { ...SMOKE, intervalSeconds: 1, maxRunsPerDay: 100, runIn: ['active'] } as TaskSchedule;
+    const leaves = { activeWindowDays: 30, coldThresholdDays: 7 };
+    expect(await decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBe('repository_backoff');
+    expect(await decideTask(f.env,'proj_2',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBeNull();
+    f.sqlite.run("UPDATE agent_runs SET run_context=? WHERE id IN ('first','second')", [JSON.stringify({ repositoryFailureCode: 'timed_out' })]);
+    expect(await notices()).toMatchObject([{ failure: { code: 'timed_out' }, backoff: false }]);
+    expect(await decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBeNull();
+    f.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,error,error_code,run_context,dispatch_spec)
+      VALUES('proj_2','bad-context','myco-agent','canopy-map','failed',?,?, 'the worker failed while driving the run (repository_unprepared)','repository_unprepared','not-json',?)`, [NOW-1000,NOW-500,JSON.stringify({ actor: 'clock' })]);
+    await readScheduleFacts(f.env, ['canopy-map'], NOW);
+    expect(await notices()).toMatchObject([{ projectId: 'proj_1', failure: { code: 'timed_out' } }]);
+
+    ended('success','completed',NOW - 1000);
+    expect(await notices()).toEqual([]);
+    expect(await decideTask(f.env,'proj_1',NOW,'canopy-map',schedule,'active',leaves,NOW)).toBeNull();
+  } finally { f.sqlite.close(); }
 });

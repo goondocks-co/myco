@@ -1,9 +1,11 @@
+import { interruptionWords } from '@goondocks/myco-shared/run-control';
 /**
  * Today's words: every sentence the page shows, built from the numbers the
  * server answers. Nothing here names a mechanism or shows an id; a run reads
  * as what it produced, a machine by its name, and the account Myco's own work
  * signs in as reads "Myco".
  */
+import { runErrorWords } from '../work/words';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
 import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
@@ -203,6 +205,7 @@ export function machineNames(rows: readonly Pick<CaptureRow, 'machineId' | 'mach
 
 /** The words of one "Needs you" item. `projectName` names a Project by id, or null when the dashboard does not know it. */
 export interface NeedsYouWords {
+  retryTask?: { projectId: string; task: string };
   title: string;
   detail: string;
   action: { label: string; to: string } | null;
@@ -218,6 +221,13 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     return name === null ? 'In a project you can’t see here.' : `In ${name}.`;
   };
   switch (item.kind) {
+    case 'repository_preparation_failed':
+      return {
+        retryTask: { projectId: item.projectId, task: item.task },
+        title: `Repository preparation keeps failing in ${projectName(item.projectId) ?? 'a project'}`,
+        detail: `${runErrorWords('repository_unprepared', null, item.failure)}${item.backoff ? ' Scheduled retries are slowed down.' : ''}${item.retryAt > now ? ` Next retry in ${retryIn(item.retryAt, now)}.` : ' Another retry is due.'}`,
+        action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
+      };
     case 'repository_missing':
       return repositoryNeededWords(item.projectId, projectName(item.projectId), item.codeMap);
 
@@ -230,7 +240,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     case 'outcome_failed':
       return {
         title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
-        detail: `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
+        detail: item.interruptionMachine !== undefined ? `${inProject(item.projectId)} ${interruptionWords(item.interruptionCode ?? 'run_interrupted_repeated', item.interruptionMachine)}` : `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
       };
     case 'runs_without_audit':
@@ -371,6 +381,7 @@ export function repositoryWords(item: UncapturedRootItem, now: number, viewerId:
 /** What each attention check reads, for the line naming the checks that could not be read. */
 export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   repository_missing: 'project repositories',
+  repository_preparation_failed: 'repository preparation',
   backup_overdue: 'backups',
   outcome_failed: 'Myco’s work',
   runs_without_audit: 'agents’ accounts of their work',
@@ -463,4 +474,11 @@ export function harnessHealthWords(fact: MachineHarnessHealth): string {
   if (fact.state === 'held_elsewhere') return harnessToolsElsewhere(harness, machine, fact.toolsDeployment);
   if (fact.state === 'ready') return `${harness}'s Myco tools on ${machine} are set up`;
   return `${harness} on ${machine}: ${fact.action!}`;
+}
+
+/** The remaining retry delay in the largest whole reader unit. */
+function retryIn(at: number, now: number): string {
+  const delay = at - now;
+  const [unit, noun] = delay >= DAY ? [DAY, 'day'] : delay >= HOUR ? [HOUR, 'hour'] : [MINUTE, 'minute'];
+  return count(Math.max(1, Math.ceil(delay / unit)), noun);
 }

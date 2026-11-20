@@ -165,8 +165,9 @@ describe('a worker reporting repository preparation failure', () => {
     const r = await rig();
     const claimed = await r.claim();
     expect(claimed.claimed).toBe(true);
-    const secret = 'synthetic-repository-secret-999';
-    const summary = `fatal: could not fetch https://reader:${secret}@github.com/example/source.git token=${secret}`;
+    const secret = 'ghs_syntheticInstallationToken999';
+    const basic = btoa('x-access-token:' + secret);
+    const summary = `fatal: cannot open '/Users/private-user/Projects/customer/private.txt' or fetch https://reader:${secret}@github.com/example/source.git ${secret} Basic ${basic} ${basic} token=${secret}`;
     const body = { repositoryFailure: { code: 'fetch_failed', summary } };
     expect(await end(r, body, r.other.token)).toMatchObject({ persisted: true, ended: false });
     r.e.sqlite.run("UPDATE agent_runs SET lease_expires_at=? WHERE id='run_seed'", [r.now - 1]);
@@ -179,6 +180,9 @@ describe('a worker reporting repository preparation failure', () => {
     expect(record.run_context).toContain('fetch_failed');
     expect(record.run_context).not.toContain(secret);
     expect(record.run_context).not.toContain('reader:');
+    expect(record.run_context).not.toContain(basic);
+    expect(record.run_context).not.toContain('private-user');
+    expect(record.run_context).toContain('<path>');
     const env = { ...r.e.env, ...OWNER_ENV };
     const headers = { cookie: await ownerCookie(r.e.db), 'cf-connecting-ip': '1.2.3.4' };
     const detail = await jsonBody(await worker.fetch(new Request('https://s/api/projects/proj_1/runs/run_seed', { headers }), env)) as any;
@@ -187,6 +191,29 @@ describe('a worker reporting repository preparation failure', () => {
     const work = await jsonBody(await worker.fetch(new Request(`https://s/api/work?since=${r.now - 1000}&until=${r.now + 10_000}`, { headers }), env)) as any;
     expect(work.timeline.find((run: any) => run.id === 'run_seed').failure.repositoryFailure).toEqual(detail.run.repositoryFailure);
     expect(JSON.stringify(work)).not.toContain(secret);
+    r.e.sqlite.run("UPDATE agent_runs SET task='canopy-map',dispatch_spec=? WHERE id='run_seed'", [JSON.stringify({ actor: 'clock' })]);
+    r.e.sqlite.run(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,error,error_code,run_context,dispatch_spec)
+      SELECT project_id,'second-source-attempt',agent_id,task,status,started_at+1,completed_at+1,error,error_code,run_context,dispatch_spec FROM agent_runs WHERE id='run_seed'`);
+    const attention = async () => jsonBody(await worker.fetch(new Request('https://s/api/attention?project=proj_1', { headers }), env)) as Promise<any>;
+    expect((await attention()).items).toMatchObject([{ kind: 'repository_preparation_failed', projectId: 'proj_1', task: 'canopy-map', failures: 2 }]);
+    const global = await jsonBody(await worker.fetch(new Request('https://s/api/attention', { headers }), env)) as any;
+    expect(global.items.filter((item: any) => item.projectId === 'proj_1')).toMatchObject([{ kind: 'repository_preparation_failed' }]);
+    const connection = await r.repositories.describe('proj_1');
+    await r.repositories.save('proj_1', { installationId: connection!.installationId, repositoryId: connection!.repositoryId, branch: 'fixed', revision: connection!.revision }, 'mem_worker', r.now + 2000);
+    expect((await attention()).items).toEqual([]);
+
+  });
+
+  it('accepts an App setup refusal without opening a per-Project secret', async () => {
+    const r = await rig(); await r.claim();
+    const unavailable = await prepareWorkerRepository(r.e.serverEnv, { worker: legacyWorker(r.owner.tokenId, 'm1'), clock: () => r.now }, { projectId: 'proj_1', runId: 'run_seed', body: {} });
+    expect(unavailable).toMatchObject({ repositoryFailure: { code: 'app_not_configured' } });
+    r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('s'.repeat(32)) };
+    expect(await end(r, { repositoryFailure: { code: 'app_not_configured', summary: 'error: cannot create /Users/Jane Smith/private: Permission denied' } })).toMatchObject({ ended: true });
+    const stored = r.e.sqlite.query("SELECT status,run_context FROM agent_runs WHERE id='run_seed'").get() as any;
+    expect(stored.status).toBe('failed');
+    expect(JSON.parse(stored.run_context).repositoryFailureCode).toBe('app_not_configured');
+    expect(stored.run_context).not.toContain('Jane');
   });
 
   it('accepts an older end without metadata and ignores unknown reasons', async () => {

@@ -1,3 +1,4 @@
+import { subjectCanRetry } from '../runs/interruptions.js';
 import { cardLearningAdmittedSql } from './admission.js';
 import { MANUAL_LEARNING_REQUEST, manualCardSessionsSql } from './manual.js';
 import type { RelationalStore } from '../../core/adapters.js';
@@ -68,7 +69,7 @@ const stageColumn = (kind: 'cards' | 'learning') => kind === 'cards' ? 'card_sta
 export function learningEligible(kind: LearningStage, now: string): string {
   const ready = kind === 'cards' ? cardLearningAdmittedSql(now, { automatic: "l.card_stage='cards'", manual: `l.card_deadline<=${now}` })
     : `l.learning_stage='learning' AND ${learningEnabledSql()} AND ${learningWindowSql(now)}`;
-  return `${ready}${kind === 'cards' ? ` AND (l.counted=1 OR EXISTS(SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
+  return `${ready}${kind === 'learning' ? ` AND ${subjectCanRetry('l.project_id', `'${EXTRACTION_TASK}'`, "'session:'||l.session_id")}` : ''}${kind === 'cards' ? ` AND (l.counted=1 OR EXISTS(SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
     WHERE c.project_id=l.project_id AND c.session_id=l.session_id AND c.state='pending' AND c.due_at IS NOT NULL AND c.due_at<=${now}))` : ''}`;
 }
 

@@ -1,3 +1,4 @@
+import { interruptedEndings } from '../db/runs/interruptions.js';
 /**
  * The Runs page: when runs finished, per runner and hour, and what failed, grouped by cause, runner, agent and task
  * with each group's count in the window, in the window before it and per slice of the window; beside each runner's
@@ -7,15 +8,14 @@
  */
 import type { RelationalStore } from '../core/adapters.js';
 import type { ProjectSet } from './scope.js';
-import { endedRuns, runHourWindow, type EndedRunPage, type RunHourRow, type RunOutcome } from '../db/runs/hour-reads.js';
+import { endedRuns, runHourWindow, type EndedRunPage, type RunHourRow, type RunOutcome, type RunResult } from '../db/runs/hour-reads.js';
 import { HOUR_MS } from '../db/runs/run-hours.js';
-import type { RunResult } from '../db/runs/run-output.js';
 
 /** The spans the page reads: a day by the hour, or a week by the day. */
 export const RUN_WINDOWS = { day: { hours: 24, sliceHours: 1 }, week: { hours: 7 * 24, sliceHours: 24 } } as const;
 export type RunWindow = keyof typeof RUN_WINDOWS;
 
-const OUTCOME: Readonly<Record<RunResult, RunOutcome>> = { produced: 'worked', unchanged: 'unchanged', failed: 'failed', failed_with_output: 'failed' };
+const OUTCOME: Readonly<Record<RunResult, RunOutcome>> = { produced: 'worked', unchanged: 'unchanged', failed: 'failed', failed_with_output: 'failed', interrupted: 'interrupted' };
 
 /** The dimensions failures are grouped by. */
 export const FAILURE_DIMENSIONS = ['cause', 'runner', 'agent', 'task'] as const;
@@ -24,7 +24,7 @@ const KEY_OF: Readonly<Record<FailureDimension, (row: RunHourRow) => string>> = 
   cause: (row) => row.error_code, runner: (row) => row.runner_id, agent: (row) => row.harness, task: (row) => row.task,
 };
 
-interface Counts { worked: number; unchanged: number; failed: number }
+interface Counts { worked: number; unchanged: number; failed: number; interrupted?: number }
 const empty = (): Counts => ({ worked: 0, unchanged: 0, failed: 0 });
 /** '' in a counter row means the run recorded none; the page reads that as null. */
 const named = (value: string): string | null => (value === '' ? null : value);
@@ -70,13 +70,13 @@ export async function readRunHours(db: RelationalStore, set: ProjectSet, name: R
     const outcome = OUTCOME[row.result];
     const current = row.hour >= since;
     if (current) {
-      totals[outcome] += row.runs;
+      totals[outcome] = (totals[outcome] ?? 0) + row.runs;
       totals.waitedMs += row.wait_ms;
       const lane = lanes.get(row.runner_id) ?? new Map<number, Counts>();
       lanes.set(row.runner_id, lane);
       const hour = lane.get(row.hour) ?? empty();
       lane.set(row.hour, hour);
-      hour[outcome] += row.runs;
+      hour[outcome] = (hour[outcome] ?? 0) + row.runs;
     }
     if (outcome !== 'failed') continue;
     for (const dimension of FAILURE_DIMENSIONS) {
@@ -123,7 +123,7 @@ export interface FinishedRun {
   dryRun: boolean;
   projectId: string; projectName: string | null; runId: string; task: string | null; result: RunResult; errorCode: string | null;
   harness: string | null; model: string | null; runner: { id: string; name: string | null } | null;
-  queuedAt: number | null; startedAt: number | null; completedAt: number;
+  queuedAt: number | null; startedAt: number | null; completedAt: number; interruptionMachine?: string | null;
 }
 
 /**
@@ -132,13 +132,18 @@ export interface FinishedRun {
  */
 export async function readFinishedRuns(db: RelationalStore, set: ProjectSet, page: EndedRunPage) {
   const { rows, next } = await endedRuns(db, set, page);
+  const endings = await interruptedEndings(db, rows.map(row => ({ projectId: row.project_id, runId: row.id })));
   return {
-    rows: rows.map((row): FinishedRun => ({
-      dryRun: Number(row.dry_run) === 1,
-      projectId: row.project_id, projectName: row.project_name, runId: row.id, task: named(row.task), result: row.result, errorCode: named(row.error_code),
-      harness: named(row.harness), model: row.model, runner: row.runner_id === '' ? null : { id: row.runner_id, name: row.runner_name },
-      queuedAt: row.queued_at, startedAt: row.started_at, completedAt: Number(row.completed_at),
-    })),
+    rows: rows.map((row): FinishedRun => {
+      const ending = endings.find(end => end.projectId === row.project_id && end.runId === row.id);
+      return {
+        ...(ending === undefined ? {} : { interruptionMachine: ending.machine }),
+        dryRun: Number(row.dry_run) === 1,
+        projectId: row.project_id, projectName: row.project_name, runId: row.id, task: named(row.task), result: row.result, errorCode: named(row.error_code),
+        harness: named(row.harness), model: row.model, runner: row.runner_id === '' ? null : { id: row.runner_id, name: row.runner_name },
+        queuedAt: row.queued_at, startedAt: row.started_at, completedAt: Number(row.completed_at),
+      };
+    }),
     cursor: next,
   };
 }

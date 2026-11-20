@@ -1,3 +1,4 @@
+import { RunTaskConfirm } from '../work/RunTask';
 import { useState, type ReactNode } from 'react';
 import { ActionLink, Button, Card, Disclosure, HealthDot, errorWords, Skeleton, ReadState } from '../../design';
 import { ConnectDialog, connectedWords, losingWork, RepositoryGroup, RepositoryItem, repositoriesTitle, type ConnectTarget } from './Repositories';
@@ -8,12 +9,18 @@ const TONE_LABEL = { warn: 'Needs attention', bad: 'Failing' } as const;
 
 /** One thing that needs an administrator: a dot, the problem in one line, the detail in one more, and one way to act. */
 export function NeedsYouItem({ tone, words }: { tone: AttentionItem['tone']; words: NeedsYouWords }) {
+  const [retrying, setRetrying] = useState(false);
   return (
     <li className="flex gap-s3 border-t border-line pt-s3 first:border-t-0 first:pt-0" data-needs-you-item={tone}>
       <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone={tone} label={TONE_LABEL[tone]} /></span>
       <div className="flex min-w-0 flex-col gap-s1">
         <p className="t-body font-medium text-ink">{words.title}</p>
         <p className="t-small text-muted">{words.detail}</p>
+        {words.retryTask !== undefined && <>
+          <Button size="sm" onClick={() => setRetrying(true)}>Try now</Button>
+          <RunTaskConfirm projectId={words.retryTask.projectId} task={retrying ? words.retryTask.task : null} admin now={Date.now()} onOpenChange={setRetrying}
+            onStarted={() => { setRetrying(false); }} />
+        </>}
         {words.action !== null && (
           <ActionLink to={words.action.to}>
             {words.action.label} →

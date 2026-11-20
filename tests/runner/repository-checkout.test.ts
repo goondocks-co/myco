@@ -202,12 +202,12 @@ describe('a checkout a task is given', () => {
 
 it('carries a bounded fetch reason with exact credentials and URL userinfo removed from stderr', async () => {
   const executable = join(home, 'git-stderr-fixture');
-  const credential = { username: 'fixture-user', token: 'a!b' };
+  const credential = { username: 'x-access-token', token: 'ghs_syntheticInstallationToken999' };
   await writeFile(executable, '#!/usr/bin/env node\n' + `
 const cp = require('node:child_process');
 if (process.argv.includes('fetch')) {
   const token = process.env.MYCO_GIT_TOKEN;
-  process.stderr.write('fatal: Could not read source ' + token + ' https://' + process.env.MYCO_GIT_USERNAME + ':' + encodeURIComponent(token) + '@example.test/source.git\\n');
+  process.stderr.write('fatal: Could not read source ' + token + ' https://' + process.env.MYCO_GIT_USERNAME + ':' + encodeURIComponent(token) + '@example.test/source.git Basic ' + Buffer.from(process.env.MYCO_GIT_USERNAME + ':' + token).toString('base64') + '\\n');
   process.exit(128);
 }
 cp.execFileSync('git', process.argv.slice(2), { stdio: 'inherit' });
@@ -215,7 +215,7 @@ cp.execFileSync('git', process.argv.slice(2), { stdio: 'inherit' });
   let failure: RepositoryCheckoutError | undefined;
   try { await prepareRepositoryCheckout({ ...request(), credential, gitPath: executable, pin: async commit => commit }); }
   catch (error) { expect(error).toBeInstanceOf(RepositoryCheckoutError); failure = error as RepositoryCheckoutError; }
-  expect(failure?.failure.code).toBe('fetch_failed');
+  expect(failure?.failure.code).toBe('other');
   expect(failure?.failure.summary).toContain('fatal: Could not read source');
   expect(failure?.failure.summary!.length).toBeLessThanOrEqual(512);
   expect(JSON.stringify(failure?.failure)).not.toContain(credential.token);
@@ -251,7 +251,7 @@ cp.execFileSync(${JSON.stringify(gitPath)}, process.argv.slice(2), { stdio: 'inh
   let failure: RepositoryCheckoutError | undefined;
   try { await prepareRepositoryCheckout({ ...request(), credential: undefined, gitPath: executable, pin: async commit => commit }); }
   catch (error) { expect(error).toBeInstanceOf(RepositoryCheckoutError); failure = error as RepositoryCheckoutError; }
-  expect(failure?.failure.summary).toContain('fatal: cannot read https://example.test');
+  expect(failure?.failure.summary).toContain('fatal: cannot read <url>');
   expect(JSON.stringify(failure?.failure)).not.toContain('shortpw');
   expect(JSON.stringify(failure?.failure)).not.toContain('reader:');
 });
@@ -314,10 +314,10 @@ process.exit(child.status??1);
     expect([second,third]).toContain(pins[0]!.split('/').at(-1)!);
     expect(JSON.parse(await readFile(counter,'utf8'))).toEqual({init:1,clone:3,remoteFetch:3,refspecs:Array(3).fill('+refs/heads/main:refs/heads/main')});
     await expect(prepareRepositoryCheckout({...request(),cacheRoot:join(home,'new-runner-cache'),commit:first,pin:async commit=>commit}))
-      .rejects.toMatchObject({failure:{code:'checkout_failed'}});
+      .rejects.toMatchObject({failure:{code:'revision_missing'}});
     expect(await readFile(join(a.root,'.git/config'),'utf8')).not.toContain(token);
     const denied=prepareRepositoryCheckout({...request(),cacheRoot,credential:{username:'reader',token:'revoked-fixture-token'},pin:async commit=>commit});
-    await expect(denied).rejects.toMatchObject({failure:{code:'fetch_failed'}});
+    await expect(denied).rejects.toMatchObject({failure:{code:'access_refused'}});
     expect(await readFile(join(b.root,'AGENTS.md'),'utf8')).toBe('Third committed rules.');
   } finally {
     await Promise.all(checkouts.map(checkout=>checkout.dispose()));
@@ -360,4 +360,16 @@ it('map and seed history reads need no repository access outside the run directo
       expect(existsSync(cacheRoot)).toBe(false);
     } finally {await checkout.dispose();discardRunDir(allocation.scratchDir);}
   }
+});
+
+it('names a missing revision before exposing files', async () => {
+  await expect(prepareRepositoryCheckout({...request(),branch:'absent-branch',pin:async commit => commit}))
+    .rejects.toMatchObject({failure:{code:'revision_missing'}});
+
+});
+
+it('reports local Git permission failures as disk errors with private paths masked', async () => {
+  const executable = join(home, 'git-local-permission');
+  await writeFile(executable, '#!/usr/bin/env node\n' + `process.stderr.write("error: unable to create file /Users/private/project with spaces/file.txt: Permission denied"); process.exit(128);`, { mode: 0o700 });
+  await expect(prepareRepositoryCheckout({ ...request(), gitPath: executable, pin: async commit => commit })).rejects.toMatchObject({ failure: { code: 'disk', summary: "error: unable to create file <path>: Permission denied" } });
 });

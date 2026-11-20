@@ -147,3 +147,12 @@ it('keeps the independent repository preparation allowance in canonical and SQL 
     expect(await prepared.renew(prepared.deadline,prepared.deadline+1)).toBe(false);
   } finally {base.e.sqlite.close();prepared.e.sqlite.close();}
 });
+
+it('renews an attempt carrying the preparation allowance issued by the previous release', async () => {
+  const previousAllowanceMs = 120_000;
+  const r = await rig(JSON.stringify({timeoutSeconds:60,preparationTimeoutMs:previousAllowanceMs}));
+  try {
+    expect(await r.renew(NOW + previousAllowanceMs, r.deadline + 1)).toBe(true);
+    expect(r.expiry()).toBe(r.deadline);
+  } finally { r.e.sqlite.close(); }
+});

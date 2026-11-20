@@ -20,7 +20,7 @@ const restore = write<[number | null, string, string, number], never>({ name: 's
 const storeTitle = attributedUpdate<[project: string, session: string, title: string, summary: string, mode: string, by: string | null,
   material: number | null, run: string | null, stamp: number | null, generation: number | null]>(
   'sessionTitle.store', 'sessions',
-  `title=?3,summary=?4,titled_by=CASE WHEN ?5='first' THEN titled_by ELSE ?6 END,title_material_at=COALESCE(?7,titled_at,${SQL_NOW_MS})`,
+  `title=?3,summary=?4,titling_attempts=0,titled_by=CASE WHEN ?5='first' THEN titled_by ELSE ?6 END,title_material_at=COALESCE(?7,titled_at,${SQL_NOW_MS})`,
   `project_id=?1 AND session_id=?2 AND (?5='overwrite' OR title IS NULL) AND ${notTombstonedSql('sessions')}
     AND ((?8 IS NULL AND ${transcriptsPublishedSql('sessions')}) OR (?8 IS NOT NULL AND titled_at=?9
       AND EXISTS(SELECT 1 FROM session_documents d WHERE d.project_id=?1 AND d.session_id=?2 AND d.generation=?10 AND d.state='live')

@@ -324,6 +324,10 @@ it('admits only closed repository reasons and masks summaries before bounding th
   expect(JSON.stringify(reason)).not.toContain(btoa('user:' + token));
   expect(JSON.stringify(reason)).not.toContain('another-secret');
   expect(parseRepositoryFailure(reason)).toEqual(reason);
+  const last = parseRepositoryFailure({ code: 'other', summary: `progress\nfatal: failed https://user:${token}@example.test/repo?key=private token=${token}` }, [token])!;
+  expect(last.summary).toStartWith('fatal:');
+  expect(JSON.stringify(last)).not.toContain('private');
+  expect(JSON.stringify(last)).not.toContain(token);
   expect(parseRepositoryFailure({ code: 'submodules', summary: token })).toEqual({ code: 'submodules' });
   expect(parseRepositoryFailure({ code: 'unrecognized', summary: token })).toBeNull();
   expect(parseRepositoryFailure(null)).toBeNull();
@@ -356,4 +360,18 @@ it('retains all safe diagnostic fields from an older runner coded ending', () =>
   expect(harnessStopFromError('the harness stopped: error (permission_refused: myco_run; exit code 3; signal SIGTERM)'))
     .toEqual({ code: 'permission_refused', names: ['myco_run'], exitCode: 3, signal: 'SIGTERM' });
   expect(harnessStopFromError('the harness stopped: error (unknown; token: private)')).toBeNull();
+});
+
+it('masks absolute repository paths and retains a known code for older Deployments', () => {
+  const reason = parseRepositoryFailure({ code: 'disk', summary: "fatal: cannot open /Users/example/checkout/a file: Permission denied at /home/private/secret.txt" }, [], '/Users/example/checkout')!;
+  expect(reason.summary).toContain('<checkout>');
+  expect(reason.summary).not.toContain('a file');
+  expect(reason.summary).toContain('<path>');
+  expect(JSON.stringify(reason)).not.toContain('/Users');
+  expect(JSON.stringify(reason)).not.toContain('/home');
+});
+
+it('masks an unquoted absolute path with spaces through the diagnostic delimiter', () => {
+  const reason = parseRepositoryFailure({ code: 'disk', summary: 'error: unable to create file /Users/Jane Smith/Projects/acme merger/file.txt: Permission denied' });
+  expect(reason?.summary).toBe('error: unable to create file <path>: Permission denied');
 });

@@ -18,14 +18,15 @@ const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1';
 /** A checkout refusal carries only a closed reason and a sanitized Git summary. */
 export class RepositoryCheckoutError extends Error {
   readonly failure: RepositoryFailure;
-  constructor(code: RepositoryFailureCode, message: string, summary?: string, secrets: readonly string[] = []) {
+  constructor(code: RepositoryFailureCode, message: string, summary?: string, secrets: readonly string[] = [], checkoutRoot?: string) {
     super(message);
     this.name = 'RepositoryCheckoutError';
-    this.failure = parseRepositoryFailure({ code, summary }, secrets)!;
+    this.failure = parseRepositoryFailure({ code, summary }, secrets, checkoutRoot)!;
   }
 }
 
 export interface RepositoryCheckoutRequest {
+  timeoutMs?: number;
   url: string;
   branch: string;
   credential?: { username: string; token: string };
@@ -85,7 +86,7 @@ export async function hashCommittedFiles(root: string, paths: readonly string[],
 
 /** One bounded Git process group; cancellation stops its transport children too. */
 async function git(
-  executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal, operation: 'fetch_failed' | 'checkout_failed',
+  executable: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal,
 ): Promise<string> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -93,9 +94,7 @@ async function git(
     const child = spawn(command[0], command.slice(1), { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     let bytes = 0;
-    const stderr: Buffer[] = [];
-    let stderrBytes = 0;
-    let stderrTruncated = false;
+    let stderr = Buffer.alloc(0);
     let failure: Error | undefined;
     const stop = () => {
       if (child.pid === undefined) return;
@@ -117,38 +116,45 @@ async function git(
       } else chunks.push(chunk);
     });
     child.stderr.on('data', (chunk: Buffer) => {
-      const room = MAX_GIT_OUTPUT_BYTES - stderrBytes;
-      if (room > 0) { stderr.push(chunk.subarray(0, room)); stderrBytes += Math.min(chunk.length, room); }
-      if (chunk.length > room) stderrTruncated = true;
+      stderr = Buffer.concat([stderr, chunk]).subarray(-MAX_GIT_OUTPUT_BYTES);
     });
     child.once('error', (error) => { failure = error; });
     child.once('close', (code) => {
       signal.removeEventListener('abort', abort);
       if (failure !== undefined) reject(failure);
       else if (code !== 0) {
-        const captured = Buffer.concat(stderr).toString('utf8');
-        const summary = stderrTruncated ? captured.slice(0, Math.max(0, captured.lastIndexOf('\n'))) : captured;
+        const summary = stderr.toString('utf8');
         const token = env.MYCO_GIT_TOKEN ?? '';
         const username = env.MYCO_GIT_USERNAME ?? '';
         const secrets = [token, username, ...(token && username ? [username + ':' + token] : [])];
-        reject(new RepositoryCheckoutError(operation, `Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`, summary, secrets));
+        reject(new RepositoryCheckoutError(gitFailureCode(summary), `Repository Git operation failed (exit ${code ?? 'signal'}). Check the repository, branch, and read credential.`, summary, secrets, cwd));
       }
       else resolve(Buffer.concat(chunks).toString('utf8'));
     });
   });
 }
 
+/** Git's transport and filesystem errors become a closed preparation reason. */
+function gitFailureCode(words: string): RepositoryFailureCode {
+  if (/no space left|disk quota|file too large|read-only file system|unable to write|insufficient permission for adding an object|unable to create file|cannot create.*(?:directory|file)|(?:work tree|config file|config lock|object file|\.git[\/]).*permission denied/i.test(words)) return 'disk';
+  if (/authentication failed|access denied|returned error: (?:401|403)|could not read (?:Username|Password)/i.test(words)) return 'access_refused';
+  if (/repository .*not found|repository not found/i.test(words)) return 'access_refused';
+  if (/returned error: 404|does not appear to be a git repository/i.test(words)) return 'not_found';
+  if (/couldn.t find remote ref|not our ref|not a valid (?:object|commit)|bad object|unknown revision|needed a single revision/i.test(words)) return 'revision_missing';
+  return 'other';
+}
+
 /** Prepare committed files in an isolated workspace; no repository hooks or filters execute. */
 export async function prepareRepositoryCheckout(request: RepositoryCheckoutRequest): Promise<RepositoryCheckout> {
-  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(CHECKOUT_TIMEOUT_MS)]);
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs ?? CHECKOUT_TIMEOUT_MS)]);
   const url = repositoryUrl(request.url);
   repositoryBranch(request.branch);
   if (request.commit !== undefined && !SHA_PATTERN.test(request.commit)) throw new RepositoryCheckoutError('commit_mismatch', 'Invalid repository commit.');
   if (request.compareCommit !== undefined && !SHA_PATTERN.test(request.compareCommit)) throw new RepositoryCheckoutError('commit_mismatch', 'Invalid comparison commit.');
   const depth = request.historyDepth ?? 1;
   if (!Number.isInteger(depth) || depth < 1 || depth > MAX_REPOSITORY_HISTORY_DEPTH) throw new Error('Invalid repository history depth.');
-  const directory = await mkdtemp(join(tmpdir(), 'myco-repository-'));
-  const root = request.destination ?? join(directory, 'checkout');
+  let directory: string | undefined;
+  let root = request.destination ?? '';
   let ownsRoot = false;
   const dispose = async () => {
     try {
@@ -156,9 +162,11 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
         if (request.removeDestination !== undefined) await request.removeDestination();
         else await rm(root, { recursive: true, force: true });
       }
-    } finally { await rm(directory, { recursive: true, force: true }); }
+    } finally { if (directory !== undefined) await rm(directory, { recursive: true, force: true }); }
   };
   try {
+    directory = await mkdtemp(join(tmpdir(), 'myco-repository-'));
+    root = request.destination ?? join(directory, 'checkout');
     await mkdir(root, { mode: 0o700 });
     ownsRoot = true;
     const askpass = join(directory, 'askpass.sh');
@@ -181,7 +189,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
       '-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null',
       '-c', 'http.followRedirects=false', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
       ...args,
-    ], cwd, env, signal, args.includes('fetch') ? 'fetch_failed' : 'checkout_failed');
+    ], cwd, env, signal);
     const run = (...args: string[]) => runAt(root,args);
     const prepare = async (mirror?: RepositoryMirror): Promise<RepositoryCheckout> => {
       await run('check-ref-format', `refs/heads/${request.branch}`);
@@ -259,6 +267,14 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
     return await (request.cacheRoot === undefined ? prepare() : withRepositoryMirror(request.cacheRoot,{url,branch:request.branch},signal,runAt,prepare));
   } catch (error) {
     await dispose();
-    throw error;
+    if (error instanceof RepositoryCheckoutError) throw error;
+    if (signal.aborted && !request.signal.aborted) {
+      throw new RepositoryCheckoutError('timed_out', 'Repository preparation timed out.', `Preparation exceeded ${(request.timeoutMs ?? CHECKOUT_TIMEOUT_MS) / 1000} seconds.`);
+    }
+    if (request.signal.aborted || typeof (error as NodeJS.ErrnoException)?.code !== 'string') throw error;
+    const words = error instanceof Error ? error.message : String(error);
+    const disk = ['ENOSPC', 'EDQUOT', 'EROFS', 'EFBIG', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException)?.code ?? '');
+    throw new RepositoryCheckoutError(disk ? 'disk' : gitFailureCode(words), 'Repository preparation failed.', words,
+      request.credential === undefined ? [] : [request.credential.token, request.credential.username, `${request.credential.username}:${request.credential.token}`], root);
   }
 }

@@ -30,6 +30,7 @@ import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
 import { endQueuedRun, expireLeases } from './harness.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
+import { abandonDirectTitle } from '../db/runs/direct-titles.js';
 import { staleAfter } from './run-deadline.js';
 import { classify, emit } from '../telemetry.js';
 import { moveRunBodies } from '../db/runs/bodies.js';
@@ -208,7 +209,9 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
     const direct = isDirectRunContext(run.runContext);
-    if (!(await failStaleRun(env.db, scope, run.id, now, direct ? 'The direct model call did not settle before its deadline' : STALE_RUN_ERROR, direct ? 'run_failed' : 'machine_unresponsive'))) continue;
+    const ended = direct ? await abandonDirectTitle(env.db, scope, run, now)
+      : await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR, 'machine_unresponsive');
+    if (!ended) continue;
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }

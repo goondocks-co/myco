@@ -8,7 +8,7 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
-import { runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
+import { repositoryFailureForVersion, runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
 import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
@@ -46,7 +46,7 @@ import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js
 import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
-import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { prepareWorkerCheckout, RepositoryAlreadyCurrent, revokeRepositoryToken } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
@@ -61,6 +61,7 @@ import { deliverStepOutbox, pendingStepOutboxes, removeEmptyOutbox, STEP_OUTBOX_
 /** What a claim answers: the run, the harness chosen for it, and what it runs under. */
 interface ClaimedRun {
   repository?: RepositoryCheckoutSpec;
+  preparationTimeoutMs?: number;
   projectId: string;
   id: string;
   task: string;
@@ -174,7 +175,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 export type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: boolean; harnessStop?: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: 1 | 2; harnessStop?: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -291,7 +292,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   let profileOutcome = false;
   let modelCatalog = false;
   let steps = false;
-  let repositoryFailure = false;
+  let repositoryFailure: 1 | 2 | undefined;
   let harnessStop = false;
   try {
     options.signal.throwIfAborted();
@@ -306,7 +307,8 @@ async function postAs(options: Requester, token: string, path: string, body: unk
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
     harnessStop = featureAdvertised(res.headers.get(FEATURES_HEADER), HARNESS_STOP_FEATURE);
-    repositoryFailure = featureAdvertised(res.headers.get(FEATURES_HEADER), REPOSITORY_FAILURE_FEATURE);
+    repositoryFailure = featureAdvertised(res.headers.get(FEATURES_HEADER), REPOSITORY_FAILURE_FEATURE) ? 2
+      : featureAdvertised(res.headers.get(FEATURES_HEADER), LEGACY_REPOSITORY_FAILURE_FEATURE) ? 1 : undefined;
     steps = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_STEPS_FEATURE);
     raw = await rawAnswerOf(res, options.signal);
   } catch (error) {
@@ -315,7 +317,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure: true } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
     case 'protocol':
       return {
         kind: 'refused',
@@ -397,7 +399,11 @@ const asRun = (value: unknown): ClaimedRun | null => {
   if (!named || !(typeof run.instruction === 'string' || run.instruction === null)) return null;
   let repository: RepositoryCheckoutSpec | undefined;
   try { repository = run.repository === undefined ? undefined : parseRepositoryCheckoutSpec(run.repository); } catch { return null; }
-  return { ...run, repository, instructions: typeof run.instructions === 'string' ? run.instructions : null };
+  let context: { preparationTimeoutMs?: unknown } = {};
+  try { if (typeof Reflect.get(value, 'runContext') === 'string') context = JSON.parse(Reflect.get(value, 'runContext')) ?? {}; } catch { /* An older claim can omit its context. */ }
+  const allowance = run.preparationTimeoutMs ?? context.preparationTimeoutMs;
+  if (allowance !== undefined && (typeof allowance !== 'number' || !Number.isSafeInteger(allowance) || allowance < 0)) return null;
+  return { ...run, preparationTimeoutMs: allowance as number | undefined, repository, instructions: typeof run.instructions === 'string' ? run.instructions : null };
 };
 
 interface AttemptLease {
@@ -507,7 +513,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
  * success.
  */
 async function drive(
-  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean, recheckLogin?: () => Promise<boolean>,
+  options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, features: { steps: boolean; repositoryFailure?: 1 | 2 }, recheckLogin?: () => Promise<boolean>,
 ): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | { status: 'lost'; error: null } | { status: 'settled'; error: null }> {
   const clock = options.clock ?? Date.now;
   // A claim answered after its own lease ran out — its answer held up by a
@@ -559,7 +565,7 @@ async function drive(
   let lost = false;
   let overran = false;
   const singleAnswer = run.task === 'curate-spores';
-  const preparationAllowance = run.repository !== undefined && REPOSITORY_TASKS.includes(run.task) ? REPOSITORY_PREPARATION_TIMEOUT_MS : 0;
+  const preparationAllowance = run.repository !== undefined && REPOSITORY_TASKS.includes(run.task) ? (run.preparationTimeoutMs ?? REPOSITORY_PREPARATION_TIMEOUT_MS) : 0;
   const cleanupDeadline = clock() + preparationAllowance + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
   /**
    * The budget, settled by the timer rather than by the harness.
@@ -582,7 +588,7 @@ async function drive(
   const events: RunEvent[] = [];
   const accounting = new ExecutionAccounting(named?.accounting.primarySources);
   // A Deployment that stores step logs is sent this attempt's; the log is kept from the harness's own events.
-  const stepLog = keepsSteps && run.attemptId !== undefined ? new StepLog(named, clock) : null;
+  const stepLog = features.steps && run.attemptId !== undefined ? new StepLog(named, clock) : null;
   let stream: AsyncIterator<RunEvent> | undefined;
   let checkout: RepositoryCheckout | undefined;
   let failure: { code: WorkerFailureCode; words: string; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | null = null;
@@ -599,12 +605,14 @@ async function drive(
           const answer = await postRepository({ ...options, signal }, { ...input, projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }) });
           if (answer.kind !== 'answered') throw new Error(`Repository preparation failed: ${answer.detail}`);
           if (answer.body.held !== true) { lost = true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
+          const repositoryFailure = parseRepositoryFailure(answer.body.repositoryFailure);
+          if (repositoryFailure !== null) throw new RepositoryCheckoutError(repositoryFailure.code, typeof answer.body.error === 'string' ? answer.body.error : 'Repository access was refused.');
           if (typeof answer.body.error === 'string') throw new Error(answer.body.error);
           return answer.body;
-        }, { task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories'), log: options.log, fetchImpl: options.githubApi });
+        }, { preparationTimeoutMs: run.preparationTimeoutMs, task: run.task, gitPath: options.repositoryGitPath, digests: REPOSITORY_DIGEST_TASKS.includes(run.task), cacheRoot: options.repositoryCacheRoot ?? join(dirname(options.runRoot),'repositories'), log: options.log, fetchImpl: options.githubApi });
       } catch (error) {
         if (!KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) || lost || stopping.signal.aborted) throw error;
-        const unavailable = error instanceof RepositoryCheckoutError ? {code:error.failure.code} : {code:'checkout_failed'};
+        const unavailable = repositoryFailureForVersion(error instanceof RepositoryCheckoutError ? { code: error.failure.code } : { code: 'checkout_failed' }, features.repositoryFailure ?? 1);
         const recorded = await postRepository(options,{projectId:run.projectId,runId:run.id,attemptId:run.attemptId,unavailable});
         if (recorded.kind !== 'answered') throw new Error('Could not record unavailable repository preparation.');
         if (recorded.body.held !== true) { lost=true; stopping.abort(); throw new Error('The repository lease is no longer held.'); }
@@ -685,7 +693,7 @@ async function drive(
   } catch (error) {
     if (error instanceof RepositoryAlreadyCurrent) alreadyCurrent = true;
     else failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error),
-      ...(preparing ? { repositoryFailure: error instanceof RepositoryCheckoutError ? error.failure : { code: 'checkout_failed' } } : {}),
+      ...(preparing ? { repositoryFailure: error instanceof RepositoryCheckoutError ? error.failure : parseRepositoryFailure({ code: 'other', summary: error instanceof Error ? error.message : String(error) }, runDiagnosticSecrets(options, run))! } : {}),
     };
   } finally {
     clearTimeout(budget);
@@ -1150,6 +1158,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         options.log('the Deployment answered a claim naming no run');
         return { driven, refused: 'malformed_answer' };
       }
+      if (answer.repositoryFailure !== 2) run.preparationTimeoutMs = LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS;
       options.log(`claimed ${run.id} (${run.task}) on ${run.harness}, budget ${run.timeoutSeconds}s`);
       // The cadence and the lease are the Deployment's, carried on the claim it answered.
       requestMs = waitOf(claim.heartbeatMs, DEFAULT_HEARTBEAT_MS);
@@ -1160,7 +1169,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           options.onClaim?.();
           const firstRun = !startedHarnesses.has(run.harness);
           startedHarnesses.add(run.harness);
-          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, answer.steps, firstRun ? async () => {
+          outcome = await drive({ ...options, signal: lease.signal }, run, lease, wake, { steps: answer.steps, repositoryFailure: answer.repositoryFailure }, firstRun ? async () => {
             detection.invalidate();
             const fresh = await detection.read();
             return fresh.some((harness) => harness.id === run.harness && harness.installed && harness.authenticated);
@@ -1187,7 +1196,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           const ended = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/end', { projectId: run.projectId, runId: run.id, status: outcome.status, error: outcome.error,
             ...accounting,
             ...(answer.harnessStop && outcome.harnessStop !== undefined ? { harnessStop: parseHarnessStop(outcome.harnessStop) } : {}),
-            ...(answer.repositoryFailure && outcome.repositoryFailure !== undefined ? { repositoryFailure: parseRepositoryFailure(outcome.repositoryFailure) } : {}),
+            ...(answer.repositoryFailure && outcome.repositoryFailure !== undefined ? { repositoryFailure: repositoryFailureForVersion(parseRepositoryFailure(outcome.repositoryFailure)!, answer.repositoryFailure) } : {}),
             ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
           }));
           if (ended.kind === 'refused') {

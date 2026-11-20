@@ -13,8 +13,8 @@ import { taskWords } from '../admin/workers';
 import { runErrorWords, shortTime } from '../work/words';
 import { gapReading, gapsOf, presenceOf, slicesOf, type Presence, type QuietSpell, type RunsWindow } from './timeline';
 
-type Outcome = 'worked' | 'unchanged' | 'failed';
-interface Counts { worked: number; unchanged: number; failed: number }
+type Outcome = 'worked' | 'unchanged' | 'failed' | 'interrupted';
+interface Counts { worked: number; unchanged: number; failed: number; interrupted?: number }
 type Dimension = 'cause' | 'runner' | 'agent' | 'task';
 interface FailureGroup { key: string | null; name: string | null; runs: number; prior: number; slices: number[]; latestHour: number | null }
 /** `GET /api/runs/hours`: runs finished per runner and hour, and failures grouped with the window before. */
@@ -31,7 +31,7 @@ export interface RunHoursAnswer {
 /** One run of `GET /api/runs/finished`. */
 interface FinishedRun {
   dryRun?: boolean;
-  projectId: string; projectName: string | null; runId: string; task: string | null; result: 'produced' | 'unchanged' | 'failed' | 'failed_with_output';
+  projectId: string; projectName: string | null; runId: string; task: string | null; result: 'produced' | 'unchanged' | 'failed' | 'failed_with_output' | 'interrupted'; interruptionMachine?: string | null;
   errorCode: string | null; harness: string | null; model: string | null; runner: { id: string; name: string | null } | null; completedAt: number;
 }
 
@@ -40,9 +40,9 @@ const WINDOW_WORDS: Readonly<Record<RunsWindow, { pill: string; span: string; be
   week: { pill: 'Last 7 days', span: 'in the last 7 days', before: 'the week before' },
 };
 const OUTCOME_WORDS: Readonly<Record<Outcome, { words: string; tone: HealthTone }>> = {
-  worked: { words: 'Worked', tone: 'ok' }, unchanged: { words: 'Changed nothing', tone: 'faint' }, failed: { words: 'Failed', tone: 'bad' },
+  worked: { words: 'Worked', tone: 'ok' }, unchanged: { words: 'Changed nothing', tone: 'faint' }, failed: { words: 'Failed', tone: 'bad' }, interrupted: { words: 'Interrupted', tone: 'warn' },
 };
-const outcomeOf = (result: FinishedRun['result']): Outcome => result === 'produced' ? 'worked' : result === 'unchanged' ? 'unchanged' : 'failed';
+const outcomeOf = (result: FinishedRun['result']): Outcome => result === 'interrupted' ? 'interrupted' : result === 'produced' ? 'worked' : result === 'unchanged' ? 'unchanged' : 'failed';
 /** Each grouping, the parameter that narrows the runs to one of its values, and the one that narrows them to runs that recorded none. */
 const DIMENSIONS: ReadonlyArray<{ value: Dimension; label: string; param: string; none: string }> = [
   { value: 'cause', label: 'Cause', param: 'cause', none: 'noCause' }, { value: 'runner', label: 'Runner', param: 'runner', none: 'noRunner' },
@@ -132,7 +132,7 @@ export function RunsPage() {
         <div className="flex flex-wrap items-center gap-s2">
           <div className="w-full sm:w-auto">
             <FilterPills label="Outcome" value={(params.get('outcome') as Outcome | null) ?? 'any'} onChange={(value) => set({ outcome: value === 'any' ? null : value })}
-              options={[{ value: 'any', label: 'Everything' }, ...(['worked', 'unchanged', 'failed'] as const).map((value) => ({ value, label: OUTCOME_WORDS[value].words }))]} />
+              options={[{ value: 'any', label: 'Everything' }, ...(['worked', 'unchanged', 'failed', 'interrupted'] as const).map((value) => ({ value, label: OUTCOME_WORDS[value].words }))]} />
           </div>
           {DIMENSIONS.map(({ value: dim, param, none }) => {
             const value = params.get(param);
@@ -156,7 +156,7 @@ export function RunsPage() {
               <li key={`${run.projectId}\u0000${run.runId}`} className="flex items-center" data-runs-run={outcomeOf(run.result)}>
                 <ListRow className="flex-1" to={runPath(run.projectId, run.runId)} leading={<HealthDot tone={outcome.tone} label={outcome.words} />}
                   title={`${capital(taskWords(run.task))}${run.projectName === null ? '' : ` · ${run.projectName}`}`}
-                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || outcomeOf(run.result) !== 'failed' ? null : runErrorWords(run.errorCode), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
+                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || !['failed','interrupted'].includes(outcomeOf(run.result)) ? null : runErrorWords(run.errorCode, null, null, run.interruptionMachine ?? run.runner?.name ?? null, run.result === 'interrupted' ? 'skipped' : 'failed'), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
                 {run.runner !== null && <Link to={runnerPath(run.runner.id)} className="shrink-0 px-s3 t-small">{run.runner.name ?? 'Its runner'}</Link>}
               </li>
             );
@@ -171,7 +171,7 @@ export function RunsPage() {
 /** Each runner's lane of finished runs per slice with its check-ins beneath, the empty slices left visible, then the spells when nothing finished anywhere, each opening what its facts come to. */
 function Timeline({ answer, now, span }: { answer: RunHoursAnswer; now: number; span: string }) {
   const { totals } = answer;
-  const finished = totals.worked + totals.unchanged + totals.failed;
+  const finished = totals.worked + totals.unchanged + totals.failed + (totals.interrupted ?? 0);
   const gaps = gapsOf(answer, now);
   const [open, setOpen] = useState<number | null>(null);
   const opened = gaps.find((gap) => gap.from === open) ?? null;
@@ -179,18 +179,18 @@ function Timeline({ answer, now, span }: { answer: RunHoursAnswer; now: number; 
     <Card className="flex flex-col gap-s3">
       {!answer.counted && <p className="t-small text-muted" data-runs-counting="">Myco is still counting runs that finished before this page existed, so earlier hours may read low.</p>}
       <p className="t-body text-ink" data-runs-totals="">{finished === 0 ? `Nothing finished ${span}.`
-        : `${count(finished, 'run')} finished ${span}: ${totals.worked.toLocaleString()} worked, ${totals.unchanged.toLocaleString()} changed nothing, ${totals.failed.toLocaleString()} failed.`}</p>
+        : `${count(finished, 'run')} finished ${span}: ${totals.worked.toLocaleString()} worked, ${totals.unchanged.toLocaleString()} changed nothing, ${totals.failed.toLocaleString()} failed${totals.interrupted ? `, ${totals.interrupted.toLocaleString()} interrupted` : ''}.`}</p>
       <ul className="flex flex-col gap-s2">
         {answer.lanes.map((lane) => {
           const slices = slicesOf(answer, lane);
-          const empty = slices.filter((slice) => slice.worked + slice.unchanged + slice.failed === 0).length;
+          const empty = slices.filter((slice) => slice.worked + slice.unchanged + slice.failed + slice.interrupted === 0).length;
           const sum = (key: keyof Counts) => slices.reduce((n, slice) => n + slice[key], 0);
-          const label = `${lane.name ?? 'No runner'}: ${sum('worked')} worked, ${sum('unchanged')} changed nothing, ${sum('failed')} failed; nothing finished in ${empty} of ${slices.length}`;
+          const label = `${lane.name ?? 'No runner'}: ${sum('worked')} worked, ${sum('unchanged')} changed nothing, ${sum('failed')} failed${sum('interrupted') ? `, ${sum('interrupted')} interrupted` : ''}; nothing finished in ${empty} of ${slices.length}`;
           return (
             <li key={lane.runnerId ?? ''} className="flex flex-col gap-s1" data-runs-lane={lane.name ?? ''}>
               {lane.runnerId === null ? <span className="t-small text-ink-2">Runs no runner ran</span>
                 : <Link to={runnerPath(lane.runnerId)} className="t-small">{lane.name ?? 'A runner no longer registered'}</Link>}
-              <StackedBars label={label} slots={slices.map((slice) => ({ parts: [{ value: slice.worked, tone: 'ok' }, { value: slice.unchanged, tone: 'faint' }, { value: slice.failed, tone: 'bad' }] }))} />
+              <StackedBars label={label} slots={slices.map((slice) => ({ parts: [{ value: slice.worked, tone: 'ok' }, { value: slice.unchanged, tone: 'faint' }, { value: slice.failed, tone: 'bad' }, { value: slice.interrupted, tone: 'warn' }] }))} />
               {lane.runnerId !== null && <CheckIns name={lane.name ?? 'This runner'} presence={presenceOf(answer, lane)} />}
             </li>
           );
@@ -206,7 +206,7 @@ function Timeline({ answer, now, span }: { answer: RunHoursAnswer; now: number; 
         </ul>
       )}
       {opened !== null && <GapCard answer={answer} spell={opened} now={now} />}
-      <p className="t-meta text-muted">Green worked, grey changed nothing, red failed. Hatched: nothing finished. Beneath each runner, a filled mark for each {answer.window.sliceMs > 3_600_000 ? 'day' : 'hour'} it checked in.</p>
+      <p className="t-meta text-muted">Green worked, grey changed nothing, red failed, amber interrupted. Hatched: nothing finished. Beneath each runner, a filled mark for each {answer.window.sliceMs > 3_600_000 ? 'day' : 'hour'} it checked in.</p>
     </Card>
   );
 }

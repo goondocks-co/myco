@@ -2,7 +2,7 @@ import { useId } from 'react';
 import { cn } from '../../lib/cn';
 
 /** One slot's parts, bottom first: each a count and the tone it is drawn in. */
-export interface StackedSlot { parts: ReadonlyArray<{ value: number; tone: 'ok' | 'bad' | 'faint' }> }
+export interface StackedSlot { parts: ReadonlyArray<{ value: number; tone: 'ok' | 'bad' | 'faint' | 'warn' }> }
 
 export interface StackedBarsProps {
   /** Slots in order, oldest first; a slot whose parts sum to zero is drawn hatched. */
@@ -13,7 +13,7 @@ export interface StackedBarsProps {
   className?: string;
 }
 
-const TONE_FILL = { ok: 'fill-ok', bad: 'fill-bad', faint: 'fill-line-strong' } as const;
+const TONE_FILL = { ok: 'fill-ok', bad: 'fill-bad', faint: 'fill-line-strong', warn: 'fill-warn' } as const;
 
 /** A full-width row of stacked bars, one per slot, scaled to the fullest slot; an empty slot is hatched so a gap reads as a gap. */
 export function StackedBars({ slots, label, height = 28, className }: StackedBarsProps) {

@@ -26,7 +26,7 @@ export function staleAfter(startedAt: number, runContext: string | null): number
   let context: unknown = null;
   try { context = runContext === null ? null : JSON.parse(runContext); } catch { /* A malformed context carries no preparation allowance. */ }
   if (context !== null && typeof context === 'object' && 'execution' in context && context.execution === 'direct') return startedAt + timeoutSecondsOf(runContext) * 1000;
-  const preparation = context !== null && typeof context === 'object' && 'preparationTimeoutMs' in context && context.preparationTimeoutMs === REPOSITORY_PREPARATION_TIMEOUT_MS ? REPOSITORY_PREPARATION_TIMEOUT_MS : 0;
+  const preparation = context !== null && typeof context === 'object' && 'preparationTimeoutMs' in context && typeof context.preparationTimeoutMs === 'number' && context.preparationTimeoutMs >= 1 && context.preparationTimeoutMs <= REPOSITORY_PREPARATION_TIMEOUT_MS ? context.preparationTimeoutMs : 0;
   return startedAt + timeoutSecondsOf(runContext) * 1000 + preparation + RUN_OVERRUN_MARGIN_MS;
 }
 
@@ -48,8 +48,8 @@ export function runDeadlineSql(): string {
 
 /** Only the claim-authored preparation bound extends an attempt's deadline. */
 export function preparationAllowanceSql(): string {
-  return `CASE WHEN json_valid(run_context) THEN CASE WHEN json_extract(run_context,'$.preparationTimeoutMs')=${REPOSITORY_PREPARATION_TIMEOUT_MS}
-    THEN ${REPOSITORY_PREPARATION_TIMEOUT_MS} ELSE 0 END ELSE 0 END`;
+  return `CASE WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context,'$.preparationTimeoutMs') IN ('integer','real') AND json_extract(run_context,'$.preparationTimeoutMs') BETWEEN 1 AND ${REPOSITORY_PREPARATION_TIMEOUT_MS}
+    THEN json_extract(run_context,'$.preparationTimeoutMs') ELSE 0 END ELSE 0 END`;
 }
 
 

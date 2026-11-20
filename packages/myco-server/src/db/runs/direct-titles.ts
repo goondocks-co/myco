@@ -1,8 +1,12 @@
 
 import type { RelationalStore } from '../../core/adapters.js';
 import type { TitleSnapshot } from '../documents/titling-material.js';
+import { TITLING_MAX_ATTEMPTS } from '../../constants.js';
 import { DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS, completionAccounting, DIRECT_CALL_WINDOW_MS, DIRECT_CALLS_PER_MINUTE, COMPLETION_TIMEOUT_MS, COMPLETION_ATTEMPTS, PROVIDER_FAULTS } from '../../core/completion/provider.js';
-import { commit, rows, write } from '../index.js';
+import type { ReadScope } from '../../read/scope.js';
+import type { RunRow } from './lifecycle.js';
+import { staleAfter } from '../../core/run-deadline.js';
+import { assertion, commit, refusalCode, refused, rows, write } from '../index.js';
 import { storeSessionTitle, faultedTitleRelease, uncalledTitleRelease } from '../session-titles.js';
 import { ensureAgentWrite } from './claim.js';
 
@@ -76,4 +80,33 @@ const reserveCall = write<[project: string, run: string, now: number], { id: num
 /** A provider request reserves its own slot in the same atomic write that counts the trailing minute. */
 export async function reserveDirectCall(db: RelationalStore, project: string, run: string, now: number): Promise<boolean> {
   return (await rows(db, reserveCall.bind(project, run, now))).length > 0;
+}
+
+const INTERRUPTED_CODE = 'execution_abandoned';
+const ABANDONED_CONFLICT = refusalCode('direct_title_ending_changed');
+const abandonmentOwner = "project_id=?1 AND id=?2 AND provider='direct' AND status='running' AND run_context IS ?3 AND started_at=?4";
+const abandonedGuard = assertion<[project: string, run: string, context: string | null, started: number]>({
+  name: 'directTitle.abandonGuard', refusal: ABANDONED_CONFLICT, when: `EXISTS(SELECT 1 FROM agent_runs WHERE ${abandonmentOwner})`,
+});
+const titleAttempts = `(SELECT titling_attempts FROM sessions WHERE project_id=agent_runs.project_id
+  AND session_id=CASE WHEN json_valid(agent_runs.run_context) THEN json_extract(agent_runs.run_context,'$.session_id') END)`;
+const abandoned = write<[project: string, run: string, context: string | null, started: number, now: number], { id: string }>({
+  name: 'directTitle.abandon', sql: `UPDATE agent_runs SET status=CASE WHEN origin='manual' OR ${titleAttempts} IS NULL THEN 'failed' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'failed' ELSE 'skipped' END,completed_at=?5,
+    error_code=CASE WHEN ${titleAttempts} IS NULL THEN 'run_failed' WHEN origin='manual' THEN 'run_interrupted' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'title_interrupted_repeated' ELSE '${INTERRUPTED_CODE}' END,
+    error=CASE WHEN ${titleAttempts} IS NULL THEN 'The direct title claim is incomplete' WHEN origin='manual' THEN 'The work was interrupted; start it again when you are ready' WHEN ${titleAttempts}>=${TITLING_MAX_ATTEMPTS} THEN 'Myco stopped after three attempts at this title'
+      ELSE 'The direct model call ended without recording a result; the work stays due' END
+    WHERE ${abandonmentOwner} RETURNING id`,
+});
+
+/** An execution without a result spends its session attempt and fails visibly at the title attempt limit. */
+export async function abandonDirectTitle(db: RelationalStore, scope: ReadScope, run: Pick<RunRow, 'id' | 'runContext' | 'startedAt'>, now: number): Promise<boolean> {
+  if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) return false;
+  try {
+    const result = await commit(db, abandonedGuard.bind(scope.projectId, run.id, run.runContext, run.startedAt),
+      abandoned.bind(scope.projectId, run.id, run.runContext, run.startedAt, now));
+    return result.at(-1)!.results.length > 0;
+  } catch (error) {
+    if (refused(error, ABANDONED_CONFLICT)) return false;
+    throw error;
+  }
 }

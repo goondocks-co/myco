@@ -3,7 +3,7 @@ export class RepositoryInputError extends Error {}
 export const REPOSITORY_COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 export const MAX_REPOSITORY_REQUEST_BYTES = 16_384;
 /** Optional source preparation has its own allowance beside the harness budget. */
-export const REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000;
+export const REPOSITORY_PREPARATION_TIMEOUT_MS = 600_000;
 /** Tasks that require a connection rather than optionally validate knowledge against source. */
 export const REQUIRED_REPOSITORY_TASKS: readonly string[] = ['canopy-map', 'vault-seed'];
 /** Knowledge runs may inspect files, without shell or edit tools. */
@@ -103,9 +103,25 @@ export function parseRepositoryCheckoutSpec(value: unknown): RepositoryCheckoutS
   return { url: repositoryUrl(url), branch: repositoryBranch(branch), historyDepth };
 }
 
+/** Why repository access is refused, each named in the reader's words. */
+export const GITHUB_ACCESS_FAILURES = {
+  app_not_configured: 'GitHub repository access needs setup. The server operator runs `myco server github-app` for this server.',
+  account_not_approved: 'This installation belongs to a GitHub account this server has not approved. An admin approves it in Project Settings → Repository.',
+  installation_unavailable: 'The App installation was removed or suspended in GitHub. Install the App again or unsuspend it, then connect the repository again.',
+  repository_not_granted: 'The App installation does not include this repository. Add the repository to the installation in GitHub, then check again.',
+  permissions_missing: 'The App installation has not granted the read access this needs. Approve the App’s requested permissions in GitHub, then check again.',
+  access_refused: 'GitHub refused access to this repository through the App installation. Check in GitHub that the installation includes it and its requested permissions are approved, then check again.',
+  rate_limited: 'GitHub’s rate limit for this App was reached. Check again after it resets.',
+  github_unavailable: 'GitHub did not answer as expected. Check again later.',
+} as const;
+export type GitHubAccessFailure = keyof typeof GITHUB_ACCESS_FAILURES;
+
 /** Structured repository checkout reasons supported by a Deployment's worker end reports. */
-export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
-export const REPOSITORY_FAILURE_CODES = ['fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
+export const REPOSITORY_FAILURE_FEATURE = 'repository-failure-v2';
+/** Preparation allowance understood by Deployments before repository-failure-v2. */
+export const LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS = 120_000;
+export const LEGACY_REPOSITORY_FAILURE_FEATURE = 'repository-failure-v1';
+export const REPOSITORY_FAILURE_CODES = [...Object.keys(GITHUB_ACCESS_FAILURES) as GitHubAccessFailure[], 'not_found', 'revision_missing', 'timed_out', 'disk', 'other', 'fetch_failed', 'submodules', 'lfs', 'too_large', 'commit_mismatch', 'checkout_failed'] as const;
 export type RepositoryFailureCode = typeof REPOSITORY_FAILURE_CODES[number];
 export interface RepositoryFailure { code: RepositoryFailureCode; summary?: string }
 export const MAX_REPOSITORY_FAILURE_SUMMARY_CHARS = 512;

@@ -84,7 +84,7 @@ if (process.argv.includes('status')) process.exit(0);
 `;
 
 describe('worker repository checkout over the Deployment wire', () => {
-  for (const access of ['private', 'invalid', 'invalid-older-server'] as const) {
+  for (const access of ['private', 'invalid', 'invalid-v1-server', 'invalid-short-claim', 'invalid-older-server', 'invalid-app-permissions'] as const) {
     it(access.startsWith('invalid') ? 'refuses a token the source rejects before launching a harness and removes scratch files (' + access + ')' : 'prepares source with its minted token, saves spores under the run and ends the token and files', async () => {
       const github = githubFixture();
       const source = await appSource(github, access === 'private');
@@ -93,7 +93,12 @@ describe('worker repository checkout over the Deployment wire', () => {
       const pipeline = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: github.fetchImpl });
       const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: async (request) => {
         const response = await pipeline.handleRequest(request, env());
-        if (access === 'invalid-older-server') response.headers.set('x-myco-features', response.headers.get('x-myco-features')!.split(',').filter(feature => feature !== 'repository-failure-v1').join(','));
+        if (access === 'invalid-older-server' || access === 'invalid-v1-server') response.headers.set('x-myco-features', response.headers.get('x-myco-features')!.split(',').filter(feature => !feature.startsWith('repository-failure-') || (access === 'invalid-v1-server' && feature === 'repository-failure-v1')).join(','));
+        if (access === 'invalid-short-claim' && new URL(request.url).pathname === '/worker/claim') {
+          const answer = await response.json() as any;
+          if (answer.claimed) answer.run.preparationTimeoutMs = 1;
+          return Response.json(answer, { status: response.status, headers: response.headers });
+        }
         return response;
       } });
       const previousPath = process.env.PATH;
@@ -114,13 +119,20 @@ describe('worker repository checkout over the Deployment wire', () => {
         await writeFile(join(binaries, 'claude'), sourceReader(evidence), { mode: 0o700 });
         process.env.PATH = `${binaries}:${previousPath ?? ''}`;
         expect(detectHarnesses(['claude-code'])).toEqual([{ id: 'claude-code', installed: true, authenticated: true }]);
+        if (access === 'invalid-app-permissions') github.state.granted.contents = 'none';
+        const issuedBefore = github.state.issued.length;
         const lines: string[] = [];
         const outcome = await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot, only: ['claude-code'], once: true,
           repositoryGitPath: source.gitPath, githubApi: github.fetchImpl, pollIdleMs: 10, signal: AbortSignal.timeout(20_000), log: (line) => { lines.push(line); } });
         expect(outcome).toEqual({ driven: 1, refused: null });
         const checkoutToken = github.state.issued.at(-1)!;
-        expect(checkoutToken.body).toEqual({ permissions: { contents: 'read', metadata: 'read' }, repository_ids: [1296269] });
-        expect(github.state.revoked).toContain(checkoutToken.token);
+        if (access === 'invalid-app-permissions') expect(github.state.issued).toHaveLength(issuedBefore);
+        else if (access === 'invalid-short-claim') {
+          for (const { token } of github.state.issued) expect(github.state.revoked).toContain(token);
+        } else {
+          expect(checkoutToken.body).toEqual({ permissions: { contents: 'read', metadata: 'read' }, repository_ids: [1296269] });
+          expect(github.state.revoked).toContain(checkoutToken.token);
+        }
         const row = e.sqlite.query(`SELECT status,error,run_context AS context FROM agent_runs WHERE id='run_seed'`).get() as { status: string; error: string | null; context: string };
         if (!access.startsWith('invalid')) {
           const accounting = e.sqlite.query(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data FROM agent_runs WHERE id='run_seed'`).get() as Record<string, unknown>;
@@ -142,11 +154,13 @@ describe('worker repository checkout over the Deployment wire', () => {
           if (access === 'invalid-older-server') {
             expect(context.repositoryFailureCode).toBeUndefined();
             expect(context.repositoryFailureSummary).toBeUndefined();
+          } else if (access === 'invalid-app-permissions') {
+            expect(context.repositoryFailureCode).toBe('permissions_missing');
           } else {
-            expect(context.repositoryFailureCode).toBe('fetch_failed');
-            expect(context.repositoryFailureSummary).toContain('fatal:');
+            expect(context.repositoryFailureCode).toBe(access === 'invalid-short-claim' ? 'timed_out' : access === 'invalid-v1-server' ? 'fetch_failed' : 'access_refused');
+            expect(context.repositoryFailureSummary).toContain(access === 'invalid-short-claim' ? 'Preparation exceeded' : 'fatal:');
           }
-          expect(row.context).not.toContain(checkoutToken.token);
+          if (checkoutToken !== undefined) expect(row.context).not.toContain(checkoutToken.token);
           expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM spores`).get()).toEqual({ n: 0 });
           expect(await readdir(runRoot)).toEqual([]);
           expect(await readdir(source.home)).not.toContain('observed.json');

@@ -1,4 +1,4 @@
-import { REPOSITORY_COMMIT_PATTERN, REPOSITORY_TOKEN_MIN_LIFETIME_MS, RepositoryInputError, type RepositoryAccess, type RepositoryComparison, type RepositoryIdentity, type RepositoryPin } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_COMMIT_PATTERN, REPOSITORY_TOKEN_MIN_LIFETIME_MS, RepositoryInputError, type RepositoryAccess, type RepositoryFailure, type RepositoryComparison, type RepositoryIdentity, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from './adapters.js';
 import { projectRepositories } from './repositories.js';
 import { GitHubAccessRefused, githubAppProjects, HandedOver } from './github-app.js';
@@ -7,7 +7,7 @@ import { type RunRow } from '../db/runs/lifecycle.js';
 import { type RunLease } from '../db/runs/leases.js';
 
 /** A source read's answer: the source with its token, or why there is none. */
-type SourceAnswer = { persisted: true; held: true; repository?: RepositoryAccess; comparison?: RepositoryComparison; error?: string };
+type SourceAnswer = { repositoryFailure?: RepositoryFailure; persisted: true; held: true; repository?: RepositoryAccess; comparison?: RepositoryComparison; error?: string };
 
 /** What a preparation checks its answer against, and adds to a source read before handing its token over. */
 export interface RunRepositoryOptions {
@@ -59,7 +59,7 @@ export async function prepareRunRepository(env: ServerEnv, projectId: string, ru
     });
     return answer instanceof HandedOver ? answer.value : answer;
   } catch (error) {
-    if (error instanceof GitHubAccessRefused) return { persisted: true, held: true, error: error.message } as const;
+    if (error instanceof GitHubAccessRefused) return { persisted: true, held: true, error: error.message, repositoryFailure: { code: error.failure } } as const;
     throw error;
   }
 }

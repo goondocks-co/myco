@@ -1,4 +1,5 @@
-import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
+import { GITHUB_ACCESS_FAILURES } from '@goondocks/myco-shared/repository';
+import { RUN_FAILURE_WORDS, interruptionWords } from '@goondocks/myco-shared/run-control';
 /**
  * Myco's work in words: every sentence the page and the run panel show, built
  * from the numbers the server answers. A run reads as what it came to, a
@@ -380,6 +381,12 @@ export const SESSION_ENDING_FIELD_LABELS: Readonly<Record<string, string>> = {
 };
 
 const REPOSITORY_FAILURE_WORDS = {
+  ...GITHUB_ACCESS_FAILURES,
+  not_found: 'Myco couldn’t find the repository. Add this repository to the Myco GitHub App’s installation in GitHub, then reconnect it in Project Settings → Repository.',
+  revision_missing: 'The repository branch or commit is missing. Check the connected branch, then start a new run.',
+  timed_out: 'Repository preparation timed out. Check the runner’s network connection, then try again.',
+  disk: 'The runner couldn’t write the repository. Free disk space and check the runner’s directory permissions.',
+  other: 'Myco couldn’t prepare the repository. Check the Git error in the run’s technical details, correct it, then try again.',
   fetch_failed: 'Myco couldn’t read the repository. Check the branch, that the server’s GitHub App installation still includes this repository, and that its read permissions are approved in GitHub.',
   submodules: 'Myco can’t use a repository with Git submodules. Choose a repository without submodules.',
   lfs: 'Myco can’t use Git LFS files in this repository. Choose a repository without Git LFS files.',
@@ -388,7 +395,9 @@ const REPOSITORY_FAILURE_WORDS = {
   checkout_failed: 'Myco couldn’t prepare the repository. Check its connection and try again.',
 } satisfies Readonly<Record<RepositoryFailure['code'], string>>;
 
-export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null): string {
+export function runErrorWords(code: string | null | undefined, reason: string | null = null, repositoryFailure: RepositoryFailure | null = null, machine: string | null = null, status = 'failed'): string {
+  const interrupted = interruptionWords(code, machine, status);
+  if (interrupted !== null) return interrupted;
 
   if (code === 'model_not_applied' && reason !== null) return `The agent couldn’t use the chosen model: ${reason}.`;
   if (code === 'repository_unprepared') return repositoryFailure === null

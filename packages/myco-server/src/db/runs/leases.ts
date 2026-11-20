@@ -1,3 +1,5 @@
+import { MAX_CONSECUTIVE_INTERRUPTION_ATTEMPTS } from '@goondocks/myco-shared/run-control';
+import { subjectInterruptions, SUBJECT_INTERRUPTED, SUBJECT_INTERRUPTED_REPEATED } from './interruptions.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
 import { renewingLeaseAuthority } from '../runners/lease-authority.js';
@@ -68,18 +70,21 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
   return rows.map(({ leasedBy, leasedRunnerId, leasedRunnerCredentialId, ...row }) => ({ ...row, owner: leaseOwnerOf({ leasedBy, leasedRunnerId, leasedRunnerCredentialId }) }));
 }
 
-/** A run with a single-flight subject ends when its lease lapses: its work stays due and a later claim pulls it again. */
-const LEASE_LAPSED = 'lease_lapsed';
+/** Automatic subject work spends one interruption; a manual attempt ends without an automatic retry. */
+const interruptionNumber = `(${subjectInterruptions('agent_runs.project_id', 'agent_runs.task', 'agent_runs.subject')}+1)`;
+const interruptionLimit = `${interruptionNumber}>=${MAX_CONSECUTIVE_INTERRUPTION_ATTEMPTS}`;
 
-const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NOT NULL THEN 'failed' ELSE 'queued' END,
+const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NULL THEN 'queued' WHEN origin='manual' THEN 'failed' WHEN ${interruptionLimit} THEN 'failed' ELSE 'skipped' END,
     completed_at = CASE WHEN subject IS NOT NULL THEN ?1 ELSE completed_at END,
-    error_code = CASE WHEN subject IS NOT NULL THEN '${LEASE_LAPSED}' ELSE error_code END,
-    error = CASE WHEN subject IS NOT NULL THEN 'The lease lapsed; the work stays due and is pulled again' ELSE error END,
+    error_code = CASE WHEN subject IS NULL THEN error_code WHEN origin='manual' THEN '${SUBJECT_INTERRUPTED}' WHEN ${interruptionLimit} THEN '${SUBJECT_INTERRUPTED_REPEATED}' ELSE '${SUBJECT_INTERRUPTED}' END,
+    error = CASE WHEN subject IS NULL THEN error WHEN origin='manual' THEN 'The work was interrupted; start it again when you are ready' WHEN ${interruptionLimit} THEN 'The work was interrupted three times; automatic attempts have stopped' ELSE 'The work was interrupted; Myco will try again' END,
+    run_context = CASE WHEN subject IS NULL OR origin='manual' THEN run_context ELSE json_set(CASE WHEN json_valid(run_context) THEN run_context ELSE '{}' END,'$.interruptionCount',${interruptionNumber}) END,
     dispatched_by = CASE WHEN subject IS NOT NULL THEN dispatched_by ELSE NULL END,
     started_at = CASE WHEN subject IS NOT NULL THEN started_at ELSE NULL END,
     held_by = CASE WHEN subject IS NOT NULL THEN NULL ELSE 'worker' END,
     queue_entered_at = CASE WHEN subject IS NOT NULL THEN queue_entered_at ELSE ?1 END,
-    leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
+    leased_by = CASE WHEN subject IS NULL THEN NULL ELSE leased_by END, leased_runner_id = CASE WHEN subject IS NULL THEN NULL ELSE leased_runner_id END,
+    leased_runner_credential_id = CASE WHEN subject IS NULL THEN NULL ELSE leased_runner_credential_id END, lease_expires_at = NULL
   WHERE project_id = ?2 AND id = ?3 AND status = 'running' AND ${named} AND dispatched_by IS ?${attempt} AND lease_expires_at <= ?${at} RETURNING id`;
 type SettleBase = [now: number, project: string, run: string];
 const settleNoOwner = write<[...SettleBase, attempt: string | null, at: number], { id: string }>({ name: 'runs.settleLapsedNoOwner', sql: settleSet('leased_by IS NULL AND leased_runner_id IS NULL', 4, 5) });

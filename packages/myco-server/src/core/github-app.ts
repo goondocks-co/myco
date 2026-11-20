@@ -1,3 +1,4 @@
+import { GITHUB_ACCESS_FAILURES, type GitHubAccessFailure } from '@goondocks/myco-shared/repository';
 import { GITHUB_TOKEN_PERMISSIONS, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppStatus, type GitHubTokenPurpose } from '@goondocks/myco-shared/github-app';
 import { GitHubAppError, githubApi, revokeInstallationToken } from '@goondocks/myco-shared/github-api';
 import { approveAccount, approvedAccount, approvedAccounts, withdrawAccount, type ApprovedAccount } from '../db/github-app/accounts.js';
@@ -26,19 +27,6 @@ import { emit } from '../telemetry.js';
  * keeps no record of an issued token on either side. Checkout and release tokens read one repository; discovery's
  * token reads metadata only, for the repositories its installation was given.
  */
-
-/** Why repository access is refused, each named in the reader's words. */
-export const GITHUB_ACCESS_FAILURES = {
-  app_not_configured: 'GitHub repository access needs setup. The server operator runs `myco server github-app` for this server.',
-  account_not_approved: 'This installation belongs to a GitHub account this server has not approved. An admin approves it in Project Settings → Repository.',
-  installation_unavailable: 'The App installation was removed or suspended in GitHub. Install the App again or unsuspend it, then connect the repository again.',
-  repository_not_granted: 'The App installation does not include this repository. Add the repository to the installation in GitHub, then check again.',
-  permissions_missing: 'The App installation has not granted the read access this needs. Approve the App’s requested permissions in GitHub, then check again.',
-  access_refused: 'GitHub refused access to this repository through the App installation. Check in GitHub that the installation includes it and its requested permissions are approved, then check again.',
-  rate_limited: 'GitHub’s rate limit for this App was reached. Check again after it resets.',
-  github_unavailable: 'GitHub did not answer as expected. Check again later.',
-} as const;
-export type GitHubAccessFailure = keyof typeof GITHUB_ACCESS_FAILURES;
 
 export class GitHubAccessRefused extends Error {
   constructor(readonly failure: GitHubAccessFailure) { super(GITHUB_ACCESS_FAILURES[failure]); }
