@@ -121,11 +121,11 @@ const transcriptPlanRows = (plans: ReadonlyMap<string, TranscriptPlan>) => [...p
  * first turn's prompt and its latest record.
  */
 function sessionRowStatements(projectId: string, sessionId: string, generation: number, tokenId: string,
-  plans: ReadonlyMap<string, TranscriptPlan>, latestInstruction: number | null, lastRecordAt: number | null, now: number): Bound[] {
+  plans: ReadonlyMap<string, TranscriptPlan>, latestUserPrompt: number | null, lastRecordAt: number | null, now: number): Bound[] {
   return [
     ...jsonPages(transcriptPlanRows(plans)).flatMap(page => transcriptPlanWrites(projectId, sessionId, tokenId, now, JSON.stringify(page))),
     ensureSessionLifecycle(projectId, sessionId),
-    ...(latestInstruction !== null ? [settlePublishedTurn(projectId, sessionId)] : []),
+    ...(latestUserPrompt !== null ? [settlePublishedTurn(projectId, sessionId)] : []),
     presentedDatesAfterPublication(projectId, sessionId, generation, lastRecordAt),
   ];
 }
@@ -172,8 +172,8 @@ export class DocumentBatch {
   private floor = 0;
   /** The latest appearance this batch placed of each plan a transcript holds, with its content hash. */
   private readonly transcriptPlans = new Map<string, TranscriptPlan>();
-  /** The latest top-level instruction this batch added. */
-  private latestInstruction: number | null = null;
+  /** The latest top-level user prompt this batch added. */
+  private latestUserPrompt: number | null = null;
 
   constructor(
     private readonly env: Pick<ServerEnv, 'db' | 'blobs'>,
@@ -309,13 +309,13 @@ export class DocumentBatch {
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
     added: Map<string, TurnAdded>; toolPrompts: ToolPromptLinks;
     resolved: Set<string>; paths: Map<string, { n: number; edits: number; at: number; turn: string | null }>; toolChanges: number; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
-    transcriptPlans: Map<string, TranscriptPlan>; latestInstruction: number | null } {
+    transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), toolPrompts: new ToolPromptLinks(this.toolPrompts), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
       newPrompts: this.newPrompts.length, turns: new Map(this.turns), added: new Map([...this.added].map(([owner, held]) => [owner, { ...held }])), resolved: new Set(this.resolved), paths: new Map(this.paths),
-      toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestInstruction: this.latestInstruction,
+      toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
     };
   }
 
@@ -323,7 +323,7 @@ export class DocumentBatch {
     this.writer.undo(mark.writer);
     Object.assign(this.counts, mark.counts);
     Object.assign(this, { records: mark.records, lastRecordAt: mark.lastRecordAt, openTurn: mark.openTurn, firstPrompt: mark.firstPrompt,
-      unplaced: mark.unplaced, unresolved: mark.unresolved, latestInstruction: mark.latestInstruction });
+      unplaced: mark.unplaced, unresolved: mark.unresolved, latestUserPrompt: mark.latestUserPrompt });
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
     this.toolChanges.splice(mark.toolChanges);
@@ -446,7 +446,7 @@ export class DocumentBatch {
         this.newPrompts.push({ record, turnKey });
         if (turnKey === record.id) {
           this.openTurn = record.id;
-          if (instruction) this.latestInstruction = Math.max(this.latestInstruction ?? 0, record.created_at);
+          if (record.origin === 'user') this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
           if (this.firstPrompt === null && instruction) this.firstPrompt = preview(record.text);
         }
       } else if (record.k === 'reply') this.counts.replies += 1;
@@ -624,7 +624,7 @@ export class DocumentBatch {
     for (const page of jsonPages(settled)) statements.push(...this.cardStatements(page, chunkState === 'building', now));
     for (const page of jsonPages(settled)) statements.push(settleTurnsWrite(key, JSON.stringify(page)));
     statements.push(...turnStatisticsStatements(key, statistics, statistics.map(change => change.id)));
-    if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(p, s, g, this.doc.token_id, this.transcriptPlans, this.latestInstruction, this.lastRecordAt, now));
+    if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
       statements.push(...sessionEditPaths(p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)));
       for (const page of jsonPages([...this.paths].filter(([, held]) => held.n <= 0).map(([path, held]) => ({ path, ...held })))) statements.push(...shrinkPathWrites(key, JSON.stringify(page)));
