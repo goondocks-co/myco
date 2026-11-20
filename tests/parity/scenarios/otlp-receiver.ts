@@ -14,10 +14,11 @@ export const otlpReceiver: ParityScenario = {
     const promptId = crypto.randomUUID();
     await event(target, child, 'prompt', { promptId, text: 'A program-invoked turn', origin: 'user' });
     const turnPath = `/api/projects/${target.projectId}/sessions/${child}/turns`;
+    const turnListPath = `${turnPath}?origins=user,agent_dispatch`;
     const before = await untilPublished(
       target,
       async () =>
-        (await owner<{ rows: { promptId: string; createdAt: number; origin: string }[] }>(target, turnPath))
+        (await owner<{ rows: { promptId: string; createdAt: number; origin: string }[] }>(target, turnListPath))
           .body,
       (page) => page.rows.some((row) => row.promptId === promptId),
     );
@@ -73,7 +74,7 @@ export const otlpReceiver: ParityScenario = {
     ]);
     const turns = await owner<{
       rows: { promptId: string; origin: string; invocation?: { keyLabel: string } }[];
-    }>(target, turnPath);
+    }>(target, turnListPath);
     expect(turns.body.rows.find((row) => row.promptId === promptId)).toMatchObject({
       origin: 'agent_dispatch',
       invocation: { keyLabel: 'parity sender' },
@@ -102,6 +103,6 @@ export const otlpReceiver: ParityScenario = {
     ).toEqual({ revoked: true });
     expect((await post(payload)).status).toBe(401);
     expect((await owner<{ edges: unknown[] }>(target, path)).body.edges).toEqual([]);
-    expect((await owner<{ rows: { origin: string }[] }>(target, turnPath)).body.rows[0]!.origin).toBe('user');
+    expect((await owner<{ rows: { origin: string }[] }>(target, turnListPath)).body.rows[0]!.origin).toBe('user');
   },
 };
