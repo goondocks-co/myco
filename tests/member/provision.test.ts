@@ -16,7 +16,7 @@ import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry, writeDeploymen
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
 import { planWritePaths } from '@myco/member/plan-files.js';
-import { folderTranscriptDiscovery, harnessSettingsFolders, settingsFolderCandidates } from '@myco/symbionts/settings-folders.js';
+import { folderTranscriptDiscovery, harnessSettingsFolders } from '@myco/symbionts/settings-folders.js';
 import { silentRepository } from '@myco/member/auto-join.js';
 import { locateTranscript } from '@myco/member/legacy-import.js';
 import { enumerateTranscripts, sessionIdFromTranscriptPath } from '@myco/symbionts/transcript-discovery.js';
@@ -404,7 +404,7 @@ describe('settings folders', () => {
   beforeEach(() => { variable = process.env.CLAUDE_CONFIG_DIR; delete process.env.CLAUDE_CONFIG_DIR; join(); });
   afterEach(() => { if (variable === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = variable; });
 
-  it('writes only where the variable, the person or the record says, reads a relative variable from the working directory, and only reports marked home folders', () => {
+  it('sets up a marked home folder like the default one, reads a relative variable from the working directory, reports a folder that fails a check, and leaves a retired folder alone until it is named again', async () => {
     const outside = path.join(root, 'outside');
     fs.mkdirSync(outside);
     fs.writeFileSync(path.join(outside, 'config.json'), '{}\n');
@@ -421,16 +421,27 @@ describe('settings folders', () => {
     expect(harnessSettingsFolders(manifest('claude-code'), mycoHome, { env, cwd: root })).toEqual([
       { path: path.join(agentHome, '.claude'), origin: 'default' },
       { path: path.join(root, 'relative-config'), origin: 'variable' },
+      { path: marked, origin: 'home' },
     ]);
-    expect(settingsFolderCandidates(loadManifests(), mycoHome, { env, cwd: root })).toEqual(new Map([['claude-code', [marked]]]));
+    expect(harnessSettingsFolders(manifest('cursor'), mycoHome, { env })).toEqual([{ path: path.join(agentHome, '.cursor'), origin: 'default' }]);
 
     provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER });
     provisionGlobally('cline', null, mycoHome, { serverUrl: SERVER });
-    for (const folder of [marked, linked]) expect(hooksIn(folder)).toEqual([]);
+    expect(hooksIn(marked)).toEqual(hooksIn(path.join(agentHome, '.claude')));
+    expect(hooksIn(marked).length).toBeGreaterThan(0);
+    expect(hooksIn(linked)).toEqual([]);
     expect(fs.existsSync(path.join(unrelated, 'plugins'))).toBe(false);
     expect(fs.readFileSync(path.join(outside, 'config.json'), 'utf8')).toBe('{}\n');
-    expect(doctorWords()).toContain(`warn ~/.claude-work holds the files Claude Code writes in a settings folder, but Myco has not been told to use it, so sessions run from it are not captured. If it is one of your Claude Code folders, run \`myco member provision claude-code --settings-folder ~/.claude-work\`.`);
-    expect(harnessSettingsFolders(manifest('cursor'), mycoHome, { env })).toEqual([{ path: path.join(agentHome, '.cursor'), origin: 'default' }]);
+    expect(doctorWords()).toContain(`Myco's configuration is in place for Claude Code in ~/.claude (default folder), ~/.claude-work (found in the home folder); capture from each folder is not checked here.`);
+    expect(doctorWords()).toContain(`warn ~/linked-marker looks like a Claude Code settings folder, but .claude.json is a link, so Myco does not set it up and sessions run from it are not captured. If it is one of your Claude Code folders, run \`myco member provision claude-code --settings-folder ~/linked-marker\`.`);
+
+    await provision(['claude-code', '--forget-settings-folder', marked]);
+    await provision(['--refresh']);
+    expect(hooksIn(marked)).toEqual([]);
+    expect(doctorWords()).toContain('Myco leaves Claude Code alone in ~/.claude-work, which you retired.');
+    await provision(['claude-code', '--settings-folder', marked]);
+    expect(hooksIn(marked).length).toBeGreaterThan(0);
+    expect(readProvisionRecord(mycoHome)?.excludedSettingsFolders).toBeUndefined();
   });
 
   it('sets up a named folder like the default one, keeps it through refusals, says what is configured, and removes it on retirement or removal', async () => {
@@ -442,7 +453,7 @@ describe('settings folders', () => {
     expect(JSON.parse(fs.readFileSync(path.join(work, '.claude.json'), 'utf8')).mcpServers).toHaveProperty('myco');
     expect(fs.readdirSync(path.join(work, 'skills')).sort()).toEqual(fs.readdirSync(path.join(agentHome, '.claude', 'skills')).sort());
     expect(readProvisionRecord(mycoHome)?.settingsFolders).toEqual({ 'claude-code': [work] });
-    expect(doctorWords()).toContain(`Myco's configuration is in place for Claude Code in ~/.claude, ${work}; capture from each folder is not checked here.`);
+    expect(doctorWords()).toContain(`Myco's configuration is in place for Claude Code in ~/.claude (default folder), ${work} (named or set up before); capture from each folder is not checked here.`);
 
     fs.writeFileSync(path.join(work, '.claude.json'), JSON.stringify({ mcpServers: { myco: { type: 'http', url: 'https://other.example/mcp' } } }));
     expect(provisionGlobally('claude-code', null, mycoHome, { serverUrl: SERVER })).toMatchObject({ detail: expect.stringContaining(`Claude Code in ${work} was not set up`) });

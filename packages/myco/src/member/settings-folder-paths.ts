@@ -10,10 +10,10 @@ import { readProvisionRecord } from './provision-record.js';
 
 /**
  * How Myco knows of a folder. `default` is the harness's own; `variable` is named by the harness's variable in this
- * environment; `recorded` was named by the person or set up before. Myco writes only into these. `candidate` was
- * found in the home folder by its markers and is only reported.
+ * environment; `home` was found directly in the home folder by the harness's markers; `recorded` was named by the
+ * person or set up before.
  */
-export type SettingsFolderOrigin = 'default' | 'variable' | 'recorded' | 'candidate';
+export type SettingsFolderOrigin = 'default' | 'variable' | 'home' | 'recorded';
 
 export interface SettingsFolder {
   /** The folder, absolute. */

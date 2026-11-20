@@ -7,10 +7,10 @@ import { normalizeMemberServerAddress } from '../member/server-url.js';
 import { readHookRepairGeneration, updateProvisionRecord, type ProvisionRecord } from '../member/provision-record.js';
 export { PROVISION_RECORD, UnreadableProvisionRecordError, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict, recordProvision, type ProvisionRecord } from '../member/provision-record.js';
 
-function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout' | 'settingsFolders'> {
+function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout' | 'settingsFolders' | 'excludedSettingsFolders'> {
   const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
     : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
-  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout), settingsFolders: retain(record?.settingsFolders) };
+  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout), settingsFolders: retain(record?.settingsFolders), excludedSettingsFolders: retain(record?.excludedSettingsFolders) };
 }
 
 /** Hold a hook trust action until its report is accepted. */
@@ -44,23 +44,36 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
   }, { strict: true });
 }
 
-/** Record that `agent` is set up in `folder`, a settings folder beyond its default one, under the record lease. */
-export function recordSettingsFolder(mycoHome: string, agent: string, folder: string): void {
+type FolderLists = Record<string, string[]> | undefined;
+
+/** `lists` with `folder` added to or removed from `agent`'s list, an emptied list dropped. */
+function withFolder(lists: FolderLists, agent: string, folder: string, held: boolean): FolderLists {
+  const { [agent]: current = [], ...others } = lists ?? {};
+  const next = held ? [...new Set([...current, folder])].sort() : current.filter(entry => entry !== folder);
+  return next.length === 0 ? others : { ...others, [agent]: next };
+}
+
+/**
+ * Record that `agent` is set up in `folder`, a settings folder beyond its default one, under the record lease. A
+ * folder the person names is no longer excluded.
+ */
+export function recordSettingsFolder(mycoHome: string, agent: string, folder: string, opts: { named?: boolean } = {}): void {
   updateProvisionRecord(mycoHome, record => {
-    const held = record?.settingsFolders?.[agent] ?? [];
-    if (record === null || held.includes(folder)) return;
-    return { ...record, settingsFolders: { ...record.settingsFolders, [agent]: [...held, folder].sort() } };
+    if (record === null) return;
+    const next = { ...record, settingsFolders: withFolder(record.settingsFolders, agent, folder, true), ...(opts.named ? { excludedSettingsFolders: withFolder(record.excludedSettingsFolders, agent, folder, false) } : {}) };
+    return JSON.stringify(next) === JSON.stringify(record) ? undefined : next;
   });
 }
 
-/** Stop recording `folder` for `agent`, once Myco's entries there are removed or the person retires it. */
+/**
+ * Stop recording `folder` for `agent` once Myco's entries there are removed, and record that the person retired it,
+ * so the home folder scan does not set it up again.
+ */
 export function forgetSettingsFolder(mycoHome: string, agent: string, folder: string): void {
   updateProvisionRecord(mycoHome, record => {
-    const held = record?.settingsFolders?.[agent] ?? [];
-    if (record === null || !held.includes(folder)) return;
-    const { [agent]: _, ...others } = record.settingsFolders ?? {};
-    const kept = held.filter(entry => entry !== folder);
-    return { ...record, settingsFolders: kept.length === 0 ? others : { ...others, [agent]: kept } };
+    if (record === null) return;
+    const next = { ...record, settingsFolders: withFolder(record.settingsFolders, agent, folder, false), excludedSettingsFolders: withFolder(record.excludedSettingsFolders, agent, folder, true) };
+    return JSON.stringify(next) === JSON.stringify(record) ? undefined : next;
   });
 }
 

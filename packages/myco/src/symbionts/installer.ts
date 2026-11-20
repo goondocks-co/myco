@@ -40,7 +40,7 @@ import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
-import { settingsFolderEscapes } from './settings-folders.js';
+import { heldTargetEscapes } from './settings-folders.js';
 
 function managedHookGroup(group: Record<string, unknown>, matches = isMycoHookCommand): Record<string, unknown> {
   if (!Array.isArray(group.hooks)) return group;
@@ -1020,15 +1020,17 @@ export class SymbiontInstaller {
    * the folder's.
    */
   private assertTargetsInSettingsFolder(): void {
+    const refusal = this.settingsFolderRefusal();
+    if (refusal !== null) throw refusal;
+  }
+
+  /** Why this installer's settings folder cannot be written, or null when every target it holds stays inside it. */
+  settingsFolderRefusal(): MemberProvisionConflictError | null {
     const folder = this.settingsFolder;
-    const reg = this.manifest.registration;
-    if (folder === undefined || folder.origin === 'default' || !reg) return;
-    const declared = [reg.globalHooksTarget, reg.globalSettingsTarget, reg.globalSkillsTarget, ...(reg.globalMcpTarget ?? []).map(entry => entry.path)]
-      .filter((target): target is string => typeof target === 'string');
-    const held = [...new Set(declared.filter(target => this.homeTarget(target) !== expandHome(target)).map(target => this.homeTarget(target)))];
-    const [escaped] = settingsFolderEscapes(folder.path, held);
-    if (escaped === undefined) return;
-    throw new MemberProvisionConflictError(
+    if (folder === undefined) return null;
+    const [escaped] = heldTargetEscapes(this.manifest, folder);
+    if (escaped === undefined) return null;
+    return new MemberProvisionConflictError(
       `${this.manifest.displayName}'s ${escaped} leads outside ${folder.path}, so nothing was written in that folder.`,
       `Replace the link with a file or folder inside ${folder.path}, then run \`myco member provision ${this.manifest.name} ${SETTINGS_FOLDER_FLAG} ${folder.path}\`.`,
     );

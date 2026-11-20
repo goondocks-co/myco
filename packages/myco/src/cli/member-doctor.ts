@@ -22,7 +22,7 @@ import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError
 import { joinSentences } from '@myco/utils/sentences.js';
 import { readProvisionRecord, UnreadableProvisionRecordError } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
-import { folderOriginWords, folderWords, harnessSettingsFolders, missingSettingsFolders, settingsFolderCandidates } from '../symbionts/settings-folders.js';
+import { folderOriginWords, folderWords, harnessSettingsFolders, missingSettingsFolders, rejectedSettingsFolders, withSettingsFolderSnapshot } from '../symbionts/settings-folders.js';
 import { FORGET_SETTINGS_FOLDER_FLAG, SETTINGS_FOLDER_FLAG } from './flags.js';
 import { getPluginVersion } from '../version.js';
 import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, checkWorkerServices, type DoctorCheck } from './doctor-member.js';
@@ -139,6 +139,10 @@ function setupRefusalWords(agent: string, error: unknown): string {
 
 /** The build and registration recorded by agent provisioning, with current wiring checked. */
 export function setupChecks(mycoHome: string, version: string = getPluginVersion()): Array<DoctorCheck & { toolsDeployment?: string }> {
+  return withSettingsFolderSnapshot(() => setupChecksNow(mycoHome, version));
+}
+
+function setupChecksNow(mycoHome: string, version: string): Array<DoctorCheck & { toolsDeployment?: string }> {
   const record = readProvisionRecord(mycoHome);
   let serverUrl: string | undefined;
   try { serverUrl = memberProvisionTarget(mycoHome); } catch (error) {
@@ -156,8 +160,8 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
       const status = memberHarnessStatus(manifest.name, mycoHome, serverUrl);
       const behind = (status.folders ?? []).filter(entry => !entry.current && entry.folder.origin !== 'default');
       if (!status.current && status.stale === undefined && behind.length > 0 && status.folders?.[0]?.current) {
-        for (const { folder, hooks } of behind) {
-          issues.push(row('Setup', 'warn', hooks
+        for (const { folder, hooks, refusal } of behind) {
+          issues.push(row('Setup', 'warn', refusal !== undefined ? refusal : hooks
             ? `Myco's setup of ${manifest.displayName} in ${folderWords(folder.path)} is incomplete or out of date (tools or skills). Run \`myco member provision --refresh\` to repair it.`
             : `${manifest.displayName}'s settings folder ${folderWords(folder.path)} has no Myco hooks, so sessions run from it are not captured. Run \`myco member provision --refresh\` to set it up.`));
         }
@@ -183,7 +187,7 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   const toolsAgents = current.filter(agent => loadManifests().some(manifest => manifest.name === agent && (manifest.registration?.globalMcpTarget?.length ?? 0) > 0));
   const covered = loadManifests().filter(manifest => current.includes(manifest.name)).flatMap(manifest => {
     const folders = harnessSettingsFolders(manifest, mycoHome);
-    return folders.length > 1 ? [`${manifest.displayName} in ${folders.map(folder => folderWords(folder.path)).join(', ')}`] : [];
+    return folders.length > 1 ? [`${manifest.displayName} in ${folders.map(folder => `${folderWords(folder.path)} (${folderOriginWords(folder, manifest.settingsFolder?.variable)})`).join(', ')}`] : [];
   });
   const configured = covered.length === 0 ? '' : ` Myco's configuration is in place for ${covered.join('; ')}; capture from each folder is not checked here.`;
   return [...held, { ...row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${serverUrl}.${configured}`), toolsAgents }, ...notes];
@@ -191,24 +195,26 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
 
 /**
  * What doctor says about the settings folders of the agents Myco set up, beyond whether each is current: a folder in
- * the home folder that looks like one of theirs but that Myco has not been told to use, a recorded folder that is
- * gone, and hooks that wait for the person's review in each folder.
+ * the home folder that holds an agent's markers but fails a check, a folder the person retired, a recorded folder that
+ * is gone, and hooks that wait for the person's review in each folder.
  */
 function settingsFolderNotes(agents: readonly string[], mycoHome: string, record: ReturnType<typeof readProvisionRecord>): DoctorCheck[] {
-  const manifests = loadManifests().filter(manifest => agents.includes(manifest.name));
-  const candidates = settingsFolderCandidates(manifests, mycoHome);
-  return manifests.flatMap(manifest => {
+  return loadManifests().filter(manifest => agents.includes(manifest.name)).flatMap(manifest => {
+    const name = manifest.displayName;
     const variable = manifest.settingsFolder?.variable;
-    const found = (candidates.get(manifest.name) ?? []).map(folder => row('Setup', 'warn',
-      `${folderWords(folder)} holds the files ${manifest.displayName} writes in a settings folder, but Myco has not been told to use it, so sessions run from it are not captured. If it is one of your ${manifest.displayName} folders, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} ${folderWords(folder)}\`.`));
+    const rejected = rejectedSettingsFolders(manifest).map(({ folder, reason }) => row('Setup', 'warn',
+      `${folderWords(folder)} looks like a ${name} settings folder, but ${reason}, so Myco does not set it up and sessions run from it are not captured. If it is one of your ${name} folders, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} ${folderWords(folder)}\`.`));
+    const retired = record?.excludedSettingsFolders?.[manifest.name] ?? [];
+    const excluded = retired.length === 0 ? [] : [row('Setup', 'ok',
+      `Myco leaves ${name} alone in ${retired.map(folder => folderWords(folder)).join(', ')}, which you retired. To set one up again, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} <folder>\`.`)];
     const gone = missingSettingsFolders(manifest, mycoHome).map(folder => row('Setup', 'warn',
-      `${manifest.displayName}'s settings folder ${folderWords(folder)}, set up before, no longer exists. If it moved, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} <its new place>\`; to stop setting it up, run \`myco member provision ${manifest.name} ${FORGET_SETTINGS_FOLDER_FLAG} ${folderWords(folder)}\`.`));
+      `${name}'s settings folder ${folderWords(folder)}, set up before, no longer exists. If it moved, run \`myco member provision ${manifest.name} ${SETTINGS_FOLDER_FLAG} <its new place>\`; to stop setting it up, run \`myco member provision ${manifest.name} ${FORGET_SETTINGS_FOLDER_FLAG} ${folderWords(folder)}\`.`));
     const trust = record?.pendingTrust?.[manifest.name];
     const folders = trust === undefined ? [] : harnessSettingsFolders(manifest, mycoHome);
     const review = trust === undefined ? [] : [row('Setup', 'warn', joinSentences(
-      `${manifest.displayName} skips Myco's hooks until you review them, in ${folders.map(folder => folderWords(folder.path)).join(', ')}`,
-      `${trust.action}${folders.length > 1 && variable !== undefined ? ` in each folder: start ${manifest.displayName} with ${variable} set to that folder for each one other than ${folderWords(folders[0]!.path)}` : ''}`))];
-    return [...found, ...gone, ...review];
+      `${name} skips Myco's hooks until you review them, in ${folders.map(folder => folderWords(folder.path)).join(', ')}`,
+      `${trust.action}${folders.length > 1 && variable !== undefined ? ` in each folder: start ${name} with ${variable} set to that folder for each one other than ${folderWords(folders[0]!.path)}` : ''}`))];
+    return [...rejected, ...excluded, ...gone, ...review];
   });
 }
 

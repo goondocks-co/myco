@@ -62,7 +62,7 @@ import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, prepareMemberSkillRemoval, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
 import { readProvisionRecord, readProvisionRecordStrict, recordProvision, recordSettingsFolder, forgetSettingsFolder, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
-import { folderWords, harnessSettingsFolders, settingsFolderEscapes } from '../symbionts/settings-folders.js';
+import { folderWords, harnessSettingsFolders, settingsFolderEscapes, withSettingsFolderSnapshot } from '../symbionts/settings-folders.js';
 import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
@@ -485,7 +485,7 @@ function skillsTargetIn(manifest: ReturnType<typeof loadManifests>[number], fold
 
 /** Manifest-backed evidence of prior provisioning in this home's global registrations. */
 export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[]; onInspectionError?: (message: string) => void } = {}): string[] {
-  return loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
+  return withSettingsFolderSnapshot(() => loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
     try {
       const registered = harnessSettingsFolders(manifest, mycoHome).some(folder => {
         const installer = globalInstaller(manifest, null, mycoHome, opts, folder).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
@@ -497,7 +497,7 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
       opts.onInspectionError?.(`could not inspect ${manifest.displayName}: ${error instanceof Error ? error.message : String(error)}`);
       return [];
     }
-  });
+  }));
 }
 
 /** Chosen agents, including surviving owned registrations absent from the provision record. */
@@ -535,7 +535,7 @@ function provisionChosenAgent(agent: string, root: string | null, mycoHome: stri
 
 /** Reconcile fresh choices and owned registrations, and hold the repair lease through the operation. */
 export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; onInspectionError?: (message: string) => void; wait?: boolean }, fn: (record: ProvisionRecord, agents: string[], retiredSettingsProblems: ReadonlySet<string>) => T): T | null {
-  return withMemberRepair(mycoHome, 'myco member reconcile', () => {
+  return withMemberRepair(mycoHome, 'myco member reconcile', () => withSettingsFolderSnapshot(() => {
     const runningVersion = getPluginVersion();
     if (semver.valid(runningVersion) !== null && selfExecOf(process.execPath, process.argv[1]).args.length === 0) {
       try {
@@ -585,11 +585,11 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
     const discovered = agents.filter(agent => !before?.agents.includes(agent));
     const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
     return fn({ ...record, serverUrl }, record.agents, retiredSettingsProblems);
-  }, { wait: opts.wait });
+  }), { wait: opts.wait });
 }
 
 /** One settings folder's registration currency, and whether Myco's hooks (or plugin) are in place there. */
-export interface FolderStatus { folder: SettingsFolder; current: boolean; hooks: boolean }
+export interface FolderStatus { folder: SettingsFolder; current: boolean; hooks: boolean; refusal?: string }
 
 /**
  * Read-only registration and settings currency through the installer, across every settings folder of the harness:
@@ -601,7 +601,7 @@ export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: 
   const statuses = harnessSettingsFolders(manifest, mycoHome).map(folder => {
     const installer = globalInstaller(manifest, null, mycoHome, opts, folder).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
     installer.assertMemberProvisionAllowed();
-    return { folder, hooks: installer.inspectMemberHooks().member, status: inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations(), folder) };
+    return { folder, hooks: installer.inspectMemberHooks().member, refusal: installer.settingsFolderRefusal()?.message, status: inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations(), folder) };
   });
   const [first] = statuses;
   if (statuses.length === 1) return first!.status;
@@ -612,7 +612,7 @@ export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: 
     currentExceptStaleTools: statuses.every(entry => entry.status.current || entry.status.currentExceptStaleTools) && statuses.some(entry => entry.status.currentExceptStaleTools),
     ...(stale.length === 0 ? {} : { stale }),
     ...(toolsDeployment === undefined ? {} : { toolsDeployment }),
-    folders: statuses.map(entry => ({ folder: entry.folder, current: entry.status.current, hooks: entry.hooks })),
+    folders: statuses.map(entry => ({ folder: entry.folder, current: entry.status.current, hooks: entry.hooks, ...(entry.refusal === undefined ? {} : { refusal: entry.refusal }) })),
   };
 }
 
@@ -645,7 +645,7 @@ export function provisionGlobally(agent: string, root: string | null, mycoHome: 
   if (first.outcome.kind === 'refused') return first.outcome;
   const others = moved.map(folder => {
     const outcome = provisionInFolder(manifest, folder, root, mycoHome, opts);
-    if (outcome.kind !== 'refused') recordSettingsFolder(mycoHome, agent, folder.path);
+    if (outcome.kind !== 'refused') recordSettingsFolder(mycoHome, agent, folder.path, { named: opts.namedFolders?.includes(folder.path) });
     return { folder, outcome };
   });
   const results = [first, ...others];
@@ -765,7 +765,7 @@ export function provisionDetectedAgents(
 export function provisionAgents(
   agents: readonly string[], mycoHome: string, serverUrl: string, root: string | null, opts: { packageRoot?: string; preserveOtherMemberTools?: boolean; timeoutMs?: number; cwd?: string } = {},
 ): DetectedProvision {
-  const found = withMemberRepair(mycoHome, 'myco member provision', () => installMemberAgents(agents, mycoHome, serverUrl, root, opts), { wait: true, timeoutMs: opts.timeoutMs });
+  const found = withMemberRepair(mycoHome, 'myco member provision', () => withSettingsFolderSnapshot(() => installMemberAgents(agents, mycoHome, serverUrl, root, opts)), { wait: true, timeoutMs: opts.timeoutMs });
   withManagedMemberHarnesses(mycoHome, opts, () => {});
   if (opts.preserveOtherMemberTools && found.skipped.length === 0) keepCurrent(mycoHome, { packageRoot: opts.packageRoot });
   return found;
