@@ -799,7 +799,7 @@ it('Cline child dispatches retain a non-human origin through capture and documen
       expect(parsed.records.filter(row => row.k === 'prompt').map(row => [row.id, row.origin])).toEqual([[prompt.promptId, 'agent_dispatch']]);
       expect(parsed.records.filter(row => row.k === 'reply' || row.k === 'tool').map(row => row.prompt_id)).toEqual([prompt.promptId, prompt.promptId]);
       expect(parsed.document).toEqual({ prompts: 1, user_prompts: 1, replies: 1, tool_calls: 1, first_prompt: 'delegated task' });
-      expect(parsed.session).toEqual({ ended_at: NOW - 1 });
+      expect(parsed.session).toEqual({ ended_at: null });
     } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
   }
 });

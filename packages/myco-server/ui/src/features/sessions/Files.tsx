@@ -62,7 +62,7 @@ export function SessionFiles({ projectId, sessionId, fileEdits }: { projectId: s
     <div className="flex max-w-reference flex-col gap-s3" data-session-files="">
       <FilterPills label="Show" options={KINDS} value={kind} onChange={pick} />
       <p className="max-w-measure t-small text-muted">
-        Files the agent’s tools named. A change made through a shell command does not appear here; the commit observations are on <Link to={`?${new URLSearchParams({ tab: 'outcomes' })}`} className="tap-inline">Outcomes</Link>.
+        Files the agent’s tools named. A change made through a shell command does not appear here; start and end commits are on <Link to={`?${new URLSearchParams({ tab: 'outcomes' })}`} className="tap-inline">Outcomes</Link>.
       </p>
       {files.isPending ? <LoadingState label="Loading the files" count={3} />
         : files.error && files.rows.length === 0 ? <ErrorState error={files.error} onRetry={files.retry} />

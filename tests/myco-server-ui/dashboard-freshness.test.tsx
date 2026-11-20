@@ -17,6 +17,7 @@ import { useTurnCollection } from '../../packages/myco-server/ui/src/hooks/use-t
 import { useTurnToolCalls } from '../../packages/myco-server/ui/src/hooks/use-sessions';
 import { holdPendingLink } from '../../packages/myco-server/ui/src/lib/pending-link';
 import { dashboardMe } from '../helpers/dashboard-permissions';
+import { sessionEvidence } from '@myco-server-worker/read/session-evidence.js';
 
 const originalFetch = globalThis.fetch;
 const clients: QueryClient[] = [];
@@ -31,7 +32,7 @@ function setup(answer: (url: URL, init?: RequestInit) => Response | Promise<Resp
 }
 const empty = () => Response.json({ rows: [], cursor: null, members: [], projects: [], items: [] });
 const session = { sessionId: 's', projectId: 'p', title: 'Retained session', summary: 'Saved summary', firstReceivedAt: 1, lastReceivedAt: 2, startedAt: 1, endedAt: 2, agent: null, branch: null };
-const detail = () => ({ session, counts: { prompts: 0, userPrompts: 0, toolCalls: 0, failedTools: 0, mycoCalls: 0, plans: 0 }, outcome: { runs: [], spores: { total: 0, items: [] } }, turnContexts: {}, filesEdited: 0 });
+const detail = () => ({ ...sessionEvidence(null, null), session: { ...session, launchParentSessionId: null }, outcome: { runs: [], spores: { total: 0, items: [] } }, turnContexts: {} });
 
 it('reconciles linked membership before opening Projects', async () => {
   holdPendingLink('x'.repeat(43));

@@ -31,6 +31,7 @@ import { schemaSqlite } from './helpers/schema-template.js';
 
 const NOW = Date.now();
 const SESSION = 'sess-identity';
+const REBUILD_VERSION = 6;
 const ON: RecallLeaves = { injection: { enabled: true, maxPerPrompt: 3 }, planNudge: false, instructionsAtSessionStart: true, instructionsAtSubagentStart: true, instructionsTemplate: '' };
 const PROMPT = 'what did we settle on for the selector';
 
@@ -311,7 +312,7 @@ describe('what outlives the answers', () => {
         toolRequests: [{ toolCallId: 'native-call', name: 'view', arguments: {} }] } } } : line) }));
     try { await publishFixtureDocuments(s.e.serverEnv, NOW); } finally { prior.mockRestore(); }
     const turns = await s.turns();
-    s.e.sqlite.run('UPDATE transcript_publication SET parser_version=parser_version-1');
+    s.e.sqlite.run('UPDATE transcript_publication SET parser_version=?', [REBUILD_VERSION - 1]);
     s.e.sqlite.run("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE phase='publicationRebuildV6'");
     await catchUpPhase(s.e.db, 'publicationRebuildV6');
     await publishFixtureDocuments(s.e.serverEnv, NOW);
