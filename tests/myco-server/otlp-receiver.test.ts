@@ -1,7 +1,9 @@
-import {
-  sessionInvocationFacts,
-  sessionTurnInvocations,
-} from '@myco-server-worker/read/session-invocations.js';
+import { schemaSqlite } from './helpers/schema-template.js';
+import { applySchemaSteps } from './helpers/migrate.js';
+import { seedCredential, sqliteD1 } from './helpers/d1.js';
+import { LAST_TELEMETRY } from '@myco-server-worker/db/schema-vNEXT-telemetry.js';
+import { TELEMETRY_EXACT_STEPS } from '@myco-server-worker/db/schema-steps-telemetry-exact.js';
+import { recordProjectRemote } from '@myco-server-worker/core/remotes.js';
 import { telemetryFixture as fixture } from './helpers/telemetry-fixture.js';
 import { describe, expect, it } from 'bun:test';
 import { runTelemetryWork } from '@myco-server-worker/core/telemetry-work.js';
@@ -160,7 +162,6 @@ describe('OpenTelemetry receiver', () => {
         parentProjectId: 'proj_1',
         source: 'telemetry',
         serviceName: 'dispatch-service',
-        inferred: false,
       }),
     );
     const hidden = await lineage_sessionLineage(f.e.db, { projectId: 'proj_2' }, 'worker /β');
@@ -183,12 +184,6 @@ describe('OpenTelemetry receiver', () => {
       ).status,
     ).toBe(401);
 
-    const overlay = await sessionTurnInvocations(f.e.db, { projectId: 'proj_2' }, 'worker /β');
-    expect(overlay.show({ createdAt: NOW - 500, origin: 'user' })).toMatchObject({
-      origin: 'agent_dispatch',
-      invocation: { matchedBy: 'exact', keyLabel: 'test sender' },
-    });
-    expect(overlay.show({ createdAt: NOW + 10_000, origin: 'user' }).origin).toBe('user');
     expect((await invocationsForSession(f.e.db, 'proj_1', 'worker /β')).rows).toEqual([]);
     expect(await (await f.owner(`/api/telemetry/keys/${f.id}/revoke`, {})).json()).toEqual({ revoked: true });
     expect((await f.send(body)).status).toBe(401);
@@ -216,7 +211,6 @@ describe('OpenTelemetry receiver', () => {
     };
     expect([...first.rows, ...last.rows].map((row) => row.spanId)).toEqual(spans.map((span) => span.spanId));
     expect(last.nextCursor).toBeNull();
-    expect(await sessionInvocationFacts(f.e.db, { projectId: 'proj_1' }, 'worker')).toHaveLength(3);
     f.e.sqlite.close();
   });
 
@@ -237,72 +231,60 @@ describe('OpenTelemetry receiver', () => {
     f.e.sqlite.close();
   });
 
-  it('infers only one repository/branch/time candidate and exact evidence replaces it', async () => {
+  it('never resolves an unnamed invocation to a nearby session on its repository and ref', async () => {
     const f = await fixture();
     await f.start('lead');
-    await f.start('candidate');
-    f.e.sqlite
-      .query('INSERT INTO project_remotes(remote,project_id,first_seen_at) VALUES(?,?,?)')
-      .run('example.test/team/repo', 'proj_1', NOW);
-    const inferred = (trace: number, branch = 'feature', agent = 'worker') =>
-      telemetryBatch([
-        telemetrySpan(1, { trace, conversation: 'lead' }),
-        telemetrySpan(3, {
-          trace,
-          parent: 1,
-          agent,
-          operation: 'invoke_agent',
-          attributes: [
-            telemetryAttribute('vcs.repository.url.full', 'https://example.test/team/repo.git'),
-            telemetryAttribute('vcs.ref.head.name', branch),
-          ],
-        }),
-      ]);
-    await f.send(inferred(1));
+    await recordProjectRemote(f.e.db, 'proj_1', 'example.test/team/repo', NOW);
+    await f.send(telemetryBatch([
+      telemetrySpan(1, { conversation: 'lead' }),
+      telemetrySpan(3, { parent: 1, operation: 'invoke_agent', attributes: [
+        telemetryAttribute('vcs.repository.url.full', 'https://example.test/team/repo'),
+        telemetryAttribute('vcs.ref.head.name', 'feature'),
+      ] }),
+    ]));
     await reconcileTelemetry(f.e.db, NOW);
-    expect((await invocationsForSession(f.e.db, 'proj_1', 'candidate')).rows).toEqual([
-      expect.objectContaining({ matchedBy: 'inferred' }),
-    ]);
-    expect(
-      (await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate'))?.edges,
-    ).toContainEqual(expect.objectContaining({ inferred: true }));
-
-    await f.start('decoy', 'proj_2');
-    const other = (await (await f.owner('/api/telemetry/keys', { label: 'Other sender' })).json()) as {
-      id: string;
-      key: string;
-    };
-    const conflicting = telemetryTrace('decoy', 'candidate');
-    for (const span of conflicting.resourceSpans[0]!.scopeSpans[0]!.spans)
-      span.traceId = telemetryId(999, 32);
-    await f.send(conflicting, '/v1/traces', { authorization: `Bearer ${other.key}` });
-    await reconcileTelemetry(f.e.db, NOW);
-    const disputed = await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate', {
-      all: true,
-    });
-    expect(disputed?.edges).toEqual([]);
-    expect(disputed?.reports?.map((row) => row.inferred).sort()).toEqual([false, true]);
-    await f.owner(`/api/telemetry/keys/${other.id}/revoke`, {});
-    await f.send(
-      telemetryBatch([
-        telemetrySpan(1, { trace: 2, conversation: 'lead' }),
-        telemetrySpan(3, { trace: 2, parent: 1, conversation: 'candidate', operation: 'invoke_agent' }),
-      ]),
-    );
-    await reconcileTelemetry(f.e.db, NOW);
-    expect(
-      (await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'candidate'))?.edges,
-    ).toContainEqual(expect.objectContaining({ inferred: false }));
-    await f.start('other');
-    await f.send(inferred(3, 'feature', 'other-agent'));
-    await f.send(inferred(4, 'no-such-branch'));
-    await reconcileTelemetry(f.e.db, NOW);
-    expect((await invocationsForSession(f.e.db, 'proj_1', 'other')).rows).toEqual([]);
-    expect(
-      (await invocationsForSession(f.e.db, 'proj_1', 'candidate')).rows.map((row) => row.traceId),
-    ).toEqual([telemetryId(2, 32)]);
+    f.advance(NOW + 1_000);
+    await f.capture('nearby', 'session.start', { agent: 'codex', startedAt: NOW + 1_000, branch: 'feature' });
+    const promptId = uuid(220);
+    await f.capture('nearby', 'prompt', { promptId, text: 'A person starts a session', origin: 'user' });
+    await publishFixture(f.e, NOW + 1_000);
+    await reconcileTelemetry(f.e.db, NOW + 1_000);
+    expect((await invocationsForSession(f.e.db, 'proj_1', 'nearby')).rows).toEqual([]);
+    const base = '/api/projects/proj_1/sessions/nearby';
+    const family = await (await f.owner(base + '/lineage')).json() as { edges: unknown[] };
+    const session = await (await f.owner(base)).json() as { personTurns: number };
+    const turns = await (await f.owner(base + '/turns')).json() as { rows: { origin: string }[] };
+    const detail = await (await f.owner(base + '/turns/' + promptId)).json() as { prompt: { origin: string } };
+    expect(family.edges).toEqual([]);
+    expect(session.personTurns).toBe(1);
+    expect(turns.rows).toMatchObject([{ origin: 'user' }]);
+    expect(detail.prompt.origin).toBe('user');
     f.e.sqlite.close();
   });
+  it('upgrades stored inferred facts away while retaining exact reports', async () => {
+    const sqlite = schemaSqlite({ through: LAST_TELEMETRY });
+    seedCredential(sqlite, { id: 'mt_upgrade_owner', expiresAt: NOW + TELEMETRY_RETENTION_MS });
+    sqlite.query("UPDATE members SET github_id=? WHERE id=?").run('583231', 'mem_machine_1');
+    sqlite.query("INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)").run('proj_1', 'Upgrade', NOW);
+    const f = await fixture(sqlite);
+    await f.start('lead');
+    await f.start('exact-child');
+    await f.start('inferred-child');
+    await f.send(telemetryBatch([
+      telemetrySpan(1, { conversation: 'lead' }),
+      telemetrySpan(3, { parent: 1, conversation: 'exact-child', operation: 'invoke_agent' }),
+      telemetrySpan(4, { parent: 1, conversation: 'inferred-child', operation: 'invoke_agent' }),
+    ]));
+    await reconcileTelemetry(f.e.db, NOW);
+    f.e.sqlite.query("UPDATE telemetry_resolutions SET matched_by='inferred' WHERE session_id=?").run('inferred-child');
+    await applySchemaSteps(sqliteD1(f.e.sqlite), TELEMETRY_EXACT_STEPS);
+    expect((await invocationsForSession(f.e.db, 'proj_1', 'exact-child')).rows).toMatchObject([{ matchedBy: 'exact' }]);
+    expect((await invocationsForSession(f.e.db, 'proj_1', 'inferred-child')).rows).toEqual([]);
+    expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'inferred-child'))?.edges).toEqual([]);
+    expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'exact-child'))?.edges).toContainEqual(expect.objectContaining({ parentId: 'lead' }));
+    f.e.sqlite.close();
+  });
+
   it('drops a named session that never arrives after the bounded match wait', async () => {
     const f = await fixture();
     await f.start('lead');
@@ -316,86 +298,12 @@ describe('OpenTelemetry receiver', () => {
     f.e.sqlite.close();
   });
 
-  it('assigns two workers launched ten minutes apart to their own invocation windows', async () => {
-    const f = await fixture();
-    await f.start('lead');
-    await f.start('terminal-worker');
-    f.e.sqlite
-      .query('INSERT INTO project_remotes(remote,project_id,first_seen_at) VALUES(?,?,?)')
-      .run('example.test/team/terminal', 'proj_1', NOW);
-    const delivery = (trace: number, at: number) =>
-      telemetryBatch([
-        telemetrySpan(1, { trace, conversation: 'lead', at }),
-        telemetrySpan(3, {
-          trace,
-          parent: 1,
-          operation: 'invoke_agent',
-          at,
-          attributes: [
-            telemetryAttribute('vcs.repository.url.full', 'https://example.test/team/terminal'),
-            telemetryAttribute('vcs.ref.head.name', 'feature'),
-          ],
-        }),
-      ]);
-    await f.send(delivery(10, NOW));
-    await reconcileTelemetry(f.e.db, NOW);
-    f.advance(NOW + 600_000);
-    await f.start('second-worker');
-    await f.send(delivery(11, NOW + 600_000));
-    await reconcileTelemetry(f.e.db, NOW + 600_000);
-    expect(
-      (await invocationsForSession(f.e.db, 'proj_1', 'terminal-worker')).rows.map((row) => [
-        row.traceId,
-        row.startAt,
-        row.matchedBy,
-      ]),
-    ).toEqual([[telemetryId(10, 32), NOW, 'inferred']]);
-    expect(
-      (await invocationsForSession(f.e.db, 'proj_1', 'second-worker')).rows.map((row) => [
-        row.traceId,
-        row.startAt,
-        row.matchedBy,
-      ]),
-    ).toEqual([[telemetryId(11, 32), NOW + 600_000, 'inferred']]);
-    f.e.sqlite.close();
-  });
-  it('revisits repository bindings, a branch learned after a live turn and tombstoned duplicate ids', async () => {
+  it('revisits exact identities after a duplicate is tombstoned', async () => {
     const f = await fixture();
     const settle = async () => {
       while ((await runTelemetryWork(f.e.db, NOW)).more) {}
     };
     await f.start('lead');
-    await f.capture('worker', 'session.start', { agent: 'codex', startedAt: NOW - 3600000 }, 'proj_2');
-    await f.capture(
-      'worker',
-      'prompt',
-      { promptId: uuid(200), text: 'A live turn', origin: 'user' },
-      'proj_2',
-    );
-    await publishFixture(f.e, NOW);
-    const body = telemetryBatch([
-      telemetrySpan(1, { conversation: 'lead' }),
-      telemetrySpan(3, {
-        parent: 1,
-        operation: 'invoke_agent',
-        attributes: [
-          telemetryAttribute('vcs.repository.url.full', 'https://example.test/late'),
-          telemetryAttribute('vcs.ref.head.name', 'feature'),
-        ],
-      }),
-    ]);
-    await f.send(body);
-    await settle();
-    f.e.sqlite
-      .query('INSERT INTO project_remotes(remote,project_id,first_seen_at) VALUES(?,?,?)')
-      .run('example.test/late', 'proj_2', NOW);
-    await settle();
-    expect((await invocationsForSession(f.e.db, 'proj_2', 'worker')).rows).toEqual([]);
-    f.e.sqlite
-      .query('UPDATE sessions SET branch=? WHERE project_id=? AND session_id=?')
-      .run('feature', 'proj_2', 'worker');
-    await settle();
-    expect((await invocationsForSession(f.e.db, 'proj_2', 'worker')).rows).toHaveLength(1);
     await f.start('duplicate');
     await f.start('duplicate', 'proj_2');
     const exact = telemetryTrace('lead', 'duplicate');

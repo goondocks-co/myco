@@ -1,4 +1,3 @@
-import { sessionTurnInvocations } from '@myco-server-worker/read/session-invocations.js';
 import { publishFixture, uuid } from './helpers/fixtures.js';
 import { expect, it } from 'bun:test';
 import { telemetryFixture as fixture } from './helpers/telemetry-fixture.js';
@@ -189,21 +188,9 @@ it('keeps parent ids independent by key, accepts long leads and restores the oth
   const lineage = await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'worker', { all: true });
   expect(lineage?.edges).toEqual([]);
   expect(lineage?.reports?.map((row) => row.keyLabel).sort()).toEqual(['Other sender', 'test sender']);
-  expect(
-    (await sessionTurnInvocations(f.e.db, { projectId: 'proj_1' }, 'worker')).show({
-      createdAt: NOW,
-      origin: 'user',
-    }).origin,
-  ).toBe('user');
   f.advance(NOW + TELEMETRY_MATCH_WAIT_MS + 10_000);
   await f.owner(`/api/telemetry/keys/${other.id}/revoke`, {});
   expect((await invocationsForSession(f.e.db, 'proj_1', 'worker')).rows).toHaveLength(1);
-  expect(
-    (await sessionTurnInvocations(f.e.db, { projectId: 'proj_1' }, 'worker')).show({
-      createdAt: NOW,
-      origin: 'user',
-    }).origin,
-  ).toBe('agent_dispatch');
   expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'worker'))?.edges).toContainEqual(
     expect.objectContaining({ parentId: 'lead', keyLabel: 'test sender' }),
   );
@@ -226,38 +213,5 @@ it('keeps parent ids independent by key, accepts long leads and restores the oth
     expect.objectContaining({ parentId: 'decoy', keyLabel: 'test sender' }),
   );
 
-  f.e.sqlite.close();
-});
-
-it('never uses another key’s stored link to break an ambiguous inference', async () => {
-  const f = await fixture();
-  await f.start('lead');
-  await f.start('worker');
-  await f.start('human');
-  f.e.sqlite
-    .query('INSERT INTO project_remotes(remote,project_id,first_seen_at) VALUES(?,?,?)')
-    .run('example.test/team/trust', 'proj_1', NOW);
-  const attrs = [
-    telemetryAttribute('vcs.repository.url.full', 'https://example.test/team/trust'),
-    telemetryAttribute('vcs.ref.head.name', 'feature'),
-  ];
-  const other = (await (await f.owner('/api/telemetry/keys', { label: 'Other sender' })).json()) as {
-    key: string;
-  };
-  const report = telemetryTrace('lead', 'human');
-  for (const span of report.resourceSpans[0]!.scopeSpans[0]!.spans) span.attributes.push(...attrs);
-  await f.send(report, '/v1/traces', { authorization: `Bearer ${other.key}` });
-  await reconcileTelemetry(f.e.db, NOW);
-  await f.send(
-    telemetryBatch([
-      telemetrySpan(1, { trace: 2, conversation: 'lead' }),
-      telemetrySpan(3, { trace: 2, parent: 1, operation: 'invoke_agent', attributes: attrs }),
-    ]),
-  );
-  await reconcileTelemetry(f.e.db, NOW);
-  expect((await invocationsForSession(f.e.db, 'proj_1', 'worker')).rows).toEqual([]);
-  expect((await invocationsForSession(f.e.db, 'proj_1', 'human')).rows.map((row) => row.keyLabel)).toEqual([
-    'Other sender',
-  ]);
   f.e.sqlite.close();
 });

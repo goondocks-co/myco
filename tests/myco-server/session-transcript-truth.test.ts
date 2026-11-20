@@ -17,7 +17,6 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { launchParentSession } from '@myco/member/session-lineage.js';
 import { documentCounters, listSessionTurns } from '@myco-server-worker/read/document-catalog.js';
 import { documentTurnDetail } from '@myco-server-worker/content/session-turns.js';
-import type { SessionInvocation } from '@myco-server-worker/read/session-invocations.js';
 
 const instant = '2026-01-01T00:00:00Z';
 const row = (type: string, payload: Record<string, unknown>) => ({ type, timestamp: instant, payload });
@@ -81,11 +80,11 @@ for (const [agent, records, calls, edits] of [
       expect([mcp.result.structuredContent.result.turnCount, mcp.result.structuredContent.result.prompt_count]).toEqual([header.turns, header.promptEntries]);
       const turns = (await get(session, '/turns?origins=user,system,agent_dispatch,hook_injected,unknown')).rows;
       expect(header.counts).toMatchObject({ userPrompts: agent === 'codex' ? 0 : 2, toolCalls: calls[0] + calls[1], failedTools: agent === 'codex' ? 0 : 1, mycoCalls: agent === 'codex' ? 0 : 1, plans: 0, attachments: 0 });
-      expect([header.turns, header.personTurns, header.reportedErrors, header.nestedToolCalls]).toEqual([2, agent === 'codex' ? 0 : 2, 1, agent === 'codex' ? 2 : 0]);
+      expect([header.turns, header.personTurns, header.reportedErrors, header.nestedToolCalls]).toEqual([2, agent === 'codex' ? 0 : parent === undefined ? 2 : 1, 1, agent === 'codex' ? 2 : 0]);
       expect(header.filesEdited).toBe(edits);
       expect(header.observedFilesEdited).toBe(edits);
       expect(header.fileEdits).toEqual({ state: 'unknown', observed: edits });
-      expect(turns.map((turn: any) => [turn.origin, turn.toolCallCount])).toEqual(calls.map(count => [agent === 'codex' ? 'system' : 'user', count]));
+      expect(turns.map((turn: any) => [turn.origin, turn.toolCallCount])).toEqual(calls.map((count, index) => [parent !== undefined && index === 0 ? 'agent_dispatch' : agent === 'codex' ? 'system' : 'user', count]));
       const detail = await get(session, `/turns/${turns[0].promptId}`);
       const material = (await documentTurnInput(env, 'proj_1', session, turns[0].promptId))!;
       expect(material.steering).toEqual([]);
@@ -95,7 +94,7 @@ for (const [agent, records, calls, edits] of [
       if (agent === 'codex') expect(material.prompt).toBe('<relay sender="planner">Read the task</relay>');
       expect(detail.prompt.originSessionId).toBeNull();
       if (agent === 'codex') expect([detail.prompt.text, detail.prompt.envelope]).toEqual(['Read the task', { name: 'relay', attributes: 'sender="planner"' }]);
-      expect((await get(session, '/turns?origins=user')).rows.length).toBe(agent === 'codex' ? 0 : 2);
+      expect((await get(session, '/turns?origins=user')).rows.length).toBe(agent === 'codex' ? 0 : parent === undefined ? 2 : 1);
       expect((await get(session, '/files?kind=edited')).files.map((file: any) => file.path)).toEqual(agent === 'codex' ? ['alpha.txt', 'beta.txt'] : ['alpha.txt']);
       const lineage = await get(session, '/lineage');
       expect(lineage.edges.map((edge: any) => [edge.kind, edge.parentId, edge.childId])).toEqual(parent === undefined ? [] : [['launched', parent, session]]);
@@ -118,21 +117,30 @@ test('Cursor transcript-only numbers distinguish unseen tools and edits from zer
   } finally { fixture.sqlite.close(); }
 });
 
-test('launch lineage leaves a hook-written person instruction attributed to the person', async () => {
+test('captured launch lineage assigns only the opening turn to another agent', async () => {
   const fixture = sqliteEnv();
   try {
     const issued = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine' }, Date.now());
+    let createdAt = Date.now();
     for (const [kind, payload] of [
       ['session.start', { agent: 'windsurf', launchParentSessionId: launchParentSession('hook-session', { BAGGAGE: 'gen_ai.conversation.id=parent-session' }) }],
-      ['prompt', { promptId: crypto.randomUUID(), text: '<relay sender="planner">Read the task</relay>', origin: 'user' }],
+      ['prompt', { promptId: crypto.randomUUID(), text: 'Read the task', origin: 'user' }],
+      ['prompt', { promptId: crypto.randomUUID(), text: 'A person follows up', origin: 'user' }],
     ] as const) {
-      const response = await worker.fetch(memberPost(issued.token, envelope({ eventId: crypto.randomUUID(), sessionId: 'hook-session', kind, payload })), fixture.env);
+      const response = await worker.fetch(memberPost(issued.token, envelope({ eventId: crypto.randomUUID(), sessionId: 'hook-session', kind, payload, createdAt: createdAt++ })), fixture.env);
       expect((await response.json() as { persisted: boolean }).persisted).toBe(true);
     }
     await publishDocuments(fixture.serverEnv, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
     const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/hook-session/turns?origins=user'), { ...fixture.env, ...OWNER_ENV });
     expect(response.status).toBe(200);
-    expect((await response.json() as { rows: { origin: string; preview: string }[] }).rows).toMatchObject([{ origin: 'user', preview: '<relay sender="planner">Read the task</relay>' }]);
+    expect((await response.json() as { rows: { origin: string; preview: string }[] }).rows).toMatchObject([{ origin: 'user', preview: 'A person follows up' }]);
+    const all = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/hook-session/turns?origins=user,agent_dispatch'), { ...fixture.env, ...OWNER_ENV });
+    const turns = (await all.json() as { rows: { promptId: string; origin: string }[] }).rows;
+    expect(turns.map(turn => turn.origin)).toEqual(['agent_dispatch', 'user']);
+    const head = await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/hook-session/turns/${turns[0]!.promptId}`), { ...fixture.env, ...OWNER_ENV });
+    expect(await head.json()).toMatchObject({ prompt: { origin: 'agent_dispatch' } });
+    const session = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/hook-session'), { ...fixture.env, ...OWNER_ENV });
+    expect(await session.json()).toMatchObject({ personTurns: 1, turns: 2 });
   } finally { fixture.sqlite.close(); }
 });
 
@@ -262,29 +270,4 @@ test('direct Codex command errors stay separate from legacy failures, including 
       expect(detail!.tools).toMatchObject({ failed: 0, reportedErrors: sameCall ? 1 : 2, failures: [] });
     }
   } finally { fixture.sqlite.close(); }
-});
-
-test('late invocation evidence overlays turn reads and person turns without changing learning or entry counts', async () => {
-  await withDocumentStores(async db => {
-    const bucket = memoryBlobStore();
-    const scope = { projectId: 'project' };
-    const records = [row('event_msg', { type: 'task_started', turn_id: 'task' }), message('user', 'Inspect the query')];
-    const env = await captureDocumentTranscript(db, bucket, 'invoked', `tx_${'8'.repeat(32)}`, records.map(record => JSON.stringify(record)).join('\n') + '\n', Date.now(), 0, 'codex', 'project');
-    await publishDocuments(env, Date.now() + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
-    const original = await listSessionTurns(db, scope, 'invoked', { origins: ['user'] });
-    const head = original.rows[0]!;
-    const fact: SessionInvocation = { startAt: head.createdAt + 1_000, endAt: head.createdAt + 10_000, matchedBy: 'exact', keyLabel: 'Planner', serviceName: 'automation', agentName: 'reviewer' };
-    for (const [facts, invoked, matchedBy] of [[[], false, null], [[fact], true, 'exact'], [[fact, { ...fact, startAt: head.createdAt - 1_000 }], false, null], [[{ ...fact, matchedBy: 'inferred' }], true, 'inferred'], [[{ ...fact, startAt: head.createdAt + 120_000 }], false, null]] as const) {
-      const provider = async () => facts;
-      const turns = await listSessionTurns(db, scope, 'invoked', { origins: ['user', 'agent_dispatch'], invocations: provider });
-      const detail = await documentTurnDetail(env, scope, 'invoked', head.promptId, provider);
-      expect([turns.rows[0]!.origin, detail!.prompt.origin]).toEqual([invoked ? 'agent_dispatch' : 'user', invoked ? 'agent_dispatch' : 'user']);
-      expect([turns.rows[0]!.invocation?.matchedBy ?? null, detail!.prompt.invocation?.matchedBy ?? null]).toEqual([matchedBy, matchedBy]);
-      if (invoked) expect(detail!.prompt.invocation?.keyLabel).toBe('Planner');
-      expect(await documentCounters(db, scope, 'invoked', provider)).toMatchObject({ userTurns: invoked ? 0 : 1, userPrompts: 1, turns: 1 });
-      expect((await listSessionTurns(db, scope, 'invoked', { origins: ['user'], invocations: provider })).rows).toHaveLength(invoked ? 0 : 1);
-      expect((await documentTurnInput(env, 'project', 'invoked', head.promptId))?.origin).toBe('user');
-    }
-    expect((await documentCounters(db, scope, 'invoked'))?.userTurns).toBe(1);
-  });
 });

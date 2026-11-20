@@ -1,5 +1,6 @@
-import { TELEMETRY_CLOCK_TOLERANCE_MS } from '../core/telemetry-policy.js';
 import { projectIdGrammar } from './project-id.js';
+
+const TELEMETRY_CLOCK_TOLERANCE_MS = 2_000;
 
 const point = (
   project: string,

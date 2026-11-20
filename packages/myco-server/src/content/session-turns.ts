@@ -1,5 +1,5 @@
 import { heldToolCalls } from '../db/documents/turn-statistics.js';
-import { sessionTurnInvocations, type InvocationProvider } from '../read/session-invocations.js';
+import { turnPageRows } from '../db/documents/turn-pages.js';
 /**
  * A turn as the session page reads it, from the turn's own pages of the live document: the prompt, its steering
  * prompts, replies, plan appearances and tool records. What hooks recorded beside the turn (attachments, context
@@ -264,7 +264,7 @@ const turnChild = (body: DocumentTurnDetail): DocumentTurnChild => ({
  * first page when it records none or found no page holding it, and the turn's last page for its closing replies and
  * plans. The pages between are reached through the collection cursors.
  */
-export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string, invocations?: InvocationProvider): Promise<DocumentTurnDetail | null> {
+export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string): Promise<DocumentTurnDetail | null> {
   const first = await promptLocator(env.db, scope.projectId, sessionId, promptId);
   if (first === null) return null;
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
@@ -286,7 +286,8 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   }
   const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
   if (place.turn === promptId) {
-    body.prompt = (await sessionTurnInvocations(env.db, scope, sessionId, invocations)).show(body.prompt);
+    const [turn] = await turnPageRows(env.db, { project: scope.projectId, session: sessionId, origins: 'all', originView: 'launch', turn: promptId, order: 'ASC', boundary: null, limit: 1 });
+    if (turn !== undefined) body.prompt.origin = turn.origin ?? body.prompt.origin;
     const catalog = await promptCatalogRow(env.db, scope.projectId, sessionId, promptId);
     const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
       records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));

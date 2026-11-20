@@ -24,7 +24,6 @@ interface lineage_LineageEdge {
   keyId?: string;
   keyLabel?: string;
   serviceName?: string | null;
-  inferred?: boolean;
   parentId: string;
   childId: string;
   kind: lineage_LineageEdgeKind;

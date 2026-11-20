@@ -579,8 +579,12 @@ describe('the session reading page', () => {
   });
 
   it('names the parent and counts the children in the facts, and draws the family on the Lineage tab with the session marked', async () => {
-    server(routes());
+    server(routes({
+      '/api/projects/x/sessions/s1': () => detail({ launchParentSessionId: 'coordinator' }),
+      '/api/projects/x/sessions/s1/invocations': () => Response.json({ rows: [{ keyId: 'sender', traceId: 'trace', spanId: 'span', keyLabel: 'Planner', serviceName: 'Dispatch service', agentName: 'Reviewer', startAt: NOW - MINUTE, endAt: NOW }], nextCursor: null }),
+    }));
     mount('/p/x/sessions/s1?about=1');
+    await waitFor(() => expect(screen.getAllByText(/Launched by another agent/).some(node => node.textContent?.includes('Release checks coordinated'))).toBe(true));
     const facts = await screen.findByRole('dialog', { name: 'About this session' });
     const parent = await within(facts).findByRole('link', { name: 'Release checks coordinated' });
     expect(parent.getAttribute('href')).toBe('/p/x/sessions/coordinator');
@@ -604,6 +608,9 @@ describe('the session reading page', () => {
     expect(within(lanes[1]!).getAllByRole('listitem')).toHaveLength(2);
     expect(within(lineage).getByRole('link', { name: 'Release checks coordinated' }).getAttribute('href')).toBe('/p/x/sessions/coordinator');
     expect(lineage.querySelectorAll('[data-lane-track][aria-hidden="true"]')).toHaveLength(4);
+    const invocations = await screen.findByRole('region', { name: 'Session invocations' });
+    expect(invocations.textContent).toContain('Planner · Dispatch service · Reviewer');
+    expect(invocations.querySelectorAll('time')).toHaveLength(2);
     expect(rawIdsInPage()).toEqual([]);
     fireEvent.click(within(lineage).getByRole('link', { name: 'Port allocation reviewed' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions/reviewer'));
@@ -2376,15 +2383,14 @@ for (const agent of ['codex', 'cursor'] as const) it(`renders ${agent} evidence 
 });
 
 it('keeps incomplete evidence invisible and unwraps an invoked turn envelope once', async () => {
-  const invocation = { startAt: NOW - 3000, endAt: NOW, matchedBy: 'inferred', keyLabel: 'Planner', serviceName: null, agentName: null };
   const answer = await detail({}, { personTurns: 0, nestedToolCalls: 1, reportedErrors: 1 }).json();
   answer.visibility.nestedToolCalls = 'not_visible';
   answer.visibility.reportedErrors = 'not_visible';
   server(base({
     '/api/projects/x/sessions/s1': () => Response.json(answer),
-    '/api/projects/x/sessions/s1/turns': () => page([turn({ origin: 'agent_dispatch', invocation })]),
+    '/api/projects/x/sessions/s1/turns': () => page([turn({ origin: 'agent_dispatch' })]),
     [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
-      prompt: { promptId: P1, origin: 'agent_dispatch', invocation, text: '<a>nested</a>', envelope: { name: 'a', attributes: '' }, blobKey: null, parentPromptId: null, createdAt: NOW - 3000 },
+      prompt: { promptId: P1, origin: 'agent_dispatch', text: '<a>nested</a>', envelope: { name: 'a', attributes: '' }, blobKey: null, parentPromptId: null, createdAt: NOW - 3000 },
       card: null, responses: [], plans: [], attachments: [], children: [], injection: null, answers: [], metrics: { tools: [], durationMs: null, tokens: null },
       tools: { complete: true, evidenceReady: false, total: 1, nested: 1, reportedErrors: 1, failed: 0, byTool: [{ toolName: 'exec', count: 1 }], failures: [], files: [], filesNamed: 0, myco: [] },
     }),
@@ -2393,7 +2399,7 @@ it('keeps incomplete evidence invisible and unwraps an invoked turn envelope onc
   const opened = await screen.findByTestId(`turn-${P1}`);
   expect(await within(opened).findByText('<a>nested</a>', { exact: true })).toBeTruthy();
   expect(within(opened).getAllByText('a', { exact: true })).toHaveLength(1);
-  expect(within(opened).getByText('Probably invoked by another program · Planner')).toBeTruthy();
+  expect(within(opened).getByText('Another agent')).toBeTruthy();
   expect(within(opened).getByText('Nested calls and reported errors are not visible for this stored turn.')).toBeTruthy();
   expect(within(opened).queryByText(/calls? reported an error/)).toBeNull();
   expect(document.querySelector('[data-session-counts]')!.textContent).not.toContain('1 nested call');

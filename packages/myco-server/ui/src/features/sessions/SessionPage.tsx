@@ -29,7 +29,7 @@ import { SessionActions } from './SessionActions';
 import { EVENT_TYPE_KEY, SessionEventList, useSessionEventFilters, type SessionEventRow } from './SessionEventList';
 import { SessionOutcomes } from './Outcomes';
 import { ACTIVITY_FILTER_KEYS, SessionActivity } from './Activity';
-import { SessionLineageTab } from './Lineage';
+import { LaunchParent, SessionLineageTab } from './Lineage';
 import { agentName, sporeLine, sporeTypeWord, spanWords } from './words';
 
 const TABS = ['conversation', 'activity', 'outcomes', 'spores', 'plans', 'files', 'lineage'] as const;
@@ -176,7 +176,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
               {session.endedAt !== null && session.startedAt !== null && <><Sep /><span>{spanWords(session.endedAt - session.startedAt)}</span></>}
               {session.branch !== null && <><Sep /><span className="t-mono">{session.branch}</span></>}
             </p>
-            {session.launchParentSessionId !== null && <p className="t-small text-muted">Launched by another agent</p>}
+            {session.launchParentSessionId !== null && <LaunchParent projectId={projectId} sessionId={session.sessionId} />}
             <Summary session={session} untitled={answer.untitled ?? null} live={live} />
             <div className="flex flex-wrap gap-s2" data-session-counts="">
               <CountButton value={answer.turns} onClick={() => openFilter('all')}>{answer.turns === 1 ? 'turn' : 'turns'}</CountButton>

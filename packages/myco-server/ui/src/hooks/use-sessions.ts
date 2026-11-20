@@ -216,7 +216,6 @@ export type PromptOrigin = (typeof PROMPT_ORIGINS)[number];
 
 /** One top-level prompt of a session and counts of what followed it; the list the timeline renders collapsed. */
 export interface TurnRow {
-  invocation?: import('../features/sessions/wire').TurnInvocation;
   promptId: string;
   origin: string;
   promptKind: string | null;
@@ -264,7 +263,6 @@ export interface ToolRollup {
 }
 
 export interface TurnPrompt {
-  invocation?: import('../features/sessions/wire').TurnInvocation;
   claim?: string | null;
   envelope?: { name: string; attributes: string } | null;
   promptId: string;
@@ -794,7 +792,6 @@ export interface LineageEdge {
   keyId?: string;
   keyLabel?: string;
   serviceName?: string | null;
-  inferred?: boolean;
   parentId: string;
   childId: string;
   kind: LineageEdgeKind;
@@ -832,4 +829,23 @@ export function useSessionLineage(projectId: string, sessionId: string) {
     queryFn: ({ signal }) => fetchJson<SessionLineage>(`${project(projectId)}/sessions/${seg(sessionId)}/lineage`, signal),
     ...live('still'),
   });
+}
+
+interface SessionInvocation {
+  traceId: string; spanId: string; keyId: string; keyLabel: string;
+  serviceName: string | null; agentName: string | null;
+  startAt: number; endAt: number; matchedBy: 'exact';
+}
+
+/** Exact session invocation facts retain their sender times independently of turns. */
+export function useSessionInvocations(projectId: string, sessionId: string) {
+  const query = useInfiniteQuery({
+    queryKey: ['session-invocations', projectId, sessionId],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => fetchJson<{ rows: SessionInvocation[]; nextCursor: string | null }>(
+      `${project(projectId)}/sessions/${seg(sessionId)}/invocations${pageParam === null ? '' : `?cursor=${encodeURIComponent(pageParam)}`}`, signal),
+    getNextPageParam: last => last.nextCursor ?? undefined,
+    ...live('still'),
+  });
+  return { ...query, rows: query.data?.pages.flatMap(page => page.rows) ?? [] };
 }

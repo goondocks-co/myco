@@ -47,8 +47,7 @@ A quota refusal states use and quota and advises waiting for retention or reduci
 
 Spans and derived facts expire after 30 days of receipt, in bounded housekeeping pages. Unknown named sessions
 wait at most seven days after new trace input. Settled partitions have no polling deadline. New spans and
-dependency notifications mark work due. Notifications include repository binding, session arrival or deletion,
-tombstones, live turn publication, and a branch learned after a live turn.
+dependency notifications mark work due. Notifications include session arrival or deletion and tombstones.
 
 One work row gates housekeeping. An idle pass reads that row and returns without writes or per-key scans.
 The tick omits the telemetry job while no key exists or no work is due. A due partition wakes through the
@@ -66,26 +65,25 @@ Every derivation uses one key's spans and stored links:
 
 - **Exact:** conversation B under an ancestor carrying different conversation A reports A → B. Each id must
   resolve unambiguously across Projects. Cycles and ancestry beyond 32 spans supply no parent.
-- **Inferred:** an `invoke_agent` span without a conversation id can match a session or live turn start on the
-  normalized repository and head ref within **two seconds** of its start. Reads use indexed windows and stop
-  at 513 turn witnesses; overflow refuses inference. A stored link from that same key may break a tie only
-  among candidates already inside this span's window. A link from another key never breaks the tie.
-- Within one key, the latest strongest consistent report supplies its parent. Across keys, different parents
-  disagree even when their strengths differ. No disputed parent is selected; the list names the child, parent,
-  key label, strength and the service name as a sender claim. Captured `BAGGAGE` always wins.
+- Within one key, the latest consistent report supplies its parent. Across keys, different parents
+  disagree. No disputed parent is selected; the list names the child, parent,
+  key label and the service name as a sender claim. Captured `BAGGAGE` always wins.
 
 Lineage reads use the caller's canonical visible Project set. A hidden endpoint is an unavailable placeholder
 without its id, Project, title, prompt, agent or times; traversal stops there.
 
 `invocationsForSession` serves a cursor page through the Project-scoped `GET …/sessions/{id}/invocations` API.
-Its cursor includes key identity. `sessionInvocationFacts` supplies the read-time turn attribution with every competing
-fact within the turn-head windows, without a page limit: `{startAt,endAt,matchedBy,keyLabel,serviceName,agentName}`.
-The shared attribution reader owns the start ±2-second matching rule. Zero or several facts preserve the stored turn origin.
-Titling, cards and extraction do not consume this display attribution.
+Its cursor includes key identity. Exact invocation facts are listed on the session with their own sender times,
+key label, service name and agent name. They do not change turn origins. Captured launch lineage assigns the
+opening turn to another agent and excludes it from person turns; later turns retain their transcript origin.
+
+Myco resolves spans only by `gen_ai.conversation.id`. Repository, ref, timing and ordering cannot establish
+identity: a live launch arrived 3.1 seconds after its span while a later message arrived within 1.1 seconds.
+A time window missed the launch and selected the message. Harness startup speed is not evidence, so Myco
+uses no inferred matches or time-based turn attribution. A named session not yet captured resolves when it arrives.
 
 Settings shows receipt minus the newest span end in the latest newly retained batch. This signed measurement
-includes both sender clock error and delivery delay; it is not a clock correction. A sender outside the
-two-second tolerance remains unmatched, and the administrator can see the offset.
+includes both sender clock error and delivery delay; it is not a clock correction or a matching rule.
 
 ## Revocation, recovery and trust
 
@@ -93,7 +91,7 @@ Revocation immediately ends the key's authority. Readers ignore its facts before
 Housekeeping removes that key's resolutions and spans in bounded pages. Another key's evidence is independent.
 
 An administrator-issued key can report misleading links or times between existing sessions. A conflicting key
-can remove, never replace, another key's displayed parent or attribution by creating disagreement. Captured
+can remove, never replace, another key's displayed parent by creating disagreement. Captured
 `BAGGAGE` is immune. Revoking the conflicting key restores the remaining result. Labels are visible to members
 who can see the session. Keys create no session, move no Project and attribute no work to a person.
 

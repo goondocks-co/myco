@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'bun:test';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TelemetryKeys } from '../../packages/myco-server/ui/src/features/admin/settings/TelemetryKeys';
-import { parentWords, SessionLineageTab } from '../../packages/myco-server/ui/src/features/sessions/Lineage';
+import { SessionLineageTab } from '../../packages/myco-server/ui/src/features/sessions/Lineage';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -66,21 +66,7 @@ it('shows connection counts and a key header once, then revokes with removal exp
   expect(await screen.findByText(/reports stop being used immediately/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Revoke key' }));
   await waitFor(() => expect(revoked).toBe(true));
-  expect(
-    parentWords(
-      {
-        parentId: 'a',
-        childId: 'b',
-        kind: 'launched',
-        reason: null,
-        source: 'telemetry',
-        serviceName: 'Build service',
-        inferred: true,
-        keyLabel: 'Approved sender',
-      },
-      'the lead',
-    ),
-  ).toBe('Probably started by the lead · reported by Approved sender (sender claims Build service)');
+
 });
 
 it('lists disagreeing key reports without presenting either as the selected parent', async () => {
@@ -104,8 +90,9 @@ it('lists disagreeing key reports without presenting either as the selected pare
     keyLabel,
     serviceName: 'claimed service',
   });
-  globalThis.fetch = (async () =>
-    Response.json({
+  globalThis.fetch = (async (input) => String(input).endsWith('/invocations')
+    ? Response.json({ rows: [], nextCursor: null })
+    : Response.json({
       nodes: [
         node('worker'),
         node('lead-a'),
@@ -114,7 +101,7 @@ it('lists disagreeing key reports without presenting either as the selected pare
       edges: [],
       reports: [
         report('lead-a', 'First key'),
-        { ...report('lead-a', 'Second key'), parentProjectId: 'proj_2', inferred: true },
+        { ...report('lead-a', 'Second key'), parentProjectId: 'proj_2' },
       ],
       truncated: false,
     })) as typeof fetch;
@@ -130,7 +117,7 @@ it('lists disagreeing key reports without presenting either as the selected pare
   ).toBeTruthy();
   expect(screen.getByText(/reported by First key/)).toBeTruthy();
   expect(
-    screen.getByText(/worker: probable parent Other Project lead · reported by Second key/),
+    screen.getByText(/worker: reported parent Other Project lead · reported by Second key/),
   ).toBeTruthy();
   expect(screen.queryByText(/Child of/)).toBeNull();
 });

@@ -1,3 +1,4 @@
+import { TELEMETRY_EXACT_STEPS } from './schema-steps-telemetry-exact.js';
 import { SESSION_ACTIVITY_STEPS } from './schema-steps-session-activity.js';
 import { TELEMETRY_STEPS } from './schema-steps-telemetry.js';
 import { RUN_INTERRUPTION_STEPS } from './schema-steps-run-interruptions.js';
@@ -2431,6 +2432,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...RUN_INTERRUPTION_STEPS.map(stamp),
   ...SESSION_ACTIVITY_STEPS.map(stamp),
   ...TELEMETRY_STEPS.map(stamp),
+  ...TELEMETRY_EXACT_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */
