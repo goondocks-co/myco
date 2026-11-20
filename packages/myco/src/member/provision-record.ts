@@ -28,6 +28,8 @@ export interface ProvisionRecord {
   hookRepairGeneration?: number;
   /** Each agent's Deployments awaiting configuration logout reconciliation. */
   pendingLogout?: Record<string, string[]>;
+  /** Each agent's settings folders beyond its default one that the person named or provisioning set up, by absolute path. */
+  settingsFolders?: Record<string, string[]>;
   at: number;
 }
 
@@ -90,7 +92,10 @@ function readProvisionRecordFile(mycoHome: string, strict: boolean): ProvisionRe
     const valid = (entry: [string, unknown]): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(url => typeof url === 'string');
     if (strict && value.pendingLogout !== undefined && (entries === null || !entries.every(valid))) return null;
     const pendingLogout = entries === null ? undefined : Object.fromEntries(entries.filter(valid));
-    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(value.discoverAgents === false ? { discoverAgents: false } : {}), ...(binaries === undefined ? {} : { binaries }), ...(value.hookRepairGeneration === undefined ? {} : { hookRepairGeneration: value.hookRepairGeneration }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), at: Number(value.at ?? 0) };
+    const folderEntries = value.settingsFolders !== null && typeof value.settingsFolders === 'object' && !Array.isArray(value.settingsFolders) ? Object.entries(value.settingsFolders) : null;
+    if (strict && value.settingsFolders !== undefined && (folderEntries === null || !folderEntries.every(valid))) return null;
+    const settingsFolders = folderEntries === null ? undefined : Object.fromEntries(folderEntries.filter(valid));
+    return { version: value.version, serverUrl: value.serverUrl, agents: value.agents.filter((a): a is string => typeof a === 'string'), ...(value.discoverAgents === false ? { discoverAgents: false } : {}), ...(binaries === undefined ? {} : { binaries }), ...(value.hookRepairGeneration === undefined ? {} : { hookRepairGeneration: value.hookRepairGeneration }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined ? {} : { pendingLogout }), ...(settingsFolders === undefined ? {} : { settingsFolders }), at: Number(value.at ?? 0) };
   } catch (error) {
     if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw new UnreadableProvisionRecordError(mycoHome, { cause: error });
     return null;
@@ -115,8 +120,9 @@ function writeProvisionRecord(mycoHome: string, record: Omit<ProvisionRecord, 'a
   const pendingTrust = record.pendingTrust ?? (!opts.replace && before !== null ? before.pendingTrust : undefined);
   const pendingLogout = record.pendingLogout ?? (!opts.replace && before !== null ? before.pendingLogout : undefined);
   const discoverAgents = record.discoverAgents ?? (record.agents.length > 0 ? true : !opts.replace ? before?.discoverAgents : undefined);
-  const next: ProvisionRecord = { ...(generation === 0 ? {} : { hookRepairGeneration: generation }), version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(discoverAgents === false ? { discoverAgents: false } : {}), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), at: record.at ?? Date.now() };
-  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && before.discoverAgents === next.discoverAgents && before.hookRepairGeneration === next.hookRepairGeneration && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout)) return before;
+  const settingsFolders = Object.fromEntries(Object.entries(record.settingsFolders ?? (!opts.replace && before !== null ? before.settingsFolders : undefined) ?? {}).filter(([, folders]) => folders.length > 0));
+  const next: ProvisionRecord = { ...(generation === 0 ? {} : { hookRepairGeneration: generation }), version: record.version, serverUrl: record.serverUrl, agents: [...new Set([...kept, ...record.agents])].sort(), ...(discoverAgents === false ? { discoverAgents: false } : {}), ...(Object.keys(binaries).length === 0 ? {} : { binaries }), ...(pendingTrust === undefined ? {} : { pendingTrust }), ...(pendingLogout === undefined || Object.keys(pendingLogout).length === 0 ? {} : { pendingLogout }), ...(Object.keys(settingsFolders).length === 0 ? {} : { settingsFolders }), at: record.at ?? Date.now() };
+  if (record.at === undefined && before !== null && before.version === next.version && before.serverUrl === next.serverUrl && before.discoverAgents === next.discoverAgents && before.hookRepairGeneration === next.hookRepairGeneration && JSON.stringify(before.agents) === JSON.stringify(next.agents) && JSON.stringify(before.binaries) === JSON.stringify(next.binaries) && JSON.stringify(before.pendingTrust) === JSON.stringify(next.pendingTrust) && JSON.stringify(before.pendingLogout) === JSON.stringify(next.pendingLogout) && JSON.stringify(before.settingsFolders) === JSON.stringify(next.settingsFolders)) return before;
   fs.mkdirSync(path.dirname(provisionRecordPath(mycoHome)), { recursive: true, mode: 0o700 });
   atomicWriteFileSync(provisionRecordPath(mycoHome), `${JSON.stringify(next, null, 2)}\n`);
   return next;

@@ -5,6 +5,8 @@ import { Database, constants } from 'bun:sqlite';
 import { HARNESS_SILENT_MS } from '@goondocks/myco-shared/harness-health';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { enumerateSessionRecords, expandRoot } from '@myco/symbionts/transcript-discovery.js';
+import { harnessSettingsFolders, transcriptDiscoveryOf } from '@myco/symbionts/settings-folders.js';
+import { pathInSettingsFolder } from '@myco/member/settings-folder-paths.js';
 import { WorkerSessionEvidence } from '@myco/symbionts/worker-session-evidence.js';
 
 type ActivitySource = NonNullable<SymbiontManifest['health']>['activityLocations'][number];
@@ -27,11 +29,11 @@ function requireWalSidecars(file: string): void {
 }
 
 function* fileSessions(source: Extract<ActivitySource, { kind: 'file' }>, manifest: SymbiontManifest, mycoHome: string): Iterable<{ id: string; at: number }> {
-  const discovery = manifest.capture?.transcriptDiscovery;
+  const discovery = transcriptDiscoveryOf(manifest, mycoHome);
   if (source.path === '@transcripts' && discovery === undefined) throw new Error('Activity references unavailable transcript layouts');
   const locations = source.path === '@transcripts'
     ? (discovery?.roots ?? []).flatMap((root) => discovery!.patterns.map((pattern) => path.join(expandRoot(root, process.env, mycoHome), pattern)))
-    : [expandRoot(source.path, process.env, mycoHome)];
+    : [...new Set(harnessSettingsFolders(manifest, mycoHome).map((folder) => folder.origin === 'default' ? expandRoot(source.path, process.env, mycoHome) : pathInSettingsFolder(manifest, source.path, folder)))];
   for (const location of locations) {
     for (const { sessionId, filePath } of enumerateSessionRecords(location, discovery?.sessionIdPattern)) {
       try {

@@ -78,6 +78,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { legacyStrayHistoryLines, dismissLegacyEarlierCopies } from '@myco/member/legacy-strays.js';
 import { planLegacyProjects, repositoryPresent, type LegacyDestination } from '@myco/member/legacy-placement.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
+import { folderTranscriptDiscovery } from '../symbionts/settings-folders.js';
 
 export const CUTOVER_HELP = `Usage: myco cutover [options]
 
@@ -827,7 +828,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
         : '   Importing earlier agent transcripts is optional; use myco cutover --import-transcripts.');
       const importedProjects = new Map<string, LegacyImportReport['projects']>();
       const imported = await withImportInterrupt(deps.signal, async (signal) => {
-        const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
+        const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE, discovery: folderTranscriptDiscovery };
         for (const project of cutover.projects) {
           const dest = project.destination;
           if (dest.kind !== 'destination') continue;

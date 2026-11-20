@@ -22,6 +22,7 @@ import { SymbiontInstaller, MemberProvisionConflictError, MemberMcpConflictError
 import { joinSentences } from '@myco/utils/sentences.js';
 import { readProvisionRecord, UnreadableProvisionRecordError } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
+import { folderOriginWords, folderWords, harnessSettingsFolders } from '../symbionts/settings-folders.js';
 import { getPluginVersion } from '../version.js';
 import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, checkWorkerServices, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
@@ -75,8 +76,21 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
   let capturing = 0;
   for (const manifest of loadManifests()) {
     if (!manifest.registration?.hooksTarget && !manifest.registration?.memberHooksTarget) continue;
-    const seen = [new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inspectMemberHooks()];
-    for (const hooks of seen) {
+    const folders = harnessSettingsFolders(manifest, mycoHome);
+    const seen = folders.map(folder => ({ folder, hooks: new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inSettingsFolder(folder).inspectMemberHooks() }));
+    const capturesSomewhere = seen.some(({ hooks }) => hooks.member);
+    for (const { folder, hooks } of seen) {
+      if (folder.origin !== 'default') {
+        const where = `${manifest.displayName}'s settings folder ${folderWords(folder.path)} (${folderOriginWords(folder, manifest.settingsFolder?.variable)})`;
+        if (!hooks.readable) checks.push(row('Capture', 'warn', `${where}: its hooks (${hooks.target}) could not be read, so whether it captures is unknown. Restore read access to this file.`));
+        else if (hooks.member) {
+          capturing += 1;
+          checks.push({ ...row('Capture', 'not-checked', `${where} is connected; capture execution not checked. Start a new agent session from it to check capture.`), symbiont: manifest.name });
+        } else if (capturesSomewhere) {
+          checks.push(row('Capture', 'warn', `${where} is not set up, so sessions run from it are not captured. Run \`myco member provision --refresh\` to set it up.`, `${manifest.displayName} sessions run from ${folderWords(folder.path)} are not captured. Run \`myco member provision --refresh\`.`));
+        }
+        continue;
+      }
       if (!hooks.readable) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Restore read access to this file.`, `${manifest.displayName}'s capture settings could not be read. Restore read access to ${hooks.target}.`));
       } else if (hooks.member) {
@@ -139,7 +153,9 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   for (const manifest of loadManifests().filter((m) => agents.includes(m.name))) {
     try {
       const status = memberHarnessStatus(manifest.name, mycoHome, serverUrl);
-      if (!status.current) issues.push(row('Setup', 'warn', status.stale?.join('\n') ?? `${manifest.displayName}'s capture configuration is missing or stale. Run \`myco member provision --refresh\` to repair it.`, `${manifest.displayName}'s capture settings need attention. Run \`myco member provision --refresh\`.`));
+      const unwired = (status.folders ?? []).filter(entry => !entry.current && entry.folder.origin !== 'default').map(entry => folderWords(entry.folder.path));
+      if (!status.current && status.stale === undefined && unwired.length > 0 && status.folders?.[0]?.current) issues.push(row('Setup', 'warn', `${manifest.displayName}'s settings ${unwired.length === 1 ? 'folder' : 'folders'} ${unwired.join(', ')} ${unwired.length === 1 ? 'is' : 'are'} not set up, so sessions run from ${unwired.length === 1 ? 'it' : 'them'} are not captured. Run \`myco member provision --refresh\` to set ${unwired.length === 1 ? 'it' : 'them'} up.`));
+      else if (!status.current) issues.push(row('Setup', 'warn', status.stale?.join('\n') ?? `${manifest.displayName}'s capture configuration is missing or stale. Run \`myco member provision --refresh\` to repair it.`, `${manifest.displayName}'s capture settings need attention. Run \`myco member provision --refresh\`.`));
       if (status.toolsDeployment !== undefined) {
         heldAgents.add(manifest.name);
         held.push({ ...row('Setup', status.current ? 'ok' : 'warn', harnessToolsElsewhere(manifest.displayName, os.hostname(), status.toolsDeployment)), toolsDeployment: status.toolsDeployment, toolsAgents: status.current ? [manifest.name] : [] });
@@ -158,7 +174,11 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   if (held.length === agents.length && held.length > 0) return held;
   const current = agents.filter((agent) => !heldAgents.has(agent));
   const toolsAgents = current.filter(agent => loadManifests().some(manifest => manifest.name === agent && (manifest.registration?.globalMcpTarget?.length ?? 0) > 0));
-  return [...held, { ...row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${serverUrl}.`), toolsAgents }];
+  const covered = loadManifests().filter(manifest => current.includes(manifest.name)).flatMap(manifest => {
+    const folders = harnessSettingsFolders(manifest, mycoHome);
+    return folders.length > 1 ? [`${manifest.displayName} in ${folders.map(folder => folderWords(folder.path)).join(', ')}`] : [];
+  });
+  return [...held, { ...row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${serverUrl}.${covered.length === 0 ? '' : ` Sessions are captured from ${covered.join('; ')}.`}`), toolsAgents }];
 }
 
 /** The Deployment and capture checks scoped to one repository. */

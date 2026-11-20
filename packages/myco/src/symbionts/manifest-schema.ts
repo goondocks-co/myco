@@ -1023,6 +1023,23 @@ const ToolResultSchema = z.custom<ToolResultDeclaration>((value) => {
   try { assertToolResultDeclaration('', value); return true; } catch { return false; }
 }, { message: 'toolResult must declare a failure field or its absence, with evidence' });
 
+/**
+ * The harness's own settings folder and how a person moves it. Every manifest path under `path` resolves inside a
+ * moved folder, as do the home paths `carries` names; any other path stays where the manifest puts it.
+ */
+const SettingsFolderSchema = z.object({
+  /** The folder the harness uses when nothing moves it. */
+  path: z.string().regex(/^~\/[^/]/, 'A settings folder is a path under the home folder, written ~/...'),
+  /** The environment variable the harness reads for a moved folder. */
+  variable: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+  /** Relative paths that, all present, mark a folder as this harness's settings folder. */
+  markers: z.array(z.string().min(1).refine((marker) => !marker.startsWith('/') && !marker.split('/').includes('..'), 'A marker is a path inside the folder')).min(1),
+  /** Home paths outside `path` that live inside a moved folder, by the relative path they take there. */
+  carries: z.record(z.string().regex(/^~\//), z.string().min(1)).optional(),
+});
+
+export type SettingsFolderDeclaration = z.infer<typeof SettingsFolderSchema>;
+
 export const SymbiontManifestSchema = z.object({
   name: z.string(),
   displayName: z.string(),
@@ -1030,6 +1047,7 @@ export const SymbiontManifestSchema = z.object({
   configDir: z.string(),
   /** Global detection directory; omitted uses executable/install locations, null disables detection. */
   detectionDir: z.string().nullable().optional(),
+  settingsFolder: SettingsFolderSchema.optional(),
   health: z.object({
     installLocations: z.array(z.string()),
     /** Per-session evidence; file paths may reference the canonical capture layouts with @transcripts. */

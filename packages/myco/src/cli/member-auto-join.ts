@@ -47,6 +47,7 @@ import { wakePendingImports } from '@myco/member/auto-join-hook.js';
 import { refreshMemberCredential } from '@myco/member/refresh.js';
 import { deadlineBudget, unboundedBudget } from '@myco/member/budget.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
+import { folderTranscriptDiscovery } from '../symbionts/settings-folders.js';
 
 async function settleAutoJoin(entry: RegistryEntry, deps: MemberCliDeps & { mycoHome: string; now: () => number }): Promise<{ moved: number; toolsPending?: true }> {
   let mcpReady: string[] | undefined;
@@ -283,7 +284,7 @@ async function bringHistory(pending: import('../member/auto-join.js').PendingImp
     else {
       report = await runImport({ project: pending.projectId, serverUrl: pending.serverUrl, until: deadline }, {
         fetch: deps.fetch, now, cwd: pending.root, mycoHome,
-        machineId: entry.machineId, progress: err,
+        machineId: entry.machineId, progress: err, discovery: folderTranscriptDiscovery,
       });
     }
   } catch (error) { err(`auto-join ${pending.root}: history import failed: ${error instanceof Error ? error.message : String(error)}`); }

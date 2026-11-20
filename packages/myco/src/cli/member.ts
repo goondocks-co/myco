@@ -37,7 +37,8 @@ import { readInstallation } from '@myco/install/installation.js';
 import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, formatCheck, type DoctorCheck } from './doctor-member.js';
 import { getMachineId } from '../machine-id.js';
 import { isSafeProjectRoot } from '../project-root.js';
-import { RUNTIME_HOME_FILENAME, defaultMycoHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
+import { RUNTIME_HOME_FILENAME, defaultMycoHome, expandHome, readHomePin, resolveMycoHome, type ResolvedMycoHome } from '../paths/home.js';
+import { SETTINGS_FOLDER_FLAG } from './flags.js';
 import { memberHomeFor, pinnedElsewhere, pinnedElsewhereRefusal, pinnedHomeLine, pinnedHomeRefusal } from '../member/home-for-folder.js';
 import { unboundedBudget, type HookBudget } from '../member/budget.js';
 import { CONNECT_TIMEOUT_CAP_MS, CREDENTIAL_FLAG, CREDENTIAL_SOURCES, deploymentScopedHeaders, isProjectId, memberHeaders, MEMBER_TOKEN_REFRESH_WINDOW_MS, SERVER_FLAG } from '../member/constants.js';
@@ -60,7 +61,9 @@ import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
 import { linkMemberSkills, missingMemberSkills, prepareMemberSkillRemoval, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
-import { readProvisionRecord, readProvisionRecordStrict, recordProvision, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
+import { readProvisionRecord, readProvisionRecordStrict, recordProvision, recordSettingsFolders, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
+import { folderWords, harnessSettingsFolders } from '../symbionts/settings-folders.js';
+import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
 import { openDeployment, openDeploymentRequests } from './deployment-reader.js';
@@ -466,18 +469,29 @@ export type ProvisionOutcome =
  */
 function globalInstaller(
   manifest: ReturnType<typeof loadManifests>[number], root: string | null, mycoHome: string, opts: { packageRoot?: string; legacyHomes?: readonly string[]; cwd?: string },
+  folder?: SettingsFolder,
 ): SymbiontInstaller {
   const installer = new SymbiontInstaller(manifest, root ?? mycoHome, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome)
     .replacingLegacy(opts.legacyHomes ?? []).forProjectFolder(root === null ? undefined : opts.cwd);
+  if (folder !== undefined) installer.inSettingsFolder(folder);
   return root === null ? installer.withoutProjectRoot() : installer;
+}
+
+/** The harness's global skills folder inside `folder`, or null when it declares none. */
+function skillsTargetIn(manifest: ReturnType<typeof loadManifests>[number], folder: SettingsFolder): string | null {
+  const target = manifest.registration?.globalSkillsTarget;
+  return target == null ? null : pathInSettingsFolder(manifest, target, folder);
 }
 
 /** Manifest-backed evidence of prior provisioning in this home's global registrations. */
 export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; exclude?: string[]; onInspectionError?: (message: string) => void } = {}): string[] {
   return loadManifests().filter((manifest) => !opts.exclude?.includes(manifest.name)).flatMap((manifest) => {
     try {
-      const installer = globalInstaller(manifest, null, mycoHome, opts).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
-      return installer.capturesAsMember() && installer.memberRegistrationPresent() ? [manifest.name] : [];
+      const registered = harnessSettingsFolders(manifest, mycoHome).some(folder => {
+        const installer = globalInstaller(manifest, null, mycoHome, opts, folder).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
+        return installer.capturesAsMember() && installer.memberRegistrationPresent();
+      });
+      return registered ? [manifest.name] : [];
     } catch (error) {
       if (!(error instanceof MemberProvisionConflictError)) throw error;
       opts.onInspectionError?.(`could not inspect ${manifest.displayName}: ${error instanceof Error ? error.message : String(error)}`);
@@ -509,7 +523,7 @@ export function memberProvisionTarget(mycoHome: string, serverUrl?: string): str
   return memberships.length === 1 ? memberships[0].serverUrl : undefined;
 }
 
-function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; cwd?: string }): ProvisionOutcome {
+function provisionChosenAgent(agent: string, root: string | null, mycoHome: string, opts: { packageRoot?: string; serverUrl?: string; cwd?: string; namedFolders?: readonly string[] }): ProvisionOutcome {
   const outcome = withMemberRepair(mycoHome, 'myco member provision', () => {
     const backup = provisionBackup(mycoHome);
     try { return provisionGlobally(agent, root, mycoHome, { ...opts, backup }); }
@@ -574,20 +588,39 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
   }, { wait: opts.wait });
 }
 
-/** Read-only registration and settings currency through the installer. */
-export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; currentExceptStaleTools?: boolean; toolsDeployment?: string; stale?: string[] } {
+/** One settings folder's registration currency. */
+export interface FolderStatus { folder: SettingsFolder; current: boolean }
+
+/**
+ * Read-only registration and settings currency through the installer, across every settings folder of the harness:
+ * current only when every folder is.
+ */
+export function memberHarnessStatus(agent: string, mycoHome: string, serverUrl: string, opts: { packageRoot?: string } = {}): { current: boolean; currentExceptStaleTools?: boolean; toolsDeployment?: string; stale?: string[]; folders?: FolderStatus[] } {
   const manifest = loadManifests().find((candidate) => candidate.name === agent);
   if (manifest === undefined) return { current: false };
-  const installer = globalInstaller(manifest, null, mycoHome, opts).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
-  installer.assertMemberProvisionAllowed();
-  return inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations());
+  const statuses = harnessSettingsFolders(manifest, mycoHome).map(folder => {
+    const installer = globalInstaller(manifest, null, mycoHome, opts, folder).takingOverManagedEntries().forDeployment(serverUrl).preservingOtherMemberTools();
+    installer.assertMemberProvisionAllowed();
+    return { folder, status: inspectMemberHarness(installer, manifest, mycoHome, installer.scanMemberRegistrations(), folder) };
+  });
+  const [first] = statuses;
+  if (statuses.length === 1) return first!.status;
+  const stale = statuses.flatMap(entry => entry.status.stale ?? []);
+  const toolsDeployment = statuses.find(entry => entry.status.toolsDeployment !== undefined)?.status.toolsDeployment;
+  return {
+    current: statuses.every(entry => entry.status.current),
+    currentExceptStaleTools: statuses.every(entry => entry.status.current || entry.status.currentExceptStaleTools) && statuses.some(entry => entry.status.currentExceptStaleTools),
+    ...(stale.length === 0 ? {} : { stale }),
+    ...(toolsDeployment === undefined ? {} : { toolsDeployment }),
+    folders: statuses.map(entry => ({ folder: entry.folder, current: entry.status.current })),
+  };
 }
 
-function inspectMemberHarness(installer: SymbiontInstaller, manifest: ReturnType<typeof loadManifests>[number], mycoHome: string, scan: ReturnType<SymbiontInstaller['scanMemberRegistrations']>) {
+function inspectMemberHarness(installer: SymbiontInstaller, manifest: ReturnType<typeof loadManifests>[number], mycoHome: string, scan: ReturnType<SymbiontInstaller['scanMemberRegistrations']>, folder?: SettingsFolder) {
   const toolsDeployment = installer.memberToolsDeployment(scan);
   const registrationCurrent = installer.memberRegistrationCurrent(scan);
   const stale = installer.memberGlobalTargets(scan).skipped;
-  const target = manifest.registration?.globalSkillsTarget;
+  const target = folder === undefined ? manifest.registration?.globalSkillsTarget : skillsTargetIn(manifest, folder);
   const skillsCurrent = target == null || missingMemberSkills(mycoHome, target).length === 0;
   return { current: registrationCurrent && skillsCurrent, currentExceptStaleTools: stale.length > 0 && skillsCurrent && installer.memberRegistrationCurrent(scan, true), ...(stale.length === 0 ? {} : { stale }), ...(toolsDeployment === undefined ? {} : { toolsDeployment }) };
 }
@@ -596,13 +629,40 @@ export function memberHarnessCurrent(agent: string, mycoHome: string, serverUrl:
   return memberHarnessStatus(agent, mycoHome, serverUrl, opts).current;
 }
 
-export function provisionGlobally(
-  agent: string, root: string | null, mycoHome: string,
-  opts: { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup; preserveOtherMemberTools?: boolean; cwd?: string } = {},
-): ProvisionOutcome {
+type GlobalProvisionOptions = { packageRoot?: string; legacyHomes?: readonly string[]; serverUrl?: string; backup?: CutoverBackup; preserveOtherMemberTools?: boolean; cwd?: string; namedFolders?: readonly string[] };
+
+/**
+ * Install the agent's member hooks (or plugin), MCP entry and skills in every settings folder it uses on this machine,
+ * and record the folders beyond its default one that were set up. A refusal in the default folder refuses the agent;
+ * a refusal in another folder is named in the outcome and leaves that folder as it was.
+ */
+export function provisionGlobally(agent: string, root: string | null, mycoHome: string, opts: GlobalProvisionOptions = {}): ProvisionOutcome {
   const manifest = loadManifests().find((m) => m.name === agent);
   if (!manifest) return { kind: 'unknown' };
-  const installer = globalInstaller(manifest, root, mycoHome, opts);
+  const results = harnessSettingsFolders(manifest, mycoHome, { named: opts.namedFolders }).map(folder => ({ folder, outcome: provisionInFolder(manifest, folder, root, mycoHome, opts) }));
+  if (manifest.settingsFolder !== undefined && results[0]!.outcome.kind !== 'refused') {
+    recordSettingsFolders(mycoHome, agent, results.filter(({ folder, outcome }) => folder.origin !== 'default' && outcome.kind !== 'refused').map(({ folder }) => folder.path));
+  }
+  const [first, ...others] = results;
+  if (others.length === 0 || first!.outcome.kind === 'refused') return first!.outcome;
+  const outcomes = results.map(result => result.outcome).filter((outcome): outcome is Extract<ProvisionOutcome, { kind: 'provisioned' | 'unchanged' }> => outcome.kind === 'provisioned' || outcome.kind === 'unchanged');
+  const refusals = others.filter(({ outcome }) => outcome.kind === 'refused')
+    .map(({ folder, outcome }) => `${manifest.displayName} in ${folderWords(folder.path)} was not set up: ${(outcome as { detail: string }).detail}`);
+  const stale = [...outcomes.flatMap(outcome => outcome.stale ?? []), ...refusals];
+  return {
+    kind: outcomes.some(outcome => outcome.kind === 'provisioned') ? 'provisioned' : 'unchanged',
+    detail: [...outcomes.map(outcome => outcome.detail), ...refusals].join('\n'),
+    skills: (first!.outcome as Extract<ProvisionOutcome, { kind: 'provisioned' | 'unchanged' }>).skills,
+    hooksChanged: outcomes.some(outcome => outcome.hooksChanged),
+    captureReady: outcomes.every(outcome => outcome.captureReady !== false),
+    written: [...new Set(outcomes.flatMap(outcome => outcome.written ?? []))],
+    stale,
+  };
+}
+
+function provisionInFolder(manifest: ReturnType<typeof loadManifests>[number], folder: SettingsFolder, root: string | null, mycoHome: string, opts: GlobalProvisionOptions): ProvisionOutcome {
+  const agent = manifest.name;
+  const installer = globalInstaller(manifest, root, mycoHome, opts, folder);
   if (!opts.legacyHomes?.length) installer.takingOverManagedEntries();
   if (opts.serverUrl !== undefined) installer.forDeployment(opts.serverUrl);
   if (opts.preserveOtherMemberTools) installer.preservingOtherMemberTools();
@@ -625,18 +685,19 @@ export function provisionGlobally(
   }
   const surface = installer.isMemberPluginFile() ? 'plugin' : 'hooks';
   // An agent Myco captures gets the skills of this home in its global skills folder, beside its hooks.
-  const target = manifest.registration?.globalSkillsTarget;
+  const target = skillsTargetIn(manifest, folder);
   const skills = installer.capturesAsMember() && target ? linkMemberSkills(mycoHome, skillsFolder(target), opts.legacyHomes ?? []) : null;
   const skillsMoved = skills !== null && (skills.linked.length > 0 || skills.removed.length > 0);
   if (opts.preserveOtherMemberTools && opts.serverUrl !== undefined) {
-    if (registration.skipped.length === 0 && !inspectMemberHarness(installer, manifest, mycoHome, scan).current) throw new Error(`${manifest.displayName}'s capture configuration is still incomplete`);
+    if (registration.skipped.length === 0 && !inspectMemberHarness(installer, manifest, mycoHome, scan, folder).current) throw new Error(`${manifest.displayName}'s capture configuration in ${folderWords(folder.path)} is still incomplete`);
     installer.recordMemberProvision(readProvisionRecord(mycoHome)?.version ?? getPluginVersion());
     if (installed.hooks && manifest.registration?.memberHookTrustAction) holdHookTrust(mycoHome, agent, manifest.registration.memberHookTrustAction);
   }
   const stale = installer.staleRegistrationMessages(scan);
   const written = [installed.hooks ? surface : null, installed.mcp ? 'tools' : null, skillsMoved ? 'skills' : null, installed.settings ? 'settings' : null].filter((value): value is string => value !== null);
   const changed = written.length > 0;
-  const detail = changed ? `provisioned ${manifest.displayName} globally (${written.join(', ')})` : `no global registration changes for ${manifest.displayName}`;
+  const where = folder.origin === 'default' ? 'globally' : `in ${folderWords(folder.path)}`;
+  const detail = changed ? `provisioned ${manifest.displayName} ${where} (${written.join(', ')})` : `no global registration changes for ${manifest.displayName}${folder.origin === 'default' ? '' : ` in ${folderWords(folder.path)}`}`;
   return { kind: changed ? 'provisioned' : 'unchanged', detail: [detail, ...stale].join('\n'), skills, hooksChanged: installed.hooks, captureReady: registration.hooks !== null, written, stale };
 }
 
@@ -790,7 +851,7 @@ export function detectedProvisionLines(found: DetectedProvision): string[] {
 }
 
 /**
- * `myco member provision [<agent>] [--root <dir>] [--server <url>]`: install an agent's hooks and MCP entry globally
+ * `myco member provision [<agent>] [--root <dir>] [--server <url>] [--settings-folder <folder>]`: install an agent's hooks and MCP entry globally
  * from the recorded membership, or every agent installed on this machine when none is named. A connected folder's
  * binding names the Deployment; a member with no folder connected yet provisions for its one Deployment, or the one
  * `--server` names. No token is supplied or changed.
@@ -804,17 +865,26 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
   let serverArg: string | undefined;
   let refresh = false;
   let remove = false;
+  const namedFolders: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--refresh') refresh = true;
     else if (arg === '--remove') remove = true;
-    else if (arg === '--root' || arg === '--server') {
+    else if (arg === '--root' || arg === '--server' || arg === SETTINGS_FOLDER_FLAG) {
       const value = args[++i];
       if (value === undefined || value.startsWith('--')) return fail(`${arg} needs a value`);
-      if (arg === '--root') rootArg = value; else serverArg = value;
+      if (arg === '--root') rootArg = value; else if (arg === '--server') serverArg = value; else namedFolders.push(path.resolve(deps.cwd ?? process.cwd(), expandHome(value)));
     } else if (arg.startsWith('-')) return fail(`unknown option ${arg.split('=')[0]}`);
     else if (agent === undefined) agent = arg;
     else return fail('provision takes one agent');
+  }
+  if (namedFolders.length > 0) {
+    if (agent === undefined || refresh || remove) return fail(`${SETTINGS_FOLDER_FLAG} names another settings folder of one agent: myco member provision <agent> ${SETTINGS_FOLDER_FLAG} <folder>`);
+    const named = loadManifests().find((candidate) => candidate.name === agent);
+    if (named === undefined) return fail(`unknown agent "${agent}"`);
+    if (named.settingsFolder === undefined) return fail(`${named.displayName} keeps its settings in one folder, so ${SETTINGS_FOLDER_FLAG} does not apply to it`);
+    const missing = namedFolders.find((folder) => { try { return !fs.statSync(folder).isDirectory(); } catch { return true; } });
+    if (missing !== undefined) return fail(`${missing} is not a folder; create it, or start ${named.displayName} once with ${named.settingsFolder.variable}=${missing}, then run this again`);
   }
   const invocationFolder = path.resolve(rootArg ?? deps.cwd ?? process.cwd());
   const root = resolveMemberProjectRoot(invocationFolder);
@@ -860,23 +930,24 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     if (agent === undefined) return fail('--remove needs a harness');
     const manifest = loadManifests().find((candidate) => candidate.name === agent);
     if (manifest === undefined) return fail(`unknown agent "${agent}"`);
-    const installer = globalInstaller(manifest, null, mycoHome, deps);
     try {
       withMemberRepair(mycoHome, 'myco member provision --remove', () => {
         const provision = readProvisionRecord(mycoHome);
         const recordedServer = provision?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
-        if (recordedServer !== undefined) installer.forDeployment(recordedServer);
         let skillOwnersKnown = recordedServer !== undefined;
-        const target = manifest.registration?.globalSkillsTarget;
         const others = new Set([...(provision?.agents ?? []),
           ...(recordedServer === undefined ? [] : registeredMemberHarnesses(mycoHome, recordedServer,
             { ...deps, onInspectionError: () => { skillOwnersKnown = false; } }))].filter(id => id !== agent));
-        const shared = target !== undefined && target !== null && loadManifests().some(other =>
-          others.has(other.name) && other.registration?.globalSkillsTarget != null
-          && skillsFolder(other.registration.globalSkillsTarget) === skillsFolder(target));
-        const removeSkills = target && skillOwnersKnown && !shared ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
-        installer.uninstallMemberRegistration();
-        removeSkills();
+        const sharedSkills = new Set(loadManifests().filter(other => others.has(other.name)).flatMap(other =>
+          harnessSettingsFolders(other, mycoHome).flatMap(folder => { const target = skillsTargetIn(other, folder); return target === null ? [] : [skillsFolder(target)]; })));
+        for (const settingsFolder of harnessSettingsFolders(manifest, mycoHome)) {
+          const installer = globalInstaller(manifest, null, mycoHome, deps, settingsFolder);
+          if (recordedServer !== undefined) installer.forDeployment(recordedServer);
+          const target = skillsTargetIn(manifest, settingsFolder);
+          const removeSkills = target !== null && skillOwnersKnown && !sharedSkills.has(skillsFolder(target)) ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
+          installer.uninstallMemberRegistration();
+          removeSkills();
+        }
         forgetProvision(mycoHome, agent);
       }, { wait: true });
     } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
@@ -910,7 +981,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     for (const line of detectedProvisionLines(found)) out(line);
     return true;
   }
-  const outcome = provisionChosenAgent(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl, cwd: invocationFolder });
+  const outcome = provisionChosenAgent(agent, folder, mycoHome, { packageRoot: deps.packageRoot, serverUrl, cwd: invocationFolder, namedFolders });
   if (outcome.kind === 'unknown') return fail(`unknown agent "${agent}"`);
   if (outcome.kind === 'refused') return fail(outcome.detail);
   out(outcome.detail);
@@ -1652,12 +1723,14 @@ export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
   },
   'provision': {
     help: `  provision [<agent>] [--root <dir>] [--server <url>] [--refresh]
+  provision <agent> --settings-folder <folder>
   provision --remove <agent>
                      Install the agent's hooks and MCP entry globally using the recorded membership, or
                      every agent installed on this machine when none is named. An agent whose entries
                      belong to another installation is left alone and named. --root selects the
                      membership, not the installation scope; --server picks the Deployment when this
-                     machine is a member of several. --refresh repairs agent setup and checks the member token for renewal.`,
+                     machine is a member of several. --settings-folder sets up another settings folder of the agent, such as
+                     a second account's, beside the ones Myco finds itself. --refresh repairs agent setup and checks the member token for renewal.`,
     run: async (rest, deps) => {
       let refresh: { result: KeepCurrentResult | null; home: string } | undefined;
       runProvision(rest, deps, (result, home) => { refresh = { result, home }; });

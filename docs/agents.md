@@ -53,13 +53,25 @@ Shipped skills are linked to the agent's live skills location:
 | Antigravity | `~/.gemini/config/skills` |
 | Cline | `~/.cline/skills` |
 
+### Several accounts for one agent
+
+Some agents let you keep a settings folder per account and choose one with a variable: Claude Code (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`), Copilot CLI (`COPILOT_HOME`), Pi (`PI_CODING_AGENT_DIR`) and Cline (`CLINE_DIR`). Myco sets up each such folder the way it sets up the default one, and the paths in the tables above move into that folder. Claude Code's tools configuration moves too, to `.claude.json` inside the folder. Shared locations such as `~/.agents/skills` stay where they are.
+
+Myco finds a folder when:
+
+- the agent's variable names it in the shell you run Myco from;
+- it sits directly in your home folder and holds the files the agent writes there on its first run (for Claude Code, `.claude.json`);
+- you name it: `myco member provision claude-code --settings-folder ~/accounts/claude-work`.
+
+`myco doctor` lists each folder it captures from, and names any folder it found but has not set up. `myco member provision --refresh` sets those up; the automatic refresh does too. Cursor, OpenCode, Antigravity and Windsurf keep one settings folder each.
+
 To disconnect one agent:
 
 ```bash
 myco member provision --remove claude-code
 ```
 
-This removes that agent's Myco hooks, tools and skill links. A shared skills folder keeps its links while another connected agent uses it. To sign the whole machine out, use `myco logout <address>`; see [Leaving a Myco](quickstart.md#leaving-a-myco).
+This removes that agent's Myco hooks, tools and skill links from every settings folder Myco set up for it. A shared skills folder keeps its links while another connected agent uses it. To sign the whole machine out, use `myco logout <address>`; see [Leaving a Myco](quickstart.md#leaving-a-myco).
 
 ## What is captured
 

@@ -6,6 +6,12 @@ health:
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .codex
 detectionDir: ~/.codex
+# A person moves this folder with CODEX_HOME. Codex writes `installation_id` and `sessions/` on its first run there.
+# User skills stay in ~/.agents/skills.
+settingsFolder:
+  path: ~/.codex
+  variable: CODEX_HOME
+  markers: [installation_id, sessions]
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
 settingsPath: .codex/config.toml
 resumeCommand: "codex resume {sessionId}"

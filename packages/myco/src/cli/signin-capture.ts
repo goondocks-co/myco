@@ -1,6 +1,7 @@
 import { deadlineBudget, type HookBudget } from '../member/budget.js';
 import { observedFetch, runImport, type ImportDeps } from '../member/import.js';
 import type { FetchLike } from '../member/transport.js';
+import { folderTranscriptDiscovery } from '../symbionts/settings-folders.js';
 
 const SIGNIN_CAPTURE_TIMEOUT_MS = 3_000;
 
@@ -36,7 +37,7 @@ export async function importSignInHistory(
   capture: SignInCapture,
 ): Promise<void> {
   try {
-    const report = await runImport({ ...opts, until: capture.budget.deadline }, { ...deps, fetch: capture.fetch, signal: capture.signal });
+    const report = await runImport({ ...opts, until: capture.budget.deadline }, { discovery: folderTranscriptDiscovery, ...deps, fetch: capture.fetch, signal: capture.signal });
     const imported = report.projects.reduce((sum, project) => sum + project.agents.reduce((count, agent) => count + agent.imported, 0), 0);
     if (imported > 0) deps.stdout(`  Imported ${imported} past sessions. Run \`myco import\` to reach further back.`);
     const causes = report.projects.flatMap(project => Object.keys(project.causes ?? {}));

@@ -7,10 +7,10 @@ import { normalizeMemberServerAddress } from '../member/server-url.js';
 import { readHookRepairGeneration, updateProvisionRecord, type ProvisionRecord } from '../member/provision-record.js';
 export { PROVISION_RECORD, UnreadableProvisionRecordError, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict, recordProvision, type ProvisionRecord } from '../member/provision-record.js';
 
-function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout'> {
+function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout' | 'settingsFolders'> {
   const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
     : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
-  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout) };
+  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout), settingsFolders: retain(record?.settingsFolders) };
 }
 
 /** Hold a hook trust action until its report is accepted. */
@@ -42,6 +42,17 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
       ...retainedProvisionMetadata(before, agents),
     };
   }, { strict: true });
+}
+
+/** Record the settings folders beyond its default one that `agent` is set up in, under the record lease. */
+export function recordSettingsFolders(mycoHome: string, agent: string, folders: readonly string[]): void {
+  updateProvisionRecord(mycoHome, record => {
+    if (record === null) return;
+    const wanted = [...new Set(folders)].sort();
+    if (JSON.stringify(record.settingsFolders?.[agent] ?? []) === JSON.stringify(wanted)) return;
+    const { [agent]: _, ...others } = record.settingsFolders ?? {};
+    return { ...record, settingsFolders: wanted.length === 0 ? others : { ...others, [agent]: wanted } };
+  });
 }
 
 /** Remove an opted-out harness and its registration metadata under the record lease. */

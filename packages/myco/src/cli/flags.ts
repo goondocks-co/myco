@@ -7,6 +7,8 @@ import path from 'node:path';
 
 export const MCP_ROOT_FLAG = '--root';
 export const MCP_CLIENT_ROOTS_FLAG = '--client-roots';
+/** Names another settings folder of one agent for `myco member provision <agent>`. */
+export const SETTINGS_FOLDER_FLAG = '--settings-folder';
 
 export const mcpUsesClientRoots = (argv: readonly string[]): boolean => argv.includes(MCP_CLIENT_ROOTS_FLAG);
 export const mcpHasExplicitRoot = (argv: readonly string[]): boolean => argv.some(word => word === MCP_ROOT_FLAG || word.startsWith(`${MCP_ROOT_FLAG}=`));

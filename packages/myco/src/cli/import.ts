@@ -19,6 +19,7 @@ import { importUntilSettled, IMPORT_PACE_PER_MINUTE, type ImportOptions, type Im
 import { runLegacyImport, type LegacyImportReport } from '../member/legacy-import.js';
 import { parseDirectoryMapping, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
 import type { FetchLike } from '../member/transport.js';
+import { folderTranscriptDiscovery } from '../symbionts/settings-folders.js';
 
 export const IMPORT_HELP = `Usage: myco import [options]
 
@@ -234,7 +235,7 @@ async function runImportCommand(args: readonly string[], deps: ImportCliDeps = {
   }
 
   const report = await importUntilSettled({ ...parsed.options, ...(exclude === undefined ? {} : { exclude }) }, {
-    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, signal: deps.signal, pace: IMPORT_PACE_PER_MINUTE,
+    fetch: deps.fetch, now: deps.now, cwd: deps.cwd, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, signal: deps.signal, pace: IMPORT_PACE_PER_MINUTE, discovery: folderTranscriptDiscovery,
     progress: (l) => err(`myco import: ${l}`),
   });
   if (report.refused !== undefined) { return refuse(report.refused); }

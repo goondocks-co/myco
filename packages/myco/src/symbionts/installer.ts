@@ -38,6 +38,7 @@ import { scanLegacyRegistrations, staleRegistrationWords, type LegacyFinding } f
 import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
+import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 
 function managedHookGroup(group: Record<string, unknown>, matches = isMycoHookCommand): Record<string, unknown> {
   if (!Array.isArray(group.hooks)) return group;
@@ -331,13 +332,18 @@ export class SymbiontInstaller {
     const reg = this.manifest.registration;
     if (!reg) return null;
     const target = field === 'hooks' ? reg.globalHooksTarget : field === 'skills' ? reg.globalSkillsTarget : reg.globalSettingsTarget;
-    return target ? throughLink(expandHome(target)) : null;
+    return target ? throughLink(this.homeTarget(target)) : null;
+  }
+
+  /** A manifest home path for this installer's settings folder. */
+  private homeTarget(target: string): string {
+    return this.settingsFolder === undefined ? expandHome(target) : pathInSettingsFolder(this.manifest, target, this.settingsFolder);
   }
 
   private resolveAbsoluteMcpTargets(): Array<{ path: string; serversKey: string }> {
     const reg = this.manifest.registration;
     return (reg?.globalMcpTarget ?? []).map(entry => ({
-      path: expandHome(entry.path), serversKey: entry.serversKey ?? reg?.mcpServersKey ?? 'mcpServers',
+      path: this.homeTarget(entry.path), serversKey: entry.serversKey ?? reg?.mcpServersKey ?? 'mcpServers',
     }));
   }
 
@@ -991,6 +997,14 @@ export class SymbiontInstaller {
 
   withoutProjectRoot(): this {
     this.noProjectRoot = true;
+    return this;
+  }
+
+  private settingsFolder: SettingsFolder | undefined;
+
+  /** Resolve every global target inside `folder`, one of the harness's settings folders. */
+  inSettingsFolder(folder: SettingsFolder): this {
+    this.settingsFolder = folder;
     return this;
   }
 
