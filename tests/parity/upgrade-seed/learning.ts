@@ -1,10 +1,11 @@
+import { event } from '../clients/requests.ts';
 import { expect } from 'bun:test';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 import { documentsPublished, lit, memberHeadersFor } from '../harness.ts';
-import { event, setting, type RouteTarget, type SeedTarget } from './requests.ts';
+import { setting, type RouteTarget, type SeedTarget } from './requests.ts';
 
 /** A session that searched Myco, which a member's machine, working as a worker, carded and learned from, acknowledging its prompts. */
 export interface LearningSeed { sessionId: string; promptId: string }

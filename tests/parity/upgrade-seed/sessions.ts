@@ -1,8 +1,9 @@
+import { event, owner } from '../clients/requests.ts';
 import { expect } from 'bun:test';
 import { sha256HexOf, uuidv5 } from '@myco-server-worker/hash.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { ageRows, documentsPublished, expectPersisted } from '../harness.ts';
-import { event, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
+import { pick, type RouteTarget, type SeedTarget } from './requests.ts';
 
 /** The sessions a Deployment's members captured, by the ids the product answered. */
 export interface SessionsSeed {

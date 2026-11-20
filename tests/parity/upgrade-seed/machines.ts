@@ -1,8 +1,9 @@
+import { owner } from '../clients/requests.ts';
 import { expect } from 'bun:test';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { CURATION_DAILY_LIMIT_LEAF } from '@myco-server-worker/core/settings.js';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
-import { client, owner, pick, setting, type RouteTarget, type SeedTarget } from './requests.ts';
+import { client, pick, setting, type RouteTarget, type SeedTarget } from './requests.ts';
 
 /** The settings and machines a Deployment's owner and members configured. */
 export interface MachinesSeed {

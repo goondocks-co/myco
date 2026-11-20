@@ -6,6 +6,7 @@ import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { CONSUMERS, buildSteps, parseArgs, planConsumers, retryAlone, rowTestFiles, settleLanes, summaryLine, windowsJobTests } from '../../scripts/check-pr-plan.mjs';
 import { imageInputs } from '../../scripts/check-pr-image.mjs';
+import { affectedTests } from '../../scripts/pr-test-selection.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '../..');
 const windowsTests = windowsJobTests(REPO);
@@ -21,6 +22,12 @@ const scratch = <T>(fn: (dir: string) => T | Promise<T>, dir = fs.mkdtempSync(pa
 const write = (root: string, files: Record<string, string>) => Object.entries(files).forEach(([file, text]) =>
   (fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }), fs.writeFileSync(path.join(root, file), text)));
 const IMAGE_BUILD = 'self-hosted image build, boot and persistence (CI only: it builds and boots the image with Docker)';
+
+test('database changes select the populated upgrade consumer without a static import', () => scratch(root => {
+  const file = 'tests/parity/parity.test.ts', schema = under('packages/myco-server/src/db');
+  write(root, { 'tsconfig.json': '{}', [file]: '', [schema]: '' });
+  expect(affectedTests({ root, files: [file, schema], changed: [schema] })).toEqual([{ file, tier: 1 }]);
+}));
 
 test.each([
   [['packages/myco-shared/release-channels.json'], [], ['installer and source install', 'self-hosted image inputs (build inputs only)', 'dashboard screens'], [IMAGE_BUILD]],

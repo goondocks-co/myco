@@ -1,9 +1,10 @@
+import { event, owner } from '../clients/requests.ts';
 import { expect } from 'bun:test';
 import { toBase64Url } from '@myco-server-worker/base64.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
 import { documentsPublished } from '../harness.ts';
-import { client, event, owner, pick, setting, type RouteTarget, type SeedTarget } from './requests.ts';
+import { client, pick, setting, type RouteTarget, type SeedTarget } from './requests.ts';
 
 /** The runs, runner and backup a Deployment's owner started. */
 export interface RunsSeed {

@@ -1,11 +1,13 @@
+import { mcp, owner } from '../clients/requests.ts';
 import { seedCuration } from './curation.ts';
 import { observeKnowledge, seedKnowledge, type KnowledgeSeed } from './knowledge.ts';
 import { seedLearning } from './learning.ts';
 import { observeMachines, seedMachines, type MachinesSeed } from './machines.ts';
 import { observeRelease, seedRelease, type ReleaseSeed } from './release.ts';
-import { mcp, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
+import { pick, type RouteTarget, type SeedTarget } from './requests.ts';
 import { observeRuns, seedRuns, type RunsSeed } from './runs.ts';
 import { observeSessions, seedSessions, type SessionsSeed } from './sessions.ts';
+import { seedTelemetry } from './telemetry.ts';
 
 /**
  * What a Deployment's users write before an upgrade, through the routes and tools they use, and what they read back.
@@ -33,6 +35,8 @@ export async function seedDeployment(target: SeedTarget): Promise<SeededDeployme
   const machines = await seedMachines(target, stamp);
   const runs = await seedRuns(target, stamp, sessions.sibling.sessionId);
   const release = await seedRelease(target, stamp);
+  await seedTelemetry(target, { lead: sessions.captured.sessionId, child: sessions.sibling.sessionId, at: stamp,
+    capture: { launched: `upgrade-launch-${stamp}`, pending: `upgrade-pending-${stamp}` } });
   const seeded = { sessions, knowledge, machines, runs, release };
   const result = { ...seeded, observed: await observe(target, seeded) };
   SEEDED.set(target.deploymentId, result);
