@@ -11,7 +11,7 @@
 import { filesNamedByToolInput, mycoToolFields } from '@goondocks/myco-shared/member-protocol';
 import { utf8Preview } from '../hash.js';
 import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../ingest/tool-outcome.js';
-import { DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
+import { TOOL_EVIDENCE_VERSION, DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
 
 /** Characters a tool's one-line input summary keeps. */
 const TOOL_SUMMARY_CHARS = 200;
@@ -49,7 +49,7 @@ function toolSummary(input: unknown): string {
 export function documentRecord(kind: string, payload: Record<string, unknown>, createdAt: number, at: RecordOrigin): DocRecord | null {
   const k = RECORD_KINDS[kind];
   if (k === undefined) return null;
-  const origin = { created_at: createdAt, received_at: at.received_at, ...(at.src ? { src: at.src } : {}), ...(at.ev ? { ev: at.ev } : {}) };
+  const origin = { tool_evidence_version: TOOL_EVIDENCE_VERSION, created_at: createdAt, received_at: at.received_at, ...(at.src ? { src: at.src } : {}), ...(at.ev ? { ev: at.ev } : {}) };
   const p = payload;
   if (k === 'prompt') {
     const parent = str(p.parentPromptId);

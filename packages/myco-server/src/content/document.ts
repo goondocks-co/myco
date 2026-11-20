@@ -1,3 +1,5 @@
+/** Revision of tool observations retained by a document record. */
+export const TOOL_EVIDENCE_VERSION = 1;
 /**
  * The session document format.
  *

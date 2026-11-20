@@ -63,8 +63,8 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     };
     const list = () => get<{ rows: CatalogTurnRow[] }>('/turns');
     const wide = (await list()).rows[0]!;
-    expect(wide, target).toMatchObject({ toolCallCount: 161, failedTools: 1, mycoCalls: 2, headline: null,
-      toolRollup: { filesEdited: 1, firstError: 'command failed', myco: [{ name: 'myco_spores:save', count: 2, failed: 0 }] } });
+    expect(wide, target).toMatchObject({ toolCallCount: 161, failedTools: 3, mycoCalls: 2, headline: null,
+      toolRollup: { filesEdited: 1, firstError: 'tool call has no result in the transcript', myco: [{ name: 'myco_spores:save', count: 2, failed: 1 }] } });
     expect(wide.toolRollup!.tools.length, target).toBe(9);
     expect(wide.toolRollup!.tools.reduce((n, row) => n + row.count, 0), target).toBe(161);
     expect((await db.prepare(`SELECT page FROM session_pages WHERE owner=? ORDER BY page DESC LIMIT 1`).bind(first).first<{ page: number }>())!.page, target).toBeGreaterThan(4);
@@ -72,7 +72,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     const detail = await get<DocumentTurnDetail>('/turns/' + first);
     expect(detail.toolCounts.total, target).toBe(161);
     expect(detail.toolCounts.shown, target).toBeLessThan(161);
-    expect(detail.tools, target).toMatchObject({ total: 161, failed: 1, complete: false, files: ['edited.ts'], filesNamed: 3 });
+    expect(detail.tools, target).toMatchObject({ total: 161, failed: 3, complete: false, files: ['edited.ts'], filesNamed: 3 });
     expect(detail.responses.map(reply => reply.text), target).toEqual(['closing reply past the head pages']);
     for (const filter of ['failed', 'myco']) expect((await get<{ rows: CatalogTurnRow[] }>('/turns?filter=' + filter)).rows.map(r => r.promptId), target).toEqual([first]);
     expect((await get<{ rows: CatalogTurnRow[] }>('/turns?around=' + prompts[1]!.prompt_id + '&limit=3')).rows.map(r => r.promptId), target).toEqual(prompts.map(r => r.prompt_id));
@@ -82,7 +82,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     const edited = await get<{ files: unknown[]; shellEditsUnseen: boolean }>('/files?kind=edited');
     expect(edited, target).toMatchObject({ files: [{ path: 'edited.ts', calls: 1, edits: 1, lastTurn: first }], shellEditsUnseen: true });
     expect(await get('/files?kind=read'), target).toMatchObject({ files: [{ path: 'late-read.ts', calls: 1, edits: 0, lastTurn: first }, { path: 'read.ts', calls: 1, edits: 0, lastTurn: first }] });
-    expect(await get(''), target).toMatchObject({ filesEdited: null, observedFilesEdited: 1, counts: { failedTools: 1, userPrompts: 3, mycoCalls: 2 } });
+    expect(await get(''), target).toMatchObject({ filesEdited: 1, observedFilesEdited: 1, fileEdits: { state: 'unknown', observed: 1 }, reportedErrors: 1, counts: { failedTools: 3, userPrompts: 3, mycoCalls: 2 } });
     expect(await get('/activity'), target).toEqual({ rows: [], cursor: null });
     const card = { ...NONE_CARD('mechanical'), done: 'Ran the build.\nOutcome: quoted inside Done', files: ['src/a, b.ts'], outcome: 'Completed the change', decisions: [{ decision: 'ship', reason: 'ready' }] };
     const current = await db.prepare(`SELECT changes FROM turn_cards WHERE turn_key=?`).bind(first).first<{ changes: number }>();
@@ -100,15 +100,16 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
       envelope({ eventId: uuid(903), sessionId: 'long', kind: 'tool.use', createdAt: now + 2,
         payload: { toolCallId: pending, promptId: first, toolName: 'mcp__myco__myco_spores', input: { op: 'save' }, success: true } }), env)).persisted, target).toBe(true);
     await publishDocuments(env, now + 1_800_002, limits());
-    expect((await list()).rows[0], target).toMatchObject({ toolCallCount: 161, failedTools: 1, mycoCalls: 2,
+    expect((await list()).rows[0], target).toMatchObject({ toolCallCount: 161, failedTools: 2, mycoCalls: 2,
       toolRollup: { myco: [{ name: 'myco_spores:save', count: 2, failed: 0 }] } });
     const rollup = (await list()).rows[0]!.toolRollup;
     await db.prepare('UPDATE turn_cards SET headline=NULL,marks=NULL WHERE project_id=? AND session_id=? AND turn_key=?').bind('project', 'long', first).run();
     await db.prepare(`DELETE FROM session_edit_paths WHERE session_id='long'`).run();
     await db.prepare(`UPDATE session_prompts SET tool_state=NULL,tool_rollup=NULL,rollup_build=NULL,failed_tools=0,myco_calls=0 WHERE session_id='long'`).run();
     await db.prepare(`UPDATE session_documents SET rollup_after=-1,rollup_page=0,myco_build=0,myco_calls=0 WHERE session_id='long'`).run();
+    expect(await get(''), target).toMatchObject({ visibility: { reportedErrors: 'not_visible', nestedToolCalls: 'not_visible' } });
     for (let pass = 0; pass < 10; pass += 1) if (!(await locatePrompts(env, limits())).more) break;
-    expect((await list()).rows[0], target).toMatchObject({ toolRollup: rollup, failedTools: 1, mycoCalls: 2, headline: 'Completed the change' });
+    expect((await list()).rows[0], target).toMatchObject({ toolRollup: rollup, failedTools: 2, mycoCalls: 2, headline: 'Completed the change' });
     expect(await get(''), target).toMatchObject({ counts: { mycoCalls: 2 } });
     for (const path of ['/turns?filter=bad', '/files?kind=bad', '/activity?type=failure', '/activity?tool=Bash']) {
       expect((await worker.fetch(await asOwner(db, base + path), bindings)).status, target).toBe(400);
@@ -125,7 +126,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
         envelope({ eventId: uuid(8550 + index), sessionId: 'long', kind: 'tool.use', createdAt: now + 3,
           payload: { toolCallId: uuid(8560 + index), promptId: first, toolName: 'Read', input: {}, success: true } }), env);
       await publishDocuments(env, now + 1_800_020, limits());
-      expect((await list()).rows[0], target).toMatchObject({ toolCallCount: 162 + index, failedTools: 1, mycoCalls: 2 });
+      expect((await list()).rows[0], target).toMatchObject({ toolCallCount: 162 + index, failedTools: 2, mycoCalls: 2 });
     }
     await ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: token!.id, bodyBytes: 1, now },
       envelope({ eventId: uuid(8600), sessionId: 'long', kind: 'tool.failure', createdAt: now + 4,
@@ -149,7 +150,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
       input: `*** Begin Patch\n*** Add File: overflow-${i}.ts\n+ok\n*** End Patch` }) + output(`f${i}`);
     await captureDocumentTranscript(db, blobs, 'long', 'tx_' + 'd'.repeat(32), overflow, now + 3, 0, 'codex');
     for (let pass = 0; pass < 10; pass += 1) if (!(await publishDocuments(env, now + 1_800_003, limits())).more) break;
-    expect(await get(''), target).toMatchObject({ filesEdited: null, observedFilesEdited: 502 });
+    expect(await get(''), target).toMatchObject({ filesEdited: 502, observedFilesEdited: 502, fileEdits: { state: 'unknown', observed: 502 } });
   });
 }, 60_000);
 
@@ -187,7 +188,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
     expect((await db.prepare("SELECT rollup_record FROM session_documents WHERE session_id='old'").first<{rollup_record:number}>())!.rollup_record,target).toBeGreaterThan(0);
     for (let pass = 0; pass < 10; pass += 1) if (!(await locatePrompts(env, limits())).more) break;
     expect(await db.prepare(`SELECT files_edited,rollup_after FROM session_documents WHERE session_id='old'`).first(), target).toEqual({ files_edited: 2, rollup_after: null });
-    expect(JSON.parse((await db.prepare(`SELECT tool_rollup FROM session_prompts WHERE prompt_id=?`).bind(turn).first<{ tool_rollup: string }>())!.tool_rollup), target).toMatchObject({ filesEdited: 2, myco: [{ name: 'myco_spores:get', count: 3, failed: 0 }] });
+    expect(JSON.parse((await db.prepare(`SELECT tool_rollup FROM session_prompts WHERE prompt_id=?`).bind(turn).first<{ tool_rollup: string }>())!.tool_rollup), target).toMatchObject({ filesEdited: 2, myco: [{ name: 'myco_spores:get', count: 3, failed: 3 }] });
     expect((await db.prepare("SELECT path FROM session_paths WHERE session_id='old' ORDER BY path LIMIT 500").all<{path:string}>()).results,target).toEqual([{path:'late.ts'},{path:'old.ts'}]);
     expect(await db.prepare("SELECT myco_calls FROM session_documents WHERE session_id='old'").first(),target).toEqual({myco_calls:3});
     const card = await db.prepare(`SELECT headline,marks FROM turn_cards WHERE turn_key=?`).bind(turn).first<{ headline: string; marks: string }>();
@@ -203,7 +204,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
     expect(blobs.gets.slice(before).some(row=>bodyKeys.includes(row.key)),target).toBe(false);
     const detail = (await documentTurnDetail(env,{projectId:'project'},'old',turn))!;
     expect(detail.tools.files,target).toEqual(['old.ts','late.ts']);
-    expect(detail.tools.myco,target).toEqual([{tool:'myco_spores',op:'get',count:3,failed:0}]);
+    expect(detail.tools.myco,target).toEqual([{tool:'myco_spores',op:'get',count:3,failed:2}]);
     expect(detail.tools.filesNamed,target).toBe(2);
     const backup = await createBackup(db, blobs, { producer: 'test', now: Date.now() });
     const artifact = (await backupArtifact(db, blobs, backup.id))!;
@@ -223,7 +224,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
     expect(await db.prepare(`SELECT files_edited,myco_calls FROM session_documents WHERE session_id='old'`).first(), target).toEqual({ files_edited: 2, myco_calls: 3 });
     expect(await db.prepare(`SELECT headline FROM turn_cards WHERE turn_key=?`).bind(source.turn).first(), target).toEqual({ headline: 'shipped' });
     const rollup = await db.prepare(`SELECT tool_rollup FROM session_prompts WHERE prompt_id=?`).bind(source.turn).first<{ tool_rollup: string }>();
-    expect(JSON.parse(rollup!.tool_rollup), target).toMatchObject({ filesEdited: 2, myco: [{ name: 'myco_spores:get', count: 3, failed: 0 }] });
+    expect(JSON.parse(rollup!.tool_rollup), target).toMatchObject({ filesEdited: 2, myco: [{ name: 'myco_spores:get', count: 3, failed: 2 }] });
   });
 }, 60_000);
 
@@ -256,7 +257,7 @@ test('a growing 9000-call turn keeps bounded values', async () => {
     for (let wake = 0; wake < 30; wake += 1) if (!(await publishDocuments(huge, now + 2_000_000 + wake * 3_600_000, limits())).more) break;
     const turn = (await db.prepare("SELECT prompt_id,tools,failed_tools,length(tool_state) bytes FROM session_prompts WHERE session_id='huge' ORDER BY tools DESC LIMIT 1")
       .first<{ prompt_id: string; tools: number; failed_tools: number; bytes: number }>())!;
-    expect(turn, target).toMatchObject({ tools: 9000, failed_tools: 0 });
+    expect(turn, target).toMatchObject({ tools: 9000, failed_tools: 9000 });
     expect(turn.bytes, target).toBeLessThan(256);
     const token = (await db.prepare("SELECT created_by_token_id id FROM sessions WHERE session_id='huge'").first<{ id: string }>())!.id;
     await ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: token, bodyBytes: 1, now },
@@ -264,7 +265,7 @@ test('a growing 9000-call turn keeps bounded values', async () => {
         payload: { toolCallId: uuid(8101), promptId: turn.prompt_id, toolName: 'Bash', input: {}, success: true } }), huge);
     await publishDocuments(huge, now + 9_000_000_000, limits());
     expect(await db.prepare('SELECT tools,failed_tools,files_named FROM session_prompts WHERE prompt_id=?').bind(turn.prompt_id).first(), target)
-      .toEqual({ tools: 9001, failed_tools: 0, files_named: 9000 });
+      .toEqual({ tools: 9001, failed_tools: 9000, files_named: 9000 });
   });
 }, 180_000);
 

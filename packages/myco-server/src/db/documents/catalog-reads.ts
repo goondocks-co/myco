@@ -3,16 +3,17 @@ import { read, readSet } from '../index.js';
 import { liveGenerationSql } from './live-generation.js';
 
 export interface DocumentCountersRow {
-  turns: number; user_turns: number; person_entries: number; nested_tools: number; reported_errors: number;
+  turns: number; user_turns: number; person_entries: number; nested_tools: number; reported_errors: number; tool_evidence_ready: number;
   prompts: number; instruction_prompts: number; replies: number; tool_calls: number; failed_tools: number; files_edited: number; myco_calls: number; plans: number;
   last_record_at: number | null; first_prompt: string | null; attachments: number;
 }
 
 const counters = read<[project: string, session: string], DocumentCountersRow>({ name: 'documentCatalog.counters', sql:
   `WITH totals AS (SELECT COUNT(*) AS turns,COALESCE(SUM(origin='user'),0) AS user_turns,
-      COALESCE(SUM(json_extract(tool_state,'$.nested')),0) AS nested_tools,COALESCE(SUM(json_extract(tool_state,'$.reportedErrors')),0) AS reported_errors FROM session_prompts
+      COALESCE(SUM(json_extract(tool_state,'$.nested')),0) AS nested_tools,COALESCE(SUM(json_extract(tool_state,'$.reportedErrors')),0) AS reported_errors,
+      COALESCE(MIN(json_extract(tool_state,'$.evidenceReady') IS 1),1) AS tool_evidence_ready FROM session_prompts
       WHERE project_id=?1 AND session_id=?2 AND generation=${liveGenerationSql('?1', '?2')} AND turn_key=prompt_id)
-    SELECT prompts, user_prompts AS instruction_prompts, replies, tool_calls, failed_tools, files_edited, myco_calls, plans, last_record_at, first_prompt,totals.turns,totals.user_turns,totals.nested_tools,totals.reported_errors,
+    SELECT prompts, user_prompts AS instruction_prompts, replies, tool_calls, failed_tools, files_edited, myco_calls, plans, last_record_at, first_prompt,totals.turns,totals.user_turns,totals.nested_tools,totals.reported_errors,totals.tool_evidence_ready,
       (SELECT COUNT(*) FROM session_prompts p WHERE p.project_id=d.project_id AND p.session_id=d.session_id AND p.generation=d.generation AND p.origin='user') AS person_entries,
       (SELECT COUNT(*) FROM attachments a WHERE a.project_id = d.project_id AND a.session_id = d.session_id) AS attachments
     FROM session_documents d CROSS JOIN totals WHERE project_id = ?1 AND session_id = ?2 AND state = 'live'` });

@@ -735,6 +735,7 @@ export function useProcessedText(projectId: string, ref: ProcessedBodyRef, revis
 
 export interface ToolUsage { toolName: string; count: number }
 export interface ToolSummary {
+  evidenceReady?: boolean;
   nested?: number;
   reportedErrors?: number;
   /** False when the turn has pages the summary did not read: its counts then cover only the start of the turn. */

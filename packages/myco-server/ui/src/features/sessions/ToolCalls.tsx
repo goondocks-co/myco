@@ -150,6 +150,7 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
             {byTool !== '' && <span className="text-muted"> · {byTool}</span>}
           </p>
         )}
+        {summary?.evidenceReady === false && <p className="t-small text-muted">Nested calls and reported errors are not visible for this stored turn.</p>}
         {nested > 0 && <p className="t-small text-muted">{count(nested, 'nested call')} run inside orchestration calls</p>}
         {(summary?.reportedErrors ?? 0) > 0 && <p className="t-small text-muted">{summary!.reportedErrors} calls reported an error or a non-zero exit</p>}
         {shown !== undefined && shown.shown < shown.total && <p className="t-small text-muted" data-testid="tool-partial">Failures, Myco calls and files below: showing the first {shown.shown.toLocaleString()} of {shown.total.toLocaleString()} calls.</p>}

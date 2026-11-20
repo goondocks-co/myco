@@ -1,4 +1,4 @@
-import type { DocRecord } from './document.js';
+import { TOOL_EVIDENCE_VERSION, type DocRecord } from './document.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { filesNamedByToolInput, mycoToolFields, MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED } from '@goondocks/myco-shared/member-protocol';
 import { getAtPath } from '@goondocks/myco-shared/dot-path';
@@ -27,6 +27,7 @@ export interface ToolState {
   named: [string, number][];
   errors: [string, number, string][];
   removedErrors: string[];
+  evidenceReady: boolean;
   nested: number;
   reportedErrors: number;
   total: number;
@@ -35,7 +36,7 @@ export interface ToolState {
   last: number | null;
 }
 
-export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], nested: 0, reportedErrors: 0, total: 0, failed: 0, mycoCalls: 0, last: null });
+export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], evidenceReady: true, nested: 0, reportedErrors: 0, total: 0, failed: 0, mycoCalls: 0, last: null });
 
 export function recordMycoFields(record: DocRecord) {
   let input: unknown = record.input;
@@ -73,6 +74,7 @@ export function editedFiles(record: DocRecord, harness: string | null): string[]
 
 /** Applies a placed record's contribution, removing the held version before a merged outcome. */
 export function adjustToolState(state: ToolState, record: DocRecord, harness: string | null, sign: 1 | -1): void {
+  if (sign === 1 && record.tool_evidence_version !== TOOL_EVIDENCE_VERSION) state.evidenceReady = false;
   if (sign === 1) state.last = Math.max(state.last ?? 0, record.created_at);
   if (record.k !== 'tool') return;
   const held = Object.hasOwn(state.calls, record.id) ? state.calls[record.id] : undefined;
@@ -89,8 +91,8 @@ export function adjustToolState(state: ToolState, record: DocRecord, harness: st
     if (count === 0) map.delete(name); else map.set(name, count);
     return [...map];
   };
-  const failed = reportedToolFailure(record) ? 1 : 0;
-  state.reportedErrors += sign * failed;
+  const failed = Number(record.success === 0);
+  state.reportedErrors += sign * Number(reportedToolFailure(record));
   if (record.nested === true) { state.nested += sign; return; }
   state.total += sign;
   state.failed += sign * Number(record.success === 0);
@@ -122,8 +124,9 @@ export function needsToolInput(record: DocRecord, harness: string | null): boole
 
 /** The persisted accumulator contains scalars; keyed rows retain distinct contributions. */
 export function scalarToolState(state: ToolState): string {
-  return JSON.stringify({ total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, nested: state.nested, reportedErrors: state.reportedErrors, last: state.last });
+  return JSON.stringify({ evidenceReady: state.evidenceReady, total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, nested: state.nested, reportedErrors: state.reportedErrors, last: state.last });
 }
 export function parseToolState(text: string): ToolState {
-  return { ...emptyToolState(), ...JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'nested' | 'reportedErrors' | 'last'> };
+  const held = JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'nested' | 'reportedErrors' | 'last'> & { evidenceReady?: boolean };
+  return { ...emptyToolState(), ...held, evidenceReady: held.evidenceReady === true };
 }

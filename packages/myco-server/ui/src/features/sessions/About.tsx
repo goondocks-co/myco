@@ -94,8 +94,8 @@ function Facts({ answer, projectId, projectName, now, live }: { answer: SessionR
       <FactRow term={session.endedAt === null ? 'Time observed' : 'Wall time'}>{answer.metrics?.durationMs === null ? 'Not recorded' : formatElapsed(answer.metrics?.durationMs ?? Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
       <FactRow term="Tools">{answer.visibility.toolCalls === 'recorded' && (answer.metrics?.tools.length ?? 0) > 0 ? <ToolUsageLine tools={answer.metrics!.tools} /> : countEvidence(answer, 'toolCalls', 'tool call')}</FactRow>
       <FactRow term="Files">{fileEditWords(answer.fileEdits)}</FactRow>
-      <FactRow term="Reported errors">{answer.reportedErrors == null || answer.visibility.failedTools === 'not_visible' ? 'Not visible' : `${count(answer.reportedErrors, 'call')} reported an error or a non-zero exit`}</FactRow>
-      {answer.nestedToolCalls > 0 && <FactRow term="Nested calls">{count(answer.nestedToolCalls, 'call')} run inside orchestration calls</FactRow>}
+      <FactRow term="Reported errors">{answer.reportedErrors == null || answer.visibility.reportedErrors === 'not_visible' ? 'Not visible' : `${count(answer.reportedErrors, 'call')} reported an error or a non-zero exit`}</FactRow>
+      <FactRow term="Nested calls">{answer.visibility.nestedToolCalls === 'not_visible' ? 'Not visible' : `${count(answer.nestedToolCalls, 'call')} run inside orchestration calls`}</FactRow>
       {session.launchParentSessionId !== null && <FactRow term="Launch">Launched by another agent</FactRow>}
       <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
       <FactRow term="Size">{[count(answer.turns, 'turn'), count(answer.promptEntries, 'prompt entry', 'prompt entries'), countEvidence(answer, 'toolCalls', 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
