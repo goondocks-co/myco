@@ -1186,5 +1186,75 @@
       "session-1",
       "123"
     ]
+  },
+  {
+    "agent": "codex",
+    "kind": "tool-call",
+    "label": "completed-item-call",
+    "facts": {
+      "record": {
+        "type": "event_msg",
+        "payload": {
+          "type": "item_completed",
+          "item": {
+            "type": "CommandExecution",
+            "id": "call-a"
+          }
+        }
+      },
+      "role": "call"
+    },
+    "offset": 123,
+    "source": {
+      "key": "call-a",
+      "block": 0
+    },
+    "sourceId": "e6d4498e-6743-509f-9811-e57923c770a9",
+    "legacyId": "e6d4498e-6743-509f-9811-e57923c770a9",
+    "parts": [
+      "tool-call",
+      "session-1",
+      "call-a"
+    ],
+    "legacyParts": [
+      "tool-call",
+      "session-1",
+      "call-a"
+    ]
+  },
+  {
+    "agent": "codex",
+    "kind": "tool-call",
+    "label": "completed-item-result",
+    "facts": {
+      "record": {
+        "type": "event_msg",
+        "payload": {
+          "type": "item_completed",
+          "item": {
+            "type": "CommandExecution",
+            "id": "call-a"
+          }
+        }
+      },
+      "role": "result"
+    },
+    "offset": 123,
+    "source": {
+      "key": "call-a",
+      "block": 0
+    },
+    "sourceId": "e6d4498e-6743-509f-9811-e57923c770a9",
+    "legacyId": "e6d4498e-6743-509f-9811-e57923c770a9",
+    "parts": [
+      "tool-call",
+      "session-1",
+      "call-a"
+    ],
+    "legacyParts": [
+      "tool-call",
+      "session-1",
+      "call-a"
+    ]
   }
 ]

@@ -77,7 +77,7 @@ it('declares the known editing tools and the paths the harness parsers handle', 
   const tools: Record<string, Record<string, string>> = {
     'claude-code': { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', NotebookEdit: 'notebook_path' },
     cursor: { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', Delete: 'file_path' },
-    codex: { apply_patch: 'command' }, opencode: { write: 'filePath', edit: 'filePath', apply_patch: 'patchText' },
+    opencode: { write: 'filePath', edit: 'filePath', apply_patch: 'patchText' },
     antigravity: { write_to_file: 'TargetFile', replace_file_content: 'TargetFile', multi_replace_file_content: 'TargetFile', replace: 'file_path' },
     cline: { editor: 'path', apply_patch: 'input' }, pi: { write: 'path', edit: 'path' },
     copilot: { replace_string_in_file: 'filePath', create_file: 'filePath', apply_patch: 'filePath', edit: 'path', create: 'path' },

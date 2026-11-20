@@ -24,7 +24,3 @@ export const CompletedToolSchema = z.object({
   failedStatus: z.string().optional(),
 });
 export type CompletedTool = z.infer<typeof CompletedToolSchema>;
-
-export const UNSEEN_TRANSCRIPT_EVIDENCE: TranscriptEvidence = {
-  toolCalls: 'not_visible', failedTools: 'not_visible', mycoCalls: 'not_visible', filesEdited: 'not_visible', commits: 'member_report_required',
-};

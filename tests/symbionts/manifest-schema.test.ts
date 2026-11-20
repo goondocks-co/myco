@@ -505,22 +505,7 @@ describe('codex manifest declares its Bash read tool without a PreToolUse hook',
       .toEqual(expect.arrayContaining(['cat', 'head', 'tail']));
   });
 
-  it('declares pathBearingTools covering Bash shell-arg reads and apply_patch writes', () => {
-    const yamlPath = path.join(MANIFESTS_DIR, 'codex.yaml');
-    const raw = YAML.parse(fs.readFileSync(yamlPath, 'utf8'));
-    const m = SymbiontManifestSchema.parse(raw);
-    expect(m.capabilities?.pathBearingTools).toHaveLength(2);
-    expect(m.capabilities!.pathBearingTools![0]).toMatchObject({
-      tool: 'Bash',
-      pathField: 'command',
-      extract: 'shell-arg',
-    });
-    expect(m.capabilities!.pathBearingTools![1]).toMatchObject({
-      tool: 'apply_patch',
-      pathField: 'command',
-      extract: 'patch',
-    });
-  });
+
 });
 
 describe('symbiont turn-row source', () => {

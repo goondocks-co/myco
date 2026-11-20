@@ -118,7 +118,7 @@ export const GOTCHAS: Turn[] = [
     tools: [{ name: 'Bash', input: { command: 'npx wrangler deploy --minify --compatibility-date=2026-08-01' }, output: 'Uploaded myco (1.2 sec)' }] },
   { id: uuid(4), text: 'Delete the old rows', at: NOW - DAY + 40, replies: ['Deleting with DELETE FROM runs.'] },
   { id: uuid(5), text: 'no, don\'t delete them; archive them with myco server archive --keep', at: NOW - DAY + 41, parent: uuid(4) },
-  { id: uuid(6), text: '<task-notification><status>completed</status></task-notification>', at: NOW - DAY + 50, replies: ['Noted.'] },
+  { id: uuid(6), origin: 'system', text: '<task-notification><status>completed</status></task-notification>', at: NOW - DAY + 50, replies: ['Noted.'] },
   { id: uuid(7), text: 'check CI', at: NOW - DAY + 60, tools: [{ name: 'Bash', input: { command: 'gh run watch 123' }, output: 'completed success' }] },
 ];
 

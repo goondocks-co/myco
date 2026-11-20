@@ -173,7 +173,7 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
     const env = serverEnvFromBindings(bindings as never, recordingDeferred());
     await capture(db, 'session', GOTCHAS);
-    await capture(db, 'quiet', [{ id: uuid(20), text: '<task-notification>done</task-notification>', at: NOW - DAY + 100, replies: ['Noted.'] }]);
+    await capture(db, 'quiet', [{ id: uuid(20), origin: 'system', text: '<task-notification>done</task-notification>', at: NOW - DAY + 100, replies: ['Noted.'] }]);
     await db.prepare(enable).run();
     await publish(db, NOW, bindings.BUCKET);
     await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();

@@ -39,7 +39,7 @@ describe('Claude Code sibling lines under the lead prompt id', () => {
       expect(prompts).toEqual([
         { prompt_id: person, text: 'Review the retention change and tell me what breaks.', origin: 'user', prompt_kind: 'user_prompt' },
         { prompt_id: await promptIdFor(SESSION, 'sidechain', '0a1b2c3d-0000-4000-8000-000000000101'), text: 'Review the retention change in src/retention.ts.', origin: 'agent_dispatch', prompt_kind: 'sidechain' },
-        { prompt_id: await promptIdFor(SESSION, 'teammate_message', '0a1b2c3d-0000-4000-8000-000000000004'), text: expect.stringContaining('<teammate-message'), origin: 'agent_dispatch', prompt_kind: 'teammate_message' },
+        { prompt_id: await promptIdFor(SESSION, 'teammate_message', '0a1b2c3d-0000-4000-8000-000000000004'), text: 'The migration keeps every row.', origin: 'agent_dispatch', prompt_kind: 'teammate_message' },
       ]);
       expect((await r.records(SESSION)).filter(p=>p.k==='reply'&&p.text==='Delegating the review.').map(p=>({prompt_id:p.prompt_id}))).toEqual([{ prompt_id: person }]);
     });

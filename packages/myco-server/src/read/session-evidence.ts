@@ -1,6 +1,10 @@
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import { UNSEEN_TRANSCRIPT_EVIDENCE } from '@goondocks/myco-shared/transcript-evidence';
+import type { TranscriptEvidence } from '@goondocks/myco-shared/transcript-evidence';
 import type { documentCounters } from './document-catalog.js';
+
+const UNSEEN_TRANSCRIPT_EVIDENCE: TranscriptEvidence = {
+  toolCalls: 'not_visible', failedTools: 'not_visible', mycoCalls: 'not_visible', filesEdited: 'not_visible', commits: 'member_report_required',
+};
 
 /** Transcript facts have declared coverage; file paths are observations and never a complete count of shell edits. */
 export function sessionEvidence(agent: string | null, counts: Awaited<ReturnType<typeof documentCounters>>) {

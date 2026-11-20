@@ -109,12 +109,16 @@
             "from": "record",
             "path": [
               "payload.call_id",
-              "payload.id"
+              "payload.id",
+              "payload.item.id"
             ]
           },
           "resultKey": {
             "from": "record",
-            "path": "payload.call_id"
+            "path": [
+              "payload.call_id",
+              "payload.item.id"
+            ]
           },
           "evidence": "tests/fixtures/record-identity-evidence.json"
         },
@@ -139,12 +143,16 @@
             "from": "record",
             "path": [
               "payload.call_id",
-              "payload.id"
+              "payload.id",
+              "payload.item.id"
             ]
           },
           "resultKey": {
             "from": "record",
-            "path": "payload.call_id"
+            "path": [
+              "payload.call_id",
+              "payload.item.id"
+            ]
           },
           "evidence": "tests/fixtures/record-identity-evidence.json"
         },
