@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import { trimTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import { expect, test } from 'bun:test';
@@ -205,6 +206,22 @@ test('parent-bearing and person sessions title and learn their three instruction
     expect(learned.cards).toHaveLength(3);
     expect(await harness.call(learning.run.runToken, 'myco_run_learning', { op: 'complete', handoff: '' })).toEqual({ completed: true, covered: 3 });
   });
+});
+
+test('typed Claude wrappers publish as system turns outside the person filter', async () => {
+  const fixture = sqliteEnv();
+  try {
+    const text = readFileSync(new URL('../fixtures/claude-siblings/typed-wrapper.jsonl', import.meta.url), 'utf8');
+    const env = await captureDocumentTranscript(fixture.db, fixture.bucket, 'typed-wrapper', `tx_${'e'.repeat(32)}`, text, Date.now(), 0, 'claude-code', 'proj_1');
+    await publishDocuments(env, Date.now() + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const get = async (suffix: string) => (await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/typed-wrapper${suffix}`), { ...fixture.env, ...OWNER_ENV })).json() as Promise<any>;
+    expect(await get('')).toMatchObject({ personTurns: 3, turns: 6, counts: { userPrompts: 3 } });
+    const people = (await get('/turns?origins=user')).rows;
+    expect(people.map((turn: any) => turn.preview)).toEqual(['Review the change', 'Explain <relay>this tag</relay> in the prompt', '<bash-input>pwd</bash-input>']);
+    const system = (await get('/turns?origins=system')).rows;
+    expect(system.map((turn: any) => turn.origin)).toEqual(['system', 'system', 'system']);
+    expect((await get(`/turns/${system[0].promptId}`)).prompt).toMatchObject({ origin: 'system', promptKind: 'unrecognized' });
+  } finally { fixture.sqlite.close(); }
 });
 
 test('unrecognized harness wrappers preserve person counts and empty wrappers open no turn', async () => {

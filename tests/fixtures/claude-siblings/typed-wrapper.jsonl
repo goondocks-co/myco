@@ -1,0 +1,6 @@
+{"type": "user", "uuid": "typed-0", "promptId": "key-0", "timestamp": "2026-01-01T00:00:00Z", "turnOrigin": "human", "promptSource": "typed", "message": {"content": "<relay sender=\"planner\">Your message is in tasks/message-next.md. Read that whole file now and do what it says.</relay>"}}
+{"type": "user", "uuid": "typed-1", "promptId": "key-1", "timestamp": "2026-01-01T00:00:00Z", "turnOrigin": "human", "promptSource": "typed", "message": {"content": "Review the change"}}
+{"type": "user", "uuid": "typed-2", "promptId": "key-2", "timestamp": "2026-01-01T00:00:00Z", "turnOrigin": "human", "promptSource": "typed", "message": {"content": "Explain <relay>this tag</relay> in the prompt"}}
+{"type": "user", "uuid": "typed-3", "promptId": "key-3", "timestamp": "2026-01-01T00:00:00Z", "turnOrigin": "task_notification", "promptSource": "system", "message": {"content": "<task-notification>Completed</task-notification>"}}
+{"type": "user", "uuid": "typed-4", "promptId": "key-4", "timestamp": "2026-01-01T00:00:00Z", "turnOrigin": "scheduled", "promptSource": "system", "message": {"content": "<relay>Scheduled work</relay>"}}
+{"type": "user", "uuid": "typed-5", "promptId": "key-5", "timestamp": "2026-01-01T00:00:00Z", "turnOrigin": "human", "promptSource": "typed", "message": {"content": "<bash-input>pwd</bash-input>"}}

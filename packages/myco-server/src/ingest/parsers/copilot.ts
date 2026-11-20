@@ -1,7 +1,7 @@
 import { RecordSourceAbsent, RecordSourceInvalid } from '@goondocks/myco-shared/record-identity';
 /** Copilot CLI's persisted session events: https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events */
 import {
-  callForResult, isBlock, lineTime, optionalRecordSource, parserContinuation, promptIdentity, recordId, recordSource, str,
+  recordedPromptLabel, callForResult, isBlock, lineTime, optionalRecordSource, parserContinuation, promptIdentity, recordId, recordSource, str,
   TOOL_OUTPUT_PREVIEW_CHARS, type DerivedEvent, type TranscriptParser,
 } from './index.js';
 
@@ -37,11 +37,13 @@ export const copilotParser: TranscriptParser = {
       const data = value.data;
       const createdAt = lineTime(value, input.now, undatedAt);
       if (value.type === 'user.message') {
-        if (data.source !== undefined || !str(data.content)?.trim()) continue;
+        const text = str(data.content);
+        if (data.source !== undefined || !text?.trim()) continue;
         const key = str(data.messageId);
         if (key === undefined || key === '') throw new RecordSourceAbsent();
         const promptId = await promptFor(key, offset);
-        events.push({ kind: 'prompt', offset, createdAt, payload: { promptId, text: data.content, origin: 'user', promptKind: 'user_prompt' } });
+        const label = recordedPromptLabel({ agent: this.agent, input, record: value, text, label: { origin: 'user', kind: 'user_prompt' } });
+        events.push({ kind: 'prompt', offset, createdAt, payload: { promptId, text, origin: label.origin, promptKind: label.kind } });
       } else if (value.type === 'assistant.message') {
         const origin = str(data.originatingMessageId);
         const promptId = origin ? await promptFor(origin, offset) : undefined;

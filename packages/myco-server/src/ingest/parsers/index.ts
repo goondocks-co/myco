@@ -19,10 +19,10 @@
 import { utf8, uuidv5 } from '../../hash.js';
 import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme, type PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
 import { promptPlanKey, canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource, type ToolPromptLinks } from '@goondocks/myco-shared/record-identity';
-import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
+import { evaluatePromptRules, isUnrecognizedPromptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { planEnvelope } from '@goondocks/myco-shared/prompt-text';
-import type { TranscriptRole, ToolResultReason } from '@goondocks/myco-shared/member-protocol';
+import type { TranscriptRole, ToolResultReason, WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import { MAX_ID_CHARS, MAX_PAYLOAD_BYTES } from '../envelope.js';
 import { kindSpec, type Payload } from '../kinds.js';
 
@@ -534,4 +534,15 @@ export async function pastedPlansInPrompt(text: string, tags: readonly string[],
   const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, agent, { prompt: text, transcriptPath: input.sessionId, record, transcriptMeta: input.transcriptMeta });
   if (decision.action === 'drop' || (decision.origin !== undefined && decision.origin !== 'human')) return [];
   return (await plansInText(decision.prompt, tags, input, agent, record, at, 0, 0, 'prompt')).events;
+}
+
+/** Human-labelled records wholly inside an unrecognized envelope are system input. */
+export function recordedPromptLabel(options: {
+  agent: string; input: ParserInput; record: Record<string, unknown>; text: string;
+  label: { kind: string; origin: WirePromptOrigin };
+}): { kind: string; origin: WirePromptOrigin } {
+  const { agent, input, record, text, label } = options;
+  return label.origin === 'user' && isUnrecognizedPromptEnvelope(CAPTURE_RULE_BUNDLES, agent, {
+    prompt: text, record, transcriptPath: input.sessionId, transcriptMeta: input.transcriptMeta,
+  }) ? { kind: 'unrecognized', origin: 'system' } : label;
 }

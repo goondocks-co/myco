@@ -574,3 +574,18 @@ it('Antigravity replaces a mid-turn reply snapshot when the final answer arrives
   const replies = new Map([...first, ...last].filter(row => row.kind === 'response').map(row => [row.payload.responseId, row.payload.text]));
   expect([...replies.values()]).toEqual(['The orchard has pears.']);
 });
+
+it('every harness keeps unknown envelopes out of human-authored prompts', async () => {
+  const text = '<relay sender="planner">Read tasks/next.md</relay>';
+  for (const [agent, value] of Object.entries({
+    cursor: { role: 'user', message: { content: `<user_query>${text}</user_query>` } },
+    antigravity: { type: 'USER_INPUT', source: 'USER_EXPLICIT', step_index: 0, content: `<USER_REQUEST>${text}</USER_REQUEST>` },
+    pi: { type: 'message', message: { role: 'user', content: text } },
+    copilot: { type: 'user.message', data: { content: text, messageId: 'typed' } },
+    cline: { v: 1, type: 'prompt', text, origin: 'user' },
+    opencode: { v: 1, type: 'prompt', text, origin: 'human' },
+  })) {
+    const events = await PARSERS[agent].parse({ transcriptId: 'typed-wrapper', recordScheme: 'legacy-session-v1', scheme: READ_BEFORE_PIN[agent]!, lines: [{ value, offset: 0 }], sessionId: SESSION, now: NOW });
+    expect(only(events, 'prompt').map(event => [event.payload.origin, event.payload.promptKind])).toEqual([['system', 'unrecognized']]);
+  }
+});

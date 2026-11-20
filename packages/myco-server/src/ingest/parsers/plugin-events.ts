@@ -23,7 +23,7 @@ import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-share
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { uuidv5 } from '../../hash.js';
 import {
-  promptIdentity, parserContinuation, recordId, recordSource, legacyRecordId, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
+  recordedPromptLabel, promptIdentity, parserContinuation, recordId, recordSource, legacyRecordId, lineTime, plansInText, str, TOOL_OUTPUT_PREVIEW_CHARS,
   type DerivedEvent, type Fidelity, type ParsedLine, type ParserInput, type TranscriptParser,
 } from './index.js';
 
@@ -121,13 +121,17 @@ export function pluginEventsParser(options: {
           const named = await promptIdentity(input, { scheme: input.scheme === 'stamp-or-offset-v2' ? 'stamp-or-offset-v2' : 'stamp-or-offset-v1', sessionId: input.sessionId, transcriptId: input.transcriptId, stamp: str(line.promptId), offset });
           promptId = named;
           if (submission !== undefined) submissions[submission] = named;
+          const label = recordedPromptLabel({ agent, input, record: value, text, label: {
+            origin: PROMPT_ORIGINS.find(origin => origin === line.origin) ?? (line.origin === undefined || line.origin === 'human' ? 'user' : 'unknown'),
+            kind: 'user_prompt',
+          } });
           events.push({
             kind: 'prompt',
             payload: {
               promptId: named,
               text,
-              origin: PROMPT_ORIGINS.find(origin => origin === line.origin) ?? (line.origin === undefined || line.origin === 'human' ? 'user' : 'unknown'),
-              promptKind: 'user_prompt',
+              origin: label.origin,
+              promptKind: label.kind,
             },
             createdAt,
             offset,

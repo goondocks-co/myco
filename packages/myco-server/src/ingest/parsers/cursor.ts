@@ -19,7 +19,7 @@
  * their results would state as fact something the file cannot support.
  */
 import {
-  recordSource, isBlock, lineTime, promptIdAtOffset, str, textOf,
+  recordedPromptLabel, recordSource, isBlock, lineTime, promptIdAtOffset, str, textOf,
   type DerivedEvent, type ParserInput, type ReplyPart, type TranscriptParser,
 } from './index.js';
 
@@ -90,7 +90,8 @@ export const cursorParser: TranscriptParser = {
       if (role === 'user') {
         await flushReply();
         promptId = await promptIdAtOffset('cursor-prompt', sessionId, offset, input);
-        events.push({ kind: 'prompt', payload: { promptId, text, origin: 'user', promptKind: 'user_query' }, createdAt, offset });
+        const label = recordedPromptLabel({ agent: this.agent, input, record: value, text, label: { origin: 'user', kind: 'user_query' } });
+        events.push({ kind: 'prompt', payload: { promptId, text, origin: label.origin, promptKind: label.kind }, createdAt, offset });
         continue;
       }
       if (reply === null) reply = { parts: [], promptId };
