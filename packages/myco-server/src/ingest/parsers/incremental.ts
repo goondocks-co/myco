@@ -75,7 +75,10 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
           if (event.kind === 'prompt') event.payload = attributedPrompt(event.payload, { at: event.createdAt,
             launchParentSessionId: input.launchParentSessionId,
             invocations: sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, parser.agent) ? input.invocations : undefined });
-          if (event.kind === 'prompt' && event.opensTurn === false && openPromptId !== undefined) event.payload.parentPromptId = openPromptId;
+          if (event.kind === 'prompt' && event.opensTurn === false) {
+            event.payload.claim ??= 'context';
+            if (openPromptId !== undefined) event.payload.parentPromptId = openPromptId;
+          }
           if(input.view)event.sourceEnd??=line.sourceEnd;
           if(input.view&&(event.kind==='tool.use'||event.kind==='tool.failure')){
             event.outcomeOffset??=line.offset;

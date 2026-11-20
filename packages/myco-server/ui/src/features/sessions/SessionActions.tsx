@@ -1,3 +1,5 @@
+import { countEvidence } from './evidence';
+import type { SessionEvidence } from './wire';
 import { useEffect, useState } from 'react';
 import { CircleStop, PenLine, Trash2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -22,6 +24,7 @@ export interface SessionActionsProps {
   projectId: string;
   session: SessionRow;
   counts: SessionCounts;
+  visibility: SessionEvidence['visibility'];
   onDeleted: () => void;
 }
 
@@ -31,7 +34,7 @@ export interface SessionActionsProps {
  * what it will do. After a new title is asked for, the page watches: it reads
  * the session again every few seconds until the title moves or the run ends.
  */
-export function SessionActions({ projectId, session, counts, onDeleted }: SessionActionsProps) {
+export function SessionActions({ projectId, session, counts, visibility, onDeleted }: SessionActionsProps) {
   const [confirming, setConfirming] = useState<Confirming>(null);
   const status = useStatus({ enabled: confirming === 'delete' });
   const target = status.error === null ? status.data?.target : null;
@@ -110,7 +113,7 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
         }}
       >
         <p className="t-small text-ink-2" data-delete-impact="">
-          {[count(counts.prompts, 'prompt'), count(counts.toolCalls, 'tool call'), count(counts.plans, 'plan'), count(counts.attachments, 'attachment')].join(' · ')}
+          {[count(counts.prompts, 'prompt'), countEvidence({counts, visibility}, 'toolCalls', 'tool call'), count(counts.plans, 'plan'), count(counts.attachments, 'attachment')].join(' · ')}
         </p>
       </ConfirmDialog>
     </>

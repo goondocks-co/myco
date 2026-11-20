@@ -28,6 +28,7 @@ export const CaptureRuleSchema = z.object({
   action: z.enum(['drop', 'rewrite_prompt', 'classify']),
 
   reason: z.string().optional(),
+  opens_turn: z.boolean().optional(),
 
   extract_after: z.string().optional(),
   /** Rewriting requires both enclosing boundaries and a nonempty body. */

@@ -26,7 +26,7 @@ import { SESSION_OWNER } from '../db/document-tables.js';
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { ensureSessionLifecycle, presentedDatesAfterPublication, settlePublishedTurn } from '../db/documents/lifecycle.js';
-import { reportedToolFailure, adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
+import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { sessionEditPaths } from '../db/documents/edit-paths.js';
 import { adoptVersionWrites, dropSealedRecordsWrite, holdVersionsWrite, releaseHolderWrites, savePagesWrite, saveSealedRecordsWrite, sealPagesWrite, versionsHeldGuard } from '../db/documents/chunk-versions.js';
 import { cardWrites, heldTurnKeys, insertPromptsWrite, placePromptsWrite, priorToolStates, sealedRecordPages, sessionAgentRow, settleTurnsWrite, turnRevisionsHeld } from '../db/documents/prompt-catalog.js';
@@ -423,13 +423,16 @@ export class DocumentBatch {
         }
       }
       if (placed.outcome === 'merged') {
-        if (record.k === 'tool') this.counts.failed_tools += Number(reportedToolFailure(placed.record)) - Number(reportedToolFailure(placed.held));
-        if (record.k === 'tool') this.counts.myco_calls += Number(recordMycoFields(placed.record).tool !== null) - Number(recordMycoFields(placed.held).tool !== null);
+        if (record.k === 'tool') {
+          this.counts.tool_calls += Number(placed.record.nested !== true) - Number(placed.held.nested !== true);
+          this.counts.failed_tools += Number(placed.record.nested !== true && placed.record.success === 0) - Number(placed.held.nested !== true && placed.held.success === 0);
+        }
+        if (record.k === 'tool') this.counts.myco_calls += Number(placed.record.nested !== true && recordMycoFields(placed.record).tool !== null) - Number(placed.held.nested !== true && recordMycoFields(placed.held).tool !== null);
         continue;
       }
       this.inserted.push([record.k, record.k === 'plan' ? planKeyOf(record) : record.id]);
       if (owner !== SESSION_OWNER) {
-        if (record.k === 'tool') this.addToTurn(owner, 'tools');
+        if (record.k === 'tool' && record.nested !== true) this.addToTurn(owner, 'tools');
         else if (record.k === 'reply') this.addToTurn(owner, 'replies');
         else if (record.k === 'prompt' && record.id !== owner) this.addToTurn(owner, 'children');
         else if (newPlan) this.addToTurn(owner, 'plans');
@@ -446,7 +449,7 @@ export class DocumentBatch {
         this.newPrompts.push({ record, turnKey });
         if (turnKey === record.id) {
           this.openTurn = record.id;
-          if (record.origin === 'user') this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
+          if (instruction) this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
           if (this.firstPrompt === null && instruction) this.firstPrompt = preview(record.text);
         }
       } else if (record.k === 'reply') this.counts.replies += 1;
@@ -454,10 +457,10 @@ export class DocumentBatch {
         if (!this.writer.plans.has(planKeyOf(record))) this.counts.plans += 1;
         this.writer.plans.add(planKeyOf(record));
       }
-      else {
+      else if (record.nested !== true) {
         this.counts.tool_calls += 1;
         if (recordMycoFields(record).tool !== null) this.counts.myco_calls += 1;
-        if (reportedToolFailure(record)) this.counts.failed_tools += 1;
+        if (record.success === 0) this.counts.failed_tools += 1;
       }
     }
     for (const owner of this.writer.touched) if (owner !== SESSION_OWNER) await this.writer.readTurnHead(owner);
@@ -536,7 +539,7 @@ export class DocumentBatch {
       settled.push({
         ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
-        ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
+        ...(complete ? { tools: input.tools.filter(tool => tool.nested !== true).length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
         input_hash: hash, source_bytes: complete || fingerprint?.bytes != null ? bytes : null, input_chars: trimmed.text.length,
       });
     }

@@ -42,7 +42,7 @@ describe('cursor.yaml capture rules', () => {
       prompt: wrapped,
       transcriptPath: '/Users/x/.claude/projects/p/session.jsonl',
     });
-    expect(result).toEqual({ action: 'pass', prompt: wrapped });
+    expect(result).toEqual({ action: 'pass', prompt: wrapped, origin: 'system' });
   });
 
   it('leaves unwrapped cursor prompts unchanged', () => {

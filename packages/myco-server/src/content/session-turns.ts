@@ -22,7 +22,7 @@ import { promptLocator } from '../db/documents/prompt-locator.js';
 import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locators.js';
 import { type DocRecord } from './document.js';
 import { SESSION_OWNER } from '../db/document-tables.js';
-import { editedFiles, toolFiles, reportedToolFailure, type ToolRollup, type ToolState } from './tool-rollup.js';
+import { editedFiles, toolFiles, reportedToolFailure, parseToolState, type ToolRollup, type ToolState } from './tool-rollup.js';
 import { hookCollectionRows, hookRecordPages, HOOK_ROWS } from '../db/documents/turn-hooks.js';
 import { promptCatalogRow, sessionAgent } from '../db/documents/turn-catalog.js';
 import {
@@ -47,6 +47,8 @@ interface ToolUsage { toolName: string; count: number }
 interface ToolSummary {
   complete: boolean;
   total: number;
+  nested: number;
+  reportedErrors: number;
   failed: number;
   byTool: ToolUsage[];
   failures: ToolCallWireRow[];
@@ -98,12 +100,16 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
   const named = new Set<string>();
   const failures: ToolCallWireRow[] = [];
   let failed = 0;
+  let nested = 0;
+  let reportedErrors = 0;
   for (const { record, at } of tools) {
     const facts = Object.hasOwn(calls, record.id) ? calls[record.id] : undefined;
     for (const path of facts?.named ?? toolFiles(record, harness)) named.add(path);
     const row = toolCallRow(facts === undefined ? record : { ...record, tool_name: facts.name, myco_tool: facts.tool, myco_op: facts.op }, at);
+    reportedErrors += Number(reportedToolFailure(record));
+    if (record.nested === true) { nested += 1; continue; }
     byTool.set(row.toolName, (byTool.get(row.toolName) ?? 0) + 1);
-    if (reportedToolFailure(record)) {
+    if (record.success === 0) {
       failed += 1;
       if (failures.length < SUMMARY_FAILURES) failures.push(row);
     }
@@ -119,7 +125,7 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
     }
   }
   return {
-    complete, total: tools.length, failed, failures, files: [...files], filesNamed: named.size, myco: [...myco.values()],
+    complete, total: tools.length - nested, nested, reportedErrors, failed, failures, files: [...files], filesNamed: named.size, myco: [...myco.values()],
     byTool: [...byTool].map(([toolName, count]) => ({ toolName, count })).sort((a, b) => b.count - a.count || (a.toolName < b.toolName ? -1 : 1)),
   };
 }
@@ -282,11 +288,12 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
     const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
       records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
     const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
+    const state = catalog?.tool_state == null ? null : parseToolState(catalog.tool_state);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
     if (catalog?.partial_reason != null) body.cardPartial = true;
     body.card = catalog?.fields ?? catalog?.card ?? null;
-    body.tools = rollup === null ? shown : { ...shown, total: catalog!.tools, failed: catalog!.failed_tools,
+    body.tools = rollup === null ? shown : { ...shown, nested: state?.nested ?? shown.nested, reportedErrors: state?.reportedErrors ?? shown.reportedErrors, total: catalog!.tools, failed: catalog!.failed_tools,
       filesNamed: catalog!.files_named, byTool: rollup.tools.map(row => ({ toolName: row.name, count: row.count })) };
   }
   return body;

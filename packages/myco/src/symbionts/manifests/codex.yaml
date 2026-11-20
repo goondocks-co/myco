@@ -238,6 +238,21 @@ capture:
       extract_after: "## My request for Codex:\n"
       reason: codex-desktop-file-preamble
 
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [user_shell_command]
+      action: classify
+      set_origin: human
+      reason: codex-person-shell-command
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_is_enclosing_envelope: true
+      action: classify
+      set_origin: system
+      opens_turn: true
+      reason: codex-unknown-envelope
   prompts:
     shapes:
       # Image prompts are multipart: `<image …>` wrapper input_text tags and

@@ -1,3 +1,4 @@
+import { promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { useState, type ReactNode } from 'react';
 import { Button, CopyButton, Disclosure, ExternalLink, ItemLink, Lightbox, Markdown, ReadState, StatusChip, TypeChip } from '../../design';
 import { processedBodyUrl, RENDERABLE_IMAGE_TYPES, useTurnDetail, type AttachmentRow, type ResponseRow, type TurnChild, type TurnDetail, type TurnInjection, type TurnRow, type TurnCollection, type PromptAnswer, type RecordLocator, type TurnPrompt, type PlanRow } from '../../hooks/use-sessions';
@@ -19,10 +20,10 @@ export const PROMPT_PREVIEW_CHARS = 120;
 const LONG_PROMPT_CHARS = 600;
 
 /** What a turn calls where its prompt came from, in the reader's words rather than the wire's. */
-const ORIGIN_LABEL: Record<string, string> = {
+export const ORIGIN_LABEL: Record<string, string> = {
   user: 'From you',
   system: 'System',
-  agent_dispatch: 'Sub-agent',
+  agent_dispatch: 'Another agent',
   hook_injected: 'Added by a hook',
 };
 
@@ -155,6 +156,8 @@ function PromptText({ projectId, sessionId, turn, text, blobKey, locator, agent 
 
 function PromptContent({ text, agent, folded = false }: { text: string; agent: string | null; folded?: boolean }) {
   const shown = promptDisplay(text, agent);
+  const outer = shown.envelopes.length === 0 && shown.text === text ? promptEnvelope(text) : null;
+  if (outer !== null) return <div className="flex flex-col gap-s2"><p className="t-small text-muted">{outer.envelope.name}{outer.envelope.attributes === '' ? '' : ` · ${outer.envelope.attributes}`}</p><p className={cn('whitespace-pre-wrap break-words t-body font-medium text-ink', folded && 'line-clamp-6')}>{outer.text}</p></div>;
   return <div className="flex flex-col gap-s2">
     {shown.envelopes.map((envelope, i) => envelope.text === '' ? <StatusChip key={i}>{envelope.label}</StatusChip> : <Disclosure key={i} summary={<StatusChip>{envelope.label}</StatusChip>}>
       <p className="whitespace-pre-wrap break-words t-small text-muted">{envelope.text}</p>
@@ -248,7 +251,7 @@ function TurnContent({ projectId, sessionId, promptId, agent, contexts, body, to
   const subagents = (contexts?.[promptId] ?? body.context)?.subagents ?? 0;
   const injected = body.injection !== null && (body.injection.sporeIds.length > 0 || (body.injection.planIds ?? []).length > 0);
   const hasAnswers = (body.answers ?? []).length > 0;
-  const hasTools = total > 0 || body.tools?.complete === false;
+  const hasTools = (body.tools?.nested ?? 0) > 0 || total > 0 || body.tools?.complete === false;
   const added = <>
     {subagents > 0 && <Contribution label={`Myco prepared ${count(subagents, 'sub-agent preamble')}`} />}
     <TurnPages projectId={projectId} sessionId={sessionId} promptId={promptId} collection="answers" initial={body.answers ?? []} cursor={body.cursors?.answers} rowKey={(row) => row.id} label="context answers">
@@ -348,6 +351,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
         </span>
       </div>
       <PromptBubble origin={turn.origin} thread={turn.threadLabel}>
+        {body?.prompt.envelope != null && <p className="t-small text-muted">{body.prompt.envelope.name}{body.prompt.envelope.attributes === '' ? '' : ` · ${body.prompt.envelope.attributes}`}</p>}
         <PromptText key={turn.promptId} projectId={projectId} sessionId={sessionId} turn={turn} text={body === undefined ? undefined : body.prompt.text} agent={agent} blobKey={body?.prompt.blobKey} locator={body?.prompt.locator} />
       </PromptBubble>
       <ReadState data={body} pending={detail.isPending} error={detail.error} onRetry={() => { void detail.refetch(); }} label="this turn">

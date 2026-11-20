@@ -48,7 +48,8 @@ export function toolResultFailed(request: { declaration: ToolResultDeclaration |
   if (typeof output !== 'string') return false;
   try {
     const parsed: unknown = JSON.parse(output);
-    if (object(parsed)) return (typeof parsed.exit_code === 'number' && parsed.exit_code !== 0) || parsed.isError === true;
+    if (object(parsed)) return (typeof parsed.exit_code === 'number' && parsed.exit_code !== 0) || parsed.isError === true
+      || (object(parsed.metadata) && typeof parsed.metadata.exit_code === 'number' && parsed.metadata.exit_code !== 0);
   } catch { /* Command output can use the harness's labelled text envelope. */ }
   const exit = /^Process exited with code (-?\d+)\s*$/m.exec(output.split('\nOutput:')[0]!);
   return exit !== null && Number(exit[1]) !== 0;

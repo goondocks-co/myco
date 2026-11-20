@@ -31,7 +31,7 @@ import { isInstructionOrigin } from '../../read/extraction-origins.js';
  */
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { MAIN_THREAD, type ClaudePromptShape, type PromptClaim } from '@goondocks/myco-shared/prompt-identity';
-import { evaluatePromptRules, notificationEnvelopes } from '@goondocks/myco-shared/capture-rules';
+import { evaluatePromptRules, notificationEnvelopes, promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import {
@@ -140,7 +140,7 @@ function v2Disposition(v: Record<string, unknown>, text: string, role: ParserInp
   if (v.isCompactSummary === true) return { as: 'context', thread: MAIN_THREAD };
   if (v.isVisibleInTranscriptOnly === true) return { as: 'sibling', thread: MAIN_THREAD, kind: 'unrecognized', origin: 'system' };
   const opener = hasOpener(v);
-  if (text.trim() === '') return { as: 'none' };
+  if ((promptEnvelope(text)?.text ?? text).trim() === '') return { as: 'none' };
   if (opener) return { as: 'claimant', opener, ...openerLabel(v) };
   if (v.isMeta === true || INTERRUPT_MARKERS.has(text.trim())) return { as: 'none' };
   const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'claude-code', { prompt: text, transcriptPath: sessionId, record: v });
@@ -250,9 +250,13 @@ export const claudeCodeParser: TranscriptParser = {
         const shape = promptShape(value, text);
         const key = shape === 'user_prompt' ? str(value.promptId) : str(value.uuid);
         if (text.trim() !== '' && key !== undefined) {
+          if ((promptEnvelope(text)?.text ?? text).trim() === '') continue;
+          const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'claude-code', { prompt: text, transcriptPath: sessionId, record: value });
+          if (decision.action === 'drop') continue;
+          const origin = shape === 'user_prompt' ? decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin : 'agent_dispatch';
           promptId = await promptIdFor(sessionId, shape, key, input);
-          events.push({ kind: 'prompt', payload: { promptId, text, origin: shape === 'user_prompt' ? 'user' : 'agent_dispatch', promptKind: shape }, createdAt, offset });
-          if (shape === 'user_prompt') events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }));
+          events.push({ kind: 'prompt', payload: { promptId, text, origin, promptKind: shape }, createdAt, offset });
+          if (isInstructionOrigin(origin)) events.push(...await pastedPlansInPrompt(text, this.planTags, input, this.agent, value, { promptId, offset, createdAt }));
         }
         continue;
       }

@@ -202,6 +202,30 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "reason": "claude-code-compact-continuation-summary",
         "trim": true,
         "set_origin": "system"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_envelope_tag_in": [
+            "bash-input"
+          ]
+        },
+        "action": "classify",
+        "reason": "claude-code-person-shell-command",
+        "trim": true,
+        "set_origin": "human"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_is_enclosing_envelope": true
+        },
+        "action": "classify",
+        "reason": "claude-code-unknown-envelope",
+        "trim": true,
+        "set_origin": "system"
       }
     ],
     "transcriptEvidence": {
@@ -567,6 +591,31 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
         "reason": "codex-desktop-file-preamble",
         "extract_after": "## My request for Codex:\n",
         "trim": true
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_envelope_tag_in": [
+            "user_shell_command"
+          ]
+        },
+        "action": "classify",
+        "reason": "codex-person-shell-command",
+        "trim": true,
+        "set_origin": "human"
+      },
+      {
+        "event": "user_prompt",
+        "scope": "this_agent",
+        "when": {
+          "prompt_is_enclosing_envelope": true
+        },
+        "action": "classify",
+        "reason": "codex-unknown-envelope",
+        "opens_turn": true,
+        "trim": true,
+        "set_origin": "system"
       }
     ],
     "transcriptEvidence": {

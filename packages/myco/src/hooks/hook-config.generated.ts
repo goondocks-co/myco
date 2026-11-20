@@ -101,6 +101,8 @@ const fieldDefaults = {
 type HookFieldOverrides = Omit<HookConfigEntry['hookFields'], keyof typeof fieldDefaults> & Partial<HookConfigEntry['hookFields']>;
 const withHookCapabilities = (overrides: Partial<HookCapabilities>): HookCapabilities => ({ ...capabilityDefaults, ...overrides });
 const withHookFields = (overrides: HookFieldOverrides): HookConfigEntry['hookFields'] => ({ ...fieldDefaults, ...overrides });
+type RuleOverrides = Omit<CaptureRule, 'event' | 'scope' | 'trim'> & Partial<Pick<CaptureRule, 'event' | 'scope' | 'trim'>>;
+const withCaptureRules = (rules: RuleOverrides[]): CaptureRule[] => rules.map(rule => ({ event: 'user_prompt', scope: 'this_agent', trim: true, ...rule }));
 const hookEvent = (hook: string, timeout?: number): HookEventEntry => timeout === undefined ? { hook } : { hook, timeout };
 
 export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
@@ -256,10 +258,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ],
       "interruptMarker": "[Request interrupted by user for tool use]"
     },
-    "captureRules": [
+    "captureRules": withCaptureRules([
       {
         "event": "session_start",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_equals": {
             "path": "entrypoint",
@@ -267,12 +268,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           }
         },
         "action": "drop",
-        "reason": "noninteractive-sdk",
-        "trim": true
+        "reason": "noninteractive-sdk"
       },
       {
         "event": "session_start",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_equals": {
             "path": "entrypoint",
@@ -280,12 +279,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           }
         },
         "action": "drop",
-        "reason": "noninteractive-sdk",
-        "trim": true
+        "reason": "noninteractive-sdk"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_equals": {
             "path": "entrypoint",
@@ -293,12 +289,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           }
         },
         "action": "drop",
-        "reason": "noninteractive-sdk",
-        "trim": true
+        "reason": "noninteractive-sdk"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_equals": {
             "path": "entrypoint",
@@ -306,43 +299,31 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           }
         },
         "action": "drop",
-        "reason": "noninteractive-sdk",
-        "trim": true
+        "reason": "noninteractive-sdk"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "<command-name>"
         },
         "action": "drop",
-        "reason": "claude-code-builtin-command-dispatch",
-        "trim": true
+        "reason": "claude-code-builtin-command-dispatch"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "<local-command-stdout>"
         },
         "action": "drop",
-        "reason": "claude-code-builtin-command-stdout",
-        "trim": true
+        "reason": "claude-code-builtin-command-stdout"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "<<autonomous-loop"
         },
         "action": "classify",
         "reason": "claude-code-autonomous-loop",
-        "trim": true,
         "set_origin": "system"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_envelope_tag_in": [
             "agent-message",
@@ -351,12 +332,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "classify",
         "reason": "claude-code-agent-envelope",
-        "trim": true,
         "set_origin": "agent_dispatch"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_envelope_tag_in": [
             "task-notification",
@@ -369,12 +347,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "classify",
         "reason": "claude-code-system-envelope",
-        "trim": true,
         "set_origin": "system"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "record_field_equals": {
             "path": "isCompactSummary",
@@ -383,10 +358,27 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "classify",
         "reason": "claude-code-compact-continuation-summary",
-        "trim": true,
+        "set_origin": "system"
+      },
+      {
+        "when": {
+          "prompt_envelope_tag_in": [
+            "bash-input"
+          ]
+        },
+        "action": "classify",
+        "reason": "claude-code-person-shell-command",
+        "set_origin": "human"
+      },
+      {
+        "when": {
+          "prompt_is_enclosing_envelope": true
+        },
+        "action": "classify",
+        "reason": "claude-code-unknown-envelope",
         "set_origin": "system"
       }
-    ],
+    ]),
     "notificationEnvelopes": [
       "task-notification"
     ],
@@ -430,10 +422,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "retention": "member"
     },
     "hookResponse": hookPart8(),
-    "captureRules": [
+    "captureRules": withCaptureRules([
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "<user_input mode=\"act\">"
         },
@@ -442,12 +432,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "strip_envelope": {
           "open": "<user_input mode=\"act\">",
           "close": "</user_input>"
-        },
-        "trim": true
+        }
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "<user_input mode=\"plan\">"
         },
@@ -456,10 +443,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "strip_envelope": {
           "open": "<user_input mode=\"plan\">",
           "close": "</user_input>"
-        },
-        "trim": true
+        }
       }
-    ]
+    ])
   },
   "codex": {
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
@@ -530,7 +516,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ],
       "interruptMarker": "<turn_aborted>"
     },
-    "captureRules": [
+    "captureRules": withCaptureRules([
       {
         "event": "session_start",
         "scope": "any_agent",
@@ -538,42 +524,33 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           "transcript_path_missing": true
         },
         "action": "drop",
-        "reason": "ephemeral-sub-invocation",
-        "trim": true
+        "reason": "ephemeral-sub-invocation"
       },
       {
-        "event": "user_prompt",
         "scope": "any_agent",
         "when": {
           "transcript_path_missing": true
         },
         "action": "drop",
-        "reason": "ephemeral-sub-invocation",
-        "trim": true
+        "reason": "ephemeral-sub-invocation"
       },
       {
         "event": "session_start",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_exists": "source.subagent"
         },
         "action": "drop",
-        "reason": "subagent-thread-spawn",
-        "trim": true
+        "reason": "subagent-thread-spawn"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_exists": "source.subagent"
         },
         "action": "drop",
-        "reason": "subagent-thread-spawn",
-        "trim": true
+        "reason": "subagent-thread-spawn"
       },
       {
         "event": "session_start",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_equals": {
             "path": "source",
@@ -581,12 +558,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           }
         },
         "action": "drop",
-        "reason": "noninteractive-exec",
-        "trim": true
+        "reason": "noninteractive-exec"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "transcript_meta_field_equals": {
             "path": "source",
@@ -594,22 +568,16 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           }
         },
         "action": "drop",
-        "reason": "noninteractive-exec",
-        "trim": true
+        "reason": "noninteractive-exec"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "# AGENTS.md instructions"
         },
         "action": "drop",
-        "reason": "agents-md-context-injection",
-        "trim": true
+        "reason": "agents-md-context-injection"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_contains": "# AGENTS.md instructions",
           "prompt_envelope_tag_in": [
@@ -617,12 +585,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           ]
         },
         "action": "drop",
-        "reason": "agents-md-context-injection-enveloped",
-        "trim": true
+        "reason": "agents-md-context-injection-enveloped"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_envelope_tag_in": [
             "subagent_notification"
@@ -630,12 +595,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "classify",
         "reason": "codex-agent-envelope",
-        "trim": true,
         "set_origin": "agent_dispatch"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_envelope_tag_in": [
             "environment_context",
@@ -645,21 +607,36 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         },
         "action": "classify",
         "reason": "codex-system-envelope",
-        "trim": true,
         "set_origin": "system"
       },
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_contains": "## My request for Codex:"
         },
         "action": "rewrite_prompt",
         "reason": "codex-desktop-file-preamble",
-        "extract_after": "## My request for Codex:\n",
-        "trim": true
+        "extract_after": "## My request for Codex:\n"
+      },
+      {
+        "when": {
+          "prompt_envelope_tag_in": [
+            "user_shell_command"
+          ]
+        },
+        "action": "classify",
+        "reason": "codex-person-shell-command",
+        "set_origin": "human"
+      },
+      {
+        "when": {
+          "prompt_is_enclosing_envelope": true
+        },
+        "action": "classify",
+        "reason": "codex-unknown-envelope",
+        "opens_turn": true,
+        "set_origin": "system"
       }
-    ],
+    ]),
     "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",
     "subagentThreadIdPath": "id",
     "subagentLabelPath": "source.subagent.thread_spawn"
@@ -780,10 +757,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "systemMessage": "system_message"
       }
     },
-    "captureRules": [
+    "captureRules": withCaptureRules([
       {
-        "event": "user_prompt",
-        "scope": "this_agent",
         "when": {
           "prompt_starts_with": "<user_query>"
         },
@@ -792,10 +767,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "strip_envelope": {
           "open": "<user_query>",
           "close": "</user_query>"
-        },
-        "trim": true
+        }
       }
-    ]
+    ])
   },
   "opencode": {
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",

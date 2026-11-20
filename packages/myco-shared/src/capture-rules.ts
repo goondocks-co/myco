@@ -107,8 +107,8 @@ export interface SessionStartRuleContext {
 export type PromptOrigin = 'human' | 'system' | 'agent_dispatch' | 'hook_injected';
 
 export type UserPromptDecision =
-  | { action: 'pass'; prompt: string; origin?: PromptOrigin }
-  | { action: 'rewrite'; prompt: string; reason?: string; origin?: PromptOrigin }
+  | { action: 'pass'; prompt: string; origin?: PromptOrigin; opensTurn?: boolean }
+  | { action: 'rewrite'; prompt: string; reason?: string; origin?: PromptOrigin; opensTurn?: boolean }
   | { action: 'drop'; reason?: string };
 
 export type SessionStartDecision =
@@ -119,7 +119,8 @@ export function evaluatePromptRules(bundles: readonly RuleSource[], detectedAgen
   for (const bundle of bundles) {
     for (const rule of bundle.rules) {
       if (rule.event !== 'user_prompt' || !scopePermits(rule, bundle.name, detectedAgent) || !whenMatches(rule, ctx)) continue;
-      return applyAction(rule, ctx);
+      const decision = applyAction(rule, ctx);
+      return decision.action === 'drop' || rule.opens_turn === undefined ? decision : { ...decision, opensTurn: rule.opens_turn };
     }
   }
   return { action: 'pass', prompt: ctx.prompt };

@@ -1,3 +1,4 @@
+import type { SessionEvidence } from './wire';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { EmptyState, ErrorState, FilterPills, Link, LoadingState, ShowMore, StatusChip, focusRing } from '../../design';
 import { useSessionFiles, type FileKind, type SessionFile } from '../../hooks/use-sessions';
@@ -13,7 +14,7 @@ const KINDS: ReadonlyArray<{ value: FileKind; label: string }> = [
 ];
 
 const EMPTY: Readonly<Record<FileKind, string>> = {
-  edited: 'No tool edited a file in this session.',
+  edited: 'No file edits were observed in this session.',
   read: 'No file was only read in this session.',
   all: 'No tool named a file in this session.',
 };
@@ -48,7 +49,7 @@ function FileRow({ file }: { file: SessionFile }) {
 }
 
 /** The files the session's tools named, edited first by default; each row opens the last turn that named the file. */
-export function SessionFiles({ projectId, sessionId }: { projectId: string; sessionId: string }) {
+export function SessionFiles({ projectId, sessionId, fileEdits }: { projectId: string; sessionId: string; fileEdits: SessionEvidence['fileEdits'] }) {
   const [params, setParams] = useSearchParams();
   const kind = KINDS.find((one) => one.value === params.get(FILE_KIND_KEY))?.value ?? 'edited';
   const files = useSessionFiles(projectId, sessionId, kind);
@@ -61,11 +62,11 @@ export function SessionFiles({ projectId, sessionId }: { projectId: string; sess
     <div className="flex max-w-reference flex-col gap-s3" data-session-files="">
       <FilterPills label="Show" options={KINDS} value={kind} onChange={pick} />
       <p className="max-w-measure t-small text-muted">
-        Files the agent’s tools named. A change made through a shell command does not appear here; the commits are on <Link to={`?${new URLSearchParams({ tab: 'outcomes' })}`} className="tap-inline">Outcomes</Link>.
+        Files the agent’s tools named. A change made through a shell command does not appear here; the commit observations are on <Link to={`?${new URLSearchParams({ tab: 'outcomes' })}`} className="tap-inline">Outcomes</Link>.
       </p>
       {files.isPending ? <LoadingState label="Loading the files" count={3} />
         : files.error && files.rows.length === 0 ? <ErrorState error={files.error} onRetry={files.retry} />
-        : files.rows.length === 0 ? <EmptyState title={(files.capped ? EMPTY_CAPPED : EMPTY)[kind]} />
+        : files.rows.length === 0 ? <EmptyState title={fileEdits.state === 'not_visible' && kind === 'edited' ? 'File edits are not visible for this agent.' : (files.capped ? EMPTY_CAPPED : EMPTY)[kind]} />
         : (
           <div>
             {files.error && <ErrorState error={files.error} onRetry={files.retry} />}

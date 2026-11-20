@@ -225,6 +225,20 @@ capture:
       action: classify
       set_origin: system
       reason: claude-code-compact-continuation-summary
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_envelope_tag_in: [bash-input]
+      action: classify
+      set_origin: human
+      reason: claude-code-person-shell-command
+    - event: user_prompt
+      scope: this_agent
+      when:
+        prompt_is_enclosing_envelope: true
+      action: classify
+      set_origin: system
+      reason: claude-code-unknown-envelope
   prompts:
     shapes:
       # Agent-team teammate-message envelopes (Claude Code v2.1.32+).

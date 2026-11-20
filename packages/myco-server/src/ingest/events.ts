@@ -199,6 +199,7 @@ export async function planEventWrite(
   const payload = parsePayload(spec, e.payload, requestClock, clockSource);
   if (!payload.ok) return payload;
   const p = payload.value;
+  if (e.kind === 'session.start' && p.launchParentSessionId === e.sessionId) return { ok: false, ...refusal('launchParentSessionId must name a different session; nothing was stored. Next call: POST /events with a different launchParentSessionId or omit it.', 'invalid_field') };
 
   const write: WriteContext = {
     projectId: ctx.projectId,

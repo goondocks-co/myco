@@ -8,15 +8,15 @@ export interface SessionInvocation {
   parentSessionId?: string;
 }
 
-/** Native harness origins stand; invocation facts override the session's launch default for instructions. */
+/** Native harness origins stand; invocation facts attribute instructions within their source-time window. */
 export function attributedPrompt(payload: Record<string, unknown>, context: {
   at: number; launchParentSessionId?: string; invocations?: readonly SessionInvocation[];
 }): Record<string, unknown> {
   if (payload.origin !== 'user') return payload;
   const matched = context.invocations?.filter(fact => fact.from <= context.at && context.at < fact.until) ?? [];
   if (matched.length > 1) throw new Error('session_invocation_overlap');
-  const origin = matched[0]?.origin ?? (context.launchParentSessionId === undefined ? 'user' : 'agent_dispatch');
-  const parent = matched[0]?.parentSessionId ?? (matched.length === 0 ? context.launchParentSessionId : undefined);
+  const origin = matched[0]?.origin ?? 'user';
+  const parent = matched[0]?.parentSessionId;
   return { ...payload, origin, originSessionId: origin === 'agent_dispatch' ? parent : undefined };
 }
 

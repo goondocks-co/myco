@@ -21,11 +21,11 @@ export const sessionCommitsParity: ParityScenario = {
     const commits = async () => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/commits`, { headers: target.ownerHeaders() });
       expect(res.status).toBe(200);
-      return await res.json() as { observations: Array<Record<string, unknown>>; release: Record<string, unknown> | null };
+      return await res.json() as { observations: Array<Record<string, unknown>>; release: Record<string, unknown> | null; range: { visibility: 'not_visible'; reason: 'member_report_required' } };
     };
 
     await post('session.start', stamp, { agent: 'claude-code', branch: 'main', headSha: A, startedAt: stamp });
-    expect(await commits()).toEqual({ observations: [{ point: 'session_start', headSha: A, branch: 'main', changes: 'unreadable', capturedAt: stamp }], release: null });
+    expect(await commits()).toEqual({ observations: [{ point: 'session_start', headSha: A, branch: 'main', changes: 'unreadable', capturedAt: stamp }], release: null, range: { visibility: 'not_visible', reason: 'member_report_required' } });
 
     await post('session.end', stamp + 10, { endedAt: stamp + 10, headSha: B, dirty: false });
     expect(await commits()).toEqual({
@@ -33,7 +33,7 @@ export const sessionCommitsParity: ParityScenario = {
         { point: 'session_start', headSha: A, branch: 'main', changes: 'unreadable', capturedAt: stamp },
         { point: 'session_end', headSha: B, branch: 'main', changes: 'none', capturedAt: stamp + 10 },
       ],
-      release: null,
+      release: null, range: { visibility: 'not_visible', reason: 'member_report_required' },
     });
 
     await post('session.end', stamp + 30, { endedAt: stamp + 30, headSha: B, dirty: true });

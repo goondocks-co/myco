@@ -111,6 +111,8 @@ async function runVectors(reader: DeploymentHandle, query: string, out: Out, err
 }
 
 interface SessionSummary {
+  turnCount?: number;
+  visibility?: { toolCalls: 'recorded' | 'not_visible' };
   id: string; status: string; title: string | null; branch: string | null; user: string | null; agent: string | null;
   started_at: number | null; ended_at: number | null; prompt_count: number; tool_count: number; summary: string;
 }
@@ -164,7 +166,8 @@ async function runSession(reader: DeploymentHandle, idOrLatest: string | undefin
   out(`Started: ${iso(s.started_at)}`);
   if (s.ended_at) out(`Ended:   ${iso(s.ended_at)}`);
   out(`Prompts: ${s.prompt_count}`);
-  out(`Tools:   ${s.tool_count}`);
+  if (s.turnCount !== undefined) out(`Turns:   ${s.turnCount}`);
+  out(`Tools:   ${s.visibility?.toolCalls === 'not_visible' ? 'Not visible' : s.tool_count}`);
   if (s.summary) out(`\nSummary:\n${s.summary}`);
   return true;
 }

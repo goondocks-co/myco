@@ -27,13 +27,15 @@ export interface ToolState {
   named: [string, number][];
   errors: [string, number, string][];
   removedErrors: string[];
+  nested: number;
+  reportedErrors: number;
   total: number;
   failed: number;
   mycoCalls: number;
   last: number | null;
 }
 
-export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], total: 0, failed: 0, mycoCalls: 0, last: null });
+export const emptyToolState = (): ToolState => ({ calls: {}, removedErrors: [], tools: [], myco: [], files: [], named: [], errors: [], nested: 0, reportedErrors: 0, total: 0, failed: 0, mycoCalls: 0, last: null });
 
 export function recordMycoFields(record: DocRecord) {
   let input: unknown = record.input;
@@ -88,8 +90,10 @@ export function adjustToolState(state: ToolState, record: DocRecord, harness: st
     return [...map];
   };
   const failed = reportedToolFailure(record) ? 1 : 0;
+  state.reportedErrors += sign * failed;
+  if (record.nested === true) { state.nested += sign; return; }
   state.total += sign;
-  state.failed += sign * failed;
+  state.failed += sign * Number(record.success === 0);
   state.tools = counts(state.tools, call.name);
   for (const path of call.named) state.named = counts(state.named, path);
   for (const path of call.files) state.files = counts(state.files, path);
@@ -118,8 +122,8 @@ export function needsToolInput(record: DocRecord, harness: string | null): boole
 
 /** The persisted accumulator contains scalars; keyed rows retain distinct contributions. */
 export function scalarToolState(state: ToolState): string {
-  return JSON.stringify({ total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, last: state.last });
+  return JSON.stringify({ total: state.total, failed: state.failed, mycoCalls: state.mycoCalls, nested: state.nested, reportedErrors: state.reportedErrors, last: state.last });
 }
 export function parseToolState(text: string): ToolState {
-  return { ...emptyToolState(), ...JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'last'> };
+  return { ...emptyToolState(), ...JSON.parse(text) as Pick<ToolState, 'total' | 'failed' | 'mycoCalls' | 'nested' | 'reportedErrors' | 'last'> };
 }

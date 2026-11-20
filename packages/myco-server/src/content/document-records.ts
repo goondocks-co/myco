@@ -9,7 +9,6 @@
  * the parser minted, and `plan_key` names the canonical plan.
  */
 import { filesNamedByToolInput, mycoToolFields } from '@goondocks/myco-shared/member-protocol';
-import { promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { utf8Preview } from '../hash.js';
 import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../ingest/tool-outcome.js';
 import { DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
@@ -54,11 +53,9 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
   const p = payload;
   if (k === 'prompt') {
     const parent = str(p.parentPromptId);
-    const display = typeof p.text === 'string' ? promptEnvelope(p.text) : null;
     return {
       k, id: String(p.promptId), prompt_id: parent, ...origin, parent_prompt_id: parent, thread_id: str(p.threadId),
-      thread_label: str(p.threadLabel), origin: str(p.origin) ?? 'user', prompt_kind: str(p.promptKind), text: display?.text ?? str(p.text),
-      ...(display === null ? {} : { envelope: display.envelope }),
+      thread_label: str(p.threadLabel), origin: str(p.origin) ?? 'user', prompt_kind: str(p.promptKind), text: str(p.text),
       origin_session_id: str(p.originSessionId),
       claim: str(p.claim), source_key: str(p.sourceKey), source_thread: str(p.sourceThread), source_record: str(p.sourceRecord),
       prompt_key_hash: str(p.promptKeyHash),
@@ -81,7 +78,7 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
     summary: toolSummary(p.input), input, input_bytes: new TextEncoder().encode(input).length,
     files_affected: Array.isArray(p.filesAffected) ? p.filesAffected : filesNamedByToolInput(p.input),
     success: failed ? 0 : 1, output_preview: preview(p.output), error_message: preview(p.errorMessage),
-    result_reason: str(p.resultReason), duration_ms: typeof p.durationMs === 'number' ? p.durationMs : null,
+    nested: p.nested === true, result_reason: str(p.resultReason), duration_ms: typeof p.durationMs === 'number' ? p.durationMs : null,
     call_source: at.call === undefined ? (str(p.toolName) && p.toolName !== 'unknown' ? { ordinal: 0, offset: 0, origin: 'reported' } : null) : at.call,
     outcome_source: at.outcome ?? { ordinal: 0, offset: 0, origin: 'reported' },
   };
@@ -100,7 +97,7 @@ export function mergeRecord(held: DocRecord, incoming: DocRecord): DocRecord {
     values: record, call: (record.call_source ?? null) as OutcomeSource | null, outcome: record.outcome_source as OutcomeSource,
   });
   const merged = assembleToolOutcome(assembly(held), assembly(incoming));
-  const record: DocRecord = { ...(merged.values as DocRecord), call_source: merged.call, outcome_source: merged.outcome };
+  const record: DocRecord = { ...(merged.values as DocRecord), nested: held.nested === true && incoming.nested === true, call_source: merged.call, outcome_source: merged.outcome };
   if (held.call_source == null && incoming.call_source != null) {
     record.summary = incoming.summary;
     const { input: _replaced, ...bodies } = held.bodies ?? {};

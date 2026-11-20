@@ -547,7 +547,9 @@ describe('a titling run reads and writes its own session', () => {
       prompt('second');
       sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
       await publishFixture({ sqlite, serverEnv });
-      expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(2);
+      const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' })).result;
+      expect(material.batches).toHaveLength(2);
+      expect(material).toMatchObject({ prompt_count: 2, turnCount: 2 });
       expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Both turns', summary: 'Complete material' })).result.written).toBe(true);
     }
   });

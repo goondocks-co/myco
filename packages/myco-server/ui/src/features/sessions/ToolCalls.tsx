@@ -63,7 +63,7 @@ function ToolCallItem({ projectId, sessionId, row }: { projectId: string; sessio
         summaryClassName="px-s2 py-s1"
         summary={(
           <span className="flex min-w-0 items-center gap-s2 t-small">
-            <span className="shrink-0 t-mono text-ink">{callName(row)}</span>
+            <span className="shrink-0 t-mono text-ink">{callName(row)}</span>{row.nested === true && <span className="t-meta text-muted">Nested call</span>}
             {file !== null && <span className="min-w-0 flex-1 truncate text-muted">{file}</span>}
             <span className="ml-auto shrink-0 tabular-nums text-muted">{formatMillis(row.durationMs)}</span>
             {row.success
@@ -84,7 +84,7 @@ function FailedCall({ projectId, sessionId, row }: { projectId: string; sessionI
   const said = row.errorMessage ?? (row.outputPreview === null ? 'No result was captured.' : null);
   return (
     <li data-testid={`failed-call-${row.toolCallId}`} className="flex flex-col gap-s1 rounded-control bg-bad-bg px-s3 py-s2">
-      <span className="t-small font-medium text-ink">{callName(row)}</span>
+      <span className="t-small font-medium text-ink">{callName(row)}</span>{row.nested === true && <span className="t-meta text-muted">Nested call</span>}
       {file !== null && <code className="t-mono break-all text-ink-2">{file}</code>}
       {said !== null && <pre className="max-h-[256px] overflow-auto whitespace-pre-wrap break-words t-mono text-bad">{said}</pre>}
       <Disclosure summary="Input and output">
@@ -136,7 +136,8 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
     : (summary?.myco ?? []).map((call) => ({ key: `${call.tool}:${call.op ?? ''}`, name: `${call.tool}${call.op !== null ? ` · ${call.op}` : ''}`, count: call.count, failed: call.failed }));
   const failuresTotal = rollup !== null ? failed : summary?.failed ?? 0;
   const partial = summary?.complete === false;
-  const calls = total > 0 || partial;
+  const nested = summary?.nested ?? 0;
+  const calls = total > 0 || nested > 0 || partial;
   const byTool = rollup === null ? '' : countsLine(rollup);
   return (
     <section aria-label="Tool use" className="flex flex-col gap-s2" data-testid="tool-use">
@@ -149,6 +150,8 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
             {byTool !== '' && <span className="text-muted"> · {byTool}</span>}
           </p>
         )}
+        {nested > 0 && <p className="t-small text-muted">{count(nested, 'nested call')} run inside orchestration calls</p>}
+        {(summary?.reportedErrors ?? 0) > 0 && <p className="t-small text-muted">{summary!.reportedErrors} calls reported an error or a non-zero exit</p>}
         {shown !== undefined && shown.shown < shown.total && <p className="t-small text-muted" data-testid="tool-partial">Failures, Myco calls and files below: showing the first {shown.shown.toLocaleString()} of {shown.total.toLocaleString()} calls.</p>}
         {myco.length > 0 && (
           <ul className="flex flex-wrap gap-s2" aria-label="Myco tool calls">
@@ -173,7 +176,7 @@ export function ToolUse({ projectId, sessionId, promptId, total, failed, rollup,
             </ul>
           </Disclosure>
         ) : fileWords !== null && <p className="t-small text-ink-2">{fileWords}</p>}
-        <ToolCalls projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} partial={partial} />
+        <ToolCalls projectId={projectId} sessionId={sessionId} promptId={promptId} total={total} partial={partial || nested > 0} />
       </div>
     </section>
   );

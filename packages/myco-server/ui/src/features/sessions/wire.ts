@@ -77,3 +77,20 @@ export interface ResumeCommand {
   command: string;
   line: string;
 }
+
+/** Observations retain their numeric counters; coverage is an independent fact. */
+export interface SessionEvidence {
+  toolCalls: number;
+  failedTools: number;
+  mycoCalls: number;
+  turns: number;
+  personTurns: number;
+  promptEntries: number;
+  nestedToolCalls: number;
+  reportedErrors: number;
+  filesEdited: number;
+  observedFilesEdited: number;
+  fileEdits: { state: 'count'; count: number } | { state: 'unknown'; observed: number } | { state: 'not_visible' };
+  visibility: { toolCalls: 'recorded' | 'not_visible'; failedTools: 'recorded' | 'not_visible'; mycoCalls: 'recorded' | 'not_visible'; filesEdited: 'recorded' | 'observed' | 'not_visible'; commits: 'not_visible' };
+  counts: { prompts: number; userPrompts: number; promptEntries: number; toolCalls: number; failedTools: number; mycoCalls: number; responses: number; plans: number; attachments: number };
+}

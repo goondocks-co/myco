@@ -22,7 +22,7 @@ import { isInstructionOrigin } from '../../read/extraction-origins.js';
  */
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { sha256Hex, uuidv5 } from '../../hash.js';
-import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
+import { evaluatePromptRules, promptEnvelope } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { canonicalPromptId, promptKeyHash, type PromptIdScheme, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import { completedTool } from './completed-tools.js';
@@ -126,7 +126,7 @@ export const codexParser: TranscriptParser = {
     for (const { value, offset, undatedAt } of lines) {
       const opened = turnOpened(value);
       if (opened !== undefined && held.turn?.id !== opened) held.turn = { id: opened, opened: false };
-      const completed = await completedTool(input, this.agent, { value, offset, undatedAt }, { promptId, turnId: held.turn?.id });
+      const completed = await completedTool(input, this.agent, { value, offset, undatedAt }, { promptId, turnId: held.turn?.id, directCalls: pending });
       if (completed !== null) { events.push(completed); continue; }
       if (str(value.type) !== 'response_item' || !isBlock(value.payload)) continue;
       const payload = value.payload;
@@ -147,7 +147,9 @@ export const codexParser: TranscriptParser = {
           const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'codex', { prompt: text, transcriptPath: sessionId, transcriptMeta: metadata, record: value });
           if (decision.action === 'drop') continue;
           const origin = decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin;
-          const opensTurn = isInstructionOrigin(origin);
+          const display = promptEnvelope(decision.prompt);
+          const opensTurn = (display?.text ?? decision.prompt).trim() !== '' && (isInstructionOrigin(origin) || (held.turn !== undefined && !held.turn.opened && decision.opensTurn === true));
+          if (scheme !== 'codex-turn-v1' && opensTurn && held.turn !== undefined) held.turn.opened = true;
           const capturedPromptId = await promptIdUnder(scheme, sessionId, offset,
             () => ({ turnId: held.turn!.id, submission: submissionIn(held.turn!, opensTurn, acceptanceOrder(value), offset) }), input);
           if (opensTurn) {
@@ -156,7 +158,7 @@ export const codexParser: TranscriptParser = {
           events.push({ kind: 'prompt', payload: { promptId: capturedPromptId, text: decision.prompt, origin,
             promptKind: 'message',
             ...(scheme === 'codex-turn-v1' ? { promptKeyHash: await promptKeyHash(sha256Hex, decision.prompt) } : {}) }, createdAt, offset, opensTurn });
-          if (opensTurn) events.push(...await pastedPlansInPrompt(decision.prompt, this.planTags, input, this.agent, value, { promptId: capturedPromptId, offset, createdAt }));
+          if (opensTurn && isInstructionOrigin(origin)) events.push(...await pastedPlansInPrompt(decision.prompt, this.planTags, input, this.agent, value, { promptId: capturedPromptId, offset, createdAt }));
           continue;
         }
         if (str(payload.role) !== 'assistant') continue;

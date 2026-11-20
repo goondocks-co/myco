@@ -3,7 +3,7 @@ import { getAtPath } from '@goondocks/myco-shared/dot-path';
 import { lineTime, optionalRecordSource, recordId, str, type DerivedEvent, type ParsedLine, type ParserInput } from './index.js';
 
 /** Completed calls with their own source ids, including tools invoked inside an orchestration call. */
-export async function completedTool(input: ParserInput, agent: string, line: ParsedLine, owner: { promptId?: string; turnId?: string }): Promise<DerivedEvent | null> {
+export async function completedTool(input: ParserInput, agent: string, line: ParsedLine, owner: { promptId?: string; turnId?: string; directCalls: ReadonlyMap<string, unknown> }): Promise<DerivedEvent | null> {
   const { value, offset, undatedAt } = line;
   const shape = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)?.completedTools
     ?.find(rule => Object.entries(rule.match).every(([path, expected]) => getAtPath(value, path) === expected));
@@ -27,7 +27,7 @@ export async function completedTool(input: ParserInput, agent: string, line: Par
   return {
     kind: failed ? 'tool.failure' : 'tool.use', source, offset, callOffset: offset, outcomeOffset: offset,
     createdAt: lineTime(value, input.now, undatedAt),
-    payload: { toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset }), promptId,
+    payload: { nested: !owner.directCalls.has(key), toolCallId: await recordId(input, agent, { kind: 'tool-call', source, offset }), promptId,
       toolName: server === undefined ? name : `mcp__${server}__${name}`, input: args ?? {}, output: text, success: !failed,
       ...(failed ? { resultReason: 'reported', errorMessage: typeof exit === 'number' ? `Exit code ${exit}` : `Tool status: ${String(status)}` } : {}) },
   };

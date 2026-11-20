@@ -1,3 +1,4 @@
+import type { sessionEvidence } from '../../packages/myco-server/src/read/session-evidence.ts';
 /**
  * The Sessions pages' wire shapes, as the dashboard declares them, match the server's.
  *
@@ -23,12 +24,13 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 
 const SAME: [
+  Same<Ui.SessionEvidence, ReturnType<typeof sessionEvidence>>,
   Same<Ui.OutcomeSpore, OutcomeSpore>,
   Same<Ui.SessionRun, SessionRun>,
   Same<Ui.SessionOutcome, SessionOutcome>,
   Same<Ui.SessionOutcome, Awaited<ReturnType<typeof sessionOutcome>>>,
   Same<Ui.ResumeCommand, ResumeCommand>,
-] = [true, true, true, true, true];
+] = [true, true, true, true, true, true];
 
 /** `GET /api/sessions`: the page the read across Projects answers, as the handler sends it. */
 type SessionsAnswer = Awaited<ReturnType<typeof listSessionSummariesAcross>>;

@@ -1,3 +1,5 @@
+import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
+import { trimTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import { expect, test } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
@@ -18,7 +20,7 @@ const instant = '2026-01-01T00:00:00Z';
 const row = (type: string, payload: Record<string, unknown>) => ({ type, timestamp: instant, payload });
 const message = (role: string, text: string) => row('response_item', { type: 'message', role, content: [{ type: 'text', text }] });
 const codex = [
-  row('event_msg', { type: 'task_started', turn_id: 'turn-a' }), message('user', '<relay sender="planner">Read the task</relay>'),
+  row('event_msg', { type: 'task_started', turn_id: 'turn-a' }), message('user', '<environment_context>Initial environment</environment_context>'), message('user', '<relay sender="planner">Read the task</relay>'), message('user', '<environment_context>Injected environment</environment_context>'),
   row('response_item', { type: 'custom_tool_call', call_id: 'wrapper', name: 'exec', input: 'tools.exec_command({cmd:"false"})' }),
   row('event_msg', { type: 'item_completed', turn_id: 'turn-a', item: { type: 'CommandExecution', id: 'command', command: 'false', status: 'failed', exit_code: 1, aggregated_output: 'command failed' } }),
   row('response_item', { type: 'custom_tool_call_output', call_id: 'wrapper', output: [{ type: 'text', text: 'Script completed' }] }),
@@ -44,7 +46,7 @@ const claude = [
 ].map(value => ({ ...value, timestamp: instant }));
 
 for (const [agent, records, calls, edits] of [
-  ['codex', codex, [3, 1], 2], ['claude-code', claude, [2, 1], 1],
+  ['codex', codex, [2, 0], 2], ['claude-code', claude, [2, 1], 1],
 ] as const) test(`${agent}: captured transcript publishes truthful session numbers and turn ownership`, async () => {
   const fixture = sqliteEnv();
   const now = Date.now();
@@ -71,18 +73,26 @@ for (const [agent, records, calls, edits] of [
       const mcpResponse = await worker.fetch(memberPost(issued.token, { jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: { name: 'myco_sessions', arguments: { project: 'proj_1', op: 'get', id: session } } }, '/mcp'), fixture.env);
       expect(mcpResponse.status).toBe(200);
-      const mcp = await mcpResponse.json() as { result: { structuredContent: { result: { counts: unknown } } } };
+      const mcp = await mcpResponse.json() as { result: { structuredContent: { result: { counts: unknown; turnCount: number; prompt_count: number } } } };
       expect(mcp.result.structuredContent.result.counts).toEqual(header.counts);
+      expect([mcp.result.structuredContent.result.turnCount, mcp.result.structuredContent.result.prompt_count]).toEqual([header.turns, header.promptEntries]);
       const turns = (await get(session, '/turns?origins=user,system,agent_dispatch,hook_injected,unknown')).rows;
-      expect(header.counts).toMatchObject({ prompts: 2, userPrompts: parent === undefined ? 2 : 0, toolCalls: calls[0] + calls[1], failedTools: 1, mycoCalls: 1, plans: 0, attachments: 0 });
-      expect(header.filesEdited).toBeNull();
+      expect(header.counts).toMatchObject({ userPrompts: agent === 'codex' ? 0 : 2, toolCalls: calls[0] + calls[1], failedTools: agent === 'codex' ? 0 : 1, mycoCalls: agent === 'codex' ? 0 : 1, plans: 0, attachments: 0 });
+      expect([header.turns, header.personTurns, header.reportedErrors, header.nestedToolCalls]).toEqual([2, agent === 'codex' ? 0 : 2, 1, agent === 'codex' ? 2 : 0]);
+      expect(header.filesEdited).toBe(edits);
       expect(header.observedFilesEdited).toBe(edits);
       expect(header.fileEdits).toEqual({ state: 'unknown', observed: edits });
-      expect(turns.map((turn: any) => [turn.origin, turn.toolCallCount])).toEqual(calls.map(count => [parent === undefined ? 'user' : 'agent_dispatch', count]));
+      expect(turns.map((turn: any) => [turn.origin, turn.toolCallCount])).toEqual(calls.map(count => [agent === 'codex' ? 'system' : 'user', count]));
       const detail = await get(session, `/turns/${turns[0].promptId}`);
-      expect(detail.prompt.originSessionId).toBe(parent ?? null);
+      const material = (await documentTurnInput(env, 'proj_1', session, turns[0].promptId))!;
+      expect(material.steering).toEqual([]);
+      expect(trimTurn(material).text).not.toContain('Injected environment');
+      expect(trimTurn(material).text).not.toContain('Initial environment');
+      expect(trimTurn(material).text).not.toContain('A file was written');
+      if (agent === 'codex') expect(material.prompt).toBe('<relay sender="planner">Read the task</relay>');
+      expect(detail.prompt.originSessionId).toBeNull();
       if (agent === 'codex') expect([detail.prompt.text, detail.prompt.envelope]).toEqual(['Read the task', { name: 'relay', attributes: 'sender="planner"' }]);
-      expect((await get(session, '/turns?origins=user')).rows.length).toBe(parent === undefined ? 2 : 0);
+      expect((await get(session, '/turns?origins=user')).rows.length).toBe(agent === 'codex' ? 0 : 2);
       expect((await get(session, '/files?kind=edited')).files.map((file: any) => file.path)).toEqual(agent === 'codex' ? ['alpha.txt', 'beta.txt'] : ['alpha.txt']);
       const lineage = await get(session, '/lineage');
       expect(lineage.edges.map((edge: any) => [edge.kind, edge.parentId, edge.childId])).toEqual(parent === undefined ? [] : [['launched', parent, session]]);
@@ -99,13 +109,13 @@ test('Cursor transcript-only numbers distinguish unseen tools and edits from zer
     await publishDocuments(env, Date.now() + 700_000, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
     const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/unseen-session'), { ...fixture.env, ...OWNER_ENV });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ filesEdited: null, observedFilesEdited: 0, fileEdits: { state: 'not_visible' },
-      counts: { toolCalls: null, failedTools: null, mycoCalls: null },
+    expect(await response.json()).toMatchObject({ filesEdited: 0, observedFilesEdited: 0, fileEdits: { state: 'not_visible' },
+      counts: { toolCalls: 0, failedTools: 0, mycoCalls: 0 },
       visibility: { toolCalls: 'not_visible', failedTools: 'not_visible', mycoCalls: 'not_visible', filesEdited: 'not_visible' } });
   } finally { fixture.sqlite.close(); }
 });
 
-test('a hook-written instruction uses the same launch origin as a parsed instruction', async () => {
+test('launch lineage leaves a hook-written person instruction attributed to the person', async () => {
   const fixture = sqliteEnv();
   try {
     const issued = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine' }, Date.now());
@@ -117,9 +127,9 @@ test('a hook-written instruction uses the same launch origin as a parsed instruc
       expect((await response.json() as { persisted: boolean }).persisted).toBe(true);
     }
     await publishDocuments(fixture.serverEnv, Date.now(), { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
-    const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/hook-session/turns?origins=agent_dispatch'), { ...fixture.env, ...OWNER_ENV });
+    const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/hook-session/turns?origins=user'), { ...fixture.env, ...OWNER_ENV });
     expect(response.status).toBe(200);
-    expect((await response.json() as { rows: { origin: string; preview: string }[] }).rows).toMatchObject([{ origin: 'agent_dispatch', preview: 'Read the task' }]);
+    expect((await response.json() as { rows: { origin: string; preview: string }[] }).rows).toMatchObject([{ origin: 'user', preview: '<relay sender="planner">Read the task</relay>' }]);
   } finally { fixture.sqlite.close(); }
 });
 
@@ -140,7 +150,7 @@ test('parent-bearing and person sessions title and learn their three instruction
     const records = instructions.flatMap((text, index) => {
       const timestamp = new Date(now - DAY + index * 1000).toISOString();
       const event = (type: string) => ({ type: 'event_msg', timestamp, payload: { type, turn_id: `turn-${index}` } });
-      const prompt = index === 0 ? text : `<relay sender="planner">${text}</relay>`;
+      const prompt = parent === undefined ? text : `<subagent_notification>${text}</subagent_notification>`;
       return [event('task_started'), { ...message('user', prompt), timestamp },
         { ...message('assistant', 'Rejected the slow query and verified its replacement'), timestamp }, event('task_complete')];
     });
@@ -164,7 +174,7 @@ test('parent-bearing and person sessions title and learn their three instruction
     expect(material).toContain(parent === undefined ? '[Person]' : '[Another agent]');
     const header = await harness.call(issued.token, 'myco_sessions', { project: 'project', op: 'get', id: session });
     expect(header).toMatchObject({ title: 'Improved the query', summary: 'Inspected, replaced and verified the query.',
-      counts: { prompts: 3, userPrompts: parent === undefined ? 3 : 0 } });
+      turnCount: 3, counts: { prompts: 3, userPrompts: parent === undefined ? 3 : 0 } });
     const cards = await harness.poll(now + HOUR);
     if (!cards.claimed) throw new Error(`No card run: ${cards.reason}`);
     expect(cards.run.task).toBe('turn-cards');
@@ -184,4 +194,41 @@ test('parent-bearing and person sessions title and learn their three instruction
     expect(learned.cards).toHaveLength(3);
     expect(await harness.call(learning.run.runToken, 'myco_run_learning', { op: 'complete', handoff: '' })).toEqual({ completed: true, covered: 3 });
   });
+});
+
+test('unrecognized harness wrappers preserve person counts and empty wrappers open no turn', async () => {
+  const fixture = sqliteEnv();
+  try {
+    for (const [agent, people, wrappers] of [
+      ['claude-code', 5, ['<user-prompt-submit-hook>context</user-prompt-submit-hook>', '<scheduled-task>context</scheduled-task>', '<note/>']],
+      ['codex', 2, ['<turn_aborted>interrupted</turn_aborted>', '<note/>']],
+      ['codex', 1, ['<hc from="planner">Follow up</hc>', '<hc from="planner">Check again</hc>', '<hc from="planner">Finish</hc>']],
+    ] as const) {
+      const session = `${agent}-${people}`;
+      const texts = [...Array.from({ length: people }, (_, i) => `Person instruction ${i}`), ...wrappers];
+      const records = agent === 'codex' ? texts.flatMap((text, i) => [row('event_msg', { type: 'task_started', turn_id: `task-${i}` }), message('user', text)])
+        : texts.map((text, i) => ({ type: 'user', uuid: `record-${i}`, promptId: `prompt-${i}`, timestamp: instant, message: { content: text } }));
+      const env = await captureDocumentTranscript(fixture.db, fixture.bucket, session, `tx_${crypto.randomUUID().replaceAll('-', '')}`, records.map(record => JSON.stringify(record)).join('\n') + '\n', Date.now(), 0, agent, 'proj_1');
+      await publishDocuments(env, Date.now() + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+      const response = await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/${session}`), { ...fixture.env, ...OWNER_ENV });
+      expect(await response.json()).toMatchObject({ personTurns: people, turns: people + wrappers.filter(text => text !== '<note/>').length });
+    }
+  } finally { fixture.sqlite.close(); }
+});
+
+test('transcript agent instructions reopen an ended session and a self launch parent is refused', async () => {
+  const fixture = sqliteEnv();
+  const now = Date.now();
+  try {
+    const issued = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine' }, now);
+    const post = (kind: string, payload: unknown) => worker.fetch(memberPost(issued.token, envelope({ eventId: crypto.randomUUID(), sessionId: 'reopen', kind, createdAt: now, payload })), fixture.env);
+    expect(await (await post('session.start', { agent: 'codex', launchParentSessionId: 'reopen' })).json()).toMatchObject({ persisted: false, code: 'invalid_field' });
+    await post('session.start', { agent: 'codex', launchParentSessionId: 'parent' });
+    await post('session.end', { endedAt: now - 1000 });
+    const records = [row('event_msg', { type: 'task_started', turn_id: 'task' }), message('user', '<subagent_notification>Review the change</subagent_notification>')].map(value => ({ ...value, timestamp: new Date(now).toISOString() }));
+    const env = await captureDocumentTranscript(fixture.db, fixture.bucket, 'reopen', `tx_${'f'.repeat(32)}`, records.map(record => JSON.stringify(record)).join('\n') + '\n', now, 0, 'codex', 'proj_1');
+    await publishDocuments(env, now + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/reopen'), { ...fixture.env, ...OWNER_ENV });
+    expect(await response.json()).toMatchObject({ session: { endedAt: null, launchParentSessionId: 'parent' }, turns: 1, personTurns: 0 });
+  } finally { fixture.sqlite.close(); }
 });

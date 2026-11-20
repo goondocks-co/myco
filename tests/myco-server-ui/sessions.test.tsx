@@ -1,3 +1,9 @@
+import worker from '@myco-server-worker/index.js';
+import { captureDocumentTranscript } from '../myco-server/helpers/document-stores.js';
+import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
+import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
+import { asOwner, OWNER_ENV } from '../myco-server/helpers/owner.js';
+import { sessionEvidence } from '@myco-server-worker/read/session-evidence.js';
 import { TICK_MS, RUNNING_TICK_MS } from '../../packages/myco-server/ui/src/lib/live';
 import { encodeCard } from '@goondocks/myco-shared/turn-card';
 import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
@@ -77,7 +83,7 @@ const page = (rows: unknown[], cursor: string | null = null) => Response.json({ 
 const counts = { prompts: 1, userPrompts: 1, mycoCalls: 0, toolCalls: 3, failedTools: 0, responses: 1, plans: 0, attachments: 2 };
 const NO_OUTCOME = { runs: [], spores: { total: 0, items: [] } };
 const detail = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) =>
-  Response.json({ session: session(over), untitled: null, counts, filesEdited: 0, release: null, outcome: NO_OUTCOME, projectId: 'x', ...extra });
+  Response.json({ ...sessionEvidence(String(over.agent ?? 'claude-code'), { turns: Number((extra.counts as typeof counts | undefined)?.prompts ?? counts.prompts), userTurns: Number((extra.counts as typeof counts | undefined)?.userPrompts ?? counts.userPrompts), prompts: counts.prompts, instructionPrompts: counts.userPrompts, userPrompts: counts.userPrompts, replies: counts.responses, toolCalls: counts.toolCalls, failedTools: counts.failedTools, mycoCalls: counts.mycoCalls, filesEdited: 0, nestedToolCalls: 0, reportedErrors: 0, plans: counts.plans, attachments: counts.attachments, firstPrompt: null, lastRecordAt: null }), session: session(over), untitled: null, counts: { ...counts, promptEntries: counts.prompts }, release: null, outcome: NO_OUTCOME, projectId: 'x', ...extra });
 
 const turn = (over: Record<string, unknown> = {}) => ({
   promptId: P1, origin: 'user', promptKind: null, threadLabel: null, preview: 'Please rename the project card', textChars: 30, blobKey: null,
@@ -510,7 +516,7 @@ describe('the session reading page', () => {
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?about=1'));
     const about = await screen.findByRole('dialog', { name: 'About this session' });
     const factText = about.querySelector('[data-facts]')!.textContent!;
-    for (const words of ['Project X', 'Claude Code', 'Ada’s studio Mac', 'Ada', 'main', '/repo', 'Released · v1.2.0', '1 prompt · 3 tool calls · 1 reply']) expect(factText).toContain(words);
+    for (const words of ['Project X', 'Claude Code', 'Ada’s studio Mac', 'Ada', 'main', '/repo', 'Released · v1.2.0', '1 turn · 1 prompt entry · 3 tool calls · 1 reply']) expect(factText).toContain(words);
     expect(within(about).getByRole('button', { name: 'Copy session id' })).toBeTruthy();
     expect(factText).not.toContain('s1');
     expect(await within(about).findByText('Myco sent the session start block')).toBeTruthy();
@@ -1687,7 +1693,7 @@ describe('the session reading page', () => {
       '/api/projects/x/sessions/s1/turns?origins=agent_dispatch%2Chook_injected%2Csystem%2Cunknown%2Cuser&limit=200&order=desc': list,
     });
     const longRoutes = (over: Routes = {}) => routes({
-      '/api/projects/x/sessions/s1': () => detail({ title: 'A long one' }, { counts: { ...counts, prompts: TURNS, userPrompts: 100, toolCalls: 10_000, failedTools: 40, mycoCalls: 100 }, filesEdited: 12 }),
+      '/api/projects/x/sessions/s1': () => detail({ title: 'A long one' }, { counts: { ...counts, prompts: TURNS, userPrompts: 100, toolCalls: 10_000, failedTools: 40, mycoCalls: 100 }, filesEdited: 12, fileEdits: { state: 'unknown', observed: 12 } }),
       ...listRoutes(turnList),
       ...Object.fromEntries(LONG.map((row) => [`/api/projects/x/sessions/s1/turns/${row.promptId}`, () => Response.json({
         card: `Asked: ${row.preview}\nDone: Did turn ${row.promptId}\nOutcome: ${row.headline}`,
@@ -1712,7 +1718,7 @@ describe('the session reading page', () => {
       expect(within(list).getAllByRole('link')).toHaveLength(100);
       expect(screen.getByTestId(`row-${newest}`).getAttribute('aria-current')).toBe('true');
       const counted = document.querySelector('[data-session-counts]')!.textContent!;
-      for (const words of ['400 turns', '100 from you', '10,000 tool calls', '40 failed', '100 Myco calls', '12 files edited']) expect(counted).toContain(words);
+      for (const words of ['400 turns', '100 from you', '10,000 tool calls', '40 failed', '100 Myco calls', 'At least 12 files edited']) expect(counted).toContain(words);
       await waitFor(() => expect(bodyReads(requested)).toEqual([`/api/projects/x/sessions/s1/turns/${newest}`]));
       expect(requested.some((path) => path.includes('/tool-calls'))).toBe(false);
       // A row and j and k each open one turn, stepping within the list; k stops at its top.
@@ -1740,11 +1746,11 @@ describe('the session reading page', () => {
       expect(screen.queryByText('error of turn 380')).toBeNull();
       fireEvent.click(within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Everything' }));
       expect((await screen.findByTestId(`row-${idOf(399)}`)).getAttribute('data-background')).toBe('');
-      expect(screen.getByTestId(`row-${idOf(398)}`).textContent).toContain('Sub-agent');
+      expect(screen.getByTestId(`row-${idOf(398)}`).textContent).toContain('Another agent');
       // A header count opens its filter, and the files count its tab.
       fireEvent.click(screen.getByRole('button', { name: /40 failed/ }));
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?filter=failed'));
-      fireEvent.click(screen.getByRole('button', { name: /12 files edited/ }));
+      fireEvent.click(screen.getByRole('button', { name: /At least 12 files edited/ }));
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=files'));
     });
 
@@ -2321,4 +2327,35 @@ describe('leading envelope ownership', () => {
     expect(promptDisplay(text, 'claude-code')).toEqual({ text: 'the parser', envelopes: [{ label: 'Ran /review', text: '', inlineText: '/review' }] });
     expect(promptDisplay('<command-name>/fork</command-name><command-args></command-args>', 'claude-code')).toEqual({ text: '', envelopes: [{ label: 'Ran /fork', text: '', inlineText: '/fork' }] });
   });
+});
+
+for (const agent of ['codex', 'cursor'] as const) it(`renders ${agent} evidence from the published session response`, async () => {
+  const fixture = sqliteEnv();
+  try {
+    const message = (payload: unknown) => ({ type: 'response_item', timestamp: new Date(NOW).toISOString(), payload });
+    const records = agent === 'codex' ? [
+      { type: 'event_msg', timestamp: new Date(NOW).toISOString(), payload: { type: 'task_started', turn_id: 'task' } },
+      message({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Check the published evidence' }] }),
+      message({ type: 'custom_tool_call', call_id: 'patch', name: 'apply_patch', input: '*** Begin Patch\n*** Add File: evidence.txt\n+evidence\n*** End Patch' }),
+      message({ type: 'custom_tool_call_output', call_id: 'patch', output: 'Success' }),
+    ] : [{ role: 'user', message: { content: [{ type: 'text', text: '<user_query>Check the published evidence</user_query>' }] } }];
+    const env = await captureDocumentTranscript(fixture.db, fixture.bucket, 'published', `tx_${'9'.repeat(32)}`, records.map(row => JSON.stringify(row)).join('\n') + '\n', NOW, 0, agent, 'proj_1');
+    await publishDocuments(env, NOW + HOUR, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
+    const response = await worker.fetch(await asOwner(fixture.db, '/api/projects/proj_1/sessions/published'), { ...fixture.env, ...OWNER_ENV });
+    expect(response.status).toBe(200);
+    const answer = await response.json();
+    server(base({
+      '/api/projects': () => Response.json({ projects: [{ ...PROJECTS.projects[0], projectId: 'proj_1', name: 'Published project' }] }),
+      '/api/projects/proj_1/sessions/published': () => Response.json(answer),
+      '/api/projects/proj_1/sessions/published/turns': () => page([]),
+    }));
+    mount('/p/proj_1/sessions/published');
+    expect(await screen.findByRole('heading', { level: 1, name: /Check the published evidence/ })).toBeTruthy();
+    const header = document.querySelector('[data-session-counts]')!;
+    expect(header.textContent).toContain(agent === 'codex' ? 'At least 1 file edited' : 'Files edited: not visible');
+    if (agent === 'cursor') expect(header.textContent).toContain('tool call: not visible');
+    fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
+    const about = await screen.findByRole('dialog', { name: 'About this session' });
+    expect(about.textContent).toContain(agent === 'codex' ? 'At least 1 file edited' : 'Files edited: not visible');
+  } finally { fixture.sqlite.close(); }
 });

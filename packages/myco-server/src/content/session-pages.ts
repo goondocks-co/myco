@@ -158,7 +158,7 @@ export function toolCallRow(record: DocRecord, at: PageLocator) {
   const input = typeof record.input === 'string' ? toolInputPreview(record.input) : null;
   const files = Array.isArray(record.files_affected) ? record.files_affected.filter((path): path is string => typeof path === 'string') : [];
   return {
-    toolCallId: record.id, promptId: record.prompt_id, toolName: str(record.tool_name) ?? 'unknown', mycoTool: recordMycoFields(record).tool,
+    toolCallId: record.id, nested: record.nested === true, promptId: record.prompt_id, toolName: str(record.tool_name) ?? 'unknown', mycoTool: recordMycoFields(record).tool,
     mycoOp: recordMycoFields(record).op, inputPreview: input?.preview ?? null,
     inputBytes: typeof record.input_bytes === 'number' ? record.input_bytes : null,
     inputTruncated: (input?.truncated ?? false) || record.bodies?.input !== undefined, inputBlobKey: record.bodies?.input?.digest ?? null,

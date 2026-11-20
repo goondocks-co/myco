@@ -508,6 +508,15 @@ describe('codex manifest declares its Bash read tool without a PreToolUse hook',
 
 });
 
+it('declares both raw and structured Codex patch writes', () => {
+  const manifest = SymbiontManifestSchema.parse(YAML.parse(fs.readFileSync(path.join(MANIFESTS_DIR, 'codex.yaml'), 'utf8')));
+  expect(manifest.capabilities?.pathBearingTools).toEqual(expect.arrayContaining([
+    expect.objectContaining({ tool: 'Bash', pathField: 'command', extract: 'shell-arg' }),
+    { tool: 'apply_patch', pathField: '', extract: 'patch', mutates: true },
+    { tool: 'apply_patch', pathField: 'command', extract: 'patch', mutates: true },
+  ]));
+});
+
 describe('symbiont turn-row source', () => {
   const capabilitiesOf = (name: string) => SymbiontManifestSchema.parse(YAML.parse(fs.readFileSync(path.join(MANIFESTS_DIR, `${name}.yaml`), 'utf-8'))).capabilities!;
 

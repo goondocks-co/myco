@@ -130,6 +130,8 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
 it('triages only mechanical turns by rule', () => {
   const turn = (over: Partial<Parameters<typeof triageTurn>[0]>) => ({ turnKey: 't', origin: 'user', prompt: 'continue', steering: [], replies: [], tools: [], plans: [], ...over });
   expect(triageTurn(turn({}))).toBe('no_human_text');
+  expect(triageTurn(turn({ origin: 'system', prompt: '<task-notification>done</task-notification>', tools: [{ toolCallId: 'edit', toolName: 'Write', input: '{}', output: '', success: true, fileChanging: true, errorMessage: null }] }))).toBeNull();
+  expect(triageTurn(turn({ origin: 'hook_injected', prompt: 'Hook result', replies: [{ responseId: 'reply', text: 'Detailed work. '.repeat(150) }] }))).toBeNull();
   expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\n<task-notification><status>done</status></task-notification>' }))).toBe('no_human_text');
   expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\nPin bun to 1.4.0 in .bun-version' }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3.' }))).toBeNull();

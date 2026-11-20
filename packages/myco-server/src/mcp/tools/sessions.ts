@@ -36,12 +36,13 @@ interface SessionSummary {
   title: string | null;
   summary: string;
   prompt_count: number;
-  tool_count: number | null;
+  turnCount: number;
+  tool_count: number;
   parent_session_id: string | null;
   launch_parent_session_id: string | null;
 }
 
-function summary(row: SessionRow, counts: { prompts: number; toolCalls: number | null }): SessionSummary {
+function summary(row: SessionRow, counts: { prompts: number; toolCalls: number; turns: number }): SessionSummary {
   return {
     id: row.sessionId,
     agent: row.agent,
@@ -53,6 +54,7 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number |
     title: row.title,
     summary: row.summary ?? '',
     prompt_count: counts.prompts,
+    turnCount: counts.turns,
     tool_count: counts.toolCalls,
     parent_session_id: row.parentSessionId,
     launch_parent_session_id: row.launchParentSessionId,
@@ -95,8 +97,8 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     const turns = ctx.principal.kind === 'grant' ? undefined : await listCatalogTurns(db, scope, id, {
       origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor,
     });
-    const evidence = sessionEvidence(row.agent, await documentCounters(db, scope, id));
-    return { ...summary(row, evidence.counts), ...evidence, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
+    const { turns: turnCount, ...evidence } = sessionEvidence(row.agent, await documentCounters(db, scope, id));
+    return { ...summary(row, { ...evidence.counts, turns: turnCount }), ...evidence, turnCount, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
   }
 
   let sessionId: string | undefined;
@@ -124,7 +126,7 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     sessionId,
     quietBefore: await sessionQuietBefore(ctx.env, ctx.now),
   }, ctx.now);
-  return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount })), cursor: page.cursor };
+  return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount, turns: row.turnCount })), cursor: page.cursor };
 }
 
 /** Turn locator repair is a named, retryable read refusal on MCP. */
