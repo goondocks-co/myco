@@ -659,7 +659,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       });
       console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);
       console.log(`Client ID:   ${result.app.clientId}`);
-      console.log(`Owner: ${existing || !result.signInInstalled ? 'not checked' : result.app.ownerLogin ?? 'not reported by GitHub'}`);
+      console.log(`Owner:       ${result.app.ownerLogin ?? (existing ? 'not checked' : 'not identified; see the steps above')}`);
       console.log(`Callback:    ${result.callbackUrl}${existing ? ' must be listed in the app' : ''}`);
       if (result.signInInstalled || result.repositoryAccess !== 'instructions') console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
       if (result.verified.ok) console.log(`Sign-in:     ${new URL(url!).origin} sends sign-in to GitHub with client ${result.app.clientId}; sign in once to confirm.`);

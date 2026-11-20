@@ -45,11 +45,11 @@ const RELEASES = {
 /** The server's App installed by the operator's organization, approved here, and by a look-alike account never approved. */
 const INSTALLATIONS = {
   installations: [
-    { installationId: 41, account: { id: 9001, login: 'goondocks-co', type: 'Organization' }, approved: true, suspended: false },
-    { installationId: 666, account: { id: 6660, login: 'go0ndocks-co', type: 'Organization' }, approved: false, suspended: false },
+    { installationId: 41, account: { id: 9001, login: 'goondocks-co', type: 'Organization' }, approved: true, suspended: false, permissionsAccepted: true },
+    { installationId: 666, account: { id: 6660, login: 'go0ndocks-co', type: 'Organization' }, approved: false, suspended: false, permissionsAccepted: true },
   ],
   accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW - HOUR }],
-  page: 1, more: true,
+  page: 1, more: true, app: { slug: 'myco-app', owner: { login: 'goondocks-co', type: 'Organization' } },
 };
 const CHOICES = { repositories: [{ id: 1296269, fullName: 'goondocks-co/myco', defaultBranch: 'main', private: true }], more: false };
 
@@ -414,7 +414,9 @@ describe('the repository', () => {
     server(base({ [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: {}, capabilities: { canopy: true } }),
       [`${api}/repository`]: () => Response.json({ repository: REPOSITORY, appConfigured: false }) }));
     mount(`/p/${P}/settings`);
-    expect((await screen.findByTestId('repository-setup')).textContent).toContain('myco server github-app');
+    const setup = await screen.findByTestId('repository-setup');
+    expect(setup.textContent).toContain('Settings → Sign-in and access → GitHub App shows each remaining step.');
+    expect(within(setup).getByRole('link', { name: 'Open the GitHub App setup →' }).getAttribute('href')).toBe('/settings/access#github-app');
     const row = (await screen.findByRole('switch', { name: 'Code map' })).closest('[data-setting="capability.canopy"]') as HTMLElement;
     await waitFor(() => expect(row.textContent).toContain('On · Code tasks need repository access set up'));
     expect(within(row).queryByRole('link')).toBeNull();
@@ -439,15 +441,20 @@ describe('the repository', () => {
     expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['goondocks-co']);
     fireEvent.click(await screen.findByRole('option', { name: 'goondocks-co' }));
     await within(dialog).findByLabelText(/^Repository(?::|$)/);
+    expect(within(dialog).getByRole('link', { name: 'Install the App in GitHub' }).getAttribute('href')).toBe('https://github.com/apps/myco-app/installations/new');
+    expect(within(dialog).getByRole('link', { name: 'Choose goondocks-co’s repositories in GitHub' }).getAttribute('href')).toBe('https://github.com/organizations/goondocks-co/settings/installations/41');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save repository' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toEqual({ method: 'PUT', path: `${api}/repository`, body: { installationId: 41, repositoryId: 1296269, branch: 'main', revision: 'rev_7' } });
   });
 
-  it('opens the connection form from a repository deep link and closes it without leaving the request in the URL', async () => {
-    server(base({ [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }) }));
+  it('opens the connection form from a repository deep link, links to the install page when the App is installed nowhere, and closes it without leaving the request in the URL', async () => {
+    server(base({ [`${api}/repository`]: () => Response.json({ repository: null, appConfigured: true }),
+      '/api/github-app/installations': () => Response.json({ ...INSTALLATIONS, installations: [], accounts: [], more: false }) }));
     mount(`/p/${P}/settings?connect=repository#repository`);
     const dialog = await screen.findByRole('dialog', { name: 'Connect a repository' });
+    await within(dialog).findByText(/^The App is not installed on any account yet\./);
+    expect(within(dialog).getByRole('link', { name: 'Install the App in GitHub' }).getAttribute('href')).toBe('https://github.com/apps/myco-app/installations/new');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.getByTestId('location').textContent).toBe(`/p/${P}/settings#repository`);

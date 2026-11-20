@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, deleteJson, fetchJson, patchJson, postJson, putJson } from '../lib/api';
 import type { EmbeddingSwitchEstimate, EmbeddingSwitchStatus, HealthPassedOverList } from '@goondocks/myco-shared/settings-contract';
 import type { ReasoningTier } from '@goondocks/myco-shared/execution-profile';
+import type { GitHubAppSetup, RepositorySuggestion, RepositorySuggestions } from '@goondocks/myco-shared/github-app-setup';
 
 import type { SecretRow, SettingsAnswer, SecretsAnswer, TitlingBackfillProgress } from '../features/admin/settings/wire';
 import type { ApprovedAccountRow, CapabilitiesAnswer, InstallationsAnswer, RepositoryAnswer, RepositoryChoicesAnswer } from '../features/admin/project/wire';
@@ -195,13 +196,17 @@ export function useRepository(projectId: string) {
   });
 }
 
+const repositoryPath = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/repository`;
+/** Everything that reads a Project's repository connection, read again once it changes. */
+const refreshRepository = (client: ReturnType<typeof useQueryClient>, projectId: string) => Promise.all([
+  client.invalidateQueries({ queryKey: ['repository', projectId] }),
+  ...['attention', 'setup-progress', 'task-start'].map(key => client.invalidateQueries({ queryKey: [key] })),
+]);
+
 export function useRepositoryActions(projectId: string) {
   const client = useQueryClient();
-  const path = `/api/projects/${encodeURIComponent(projectId)}/repository`;
-  const refresh = () => Promise.all([
-    client.invalidateQueries({ queryKey: ['repository', projectId] }),
-    ...['attention', 'setup-progress', 'task-start'].map(key => client.invalidateQueries({ queryKey: [key] })),
-  ]);
+  const path = repositoryPath(projectId);
+  const refresh = () => refreshRepository(client, projectId);
   return {
     save: useMutation({
       gcTime: 0,
@@ -216,7 +221,29 @@ export function useRepositoryActions(projectId: string) {
   };
 }
 
-const INSTALLATIONS_KEY = ['github-app', 'installations'] as const;
+const GITHUB_APP_KEY = 'github-app';
+const INSTALLATIONS_KEY = [GITHUB_APP_KEY, 'installations'] as const;
+
+/** The live facts behind the GitHub App setup checklist, asked of GitHub when the section opens and when an admin checks again. */
+export function useGitHubAppSetup() {
+  return useQuery({ queryKey: [GITHUB_APP_KEY, 'setup'], retry: false, queryFn: ({ signal }) => fetchJson<GitHubAppSetup>('/api/github-app', signal), ...live('heavy'), refetchOnMount: 'always' });
+}
+
+/** A repository proposed for each Project with none, asked of GitHub only when an admin asks. */
+export function useRepositorySuggestions() {
+  return useQuery({ queryKey: [GITHUB_APP_KEY, 'suggestions'], enabled: false, retry: false,
+    queryFn: ({ signal }) => fetchJson<RepositorySuggestions>('/api/github-app/suggestions', signal), ...live('heavy') });
+}
+
+/** Connects a proposed repository to its Project with its default branch, through the Project's own repository connection. */
+export function useConnectSuggestion() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (proposal: RepositorySuggestion) => putJson<RepositoryAnswer>(repositoryPath(proposal.projectId),
+      { installationId: proposal.installationId, repositoryId: proposal.repositoryId, branch: proposal.defaultBranch, revision: null }),
+    onSuccess: (_answer, proposal) => Promise.all([refreshRepository(client, proposal.projectId), client.invalidateQueries({ queryKey: [GITHUB_APP_KEY, 'setup'] })]),
+  });
+}
 
 /** The App's installations and the accounts approved here, asked of GitHub only when an admin opens or refreshes them. */
 export function useGitHubInstallations(enabled: boolean, page = 1) {
@@ -236,10 +263,10 @@ export function useInstallationRepositories(installationId: number | null, page:
   });
 }
 
-/** Approve the account holding an installation, or withdraw an account's approval. */
+/** Approve the account holding an installation, or withdraw an account's approval; the setup checklist is read again too. */
 export function useGitHubAccountActions() {
   const client = useQueryClient();
-  const refresh = () => client.invalidateQueries({ queryKey: [...INSTALLATIONS_KEY] });
+  const refresh = () => client.invalidateQueries({ queryKey: [GITHUB_APP_KEY] });
   return {
     approve: useMutation({
       mutationFn: (installationId: number) => postJson<{ account: ApprovedAccountRow }>('/api/github-app/accounts', { installationId }),

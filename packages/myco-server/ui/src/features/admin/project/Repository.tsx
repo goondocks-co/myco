@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, FactRow, Input, LoadingState, MoreMenu, Select,
+  ActionLink, Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, ExternalLink, FactRow, Input, LoadingState, MoreMenu, Select, tapTarget,
 } from '../../../design';
+import { GITHUB_APP_SETUP_PATH, githubAppPages, installationPage as installationSettings, ownerWords } from '@goondocks/myco-shared/github-app-setup';
 import {
   settingsRefusalText, useGitHubAccountActions, useGitHubInstallations, useInstallationRepositories, useRepository, useRepositoryActions,
 } from '../../../hooks/use-settings';
@@ -12,10 +13,8 @@ import { useMemberNames } from '../members';
 import type { InstallationRow, RepositoryRow } from './wire';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
-/** The operator's step when this server holds no GitHub App key. */
-export const APP_SETUP_WORDS = 'Repository access needs setup on this server: the server operator runs `myco server github-app` to give it the GitHub App’s key.';
-
-const accountKind = (type: InstallationRow['account']['type']) => (type === 'Organization' ? 'an organization' : 'a personal account');
+/** What a Project's repository waits for when this server holds no GitHub App key. */
+export const APP_SETUP_WORDS = 'Repository access is not set up on this server yet. Settings → Sign-in and access → GitHub App shows each remaining step.';
 
 /**
  * The committed source a project's code tasks read: one repository this
@@ -66,7 +65,9 @@ export function Repository({ projectId }: { projectId: string }) {
         : query.isError ? <ErrorState error={query.error} onRetry={() => void query.refetch()} />
         : (
           <>
-            {!appConfigured && <p role="status" className="t-small text-muted" data-testid="repository-setup">{APP_SETUP_WORDS}</p>}
+            {!appConfigured && <p role="status" className="t-small text-muted" data-testid="repository-setup">
+              {APP_SETUP_WORDS} <ActionLink to={GITHUB_APP_SETUP_PATH}>Open the GitHub App setup →</ActionLink>
+            </p>}
             {connection === null ? <Card><p className="t-body text-muted">No repository connected. Code tasks here need one before they can run.</p></Card>
               : (
                 <Card className="py-s2" data-repository="">
@@ -105,16 +106,17 @@ export function Repository({ projectId }: { projectId: string }) {
 
 /** One installation as an admin meets it: chosen, approved, or waiting for an approval it can be given here. */
 function InstallationLine({ installation, onApprove, pending }: { installation: InstallationRow; onApprove: () => void; pending: boolean }) {
-  const who = `${installation.account.login} (${accountKind(installation.account.type)})`;
+  const who = ownerWords(installation.account);
   if (!installation.approved) {
     return (
       <div className="flex items-center justify-between gap-s3" data-installation={installation.installationId}>
-        <p className="t-small">{`Installed by an account this server has not approved: ${who}`}</p>
+        <p className="t-small">{`Installed by an account this server has not approved: ${who}${installation.permissionsAccepted ? '' : '; has not accepted the new permissions'}`}</p>
         <Button onClick={onApprove} pending={pending}>Approve</Button>
       </div>
     );
   }
-  return <p className="t-small text-muted" data-installation={installation.installationId}>{installation.suspended ? `${who}: suspended in GitHub` : `${who}: approved`}</p>;
+  const unaccepted = installation.permissionsAccepted ? '' : '; has not accepted the new permissions';
+  return <p className="t-small text-muted" data-installation={installation.installationId}>{installation.suspended ? `${who}: suspended in GitHub` : `${who}: approved${unaccepted}`}</p>;
 }
 
 function RepositoryForm({ projectId, connection, onClose }: { projectId: string; connection: RepositoryRow | null; onClose: () => void }) {
@@ -124,7 +126,8 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
   const installations = useGitHubInstallations(true, installationPage);
   const usable = (installations.data?.installations ?? []).filter((installation) => installation.approved && !installation.suspended);
   const [installationId, setInstallationId] = useState<number | null>(connection?.installationId ?? null);
-  const chosenInstallation = usable.some((installation) => installation.installationId === installationId) ? installationId : null;
+  const chosenAccount = usable.find((installation) => installation.installationId === installationId) ?? null;
+  const chosenInstallation = chosenAccount?.installationId ?? null;
   const [page, setPage] = useState(1);
   const repositories = useInstallationRepositories(chosenInstallation, page);
   const [repositoryId, setRepositoryId] = useState<number | null>(connection?.repositoryId ?? null);
@@ -150,7 +153,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
       {installations.isPending ? <LoadingState label="Asking GitHub for the App’s installations" count={2} />
         : installations.isError ? <ErrorState error={installations.error} onRetry={() => void installations.refetch()} />
         : installations.data.installations.length === 0
-          ? <p className="t-small text-muted">The App is not installed on any account yet. Install it from GitHub, choosing only the repositories code tasks should read, then refresh.</p>
+          ? <p className="t-small text-muted" data-no-installation="">The App is not installed on any account yet. Install it on the account that owns the repository, choosing only the repositories code tasks should read, then press Refresh GitHub access.</p>
           : installations.data.installations.map((installation) => (
             <InstallationLine key={installation.installationId} installation={installation}
               pending={accounts.approve.isPending && accounts.approve.variables === installation.installationId}
@@ -159,6 +162,13 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
       {installations.data?.more && <Button variant="ghost" onClick={() => setInstallationPage(installationPage + 1)}>Show the next accounts</Button>}
       {installationPage > 1 && <Button variant="ghost" onClick={() => setInstallationPage(1)}>Back to the first accounts</Button>}
       {accounts.approve.error && <p role="alert" className="t-small text-bad">{settingsRefusalText(accounts.approve.error)}</p>}
+      {installations.isSuccess && (
+        <div className="flex flex-col items-start t-small text-muted" data-install-hint="">
+          {installations.data.installations.length > 0 && <span>Repository not here? Install the App on the account that owns it, or add the repository to that account’s installation, then press Refresh GitHub access.</span>}
+          <ExternalLink className={tapTarget} href={githubAppPages(installations.data.app.slug, installations.data.app.owner).install}>Install the App in GitHub</ExternalLink>
+          {chosenAccount !== null && <ExternalLink className={tapTarget} href={installationSettings(chosenAccount.installationId, chosenAccount.account)}>{`Choose ${chosenAccount.account.login}’s repositories in GitHub`}</ExternalLink>}
+        </div>
+      )}
       {usable.length > 0 && (
         <Select
           id="repository-installation" label="Account" placeholder="Choose an account"
@@ -169,7 +179,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
       )}
       {chosenInstallation !== null && (repositories.isPending ? <LoadingState label="Asking GitHub for the repositories this account selected" count={1} />
         : repositories.isError ? <ErrorState error={repositories.error} onRetry={() => void repositories.refetch()} />
-        : choices.length === 0 ? <p className="t-small text-muted">This installation includes no repositories. Add one to it in GitHub, then refresh.</p>
+        : choices.length === 0 ? <p className="t-small text-muted">This installation includes no repositories. Add one to it in GitHub, then press Refresh GitHub access.</p>
         : (
           <>
             <Select

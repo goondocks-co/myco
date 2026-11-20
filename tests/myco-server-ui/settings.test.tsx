@@ -128,11 +128,18 @@ function server(routes: Record<string, (init?: RequestInit) => Response | Promis
   return { sent };
 }
 
+/** `GET /api/github-app` for a hosted Deployment whose App GitHub's public page identified before any key. */
+const APP_OWNER = { login: 'goondocks-co', type: 'Organization' as const };
+const SETUP = { target: 'cloudflare', origin: null, clientId: 'Iv1.app', expectedName: null, lookupError: null, key: { state: 'key_absent' }, installations: null, connectedProjects: 0, repository: null,
+  app: { slug: 'myco-app', name: 'Myco (app)', owner: APP_OWNER, permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' }, source: 'public' } };
+const KEYED = { ...SETUP, key: { state: 'ready', app: { slug: 'myco-app' }, missing: [] } };
+const INSTALLED = { installationId: 41, account: APP_OWNER, approved: false, suspended: false, permissionsAccepted: true };
+
 const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<Response>> = {}) => ({
   '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
-  '/api/github-app': () => Response.json({ state: 'key_absent' }),
+  '/api/github-app': () => Response.json(SETUP),
   '/api/settings': () => Response.json(leaves({ 'cortex.digest.inject_on_session_start': { value: true, updatedBy: ADA, updatedAt: NOW - 2 * 3_600_000 } })),
   '/api/secrets': () => Response.json(secrets(true)),
   '/api/titling-backfill': () => Response.json(TITLING),
@@ -1083,25 +1090,64 @@ describe('Title imported sessions', () => {
 });
 
 describe('Sign-in and access', () => {
-  it('shows App setup, missing reads, a successful explicit recheck and the accounts approved here', async () => {
-    let state: unknown = { state: 'key_absent' };
+  it('carries the App setup as a live checklist with direct links, approves an installation, connects proposed repositories and says set up only once a Project reads one', async () => {
+    let state: unknown = SETUP;
     const { sent } = server(base({ '/api/github-app': () => Response.json(state),
-      '/api/github-app/installations': () => Response.json({ installations: [], accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW }] }),
-      '/api/github-app/accounts/9001': () => Response.json({ withdrawn: true }) }));
+      '/api/github-app/installations': () => Response.json({ installations: [], accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW }], page: 1, more: false, app: { slug: 'myco-app', owner: APP_OWNER } }),
+      '/api/github-app/accounts': () => Response.json({ account: {} }),
+      '/api/github-app/accounts/9001': () => Response.json({ withdrawn: true }),
+      '/api/github-app/suggestions': () => Response.json({ complete: true, withheld: [], suggestions: ['a', 'b'].map((name, index) => ({ projectId: `proj_${name}`, project: name, installationId: 41, repositoryId: index + 1, fullName: `goondocks-co/${name}`, defaultBranch: 'main' })) }),
+      '/api/projects/proj_a/repository': () => Response.json({ repository: null, appConfigured: true }),
+      '/api/projects/proj_b/repository': () => Response.json({ repository: null, appConfigured: true }) }));
     mount('/settings/access');
-    await screen.findByText('Check whether repository access is set up.');
+    await screen.findByText('This server’s App is Myco (app), owned by goondocks-co (an organization).');
+    expect(within(document.querySelector('[data-app-identity]') as HTMLElement).getByRole('link', { name: 'Open the App’s settings' }).getAttribute('href')).toBe('https://github.com/organizations/goondocks-co/settings/apps/myco-app');
+    const key = document.querySelector('[data-step="key"]') as HTMLElement;
+    expect(within(key).getByText('Import the App’s private key.')).toBeTruthy();
+    expect(within(key).getByText(`myco server github-app --target cloudflare --url ${window.location.origin} --private-key-file <downloaded.pem>`)).toBeTruthy();
+    expect(within(document.querySelector('[data-step="installed"]') as HTMLElement).getByRole('link', { name: 'Install the App in GitHub' }).getAttribute('href')).toBe('https://github.com/apps/myco-app/installations/new');
+    expect(screen.getByText(/^Repository access is not set up yet: 4 of 6 steps remain\. Next: Import the App’s private key\.$/)).toBeTruthy();
+    expect(screen.getByText(/confirm access/)).toBeTruthy();
+    state = { ...KEYED, installations: { list: [INSTALLED], more: false } };
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
-    await screen.findByText(/App private key is absent/);
-    expect(screen.getByText(/myco server github-app/).textContent).toContain('--url');
-    state = { state: 'permissions_missing', app: { slug: 'myco-app' }, missing: ['pull_requests must be read-only (currently absent)'] };
+    const installed = await screen.findByText('Installed by an account this server has not approved: goondocks-co (an organization)');
+    fireEvent.click(within(installed.parentElement as HTMLElement).getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(sent.filter((request) => request.method === 'POST').map(({ path, body }) => ({ path, body }))).toEqual([{ path: '/api/github-app/accounts', body: { installationId: 41 } }]));
+    state = { ...KEYED, installations: { list: [{ ...INSTALLED, approved: true }], more: false } };
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
-    await screen.findByText('App permissions need changes: pull_requests must be read-only (currently absent).');
-    state = { state: 'ready', app: { slug: 'myco-app' }, missing: [] };
+    fireEvent.click(await screen.findByRole('button', { name: 'Find repositories for my Projects' }));
+    await screen.findByText('a: goondocks-co/a, branch main');
+    fireEvent.click(screen.getByRole('button', { name: 'Connect all 2' }));
+    await waitFor(() => expect(sent.filter((request) => request.method === 'PUT').map(({ path, body }) => ({ path, body }))).toEqual(['a', 'b'].map((name, index) => ({
+      path: `/api/projects/proj_${name}/repository`, body: { installationId: 41, repositoryId: index + 1, branch: 'main', revision: null } }))));
+    state = { ...KEYED, installations: { list: [{ ...INSTALLED, approved: true }], more: false }, connectedProjects: 2, repository: { project: 'a', fullName: 'goondocks-co/a' } };
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
-    await screen.findByText('Repository access is set up for myco-app.');
-    const approved = (await screen.findByText('goondocks-co (an organization)')).parentElement as HTMLElement;
+    await screen.findByText('Repository access is set up: a reads goondocks-co/a.');
+    const approved = (await screen.findByText('goondocks-co (an organization)', { selector: '[data-approved-accounts] span' })).parentElement as HTMLElement;
     fireEvent.click(within(approved).getByRole('button', { name: 'Remove approval' }));
     await waitFor(() => expect(sent.filter((request) => request.method === 'DELETE').map(({ method, path }) => ({ method, path }))).toEqual([{ method: 'DELETE', path: '/api/github-app/accounts/9001' }]));
+  });
+
+  it('keeps approving and installing open after the first account, withholds proposals from an incomplete search, and reads the facts again on every opening', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let state: unknown = { ...KEYED, installations: { list: [{ ...INSTALLED, approved: true }, { installationId: 42, account: { login: 'second-org', type: 'Organization' }, approved: false, suspended: false, permissionsAccepted: false }], more: false } };
+    let reads = 0;
+    server(base({ '/api/github-app': () => { reads += 1; return Response.json(state); },
+      '/api/github-app/installations': () => Response.json({ installations: [], accounts: [], page: 1, more: false, app: { slug: 'myco-app', owner: APP_OWNER } }),
+      '/api/github-app/suggestions': () => Response.json({ complete: false, suggestions: [], withheld: [{ projectId: 'proj_a', project: 'a' }] }) }));
+    mount('/settings/access', client);
+    const approved = await waitFor(() => { const step = document.querySelector('[data-step="approved"]') as HTMLElement; expect(step.dataset.state).toBe('done'); return step; });
+    expect(within(approved).getByText('Installed by an account this server has not approved: second-org (an organization); has not accepted the new permissions')).toBeTruthy();
+    expect(within(approved).getByRole('button', { name: 'Approve' })).toBeTruthy();
+    expect(within(document.querySelector('[data-step="installed"]') as HTMLElement).getByRole('link', { name: 'Install on another account' }).getAttribute('href')).toBe('https://github.com/apps/myco-app/installations/new');
+    fireEvent.click(screen.getByRole('button', { name: 'Find repositories for my Projects' }));
+    await screen.findByText('a: Not every repository could be checked; connect this one by hand from its Settings → Repository.');
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
+    cleanup();
+    state = { ...SETUP, key: { state: 'unavailable', reason: 'GitHub refused App verification (HTTP 401).' } };
+    mount('/settings/access', client);
+    await screen.findByText('GitHub did not accept the imported key: GitHub refused App verification (HTTP 401).');
+    expect(reads).toBe(2);
   });
 
   it('counts the people who can sign in, never Myco, and leads to People & machines, My machines and each live project\'s access keys', async () => {

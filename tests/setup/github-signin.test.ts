@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { AsyncResource } from 'node:async_hooks';
 import {
-  APP_NAME_MAX, defaultAppName, manifestFor, registerGitHubApp, signInPendingPath,
+  defaultAppName, manifestFor, registerGitHubApp, signInPendingPath,
   signInState, writeSignInPending, discardSignInPending, type RegisterOptions, type SignInTarget,
 } from '@myco/server/github-app.js';
 import { readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
@@ -18,9 +18,12 @@ import type { CommandRunner } from '@myco/server/runner.js';
 import { APP_PEM, fakeGitHub, SETUP_APP } from './fixtures/github.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { APP_NAME_MAX, appSlugOf } from '@goondocks/myco-shared/github-app-setup';
 import { convertedBeforeInstall } from './fixtures/interrupted-state.js';
 
 const URL_ = 'https://setup.invalid';
+/** The one public read the command makes to identify a configured App: its page at the slug `Myco (setup.invalid)` implies. */
+const PUBLIC_LOOKUP = 'https://api.github.com/apps/myco-setup-invalid';
 const roots: string[] = [];
 const handlers: BunHandler[] = [];
 afterEach(async () => {
@@ -296,7 +299,7 @@ describe('durable registration recovery', () => {
     const f = hosted();
     const result = await registerGitHubApp({ ...f.options, existing: SETUP_APP });
     expect(result.verified).toEqual({ ok: true });
-    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app') && call.url !== PUBLIC_LOOKUP)).toHaveLength(0);
     expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
     expect(fs.existsSync(signInPendingPath(f.options.target))).toBe(false);
   });
@@ -307,7 +310,7 @@ describe('durable registration recovery', () => {
     await expect(registerGitHubApp({ ...f.options, existing: SETUP_APP })).rejects.toThrow(/interrupted|installation did not finish/);
     await expect(registerGitHubApp({ ...f.options, existing: { clientId: 'another', clientSecret: 'regenerated' } })).rejects.toThrow(/different client id/);
     expect((await registerGitHubApp(f.options)).verified.ok).toBe(true);
-    expect(f.github.calls.filter((call) => !call.url.endsWith('/app'))).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app') && call.url !== PUBLIC_LOOKUP)).toHaveLength(0);
     expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
   });
 
@@ -317,7 +320,13 @@ describe('durable registration recovery', () => {
     const logs: string[] = [];
     const result = await registerGitHubApp({ ...f.options, log: (line) => logs.push(line) });
     expect(result.repositoryAccess).toBe('instructions');
-    expect(logs.join('\n')).toContain('--private-key-file');
+    expect(result.app).toMatchObject({ name: 'Myco (setup.invalid)', ownerLogin: 'setup-org' });
+    const printed = logs.join('\n');
+    for (const words of ['This server’s App is Myco (setup.invalid), owned by setup-org (an organization)',
+      '1. Permissions: https://github.com/organizations/setup-org/settings/apps/myco-setup-invalid/permissions',
+      'myco server github-app --target cloudflare --url https://setup.invalid --private-key-file <downloaded.pem>',
+      '3. Install: https://github.com/apps/myco-setup-invalid/installations/new', '4. Connect: https://setup.invalid/settings/access#github-app']) expect(printed).toContain(words);
+    expect(printed).not.toContain('<local|cloudflare>');
     expect(f.installs).toHaveLength(0);
     expect(result.verified).toMatchObject({ ok: false, notChecked: true });
     await expect(registerGitHubApp({ ...f.options, name: 'Ignored name' })).rejects.toThrow('--app-name');
@@ -410,7 +419,8 @@ describe('durable registration recovery', () => {
     atomicWriteFileSync(signInPendingPath(target), JSON.stringify({ ...record, installed: true }), { mode: 0o600, durable: true });
     const github = fakeGitHub();
     await registerThroughBrowser({ url, target, fetchImpl: github.registrationFetch, timeoutMs: 1000 });
-    expect(github.calls).toHaveLength(0);
+    const lookup = `https://api.github.com/apps/${appSlugOf(await defaultAppName(url))}`;
+    expect(github.calls.filter((call) => call.url !== lookup)).toHaveLength(0);
     expect(fs.existsSync(signInPendingPath(target))).toBe(false);
   });
 
@@ -476,22 +486,22 @@ describe('GitHub App names', () => {
     expect((await registerThroughBrowser({ ...f.options, name: 'myco Whisker Engineering' })).verified.ok).toBe(true);
     expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
   });
-  it('keeps a short host, shortens long hosts deterministically and distinguishes first-label collisions', () => {
-    expect(defaultAppName('https://myco.example.com')).toBe('Myco (myco.example.com)');
+  it('keeps a short host, shortens long hosts deterministically and distinguishes first-label collisions', async () => {
+    expect(await defaultAppName('https://myco.example.com')).toBe('Myco (myco.example.com)');
     const host = 'myco-server.example-account.workers.dev';
     const hash = createHash('sha256').update(host).digest('hex').slice(0, 4);
-    expect(defaultAppName(`https://${host}`)).toBe(`Myco (myco-server-${hash})`);
-    const a = defaultAppName('https://same-name.very-long-account-a.workers.dev');
-    const b = defaultAppName('https://same-name.very-long-account-b.workers.dev');
+    expect(await defaultAppName(`https://${host}`)).toBe(`Myco (myco-server-${hash})`);
+    const a = await defaultAppName('https://same-name.very-long-account-a.workers.dev');
+    const b = await defaultAppName('https://same-name.very-long-account-b.workers.dev');
     expect(a).not.toBe(b);
-    for (const name of [a, b, defaultAppName(`https://${'x'.repeat(63)}.workers.dev`)]) expect(name.length).toBeLessThanOrEqual(APP_NAME_MAX);
+    for (const name of [a, b, await defaultAppName(`https://${'x'.repeat(63)}.workers.dev`)]) expect(name.length).toBeLessThanOrEqual(APP_NAME_MAX);
   });
-  it('uses machine hostname and port for loopback, and passes the operator name through', () => {
-    expect(defaultAppName('http://127.0.0.1:8787', 'work-laptop')).toBe(`Myco (work-laptop-${createHash('sha256').update('work-laptop:8787').digest('hex').slice(0, 4)}:8787)`);
-    expect(defaultAppName('http://[::1]:8787', 'home-laptop')).not.toBe(defaultAppName('http://127.0.0.1:8787', 'work-laptop'));
-    expect(defaultAppName('http://127.0.0.1:8787', 'x'.repeat(70)).length).toBeLessThanOrEqual(APP_NAME_MAX);
+  it('uses machine hostname and port for loopback, and passes the operator name through', async () => {
+    expect(await defaultAppName('http://127.0.0.1:8787', 'work-laptop')).toBe(`Myco (work-laptop-${createHash('sha256').update('work-laptop:8787').digest('hex').slice(0, 4)}:8787)`);
+    expect(await defaultAppName('http://[::1]:8787', 'home-laptop')).not.toBe(await defaultAppName('http://127.0.0.1:8787', 'work-laptop'));
+    expect((await defaultAppName('http://127.0.0.1:8787', 'x'.repeat(70))).length).toBeLessThanOrEqual(APP_NAME_MAX);
     for (const host of ['127.0.0.2', '127.12.34.56', '127.255.255.255', '[::1]']) {
-      expect(defaultAppName(`http://${host}:8787`, 'work-laptop')).toBe(defaultAppName('http://127.0.0.1:8787', 'work-laptop'));
+      expect(await defaultAppName(`http://${host}:8787`, 'work-laptop')).toBe(await defaultAppName('http://127.0.0.1:8787', 'work-laptop'));
     }
     expect(manifestFor({ url: URL_, redirectUrl: 'http://127.0.0.1/callback', name: 'myco Whisker Engineering' }).name).toBe('myco Whisker Engineering');
   });

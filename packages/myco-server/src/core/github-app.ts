@@ -1,6 +1,6 @@
 import { GITHUB_ACCESS_FAILURES, type GitHubAccessFailure } from '@goondocks/myco-shared/repository';
-import { GITHUB_TOKEN_PERMISSIONS, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppStatus, type GitHubTokenPurpose } from '@goondocks/myco-shared/github-app';
-import { GitHubAppError, githubApi, revokeInstallationToken } from '@goondocks/myco-shared/github-api';
+import { GITHUB_APP_PERMISSIONS, GITHUB_TOKEN_PERMISSIONS, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppIdentity, type GitHubAppOwner, type GitHubAppStatus, type GitHubTokenPurpose } from '@goondocks/myco-shared/github-app';
+import { GitHubAppError, githubApi, rateLimitOf, revokeInstallationToken } from '@goondocks/myco-shared/github-api';
 import { approveAccount, approvedAccount, approvedAccounts, withdrawAccount, type ApprovedAccount } from '../db/github-app/accounts.js';
 import type { ServerEnv } from './adapters.js';
 import { emit } from '../telemetry.js';
@@ -32,14 +32,16 @@ export class GitHubAccessRefused extends Error {
   constructor(readonly failure: GitHubAccessFailure) { super(GITHUB_ACCESS_FAILURES[failure]); }
 }
 
-export interface InstallationAccount { id: number; login: string; type: 'User' | 'Organization' }
-/** One page of the App's installations, and whether GitHub holds another after it. */
-export interface InstallationsPage { installations: InstallationView[]; accounts: ApprovedAccount[]; page: number; more: boolean }
+export interface InstallationAccount extends GitHubAppOwner { id: number }
+/** One page of the App's installations, whether GitHub holds another after it, and the App they install. */
+export interface InstallationsPage { installations: InstallationView[]; accounts: ApprovedAccount[]; page: number; more: boolean; app: { slug: string; owner: GitHubAppOwner | null } }
 export interface InstallationView {
   installationId: number;
   account: InstallationAccount;
   approved: boolean;
   suspended: boolean;
+  /** False when GitHub's installation detail shows it has not granted every read the App requests. */
+  permissionsAccepted: boolean;
 }
 export interface RepositoryChoice { id: number; fullName: string; defaultBranch: string; private: boolean }
 /** A repository GitHub confirmed through an approved installation. */
@@ -72,7 +74,7 @@ export async function githubAppStatus(env: ServerEnv, now: number): Promise<GitH
     const missing = gitHubAppPermissionIssues(app);
     return { state: missing.length === 0 ? 'ready' : 'permissions_missing', app, missing };
   } catch (error) {
-    if (error instanceof GitHubAppError) return { state: 'unavailable', reason: error.message };
+    if (error instanceof GitHubAppError) return { state: error.rateLimited ? 'rate_limited' : 'unavailable', reason: error.message };
     throw error;
   }
 }
@@ -83,15 +85,12 @@ const GITHUB_REQUEST_TIMEOUT_MS = 10_000;
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const positiveId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 
-/** A refused GitHub answer, named. https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api */
+/** A refused GitHub answer, named. */
 async function refusalOf(response: Response, notFound: GitHubAccessFailure): Promise<GitHubAccessRefused> {
-  const { status, headers } = response;
-  if (status === 429 || (status === 403 && (headers.get('x-ratelimit-remaining') === '0' || headers.has('retry-after') || /rate limit/i.test(await response.text().catch(() => ''))))) {
-    return new GitHubAccessRefused('rate_limited');
-  }
-  if (status === 404) return new GitHubAccessRefused(notFound);
+  if (await rateLimitOf(response) !== null) return new GitHubAccessRefused('rate_limited');
+  if (response.status === 404) return new GitHubAccessRefused(notFound);
   // A validation refusal names no cause Myco can rely on; it is never read as a repository leaving the installation.
-  if (status === 422) return new GitHubAccessRefused('access_refused');
+  if (response.status === 422) return new GitHubAccessRefused('access_refused');
   return new GitHubAccessRefused('github_unavailable');
 }
 
@@ -100,16 +99,17 @@ async function bodyOf(response: Response): Promise<unknown> {
 }
 
 /** https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app */
-function installationOf(value: unknown): { installationId: number; account: InstallationAccount; suspended: boolean; permissions: Record<string, unknown> } {
+function installationOf(value: unknown): { installationId: number; account: InstallationAccount; suspended: boolean; permissions: Record<string, unknown>; granted: boolean } {
   const account = isRecord(value) ? value.account : null;
   if (!isRecord(value) || !positiveId(value.id) || !isRecord(account) || !positiveId(account.id) || typeof account.login !== 'string'
     || (account.type !== 'User' && account.type !== 'Organization')) throw new GitHubAccessRefused('github_unavailable');
   return { installationId: value.id, account: { id: account.id, login: account.login, type: account.type }, suspended: value.suspended_at != null,
-    permissions: isRecord(value.permissions) ? value.permissions : {} };
+    permissions: isRecord(value.permissions) ? value.permissions : {}, granted: isRecord(value.permissions) };
 }
 
-/** An installation as an admin's list shows it, without the grant it carries. */
-const viewOf = ({ installationId, account, suspended }: ReturnType<typeof installationOf>) => ({ installationId, account, suspended });
+/** An installation as an admin's list shows it: whether it granted the App's reads, not the grant itself. GitHub omitting the grant is not read as a refusal. */
+const viewOf = ({ installationId, account, suspended, permissions, granted }: ReturnType<typeof installationOf>) =>
+  ({ installationId, account, suspended, permissionsAccepted: !granted || Object.keys(GITHUB_APP_PERMISSIONS).every((name) => permissions[name] === 'read') });
 
 /** https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation */
 function repositoryOf(value: unknown): RepositoryChoice {
@@ -208,11 +208,14 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
 
   return {
     /**
-     * One page of the App's installations, with each account's approval here. Admin refresh only. The next page is
-     * asked for by number on the fixed origin; GitHub's own link only says whether one exists.
-     * https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
+     * One page of the App's installations, with each account's approval here, and the App's slug and owner, which name
+     * its install page. Admin refresh only. The next page is asked for by number on the fixed origin; GitHub's own link
+     * only says whether one exists. https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
      */
     async installations(page = 1): Promise<InstallationsPage> {
+      let identity: GitHubAppIdentity;
+      try { identity = await app().identity(); }
+      catch (error) { if (error instanceof GitHubAppError) throw new GitHubAccessRefused(error.rateLimited ? 'rate_limited' : 'github_unavailable'); throw error; }
       const response = await asApp(`/app/installations?per_page=${GITHUB_PAGE_SIZE}&page=${page}`);
       if (response.status !== 200) throw await refusalOf(response, 'github_unavailable');
       const body = await bodyOf(response);
@@ -222,6 +225,7 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
       return {
         installations: body.map(installationOf).map(installation => ({ ...viewOf(installation), approved: approved.has(installation.account.id) })),
         accounts, page, more: /rel="next"/.test(response.headers.get('link') ?? '') && page < MAX_REPOSITORY_PAGE,
+        app: { slug: identity.slug, owner: identity.owner },
       };
     },
     /** Approves the account that holds `installationId`, as GitHub names it now; the request names only the installation. */

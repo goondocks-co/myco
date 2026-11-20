@@ -12,6 +12,9 @@ export const SOURCE = { id: 1296269, full_name: 'example/source', default_branch
 export const SOURCE_URL = 'https://github.com/example/source';
 const STRANGER_SOURCE = { id: 7770001, full_name: 'operat0r-org/source', default_branch: 'main', private: false };
 
+/** The App GitHub answers for, owned by the operator's organization. */
+export const APP = { id: 12345, slug: 'myco-operator', name: 'Myco (operator)', client_id: OWNER_ENV.GITHUB_CLIENT_ID, owner: { login: OPERATOR.account.login, type: 'Organization' } };
+
 /** The secrets a Deployment with an App key holds. */
 export const APP_SECRETS = { GITHUB_CLIENT_ID: OWNER_ENV.GITHUB_CLIENT_ID, GITHUB_APP_PRIVATE_KEY: APP_KEY };
 
@@ -37,6 +40,10 @@ export function githubFixture() {
     laterInstallations: [] as Array<typeof OPERATOR>,
     /** The `expires_at` GitHub answers with instead of an hour from now. */
     expiresAt: null as string | null,
+    /** What each installation shows it granted, when it differs from what the App requests (`granted`). */
+    installationGranted: null as Record<string, string> | null,
+    /** `GET /app` answers GitHub's rate-limit refusal, lifting at this epoch second. */
+    appLimitedUntil: null as number | null,
   };
   const repositoryAnswer = (repository: typeof SOURCE) => ({ ...repository, full_name: state.names.get(repository.id) ?? repository.full_name });
   const fetchImpl: OutboundFetch = async (input, init) => {
@@ -49,7 +56,12 @@ export function githubFixture() {
     const installation = (id: number) => [...installations, ...state.laterInstallations].find(entry => entry.installationId === id);
     // https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app
     const installationBody = (entry: typeof OPERATOR) => ({ id: entry.installationId, account: entry.account, repository_selection: 'selected',
-      permissions: state.granted, suspended_at: state.suspended.has(entry.installationId) ? '2026-11-01T00:00:00Z' : null });
+      permissions: state.installationGranted ?? state.granted, suspended_at: state.suspended.has(entry.installationId) ? '2026-11-01T00:00:00Z' : null });
+    // https://docs.github.com/en/rest/apps/apps#get-the-authenticated-app
+    if (request.method === 'GET' && url.pathname === '/app') {
+      if (state.appLimitedUntil !== null) return Response.json({ message: 'API rate limit exceeded' }, { status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(state.appLimitedUntil) } });
+      return Response.json({ ...APP, permissions: state.granted });
+    }
     // https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
     if (request.method === 'GET' && url.pathname === '/app/installations') {
       const later = url.searchParams.get('page') === '2';
@@ -86,11 +98,13 @@ export function githubFixture() {
     // https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation
     if (request.method === 'GET' && url.pathname === '/installation/repositories' && minted !== undefined) {
       const held = repositories.get(minted.installationId) ?? [];
-      return Response.json({ total_count: held.length, repositories: held.map(repositoryAnswer) });
+      const size = Number(url.searchParams.get('per_page') ?? 30);
+      const page = Number(url.searchParams.get('page') ?? 1);
+      return Response.json({ total_count: held.length, repositories: held.slice((page - 1) * size, page * size).map(repositoryAnswer) });
     }
     throw new Error(`fixture GitHub: unexpected request ${request.method} ${url.pathname}`);
   };
-  return { fetchImpl, state };
+  return { fetchImpl, state, repositories };
 }
 
 /** A Deployment environment holding the App key, whose outbound requests reach the fixture. */
