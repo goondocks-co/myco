@@ -165,7 +165,7 @@ async function drainAfterJobs(env: ServerEnv, now: number, state: PowerState): P
 export async function engineAssertions(env: ServerEnv, now: number, telemetry?: TelemetryWork): Promise<PowerAssertion[]> {
   const [inside, queued,budgetQueued] = await Promise.all([hasRunInsideBound(env.db, now, DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS), hasQueuedRun(env.db,'other'),hasQueuedRun(env.db,'budget')]);
   const assertions: PowerAssertion[] = [];
-  if (isTelemetryWorkDue(telemetry ?? await telemetryWork(env.db), now)) assertions.push({ name: 'telemetry:due', maxDepth: 'active' });
+  if (isTelemetryWorkDue(telemetry ?? await telemetryWork(env.db), now)) assertions.push({ name: 'telemetry:due', maxDepth: 'sleep' });
   if (await estimateRefreshDue(env.db,now)) assertions.push({name:'estimate:due',maxDepth:'sleep'});
   if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
