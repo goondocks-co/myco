@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS telemetry_lineage_reports(key_id TEXT NOT NULL REFERE
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_report_parent ON telemetry_lineage_reports(parent_project_id,parent_session_id,project_id,session_id);
 
-CREATE INDEX IF NOT EXISTS idx_telemetry_report_key ON telemetry_lineage_reports(key_id,project_id,session_id);
+CREATE INDEX IF NOT EXISTS idx_telemetry_report_key ON telemetry_lineage_reports(key_id,trace_id,span_id);
 
 CREATE TRIGGER IF NOT EXISTS telemetry_report_added AFTER INSERT ON telemetry_resolutions BEGIN DELETE FROM telemetry_lineage_reports WHERE key_id=NEW.key_id AND project_id=NEW.project_id AND session_id=NEW.session_id;
  INSERT INTO telemetry_lineage_reports(key_id,project_id,session_id,parent_project_id,parent_session_id,matched_by,service_name,trace_id,span_id)

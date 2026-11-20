@@ -17,7 +17,7 @@ export const TELEMETRY_REPORT_DDL = [
  FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id) ON DELETE CASCADE,
  FOREIGN KEY(parent_project_id,parent_session_id) REFERENCES sessions(project_id,session_id) ON DELETE CASCADE) WITHOUT ROWID`,
   'CREATE INDEX IF NOT EXISTS idx_telemetry_report_parent ON telemetry_lineage_reports(parent_project_id,parent_session_id,project_id,session_id)',
-  'CREATE INDEX IF NOT EXISTS idx_telemetry_report_key ON telemetry_lineage_reports(key_id,project_id,session_id)',
+  'CREATE INDEX IF NOT EXISTS idx_telemetry_report_key ON telemetry_lineage_reports(key_id,trace_id,span_id)',
   `CREATE TRIGGER IF NOT EXISTS telemetry_report_added AFTER INSERT ON telemetry_resolutions BEGIN ${refresh('NEW')} END`,
   `CREATE TRIGGER IF NOT EXISTS telemetry_report_removed AFTER DELETE ON telemetry_resolutions BEGIN ${refresh('OLD')} END`,
   `CREATE TRIGGER IF NOT EXISTS telemetry_report_changed AFTER UPDATE ON telemetry_resolutions BEGIN ${refresh('OLD')} ${refresh('NEW')} END`,
