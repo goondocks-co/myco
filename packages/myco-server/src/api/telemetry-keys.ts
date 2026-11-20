@@ -21,7 +21,7 @@ export async function handleIssueTelemetryKey(env: ServerEnv, ctx: OwnerContext)
   const key = `${TELEMETRY_KEY_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TELEMETRY_KEY_BYTES)))}`;
   const id = `tk_${toBase64Url(crypto.getRandomValues(new Uint8Array(TELEMETRY_KEY_ID_BYTES)))}`;
   if (!await insertTelemetryKey(env.db, { id, hash: await sha256Hex(key), label: body.label.trim(), actor: ctx.member.id, now: ctx.now })) {
-    return Response.json({ error: 'telemetry_key_limit', reason: `No key was saved: this Deployment holds ${TELEMETRY_KEY_LIMIT} keys. Revoke an unused key and remove its record before creating another.` }, { status: 409 });
+    return Response.json({ error: 'telemetry_key_limit', reason: `No key was saved: Myco holds ${TELEMETRY_KEY_LIMIT} keys. Revoke an unused key and remove its record before creating another.` }, { status: 409 });
   }
   return Response.json({ id, key, endpoint: ctx.url.origin, headers: `Authorization=Bearer%20${key}` }, { status: 201 });
 }

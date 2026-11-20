@@ -202,6 +202,7 @@
   "session:member GET /api/projects/{projectId}/sessions/{sessionId}/artifacts",
   "session:member GET /api/projects/{projectId}/sessions/{sessionId}/commits",
   "session:member GET /api/projects/{projectId}/sessions/{sessionId}/files",
+  "session:member GET /api/projects/{projectId}/sessions/{sessionId}/invocations",
   "session:member GET /api/projects/{projectId}/sessions/{sessionId}/lineage",
   "session:member GET /api/projects/{projectId}/sessions/{sessionId}/transcript",
   "session:member GET /api/projects/{projectId}/sessions/{sessionId}/turns",

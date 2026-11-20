@@ -1,10 +1,9 @@
 import type { RelationalStore } from './adapters.js';
 import { invocationRows, type InvocationFact } from '../db/telemetry/invocations.js';
-import { TELEMETRY_CLOCK_TOLERANCE_MS } from './telemetry-policy.js';
+import { TELEMETRY_CLOCK_TOLERANCE_MS, TELEMETRY_INVOCATIONS_PER_PAGE } from './telemetry-policy.js';
 
 export type { InvocationFact } from '../db/telemetry/invocations.js';
 export interface InvocationCursor { startAt: number; traceId: string; spanId: string }
-const INVOCATION_PAGE = 200;
 
 /**
  * A Project-scoped page of stored invocation facts, ordered by (startAt, traceId, spanId).
@@ -12,9 +11,9 @@ const INVOCATION_PAGE = 200;
  * A fact says a program invoked the session; it never identifies a person or changes captured turn content.
  */
 export async function invocationsForSession(db: RelationalStore, projectId: string, sessionId: string, cursor?: InvocationCursor): Promise<{ rows: InvocationFact[]; nextCursor: InvocationCursor | null }> {
-  const facts = await invocationRows(db, { projectId, sessionId, after: cursor?.startAt ?? -1, trace: cursor?.traceId ?? '', span: cursor?.spanId ?? '', limit: INVOCATION_PAGE + 1 });
-  const rows = facts.slice(0, INVOCATION_PAGE), last = rows.at(-1);
-  return { rows, nextCursor: facts.length > INVOCATION_PAGE && last !== undefined ? { startAt: last.startAt, traceId: last.traceId, spanId: last.spanId } : null };
+  const facts = await invocationRows(db, { projectId, sessionId, after: cursor?.startAt ?? -1, trace: cursor?.traceId ?? '', span: cursor?.spanId ?? '', limit: TELEMETRY_INVOCATIONS_PER_PAGE + 1 });
+  const rows = facts.slice(0, TELEMETRY_INVOCATIONS_PER_PAGE), last = rows.at(-1);
+  return { rows, nextCursor: facts.length > TELEMETRY_INVOCATIONS_PER_PAGE && last !== undefined ? { startAt: last.startAt, traceId: last.traceId, spanId: last.spanId } : null };
 }
 
 /** Real overlap wins over clock tolerance; exact evidence wins over inferred; an ambiguous window attributes nothing. */

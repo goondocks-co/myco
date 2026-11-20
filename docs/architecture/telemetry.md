@@ -90,6 +90,8 @@ Each fact names the key, service, agent, sender start/end milliseconds and exact
 prefers exact evidence and refuses an ambiguous attribution. Two seconds allows ordinary synchronized-clock
 skew while limiting attribution to a nearby turn. Larger clock errors remain unattributed.
 This is the seam for the separate turn-origin implementation.
+The dashboard-authorized `GET /api/projects/{projectId}/sessions/{sessionId}/invocations` reads that same page;
+pass its opaque `nextCursor` back as `?cursor=` to continue. A telemetry key cannot use this read endpoint.
 
 ## Sender requirements and security
 

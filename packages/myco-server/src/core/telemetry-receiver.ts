@@ -30,13 +30,13 @@ export async function receiveTelemetry(env: ServerEnv, request: Request, now: nu
     catch (error) { emit({ kind: 'request_error', error_class: classify(error, env.platform.classifyError) }); }
     if ((request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase() !== 'application/json' ||
       (request.headers.get('content-encoding') !== null && request.headers.get('content-encoding') !== 'identity')) {
-      return malformed('send uncompressed OTLP/HTTP JSON with Content-Type: application/json');
+      return malformed('send uncompressed OTLP/HTTP with Content-Type: application/json');
     }
     const body = await readBoundedBody(request, TELEMETRY_BODY_BYTES);
     if (!body.ok) return Response.json({ code: 8, message: body.reason }, { status: 413 });
     let raw: unknown;
     try { raw = JSON.parse(body.text); }
-    catch { return malformed('body must be a valid OTLP JSON object'); }
+    catch { return malformed('body must be a valid OTLP object encoded as application/json'); }
     const signal = new URL(request.url).pathname.split('/').at(-1);
     if (signal === 'traces') {
       let parsed: ReturnType<typeof parseTraces>;

@@ -3,7 +3,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.js';
 import { invocationsForSession, invocationForTurn } from '@myco-server-worker/core/telemetry-invocations.js';
 import { pruneTelemetry } from '@myco-server-worker/db/telemetry/retention.js';
-import { TELEMETRY_BODY_BYTES, TELEMETRY_MATCH_WAIT_MS, TELEMETRY_RETENTION_MS, TELEMETRY_SPANS_PER_REQUEST, TELEMETRY_SPANS_PER_TRACE, TELEMETRY_TEXT_BYTES } from '@myco-server-worker/core/telemetry-policy.js';
+import { TELEMETRY_BODY_BYTES, TELEMETRY_INVOCATIONS_PER_PAGE, TELEMETRY_MATCH_WAIT_MS, TELEMETRY_RETENTION_MS, TELEMETRY_SPANS_PER_REQUEST, TELEMETRY_SPANS_PER_TRACE, TELEMETRY_TEXT_BYTES } from '@myco-server-worker/core/telemetry-policy.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { lineage_sessionLineage } from '@myco-server-worker/read/catalog/lineage.js';
 import { seedCredential } from './helpers/d1.js';
@@ -92,12 +92,31 @@ describe('OpenTelemetry receiver', () => {
     expect(lineage?.edges).toContainEqual(expect.objectContaining({ parentId: 'lead', childId: 'worker /β', parentProjectId: 'proj_1', source: 'telemetry', serviceName: 'dispatch-service', inferred: false }));
     const facts = await invocationsForSession(f.e.db, 'proj_2', 'worker /β');
     expect(facts.rows).toEqual([expect.objectContaining({ agentName: 'worker', startAt: NOW, endAt: NOW + 1000, matchedBy: 'exact' })]);
+    const path = '/api/projects/proj_2/sessions/worker%20%2F%CE%B2/invocations';
+    expect(await (await f.owner(path)).json()).toEqual(facts);
+    expect((await f.owner(`${path}?cursor=invalid`)).status).toBe(400);
+    expect((await f.owner('/api/projects/proj_1/sessions/worker%20%2F%CE%B2/invocations')).status).toBe(404);
+    expect((await f.server.handleRequest(new Request(`https://s${path}`, { headers: { authorization: `Bearer ${f.key}` } }), f.env)).status).toBe(401);
     expect(invocationForTurn(facts.rows, { startAt: NOW - 500, endAt: NOW + 100 })).toEqual(facts.rows[0]!);
     expect((await invocationsForSession(f.e.db, 'proj_1', 'worker /β')).rows).toEqual([]);
     expect(await (await f.owner(`/api/telemetry/keys/${f.id}/revoke`, {})).json()).toEqual({ revoked: true });
     expect((await f.send(body)).status).toBe(401);
     expect((await invocationsForSession(f.e.db, 'proj_2', 'worker /β')).rows).toEqual([]);
     expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_2' }, 'worker /β'))?.edges).toEqual([]);
+    f.e.sqlite.close();
+  });
+
+  it('pages every stored invocation once through the Project-scoped session read', async () => {
+    const f = await fixture();
+    await f.start('worker');
+    const spans = Array.from({ length: TELEMETRY_INVOCATIONS_PER_PAGE + 1 }, (_, index) => telemetrySpan(index + 1, { conversation: 'worker', operation: 'invoke_agent', at: NOW + index * 1000 }));
+    expect(await (await f.send(telemetryBatch(spans))).json()).toEqual({});
+    await reconcileTelemetry(f.e.db, NOW);
+    const path = '/api/projects/proj_1/sessions/worker/invocations';
+    const first = await (await f.owner(path)).json() as { rows: { spanId: string }[]; nextCursor: string };
+    const last = await (await f.owner(`${path}?cursor=${encodeURIComponent(first.nextCursor)}`)).json() as { rows: { spanId: string }[]; nextCursor: null };
+    expect([...first.rows, ...last.rows].map(row => row.spanId)).toEqual(spans.map(span => span.spanId));
+    expect(last.nextCursor).toBeNull();
     f.e.sqlite.close();
   });
 
