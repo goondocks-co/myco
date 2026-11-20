@@ -3,7 +3,8 @@
  * (`tests/scripts/run-bun-tests-guards.test.ts`). The `_test.ts` suffix
  * matches Bun's test pattern but not the runner's `*.test.*` discovery, so only an
  * explicit target runs it, and it blocks only when the gate sets
- * MYCO_RUNNER_HANG_FIXTURE.
+ * MYCO_RUNNER_HANG_FIXTURE. A test that passes runs first, so the runner can
+ * say which test the group was in when it was killed.
  *
  * Before blocking it starts two long-lived children and writes their pids to
  * MYCO_RUNNER_HANG_PIDS_FILE: one in the group's process group, and one in a
@@ -14,6 +15,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { expect, it } from 'bun:test';
+
+it.skipIf(process.env.MYCO_RUNNER_HANG_FIXTURE !== '1')('finishes before the one that blocks', () => {});
 
 it.skipIf(process.env.MYCO_RUNNER_HANG_FIXTURE !== '1')('blocks synchronously, beyond the reach of a per-test timeout', () => {
   const inGroup = spawn('sleep', ['600'], { stdio: 'ignore' });

@@ -320,6 +320,10 @@ jobs:
       MYCO_TEST_KIND: ${{ matrix.kind }}
       MYCO_TEST_SHARD: ${{ matrix.shard }}
     steps:
+      # The test runner ends the group still running 13 minutes into the job, naming its file and test, and starts no other;
+      # the job's reporting steps run in the 2 minutes left of its limit.
+      - name: Set the test run deadline
+        run: echo "MYCO_RUNNER_DEADLINE_AT_MS=$(( $(date +%s) * 1000 + 780000 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
       - name: Install dashboard test dependencies

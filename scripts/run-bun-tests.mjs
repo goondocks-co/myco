@@ -193,6 +193,30 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 // 600s is more than twice the slowest of them.
 const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
 
+// The time the whole run must end by, in epoch milliseconds, when the caller
+// has one: CI sets it inside the job's own time limit. A group still running
+// then is sampled, killed and named like one over its own budget, and a group
+// not yet started is reported failed without running, so the run ends with
+// time left for the job's reporting steps and names what was running.
+const RUN_DEADLINE_AT_MS = process.env.MYCO_RUNNER_DEADLINE_AT_MS ? Number(process.env.MYCO_RUNNER_DEADLINE_AT_MS) : null;
+if (RUN_DEADLINE_AT_MS !== null && !Number.isSafeInteger(RUN_DEADLINE_AT_MS)) {
+  throw new Error(`[run-bun-tests] MYCO_RUNNER_DEADLINE_AT_MS must be epoch milliseconds, got ${process.env.MYCO_RUNNER_DEADLINE_AT_MS}`);
+}
+
+// Bun's line naming the test file it starts (`##[group]`-prefixed under
+// GitHub Actions), and its line reporting one test's result.
+const BUN_FILE_HEADER = /^(?:##\[group\])?(\S+\.[cm]?[jt]sx?):$/;
+const BUN_TEST_RESULT = /^\((?:pass|fail|skip|todo)\) (.+?)(?: \[[\d.]+m?s\])?$/;
+
+/** A group's deadline: its own budget from now, or the run's deadline when that comes first. */
+function groupDeadline() {
+  const own = Date.now() + GROUP_BUDGET_MS;
+  if (RUN_DEADLINE_AT_MS !== null && RUN_DEADLINE_AT_MS < own) {
+    return { at: RUN_DEADLINE_AT_MS, budget: `the run's deadline (${new Date(RUN_DEADLINE_AT_MS).toISOString()})` };
+  }
+  return { at: own, budget: `its ${GROUP_BUDGET_MS}ms group budget` };
+}
+
 
 function resolveBunExecutable() {
   const extensions = process.platform === 'win32'
@@ -901,9 +925,8 @@ const overBudgetGroups = [];
  * file, so the aggregate and the failure summary count the group as failed
  * even though bun never wrote its own report.
  */
-function writeOverBudgetJunit(reportFile, label, files) {
+function writeOverBudgetJunit(reportFile, label, files, message) {
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const message = `group "${label}" exceeded its ${GROUP_BUDGET_MS}ms budget and was killed`;
   const cases = files.map((file) => `    <testcase name="${esc(file)}" classname="${esc(label)}" file="${esc(file)}">\n      <failure type="GroupBudgetExceeded" message="${esc(message)}" />\n    </testcase>`);
   fs.writeFileSync(reportFile, [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -988,7 +1011,7 @@ function reportInfrastructureRetry(file, signature) {
 }
 
 /** Rerun one file by itself. The caller decides whether this result replaces the phase. */
-async function runFileOnce(file, preloads, isolate, deadlineMs) {
+async function runFileOnce(file, preloads, isolate, deadline) {
   const slug = bundleSlug(`retry-${file}`);
   const reportFile = path.join(RUN_REPORT_DIR, `${slug}.junit.xml`);
   const teeFile = path.join(RUN_REPORT_DIR, `${slug}.log`);
@@ -1002,7 +1025,7 @@ async function runFileOnce(file, preloads, isolate, deadlineMs) {
     `--reporter-outfile=${reportFile}`,
     file,
   ];
-  const result = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, `retry ${file}`, { deadlineMs, hangFile: hangPath(slug) });
+  const result = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, `retry ${file}`, { deadline, hangFile: hangPath(slug) });
   return { ...result, reportFile, teeFile };
 }
 
@@ -1030,7 +1053,7 @@ function logWithoutRetriedMarkers(log, faults, junitFailureCount) {
  * and the log carries no error that JUnit does not. Returns true when every rerun passed
  * and the phase artifacts show that pass. Any other failure is left where it was.
  */
-async function rerunInfrastructureFaults(label, phaseFiles, teeFile, reportFile, preloads, isolate, deadlineMs, seenFailure) {
+async function rerunInfrastructureFaults(label, phaseFiles, teeFile, reportFile, preloads, isolate, deadline, seenFailure) {
   let log = '';
   try { log = fs.readFileSync(teeFile, 'utf8'); } catch { return false; }
   if (logHasUncarriedError(log)) return false;
@@ -1050,9 +1073,9 @@ async function rerunInfrastructureFaults(label, phaseFiles, teeFile, reportFile,
   let report = '';
   try { report = fs.readFileSync(reportFile, 'utf8'); } catch { return false; }
   for (const fault of retry) {
-    if (Date.now() >= deadlineMs) return false;
+    if (Date.now() >= deadline.at) return false;
     reportInfrastructureRetry(fault.file, fault.signature);
-    const rerun = await runFileOnce(fault.file, preloads, isolate, deadlineMs);
+    const rerun = await runFileOnce(fault.file, preloads, isolate, deadline);
     let rerunLog = '';
     let rerunReport = '';
     try {
@@ -1124,24 +1147,31 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
     // with assertion output and `wedged:false`, so it is never retried).
     // Every attempt shares one deadline, so retries never extend a group past
     // its budget.
-    const deadlineMs = Date.now() + GROUP_BUDGET_MS;
+    const deadline = groupDeadline();
     const hangFile = hangPath(label);
     fs.rmSync(hangFile, { force: true });
-    let { status, wedged, overBudget, evidenceError, streamFailure } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile });
-    for (let attempt = 1; wedged && !overBudget && !evidenceError && !streamFailure && attempt <= WEDGE_RETRIES && Date.now() < deadlineMs; attempt += 1) {
-      const note = `[run-bun-tests] RETRYING ${label} after wedge-kill (attempt ${attempt}/${WEDGE_RETRIES})\n`;
-      process.stderr.write(note);
-      fs.writeFileSync(teeFile, ''); // fresh log for the retry
-      ({ status, wedged, overBudget, evidenceError, streamFailure } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadlineMs, hangFile }));
-    }
-    if (overBudget) {
-      overBudgetGroups.push({ label, files, hangFile });
-      writeOverBudgetJunit(reportFile, label, files);
-    } else if (status !== 0 && !wedged && !evidenceError) {
-      const cleared = await rerunInfrastructureFaults(label, files, teeFile, reportFile, preloads, isolate, deadlineMs, seenFailure);
-      if (cleared) {
-        status = 0;
-        streamFailure = false;
+    let status = 1, wedged = false, overBudget = false, evidenceError = null, streamFailure = false, where = null;
+    if (Date.now() >= deadline.at) {
+      process.stderr.write(`[run-bun-tests] NOT STARTED ${label} — ${deadline.budget} has passed\n`);
+      overBudgetGroups.push({ label, files, budget: deadline.budget, where, hangFile: null });
+      writeOverBudgetJunit(reportFile, label, files, `group "${label}" was not started: ${deadline.budget} had passed`);
+    } else {
+      ({ status, wedged, overBudget, evidenceError, streamFailure, where } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadline, hangFile }));
+      for (let attempt = 1; wedged && !overBudget && !evidenceError && !streamFailure && attempt <= WEDGE_RETRIES && Date.now() < deadline.at; attempt += 1) {
+        const note = `[run-bun-tests] RETRYING ${label} after wedge-kill (attempt ${attempt}/${WEDGE_RETRIES})\n`;
+        process.stderr.write(note);
+        fs.writeFileSync(teeFile, ''); // fresh log for the retry
+        ({ status, wedged, overBudget, evidenceError, streamFailure, where } = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, label, { deadline, hangFile }));
+      }
+      if (overBudget) {
+        overBudgetGroups.push({ label, files, budget: deadline.budget, where, hangFile });
+        writeOverBudgetJunit(reportFile, label, files, `group "${label}" was killed at ${deadline.budget}, ${where}`);
+      } else if (status !== 0 && !wedged && !evidenceError) {
+        const cleared = await rerunInfrastructureFaults(label, files, teeFile, reportFile, preloads, isolate, deadline, seenFailure);
+        if (cleared) {
+          status = 0;
+          streamFailure = false;
+        }
       }
     }
     const evidence = evaluatePhaseEvidence([{ label, file: reportFile, log: teeFile }]);
@@ -1203,7 +1233,7 @@ function parseJunitFailures(xml) {
 }
 
 /** Run a command directly, tee its output, and enforce quiet and wall-clock budgets. */
-async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineMs, hangFile }) {
+async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadline, hangFile }) {
   const startMs = Date.now();
   process.stderr.write(`[run-bun-tests] STARTING ${label}\n`);
 
@@ -1284,6 +1314,15 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
 
     let lastNonEmptyLine = '';
     let lastOutputMs = Date.now();
+    // Where Bun is: the file whose header it printed last and the last test it
+    // reported in that file. Server logs a test prints are not a test's name.
+    let runningFile = null;
+    let lastTest = null;
+    function where() {
+      if (runningFile === null) return 'before Bun named a test file';
+      if (lastTest === null) return `in ${runningFile}, with no test of it reported yet`;
+      return `in ${runningFile}, in the test after "${lastTest}"`;
+    }
     // Buffer partial lines across chunks so we attribute the last
     // non-empty line correctly even when chunks arrive mid-line.
     let stdoutTail = '';
@@ -1308,6 +1347,11 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
         if (trimmed) {
           lastNonEmptyLine = trimmed;
           lastOutputMs = Date.now();
+          const plain = stripVTControlCharacters(trimmed);
+          const header = BUN_FILE_HEADER.exec(plain);
+          const result = header ? null : BUN_TEST_RESULT.exec(plain);
+          if (header) { runningFile = header[1]; lastTest = null; }
+          else if (result) lastTest = result[1];
         }
       }
     }
@@ -1327,25 +1371,25 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       if (killedForHang || killedForBudget) return;
       const now = Date.now();
       const totalElapsed = now - startMs;
-      if (now >= deadlineMs) {
+      if (now >= deadline.at) {
         killedForBudget = true;
-        reportAndKill(`[run-bun-tests] OVER BUDGET ${label} — still running at its ${GROUP_BUDGET_MS}ms group budget (${totalElapsed}ms this attempt); killing its process tree. Last line: ${lastNonEmptyLine || '(none)'}`);
+        reportAndKill(`[run-bun-tests] OVER BUDGET ${label} — still running at ${deadline.budget} (${totalElapsed}ms this attempt), ${where()}; killing its process tree. Last line: ${lastNonEmptyLine || '(none)'}`);
         return;
       }
       const sinceLastOutput = now - lastOutputMs;
       if (sinceLastOutput >= PHASE_KILL_QUIET_MS) {
         killedForHang = true;
-        reportAndKill(`[run-bun-tests] WEDGED ${label} — no output for ${sinceLastOutput}ms (>${PHASE_KILL_QUIET_MS}ms), ${totalElapsed}ms elapsed; killing phase tree. Last line: ${lastNonEmptyLine || '(none)'}`);
+        reportAndKill(`[run-bun-tests] WEDGED ${label} — no output for ${sinceLastOutput}ms (>${PHASE_KILL_QUIET_MS}ms), ${totalElapsed}ms elapsed, ${where()}; killing phase tree. Last line: ${lastNonEmptyLine || '(none)'}`);
         return;
       }
       if (sinceLastOutput >= WATCHDOG_QUIET_MS) {
-        const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output; last line: ${lastNonEmptyLine || '(none)'}\n`;
+        const msg = `[run-bun-tests] STILL RUNNING ${label} — ${totalElapsed}ms elapsed, ${sinceLastOutput}ms since last output, ${where()}; last line: ${lastNonEmptyLine || '(none)'}\n`;
         process.stderr.write(msg);
         appendEvidence(msg);
       }
     }
     // The budget fires on time even when it falls between heartbeat ticks.
-    const budgetTimer = setTimeout(checkDeadlines, Math.max(0, deadlineMs - Date.now()));
+    const budgetTimer = setTimeout(checkDeadlines, Math.max(0, deadline.at - Date.now()));
     budgetTimer.unref?.();
 
     const watchdog = setInterval(checkDeadlines, WATCHDOG_INTERVAL_MS);
@@ -1358,7 +1402,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       clearInterval(watchdog);
       clearTimeout(budgetTimer);
       process.stderr.write(`[run-bun-tests] FAILED TO SPAWN ${label}: ${err?.message ?? err}\n`);
-      resolve({ status: 1, wedged: false, overBudget: false });
+      resolve({ status: 1, wedged: false, overBudget: false, where: where() });
     });
 
     let settled = false;
@@ -1380,7 +1424,7 @@ async function runWithTeeAndHeartbeat(command, args, teeFile, label, { deadlineM
       inspectStreamTails();
       appendEvidence(completion);
       if (streamFailure) process.stderr.write(`[run-bun-tests] FAIL: ${label} stream reported a failure or error\n`);
-      const outcome = { status: exit || evidenceError || streamFailure || reportFailurePersistenceError ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure };
+      const outcome = { status: exit || evidenceError || streamFailure || reportFailurePersistenceError ? (exit || 1) : 0, wedged: killedForHang, overBudget: killedForBudget, evidenceError, streamFailure, where: where() };
       if (escalation === null) resolve(outcome);
       else escalation.then(() => resolve(outcome));
     }
@@ -1535,14 +1579,15 @@ function printFailureSummary(phaseStatuses) {
 }
 
 /**
- * Name every group killed at its budget, with its test files and the file
- * holding the stack samples and open files captured before the kill.
+ * Name every group killed at its deadline, with where Bun was, its test files
+ * and the file holding the stack samples and open files captured before the
+ * kill; and every group not started because the run's deadline had passed.
  */
 function printOverBudgetSummary() {
   if (overBudgetGroups.length === 0) return;
-  console.log(`\n=== OVER BUDGET (killed at ${GROUP_BUDGET_MS}ms) ===`);
-  for (const { label, files, hangFile } of overBudgetGroups) {
-    console.log(`[${label}] diagnostics: ${hangFile}`);
+  console.log('\n=== OVER BUDGET ===');
+  for (const { label, files, budget, where, hangFile } of overBudgetGroups) {
+    console.log(hangFile === null ? `[${label}] not started: ${budget} had passed` : `[${label}] killed at ${budget}, ${where}; diagnostics: ${hangFile}`);
     for (const file of files) console.log(`  ${file}`);
   }
 }
