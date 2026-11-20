@@ -1,6 +1,3 @@
-/** The longest an open turn is considered current work. */
-export const WORKING_CAP_MS = 3 * 60 * 60 * 1000;
-
 /**
  * The instants and state a session is presented with, as SQL.
  *

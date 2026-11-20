@@ -1,5 +1,3 @@
-import { WORKING_CAP_MS as sessions_import_WORKING_CAP_MS } from '../../db/session-dates.js';
-import { sessionQuietBefore } from '../../core/session-quiet.js';
 import { readSessionDetail } from '../../db/sessions/publication.js';
 import {
   documentCountRows, existingProjectIds, heldSessionRows, importerOwnedSessions, projectExists, projectListRows, sessionCountsRow, sessionDurationRow,
@@ -11,6 +9,7 @@ import { decodeSessionsAcrossCursor as sessions_import_decodeAcrossCursor, sessi
 import {
   readSessionPage as sessions_import_readSessionPage,
   SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
+  WORKING_CAP_MS as sessions_import_WORKING_CAP_MS,
 } from "../../db/sessions/browse.js";
 import type { Page as sessions_import_Page } from "../scope.js";
 import type { ProjectSet as sessions_import_ProjectSet } from "../scope.js";
@@ -157,8 +156,7 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number, quietB
 
 /** Every project with its live session count and most recent live receipt, most recently active first; a project with no live session still lists with a count of zero. Unscoped: the caller decides which projects its credential may see. */
 async function sessions_listProjects(db: sessions_import_RelationalStore, opts: { includeArchived?: boolean } = {}): Promise<sessions_ProjectRow[]> {
-  const now = Date.now();
-  const rows = await projectListRows(db, { includeArchived: opts.includeArchived === true, quietBefore: await sessionQuietBefore({ db }, now), workingAfter: now - sessions_WORKING_CAP_MS });
+  const rows = await projectListRows(db, opts.includeArchived === true);
   return rows.map((row) => ({
     projectId: row.project_id,
     name: row.name,

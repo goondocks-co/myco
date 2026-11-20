@@ -98,7 +98,7 @@ describe('a session working now', () => {
     expect(asked.status).toBe(200);
     expect(r.workingSince('sess_1')).toBe(at);
     // A receipt far older than the live window, and still working.
-    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id = 'sess_1'`, [r.now - 60 * 60_000]);
+    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ?1, latest_activity_at = ?1 WHERE session_id = 'sess_1'`, [r.now - 60 * 60_000]);
     expect((await r.get('/api/projects/proj_1/sessions/sess_1')).session).toMatchObject({ working: true, workingSince: at });
     const live = await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}&state=open`);
     expect(live.rows.map((row: { sessionId: string; working: boolean }) => [row.sessionId, row.working])).toEqual([['sess_1', true]]);
@@ -138,7 +138,7 @@ describe('a session working now', () => {
     await r.prompt('sess_1', promptIdAt(resumed));
     expect(r.workingSince('sess_1')).toBe(resumed);
     expect((await r.get('/api/projects/proj_1/sessions/sess_1')).session).toMatchObject({ working: true, workingSince: resumed, endedAt: r.now - 60_000 });
-    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id = 'sess_1'`, [r.now - 60 * 60_000]);
+    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ?1, latest_activity_at = ?1 WHERE session_id = 'sess_1'`, [r.now - 60 * 60_000]);
     const live = await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}&state=open`);
     expect(live.rows.map((row: { sessionId: string; working: boolean }) => [row.sessionId, row.working])).toEqual([['sess_1', true]]);
     // Its turn's end closes it, and the session reads ended again as recorded.
@@ -271,10 +271,8 @@ describe('a session working now', () => {
       await r.event({ kind: 'session.start', sessionId: id, createdAt: started, payload: { agent: 'claude-code', startedAt: started } });
       await r.prompt(id, promptIdAt(r.now - 5_000));
     }
-    for (const sessionId of ['sess_a', 'sess_c']) await r.event({ kind: 'turn', sessionId, createdAt: r.now - 5_000, payload: { phase: 'start' } });
-    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ? WHERE session_id IN ('sess_b', 'sess_1')`, [r.now - 60 * 60_000]);
-    r.e.sqlite.run(`UPDATE sessions SET latest_activity_at = ? WHERE session_id = 'sess_1'`, [r.now - 60 * 60_000]);
-    const live = await r.get(`/api/sessions?window=activity&since=${r.now - 150_000}&state=open`);
+    r.e.sqlite.run(`UPDATE sessions SET last_received_at = ?1, latest_activity_at = ?1 WHERE session_id IN ('sess_b', 'sess_1')`, [r.now - 60 * 60_000]);
+    const live = await r.get(`/api/sessions?window=activity&since=${Date.now() - 15 * 60_000}&state=open`);
     // sess_a and sess_c are in both reads, and listed once; sess_b falls between them, and the page reads newest start first.
     expect((live.rows as Array<{ sessionId: string }>).map((row) => row.sessionId)).toEqual(['sess_c', 'sess_b', 'sess_a']);
   });

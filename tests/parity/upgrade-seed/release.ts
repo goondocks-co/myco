@@ -1,4 +1,3 @@
-import { documentsPublished } from '../harness.ts';
 import { expect } from 'bun:test';
 import { A, B } from '../../myco-server/helpers/github-fake.ts';
 import { event, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
@@ -25,11 +24,9 @@ export async function seedRelease(target: SeedTarget, stamp: number): Promise<Re
   await repository(target, 'example/repo');
   const sessionId = `upgrade-release-${stamp}`;
   await event(target, sessionId, 'session.start', { agent: 'claude-code', branch: 'release', headSha: B, startedAt: stamp + 50 }, stamp + 50);
-  await event(target, sessionId, 'prompt', { promptId: crypto.randomUUID(), text: 'Review the release changes', origin: 'user' }, stamp + 50);
   await event(target, sessionId, 'session.end', { endedAt: stamp + 51, headSha: A, dirty: false }, stamp + 51);
   expect((await owner(target, `${path}/check`, { method: 'POST' })).status).toBe(200);
   await target.checkRelease();
-  await documentsPublished(target, sessionId);
   const commits = await owner(target, `/api/projects/${target.projectId}/sessions/${sessionId}/commits`);
   expect(commits.body.release).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
   return { sessionId };

@@ -61,8 +61,6 @@ it('D1 capture of tool calls, attachments, segments, plans and deliveries costs 
     },
     cases: [
       { name: 'session.start', run: (db, { scale }) => event(db, scale, 'session.start', { agent: 'claude-code' }, projected) },
-      { name: 'prompt marks activity before publication', extra: BOUNDED_EXTRA, run: (db, { scale }) =>
-        event(db, scale, 'prompt', { promptId: crypto.randomUUID(), text: 'Captured work', origin: 'user' }, projected) },
       { name: 'tool call naming its prompt, input in an uploaded blob', extra: BOUNDED_EXTRA, run: (db, { scale }) =>
         event(db, scale, 'tool.use', { toolCallId: crypto.randomUUID(), promptId: crypto.randomUUID(), toolName: 'Read', blob: BLOB, success: true }, projected) },
       { name: 'attachment of an uploaded blob', extra: BOUNDED_EXTRA, run: (db, { scale }) =>

@@ -1,6 +1,3 @@
-import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from './helpers/member-token.js';
-import { sessions_listSessionSummaries as listSessionSummaries } from '@myco-server-worker/read/catalog/sessions.js';
 import { commit } from '@myco-server-worker/db/index.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { releaseNow } from './helpers/release-now.js';
@@ -51,10 +48,6 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
   await withDocumentStores(async (db, name) => {
     const t0 = Date.now() - 2 * 60 * MIN;
     const blobs = memoryBlobStore();
-    await ensureMember(db, 'member', t0, 'member');
-    const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, t0);
-    expect((await ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: t0 },
-      envelope({ eventId: crypto.randomUUID(), sessionId: 'session', kind: 'session.start', createdAt: t0, payload: { agent: 'codex' } }), { db, blobs })).persisted, name).toBe(true);
     const first = user('turn-1', 'run the tests') + reply('running') + call;
     const env = await captureDocumentTranscript(db, blobs, 'session', tx, first, t0, 0, 'codex');
 
@@ -64,7 +57,6 @@ test('a transcript publishes after a failed pass, its closed turn takes a late r
     blobs.put = async (...args: Parameters<typeof put>) => { if (++puts === 2) blobs.failNextPut = 'store unavailable'; return put(...args); };
     await expect(publishDocuments(env, t0 + 11 * MIN, limits())).rejects.toThrow('store unavailable');
     blobs.put = put;
-    expect((await listSessionSummaries(db, { projectId: 'project' }, {}, Date.now())).rows.map(row => row.sessionId), name).toContain('session');
     expect(await one(db, `SELECT (SELECT COUNT(*) FROM session_chunks)+(SELECT COUNT(*) FROM transcript_publication)
       +(SELECT COUNT(*) FROM registered_content_proofs WHERE source_kind='document') n`), name).toEqual({ n: 0 });
 

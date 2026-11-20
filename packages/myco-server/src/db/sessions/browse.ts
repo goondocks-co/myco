@@ -1,9 +1,8 @@
-import { emptyLiveSession, emptyWorkingSession, retainedSession } from './visibility.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { sessionMaterialReadySql } from './material.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
-import { WORKING_CAP_MS, activityAt, occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
+import { activityAt, occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
 /** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
@@ -32,16 +31,22 @@ export function sessionFrom(indexedBy: string): string {
 }
 
 /** The Deployment-wide order every read of sessions across Projects walks: the instant, the Project, then the id. */
-const SESSIONS_ACROSS_INDEX = 'idx_sessions_retained_across';
+const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_project';
 
 /**
- * The index an activity window reads: it leads with bounded event activity, so the read seeks sessions active from
+ * The index an activity window reads: it leads with clock-corrected activity, so the read seeks the sessions active from
  * the window's start on, however long ago they started, and sorts that set alone.
  */
-const SESSIONS_ACTIVE_INDEX = 'idx_sessions_retained_activity';
+const SESSIONS_ACTIVE_INDEX = 'idx_sessions_activity';
 
 /** The index the sessions working now are read through: it holds the sessions with an open turn alone. */
-const SESSIONS_WORKING_INDEX = 'idx_sessions_retained_working';
+const SESSIONS_WORKING_INDEX = 'idx_sessions_working';
+
+/**
+ * How long a turn may stay open and still read as working. A turn ends when its end reaches the Deployment; this
+ * bounds only a turn whose end never does (a crash, an interrupt no hook reports), which reads as working no longer.
+ */
+export const WORKING_CAP_MS = 3 * 60 * 60 * 1000;
 
 const LIVE_SESSION = notTombstonedSql('s');
 
@@ -124,7 +129,7 @@ function variantSql(shape: Shape): string {
   ];
   // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
   if (window === 'working') conditions.push('s.working_since IS NOT NULL', 's.working_since > {workingAfter}', `(${ENDED} IS NULL OR ${ENDED} < s.working_since)`);
-  // Active in the window: event activity at or after its start, and open (`presentedOpen`) or ended no earlier than it.
+  // Active in the window: activity at or after its start, and open (`presentedOpen`) or ended no earlier than it.
   if (window === 'activity') conditions.push(`${activityAt('s.')} >= {since}`, `(${ENDED} >= {since} OR ${presentedOpen('s.')})`);
   // A window of starts bounds the instant the page is ordered by, so the filter admits what the order shows.
   if (window === 'start' && since) conditions.push(`${O} >= {since}`);
@@ -132,16 +137,9 @@ function variantSql(shape: Shape): string {
   if (after) conditions.push(across
     ? `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND (s.project_id < {afterProject} OR (s.project_id = {afterProject} AND s.session_id < {afterId}))))`
     : `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND s.session_id < {afterId}))`);
-  const index = window === 'activity' ? SESSIONS_ACTIVE_INDEX : window === 'working' ? SESSIONS_WORKING_INDEX : across ? SESSIONS_ACROSS_INDEX : 'idx_sessions_retained_project';
-  const page = (index: string, admission: string) => `SELECT s.project_id, ${SESSION_COLUMNS}, ${O} AS page_at,
-    ${presentedLive('{quiet}', 's.')} AS live ${sessionFrom(index)} WHERE ${admission} AND ${conditions.join(' AND ')}
+  const index = window === 'activity' ? SESSIONS_ACTIVE_INDEX : window === 'working' ? SESSIONS_WORKING_INDEX : across ? SESSIONS_ACROSS_INDEX : '';
+  return `SELECT s.project_id, ${SESSION_COLUMNS}, ${presentedLive('{quiet}', 's.')} AS live ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
     ORDER BY ${O} DESC${across ? ', s.project_id DESC' : ''}, s.session_id DESC LIMIT {limit}`;
-  const emptyIndex = across ? 'idx_sessions_empty_live' : 'idx_sessions_empty_live_project';
-  const empty = emptyLiveSession('{quiet}', 's.');
-  const workingIndex = across ? 'idx_sessions_empty_working' : 'idx_sessions_empty_working_project';
-  return `SELECT * FROM (${page(index, retainedSession('s.'))}) UNION ALL SELECT * FROM (${page(emptyIndex, empty)})
-    UNION ALL SELECT * FROM (${page(workingIndex, emptyWorkingSession('{workingAfter}', '{quiet}', 's.'))})
-    ORDER BY page_at DESC${across ? ', project_id DESC' : ''}, session_id DESC LIMIT {limit}`;
 }
 
 const keyOf = (shape: Shape) => `${shape.scope}${shape.window[0]!.toUpperCase()}${shape.window.slice(1)}${cap('Since', shape.since)}${cap('Until', shape.until)}`
@@ -165,7 +163,7 @@ for (const scope of ['project', 'all', 'named'] as const) for (const window of [
  * One session page as stored rows, at most `limit` + 1 of them, newest occurrence first: the Project admits the rows,
  * the filters narrow them, and the order and the key are the occurred instant, then across Projects the Project, then
  * the id. A read across Projects walks the Deployment-wide index; an activity window reads the sessions
- * active from its start on and, judged at an instant, also the sessions working now, read apart as `working`. A
+ * received from its start on and, judged at an instant, also the sessions working now, read apart as `working`. A
  * list never matches free text: a text match is a search.
  */
 export async function readSessionPage(db: RelationalStore, request: SessionPageRequest):

@@ -6,6 +6,8 @@ export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
 /** The protocol and project header names used by every member request. */
 export const MEMBER_PROTOCOL = 1;
 export const PROTOCOL_HEADER = 'x-myco-protocol';
+/** The member's clock immediately before sending a request, in epoch milliseconds. */
+export const MEMBER_SENT_AT_HEADER = 'x-myco-sent-at';
 
 /**
  * The header a member's turn-end hook sends on its own session's transcript, which the Deployment reads as the end of

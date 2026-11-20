@@ -11,10 +11,11 @@ export { ID_GRAMMAR, MAX_ID_CHARS } from '@goondocks/myco-shared/member-protocol
 /** Producer identifiers: adapter names and member versions. */
 export const PRODUCER_GRAMMAR = /^[A-Za-z0-9._-]{1,64}$/;
 
-/** The one clock rule: a caller-supplied instant is ahead of the clock when it stands more than the skew bound past the server's `now`. The envelope's `createdAt` and every ordering field of the catalogue are held to it. */
+/** The one clock rule: a caller-supplied instant is ahead of the clock when it stands more than the skew bound past the request's reference clock. The envelope's `createdAt` and every ordering field of the catalogue are held to it. */
 export const aheadOfClock = (value: number, now: number): boolean => value > now + MAX_CLOCK_SKEW_MS;
+export type ClockSource = 'server' | 'member';
 /** The refusal text for a value the clock rule refuses, by field name. */
-export const AHEAD_OF_CLOCK = (field: string): string => `${field} is more than ${MAX_CLOCK_SKEW_MS} ms ahead of the server clock`;
+export const AHEAD_OF_CLOCK = (field: string, clock: ClockSource = 'server'): string => `${field} is more than ${MAX_CLOCK_SKEW_MS} ms ahead of the ${clock} clock`;
 
 /** The refusal a member sees when a payload is over the cap: the size refused, the limit, and the route that takes large content. */
 export const payloadCapReason = (bytes: number): string =>
@@ -87,8 +88,8 @@ function checkPayload(payload: unknown): { ok: true; json: string; bytes: Uint8A
   }
 }
 
-/** Validates the closed envelope: fields, id grammar, producer, a caller time no further ahead of the server clock than the skew bound, channel, and the payload bounds. */
-export function parseEnvelope(input: unknown, now: number): ParseResult {
+/** Validates the closed envelope: fields, id grammar, producer, a caller time no further ahead of the request clock than the skew bound, channel, and the payload bounds. */
+export function parseEnvelope(input: unknown, now: number, clock: ClockSource = 'server'): ParseResult {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return refused('envelope must be an object');
   const raw = input as Record<string, unknown>;
 
@@ -106,7 +107,7 @@ export function parseEnvelope(input: unknown, now: number): ParseResult {
   if (typeof raw.createdAt !== 'number' || !Number.isSafeInteger(raw.createdAt) || raw.createdAt < 0) {
     return refused('createdAt must be a non-negative integer');
   }
-  if (aheadOfClock(raw.createdAt, now)) return refused(AHEAD_OF_CLOCK('createdAt'), 'clock_skew');
+  if (aheadOfClock(raw.createdAt, now)) return refused(AHEAD_OF_CLOCK('createdAt', clock), 'clock_skew');
   if (typeof raw.channel !== 'string' || !CHANNELS.has(raw.channel)) {
     return refused(`channel must be one of ${[...CHANNELS].join(', ')}`);
   }

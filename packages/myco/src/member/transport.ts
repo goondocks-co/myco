@@ -10,7 +10,7 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { deploymentScopedHeaders, LINEAGE_REPLAYED_CODE, MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
-import { TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { MEMBER_SENT_AT_HEADER, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import type { MemberTokenSource } from './token-pairing.js';
 
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -206,15 +206,15 @@ export class ServerClient {
   private headersFor(scope: 'project' | 'deployment'): Record<string, string> {
     if (scope === 'deployment') return deploymentScopedHeaders(this.record, this.protocol);
     const { projectId } = this.record;
-    if (projectId === undefined) throw new Error('ServerClient: a Project-scoped request needs a client that names a Project');
+    if (projectId === undefined) throw new Error('ServerClient needs a Project');
     return memberHeaders({ token: this.record.token, projectId }, this.protocol);
   }
 
   /** Authenticated fetch bounded across upload, response headers and response body by the request deadline. A `deployment` request names no Project. */
   async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget; scope?: 'project' | 'deployment' }): Promise<RawAnswer> {
-    const headers = { ...this.headersFor(init.scope ?? 'project'), ...init.headers };
-    const progress: { phase: TimeoutPhase; head?: Response } = { phase: 'headers' };
     const started = Date.now();
+    const headers = { ...this.headersFor(init.scope ?? 'project'), ...init.headers, [MEMBER_SENT_AT_HEADER]: String(started) };
+    const progress: { phase: TimeoutPhase; head?: Response } = { phase: 'headers' };
     return withinRequestDeadline(init.budget, async ({ signal, expired }) => {
       let removeCancellation: (() => void) | undefined;
       try {

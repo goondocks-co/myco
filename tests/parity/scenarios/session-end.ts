@@ -1,4 +1,3 @@
-import { context } from '../clients/capture.ts';
 import { expect } from 'bun:test';
 import { MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { event, owner } from '../clients/requests.ts';
@@ -62,29 +61,29 @@ export const sessionEnd: ParityScenario = {
 };
 
 export const sessionActivity: ParityScenario = {
-  name: 'session activity: late capture stays ended, empty sessions disappear only after going quiet, and future clocks are bounded',
+  name: 'session activity: request clocks distinguish live work from late capture while older members retain receipt-time liveness',
   async run(target) {
-    const now = Date.now(), day = 86_400_000;
-    const late = `late-${now}`, empty = `empty-${now}`, future = `future-${now}`;
+    const now = Date.now(), hour = 3_600_000, day = 24 * hour;
     const list = async () => (await owner(target, `/api/projects/${target.projectId}/sessions`)).body.rows;
-    await event(target, late, 'session.start', { agent: 'claude-code', startedAt: now - day }, now - day);
-    await event(target, late, 'prompt', { promptId: crypto.randomUUID(), text: 'Yesterday work', origin: 'user' }, now - day);
-    expect((await list()).find((row: any) => row.sessionId === late)).toMatchObject({ live: false, liveUntil: null });
-    await event(target, empty, 'session.start', { agent: 'claude-code' });
-    expect((await list()).find((row: any) => row.sessionId === empty)).toMatchObject({ live: true });
+    for (const [name, age, skew, live] of [
+      ['slow-three-hours', 0, -3 * hour, true], ['fast-three-hours', -120_000, 3 * hour, true],
+      ['slow-day', 0, -day, true], ['late', day, 0, false], ['late-slow-day', day, -day, false],
+      ['older-member', day, null, true],
+    ] as const) {
+      const id = `${name}-${now}`;
+      await event(target, id, 'prompt', { promptId: crypto.randomUUID(), text: 'Captured work', origin: 'user' }, now - age + (skew ?? 0), target.projectId, skew === null ? {} : { sentAt: now + skew });
+      const row = (await list()).find((row: any) => row.sessionId === id);
+      expect(row).toMatchObject({ live });
+      if (name === 'fast-three-hours') {
+        await event(target, id, 'prompt', { promptId: crypto.randomUUID(), text: 'Older work', origin: 'user' }, now - day + skew, target.projectId, { sentAt: now + skew });
+        expect((await list()).find((row: any) => row.sessionId === id).liveUntil).toBe(row.liveUntil);
+      }
+    }
+    const rows = await list();
+    expect(rows.find((row: any) => row.sessionId === `fast-three-hours-${now}`).liveUntil).toBeLessThanOrEqual(rows.find((row: any) => row.sessionId === `older-member-${now}`).liveUntil);
+    const empty = `empty-${now}`;
+    await event(target, empty, 'session.start', { agent: 'codex' });
     await event(target, empty, 'session.end', {});
-    expect((await list()).some((row: any) => row.sessionId === empty)).toBe(false);
-    await event(target, future, 'session.start', { agent: 'claude-code' });
-    const before = (await list()).find((row: any) => row.sessionId === future).liveUntil;
-    await event(target, future, 'prompt', { promptId: crypto.randomUUID(), text: 'Clock ahead', origin: 'user' }, now + 120_000);
-    const row = (await list()).find((row: any) => row.sessionId === future);
-    expect(row.live).toBe(true);
-    expect(row.liveUntil - before).toBeLessThan(60_000);
-    const working = `working-${now}`;
-    await event(target, working, 'session.start', { agent: 'claude-code' }, now - 2 * 3_600_000);
-    await context(target, 'prompt', { sessionId: working, promptId: crypto.randomUUID(), text: 'Working on the first turn', identity: 1, at: Date.now() });
-    expect((await owner(target, '/api/sessions')).body.rows.find((row: any) => row.sessionId === working)).toMatchObject({ working: true, live: false });
-    await event(target, working, 'session.end', {});
-    expect((await list()).some((row: any) => row.sessionId === working)).toBe(false);
+    expect((await list()).find((row: any) => row.sessionId === empty)).toMatchObject({ live: false });
   },
 };

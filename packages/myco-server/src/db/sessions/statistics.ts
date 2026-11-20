@@ -1,6 +1,3 @@
-import { sessionQuietBefore } from '../../core/session-quiet.js';
-import { emptyVisibleFrom, visibleLastReceipt, visibleSessionCount } from './visibility.js';
-import { WORKING_CAP_MS, occurredAt, presentedEndedAt } from '../session-dates.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { jsonKeys } from '../ddl.js';
 import { read, readSet, write, type Bound } from '../index.js';
@@ -41,17 +38,11 @@ interface ProjectCounters {
 }
 
 const phases = read<[], { done: number }>({ name: 'projectStatistics.phases', sql: `SELECT done FROM projection_catchup WHERE projection='${PROJECT_STATISTICS_PROJECTION}'` });
-const counters = read<[project: string, quiet: number, workingAfter: number], ProjectCounters>({ name: 'projectStatistics.counters',
-  sql: `SELECT ${visibleSessionCount('?1', '?2', '?3', 'session_count')} AS session_count,
-    open_sessions-COALESCE((SELECT open_n FROM project_empty_session_counts WHERE project_id=?1),0)
-      +(SELECT COUNT(*) ${emptyVisibleFrom('?1','?2','?3')} AND ${presentedEndedAt('s.')} IS NULL) AS open_sessions,
-    prompts,tool_calls,attachments FROM project_session_counts WHERE project_id=?1` });
-const recentDays = read<[project: string, from: number, quiet: number, workingAfter: number], { n: number }>({ name: 'projectStatistics.recentDays', sql: `SELECT
-  COALESCE((SELECT SUM(n) FROM project_session_days WHERE project_id=?1 AND day>=?2),0)
-  -COALESCE((SELECT SUM(n) FROM project_empty_session_days WHERE project_id=?1 AND day>=?2),0)
-  +(SELECT COUNT(*) ${emptyVisibleFrom('?1','?3','?4')} AND ${occurredAt('s.')}/${DAY_MS}>=?2) AS n` });
-const lastActivity = read<[project: string, quiet: number, workingAfter: number], { last_received_at: number }>({ name: 'projectStatistics.lastActivity',
-  sql: `SELECT ${visibleLastReceipt('?1','?2','?3')} AS last_received_at` });
+const counters = read<[project: string], ProjectCounters>({ name: 'projectStatistics.counters',
+  sql: 'SELECT session_count,open_sessions,prompts,tool_calls,attachments FROM project_session_counts WHERE project_id=?1' });
+const recentDays = read<[project: string, from: number], { n: number }>({ name: 'projectStatistics.recentDays', sql: 'SELECT n FROM project_session_days WHERE project_id=?1 AND day>=?2' });
+const lastActivity = read<[project: string], { last_received_at: number }>({ name: 'projectStatistics.lastActivity',
+  sql: `SELECT last_received_at FROM session_read_facts WHERE project_id=?1 AND has_session=1 AND tombstoned=0 ORDER BY last_received_at DESC LIMIT 1` });
 
 /** What a Project holds, counted for its home page. */
 export interface ProjectStatistics {
@@ -73,10 +64,9 @@ export type ProjectStatisticsAnswer = { state: 'building' } | ({ state: 'ready' 
 
 /** One Project's statistics in a fixed number of small reads, whatever it holds. */
 export async function projectStatistics(db: RelationalStore, projectId: string, nowMs: number): Promise<ProjectStatisticsAnswer> {
-  const quiet = await sessionQuietBefore({ db }, nowMs);
   const today = Math.floor(nowMs / DAY_MS);
   const [held, plans] = await Promise.all([
-    readSet(db, phases.bind(), counters.bind(projectId, quiet, nowMs - WORKING_CAP_MS), recentDays.bind(projectId, today - RECENT_DAYS + 1, quiet, nowMs - WORKING_CAP_MS), lastActivity.bind(projectId, quiet, nowMs - WORKING_CAP_MS)),
+    readSet(db, phases.bind(), counters.bind(projectId), recentDays.bind(projectId, today - RECENT_DAYS + 1), lastActivity.bind(projectId)),
     planStatusTotals(db, { projectId }),
   ]);
   const [done, count, days, last] = held;

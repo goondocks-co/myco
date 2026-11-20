@@ -52,6 +52,8 @@ export interface RouteContext {
   body: string;
   bodyBytes: number;
   now: number;
+  /** The member's send clock; absent on requests from older members. */
+  sentAt?: number;
   /** The server clock at a runtime mutation. */
   clock?: () => number;
   /** The immutable attempt deadline resolved from a run credential. */

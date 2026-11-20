@@ -465,6 +465,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     const one = await tripsWith(1, 'active');
     const twelve = await tripsWith(12, 'active');
     expect({ one, twelve }).toEqual({ one, twelve: one });
+    expect(one).toBeLessThanOrEqual(5);
   });
 
   it('decides each Project and task on the same facts a read of that Project alone answers', async () => {

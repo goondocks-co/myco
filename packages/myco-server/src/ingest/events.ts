@@ -58,7 +58,7 @@ type WriteOrigin = 'member' | 'server';
 
 export type IngestContext = Pick<
   RouteContext,
-  'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now' | 'turnEnd'
+  'projectId' | 'machineId' | 'tokenId' | 'bodyBytes' | 'now' | 'turnEnd' | 'sentAt'
 > & {
   writeOrigin?: WriteOrigin;
   /** The member acting through a server-origin write, where a projection records who acted; absent for a member's own capture and for derived events. */ actor?: string;
@@ -179,7 +179,9 @@ export async function planEventWrite(
   body: unknown,
   env?: Pick<ServerEnv, 'db' | 'blobs'>,
 ): Promise<PlannedWrite> {
-  const parsed = parseEnvelope(body, ctx.now);
+  const requestClock = ctx.sentAt ?? ctx.now;
+  const clockSource = ctx.sentAt === undefined ? 'server' : 'member';
+  const parsed = parseEnvelope(body, requestClock, clockSource);
   if (!parsed.ok) return parsed;
   const e = parsed.value;
   // The transcript parser adapter is reserved for server-origin writes.
@@ -194,7 +196,7 @@ export async function planEventWrite(
   }
   const spec = kindSpec(e.kind);
   if (!spec) return { ok: false, ...refusal(`unknown kind ${e.kind}`, 'unknown_kind') };
-  const payload = parsePayload(spec, e.payload, ctx.now);
+  const payload = parsePayload(spec, e.payload, requestClock, clockSource);
   if (!payload.ok) return payload;
   const p = payload.value;
 
@@ -262,7 +264,7 @@ export async function planEventWrite(
   // absent, so a derived event is never refused for want of one.
   const writer = { project: ctx.projectId, session: e.sessionId, machine: ctx.machineId, token: ctx.tokenId, event: e.eventId, nonce: write.nonce };
   const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: e.kind === 'session.start' ? (p.agent as string) : null,
-    live: e.channel !== 'import', start: e.kind === 'session.start', hasActivity: e.kind === 'prompt' || e.kind === 'tool.use' || e.kind === 'tool.failure' });
+    live: e.channel !== 'import', start: e.kind === 'session.start', activityAt: ctx.sentAt === undefined ? ctx.now : Math.min(e.createdAt + (ctx.now - ctx.sentAt), ctx.now) });
 
   // The nonce, not a change count, decides whether THIS write stored the row: reading it back asks the store what
   // happened instead of asking the driver.

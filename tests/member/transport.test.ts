@@ -51,9 +51,16 @@ describe('ServerClient classification', () => {
 
   it('acked on persisted:true and on a duplicate replay; the duplicate flag is carried', async () => {
     const rig = await memberRig();
-    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
+    let sentAt = 0;
+    const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, (input, init) => {
+      sentAt = Number(new Headers(init?.headers).get('x-myco-sent-at'));
+      return rig.fetch(input, init);
+    });
     const env = promptEvent(ctx('s1'), { promptId: mintId(), text: 'hi' }).envelope;
+    const before = Date.now();
     expect(await client.postEvent(env, budget)).toMatchObject({ class: 'acked' });
+    expect(sentAt).toBeGreaterThanOrEqual(before);
+    expect(sentAt).toBeLessThanOrEqual(Date.now());
     expect(await client.postEvent(env, budget)).toMatchObject({ class: 'acked', duplicate: true });
   });
 
