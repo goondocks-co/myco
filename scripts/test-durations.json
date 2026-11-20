@@ -972,6 +972,7 @@
     "tests/myco-server/spore-curation-undo.test.ts": 4000
   },
   "parity": {
+    "session activity: request clocks distinguish live work from late capture while older members retain receipt-time liveness": 2000,
     "github app: sign-in beside the App, and admin-only setup status": 500,
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,

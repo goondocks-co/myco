@@ -145,7 +145,7 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number, quietB
     workingSince,
     working: nowMs !== undefined && workingSince !== null && workingSince > nowMs - sessions_WORKING_CAP_MS,
     live,
-    liveUntil: live ? (row.last_received_at as number) + nowMs! - quietBefore! : null,
+    liveUntil: live ? (row.activity_at as number) + nowMs! - quietBefore! : null,
     runtimeKind: sessions_text(row.runtime_kind),
     title: sessions_text(row.title),
     summary: sessions_text(row.summary),

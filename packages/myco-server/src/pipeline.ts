@@ -3,7 +3,7 @@ import { machineBlockFor } from './core/machine-settings.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { CARD_WRITE_BOUND } from './core/turn-card-prompt.js';
 import { sessions_projectExists as projectExists } from './read/catalog/sessions.js';
-import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
+import { AUTH_SETUP_CODES, MEMBER_SENT_AT_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
 import { credentialWriteStore } from './auth/write-authority-store.js';
@@ -725,6 +725,10 @@ export function createServer(deps: ServerDeps) {
     try {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), route.path === '/events' ? `${body.reason} ${EVENT_BODY_CAP_NEXT_CALL}` : body.reason, 'body_cap');
+      const sentAt = request.headers.get(MEMBER_SENT_AT_HEADER);
+      if (sentAt !== null && (!/^\d+$/.test(sentAt) || !Number.isSafeInteger(Number(sentAt)))) {
+        return refuse(auth, shapeOf(route), `${MEMBER_SENT_AT_HEADER} must be a non-negative safe integer in epoch milliseconds`, 'invalid_field');
+      }
       if (route.authorization.action === 'bootstrap') {
         const malformed = emptyBodyRefusal(body.text);
         if (malformed !== null) return refuse(auth, shapeOf(route), malformed.reason, malformed.classifier);
@@ -738,7 +742,7 @@ export function createServer(deps: ServerDeps) {
         contextTimings,
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
-        ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
+        ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, ...(sentAt === null ? {} : { sentAt: Number(sentAt) }), clock: deps.now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
       });
       return await memberMachineSettings(request, env, auth, answered, route);
     } catch (err) {

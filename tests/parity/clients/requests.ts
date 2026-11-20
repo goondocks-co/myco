@@ -13,8 +13,8 @@ export async function owner<T = any>(target: RouteTarget, path: string, init: Re
   const response = await fetch(`${target.url}${path}`, { ...init, headers: { ...target.ownerHeaders(), origin: target.url, ...json, ...(init.headers ?? {}) } });
   const text = await response.text(); return { status: response.status, body: text === '' ? null : JSON.parse(text) };
 }
-export async function event(target: RouteTarget, sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now(), projectId = target.projectId, extra: { channel?: string; producer?: { adapter: string; version: string } } = {}): Promise<void> {
-  await expectPersisted(await fetch(`${target.url}/events`, { method: 'POST', headers: { ...target.memberHeaders({ 'x-myco-project': projectId }), ...json }, body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind, createdAt, channel: extra.channel ?? 'cli', producer: extra.producer ?? { adapter: 'parity', version: '1' }, payload }) }), kind);
+export async function event(target: RouteTarget, sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now(), projectId = target.projectId, extra: { sentAt?: number; channel?: string; producer?: { adapter: string; version: string } } = {}): Promise<void> {
+  await expectPersisted(await fetch(`${target.url}/events`, { method: 'POST', headers: { ...target.memberHeaders({ 'x-myco-project': projectId }), ...json, ...(extra.sentAt === undefined ? {} : { 'x-myco-sent-at': String(extra.sentAt) }) }, body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind, createdAt, channel: extra.channel ?? 'cli', producer: extra.producer ?? { adapter: 'parity', version: '1' }, payload }) }), kind);
 }
 async function postJson<T>(target: RouteTarget, path: string, body: unknown, headers: Record<string, string>): Promise<T> {
   const response = await fetch(`${target.url}${path}`, { method: 'POST', headers: { ...headers, ...json }, body: JSON.stringify(body) });

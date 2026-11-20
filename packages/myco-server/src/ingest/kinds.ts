@@ -1,6 +1,6 @@
 import { MAX_BLOB_BYTES } from '../constants.js';
 import { utf8 } from '../hash.js';
-import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type Refused } from './envelope.js';
+import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type ClockSource, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TOOL_RESULT_REASONS, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
 import { CONTEXT_DELIVERED_KIND, DELIVERED_SESSION_RECORDS, HOOK_NAMED_SCHEMES, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
@@ -29,7 +29,7 @@ export type Bound =
   | { type: 'string'; max: number }
   | { type: 'enum'; values: readonly string[] }
   | { type: 'int'; min: number; max: number }
-  /** A caller-supplied instant that decides a merge order. Bounded by the same rule the envelope applies to `createdAt`: no further ahead of the server clock than the skew bound, so one bad clock cannot pin a projected column forever. */
+  /** A caller-supplied instant that decides a merge order. Bounded by the same rule the envelope applies to `createdAt`: no further ahead of the request clock than the skew bound, so one bad clock cannot pin a projected column forever. */
   | { type: 'time' }
   | { type: 'bool' }
   | { type: 'stringArray'; maxItems: number; maxItem: number }
@@ -272,7 +272,7 @@ const refused = (reason: string, classifier: Refusal['classifier'] = 'invalid_fi
 const unclassified = (bound: never): never => { throw new Error(`unclassified bound ${JSON.stringify(bound)}`); };
 
 /** The refusal a value earns under a bound, or null when it satisfies it; each grammar and clock refusal is made with its classifier. */
-function boundViolation(field: string, value: unknown, bound: Bound, now: number): Refusal | null {
+function boundViolation(field: string, value: unknown, bound: Bound, now: number, clock: ClockSource): Refusal | null {
   switch (bound.type) {
     case 'id':
       return typeof value === 'string' && ID_GRAMMAR.test(value) ? null : refusal(`${field} must match the id grammar`, 'id_grammar');
@@ -297,7 +297,7 @@ function boundViolation(field: string, value: unknown, bound: Bound, now: number
     }
     case 'time': {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return refusal(`${field} must be a non-negative integer`, 'invalid_field');
-      return aheadOfClock(value, now) ? refusal(AHEAD_OF_CLOCK(field), 'clock_skew') : null;
+      return aheadOfClock(value, now) ? refusal(AHEAD_OF_CLOCK(field, clock), 'clock_skew') : null;
     }
     case 'bool':
       return typeof value === 'boolean' ? null : refusal(`${field} must be a boolean`, 'invalid_field');
@@ -311,8 +311,8 @@ function boundViolation(field: string, value: unknown, bound: Bound, now: number
   return unclassified(bound);
 }
 
-/** Validates a kind's payload against its schema: closed field set, required fields, exactly-one and at-most-one pairs, and every bound. `now` is the server clock the time bounds are read against. */
-export function parsePayload(spec: KindSpec, payload: unknown, now: number): PayloadResult {
+/** Validates a kind's payload against its schema: closed field set, required fields, exactly-one and at-most-one pairs, and every bound. `now` is the reference clock the time bounds are read against. */
+export function parsePayload(spec: KindSpec, payload: unknown, now: number, clock: ClockSource = 'server'): PayloadResult {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return refused('payload must be an object');
   const raw = payload as Payload;
   for (const key of Object.keys(raw)) {
@@ -324,7 +324,7 @@ export function parsePayload(spec: KindSpec, payload: unknown, now: number): Pay
       if (f.required) return refused(`${field} is required`);
       continue;
     }
-    const violation = boundViolation(field, value, f.bound, now);
+    const violation = boundViolation(field, value, f.bound, now, clock);
     if (violation !== null) return { ok: false, ...violation };
   }
   if (spec.exactlyOne) {

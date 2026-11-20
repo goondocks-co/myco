@@ -2,7 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { sessionMaterialReadySql } from './material.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
-import { occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
+import { activityAt, occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
 /** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
@@ -17,7 +17,7 @@ export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
 export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 /** All joins land on primary keys, preserving the session row count. */
-export const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
+export const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at, ${activityAt('s.')} AS activity_at,
      s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason, s.launch_parent_session_id,
      s.title, s.summary, s.titled_at, s.ended_by, ${firstPromptSql('s')} AS first_prompt,
      c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
@@ -34,10 +34,10 @@ export function sessionFrom(indexedBy: string): string {
 const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_project';
 
 /**
- * The index an activity window reads: it leads with the last receipt, so the read seeks the sessions received from
+ * The index an activity window reads: it leads with clock-corrected activity, so the read seeks the sessions active from
  * the window's start on, however long ago they started, and sorts that set alone.
  */
-const SESSIONS_ACTIVE_INDEX = 'idx_sessions_capture';
+const SESSIONS_ACTIVE_INDEX = 'idx_sessions_activity';
 
 /** The index the sessions working now are read through: it holds the sessions with an open turn alone. */
 const SESSIONS_WORKING_INDEX = 'idx_sessions_working';
@@ -129,8 +129,8 @@ function variantSql(shape: Shape): string {
   ];
   // Working now: a turn opened within the cap, with no end recorded or one older than the turn.
   if (window === 'working') conditions.push('s.working_since IS NOT NULL', 's.working_since > {workingAfter}', `(${ENDED} IS NULL OR ${ENDED} < s.working_since)`);
-  // Active in the window: a receipt at or after its start, and open (`presentedOpen`) or ended no earlier than it.
-  if (window === 'activity') conditions.push('s.last_received_at >= {since}', `(${ENDED} >= {since} OR ${presentedOpen('s.')})`);
+  // Active in the window: activity at or after its start, and open (`presentedOpen`) or ended no earlier than it.
+  if (window === 'activity') conditions.push(`${activityAt('s.')} >= {since}`, `(${ENDED} >= {since} OR ${presentedOpen('s.')})`);
   // A window of starts bounds the instant the page is ordered by, so the filter admits what the order shows.
   if (window === 'start' && since) conditions.push(`${O} >= {since}`);
   if (until) conditions.push(`${O} < {until}`);

@@ -841,7 +841,7 @@ describe('kind catalogue', () => {
     ];
     for (const ev of events) expect((await json(await worker.fetch(memberPost(t.token, ev), e.env))).persisted).toBe(true);
     const snapshot = (env: ReturnType<typeof sqliteEnv>) =>
-      ['sessions', 'plans', 'tags', 'transcripts', 'transcript_segments'].map((table) => env.sqlite.query(`SELECT * FROM ${table}`).all().map((r: any) => { const { received_at, token_id, event_id, first_received_at, last_received_at, last_live_received_at, created_by_token_id, ...rest } = r; return rest; }));
+      ['sessions', 'plans', 'tags', 'transcripts', 'transcript_segments'].map((table) => env.sqlite.query(`SELECT * FROM ${table}`).all().map((r: any) => { const { received_at, token_id, event_id, first_received_at, last_received_at, last_live_received_at, latest_activity_at, created_by_token_id, ...rest } = r; return rest; }));
     expect(e.sqlite.query(`SELECT created_at, updated_at, content FROM plans`).get()).toEqual({ created_at: 1_400, updated_at: 1_450, content: 'p2' });
     const forward = snapshot(e);
     const e2 = sqliteEnv();

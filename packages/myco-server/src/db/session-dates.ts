@@ -22,13 +22,16 @@ export const presentedStatus = (prefix = ''): string => `CASE WHEN ${presentedEn
 export const presentedOpen = (prefix = ''): string =>
   `(${presentedEndedAt(prefix)} IS NULL OR COALESCE(${prefix}working_since > ${presentedEndedAt(prefix)}, 0))`;
 
+/** Latest event activity, bounded by receipt; older rows retain receipt-based liveness. */
+export const activityAt = (prefix = ''): string => `COALESCE(${prefix}latest_activity_at, ${prefix}last_received_at)`;
+
 /**
  * Whether a session is live, as 0 or 1: open (`presentedOpen`) and heard from after `quiet`, the instant
  * `sessionQuietBefore` answers. A session quiet since then reads as ended, whether or not its harness sent an end. With
  * `quiet` null, no session reads as live.
  */
 export const presentedLive = (quiet: string, prefix = ''): string =>
-  `(${quiet} IS NOT NULL AND ${prefix}last_received_at > ${quiet} AND ${presentedOpen(prefix)})`;
+  `(${quiet} IS NOT NULL AND ${activityAt(prefix)} > ${quiet} AND ${presentedOpen(prefix)})`;
 
 /** A session's state as browsing, its page, `myco_sessions` and search all show it: `active` while live, else `completed`. */
 export const presentedLiveStatus = (quiet: string, prefix = ''): string => `CASE WHEN ${presentedLive(quiet, prefix)} THEN 'active' ELSE 'completed' END`;

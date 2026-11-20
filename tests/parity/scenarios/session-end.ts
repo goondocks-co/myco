@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { event } from '../clients/requests.ts';
+import { event, owner } from '../clients/requests.ts';
 
 /**
  * A person's end of a session on both targets: the owner route ends an open
@@ -57,5 +57,33 @@ export const sessionEnd: ParityScenario = {
     await post('session.end', first.endedAt + 2_000, { endedAt: first.endedAt + 2_000 });
     expect((await listed())?.endedAt).toBe(first.endedAt + 2_000);
     expect(await endedBy()).toBeNull();
+  },
+};
+
+export const sessionActivity: ParityScenario = {
+  name: 'session activity: request clocks distinguish live work from late capture while older members retain receipt-time liveness',
+  async run(target) {
+    const now = Date.now(), hour = 3_600_000, day = 24 * hour;
+    const list = async () => (await owner(target, `/api/projects/${target.projectId}/sessions`)).body.rows;
+    for (const [name, age, skew, live] of [
+      ['slow-three-hours', 0, -3 * hour, true], ['fast-three-hours', -120_000, 3 * hour, true],
+      ['slow-day', 0, -day, true], ['late', day, 0, false], ['late-slow-day', day, -day, false],
+      ['older-member', day, null, true],
+    ] as const) {
+      const id = `${name}-${now}`;
+      await event(target, id, 'prompt', { promptId: crypto.randomUUID(), text: 'Captured work', origin: 'user' }, now - age + (skew ?? 0), target.projectId, skew === null ? {} : { sentAt: now + skew });
+      const row = (await list()).find((row: any) => row.sessionId === id);
+      expect(row).toMatchObject({ live });
+      if (name === 'fast-three-hours') {
+        await event(target, id, 'prompt', { promptId: crypto.randomUUID(), text: 'Older work', origin: 'user' }, now - day + skew, target.projectId, { sentAt: now + skew });
+        expect((await list()).find((row: any) => row.sessionId === id).liveUntil).toBe(row.liveUntil);
+      }
+    }
+    const rows = await list();
+    expect(rows.find((row: any) => row.sessionId === `fast-three-hours-${now}`).liveUntil).toBeLessThanOrEqual(rows.find((row: any) => row.sessionId === `older-member-${now}`).liveUntil);
+    const empty = `empty-${now}`;
+    await event(target, empty, 'session.start', { agent: 'codex' });
+    await event(target, empty, 'session.end', {});
+    expect((await list()).find((row: any) => row.sessionId === empty)).toMatchObject({ live: false });
   },
 };
