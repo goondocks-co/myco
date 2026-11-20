@@ -1,4 +1,4 @@
-import { AGENT_LINE_GUIDANCE } from './injection.js';
+import { AGENT_LINE_RULE } from './agent-line.js';
 
 /** The standing rules every extraction run works under, as the run's instructions file. */
 export const EXTRACTION_RULES = [
@@ -8,9 +8,9 @@ export const EXTRACTION_RULES = [
   '',
   '## What a spore is',
   '',
-  'A spore is one durable observation a future agent or developer would pay to know before touching this code: a decision and why it was made, a gotcha and what it cost, a pattern this codebase follows, a trade-off it accepted, an architectural invariant. It is not an activity log. "Fixed the retry bug" is not a spore; "The runner\'s retry must wrap only the claim call: wrapping the lease renewal too re-claims a run another worker now holds" is.',
+  'A spore is one durable observation a future agent or developer would pay to know before touching this code: a decision and why it was made, a gotcha and what it cost, a pattern this codebase follows, a trade-off it accepted, an architectural invariant. It is not an activity log. "Fixed the retry bug" is not a spore; "The runner\'s retry must wrap only the claim call: wrapping the lease renewal too re-claims a run another worker now holds" is. One spore holds one situation and its guidance: save separate points as separate spores, even when one prompt taught them all.',
   '',
-  `Give every spore an \`agent_line\`: one line that an agent can act on — the situation that triggers it, then the guidance, at most naming the component or concept, never a file or symbol as its anchor. A longer line is refused, so write it short the first time. It is what a session is served in place of the body, so it has to stand alone. ${AGENT_LINE_GUIDANCE} Open the \`content\` with the same line, then the detail.`,
+  `Give every spore an \`agent_line\`. ${AGENT_LINE_RULE} A longer line, or one carrying code notation, is refused, so write it plain and short the first time. It is what a session is served in place of the body, so it has to stand alone. Open the \`content\` with the same line, then the detail.`,
   '',
   'Types: gotcha, bug_fix, decision, discovery, trade_off, cross-cutting, wisdom, pattern, architecture. Tags: two to four, naming the subsystem and the theme.',
   '',
@@ -28,7 +28,7 @@ export const EXTRACTION_RULES = [
   '',
   '- Same topic, nothing new to add: write nothing.',
   '- Same topic, new detail: save the new spore, then `myco_spores` op "supersede" with `old_spore_id`, `new_spore_id`, `expect_revision` and a `reason` naming what the new one adds.',
-  '- Three or more active spores on one topic, counting the one you just saved: `myco_spores` op "consolidate" with `source_spore_ids` as [{id, revision}], `consolidated_content`, `agent_line`, `session_id`, `observation_type` "wisdom" and a `reason`.',
+  '- Three or more active spores on one situation, counting the one you just saved: `myco_spores` op "consolidate" with `source_spore_ids` as [{id, revision}], `consolidated_content`, `agent_line`, `session_id`, `observation_type` "wisdom" and a `reason`. Never consolidate spores that hold different situations.',
   '- Genuinely distinct, sharing only words: keep both.',
   '- A spore the prompts show to be false, with nothing replacing it: `myco_spores` op "obsolete" with `id`, `expect_revision` and a `reason` saying what invalidated it.',
   '',

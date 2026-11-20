@@ -1,7 +1,7 @@
 import { currentCurationEdgeSql } from '../spores/curation-history-sql.js';
 import { SPORE_SUCCESSOR_LIMIT } from '../spores/lineage-limit.js';
 import { sporeLearnedAtSql } from './spore-dates.js';
-import { SEARCH_CURRENT_STATUSES } from '@goondocks/myco-shared/search-types';
+import { SEARCH_CURRENT_STATUSES, SEARCH_PREVIEW_CHARS } from '@goondocks/myco-shared/search-types';
 import type { RelationalStore } from '../../core/adapters.js';
 import { occurredAt, presentedLiveStatus } from '../session-dates.js';
 import { read, readSet } from '../index.js';
@@ -35,6 +35,7 @@ export interface HydratedDocument {
   id: string;
   /** For a plan or chunk: the plan, as `[project, plan_key]`. */
   plan: string | null;
+  /** A spore's is the opening of its body. */
   title: string | null;
   line: string | null;
   text: string | null;
@@ -89,7 +90,7 @@ const HYDRATE_SESSIONS = read<SessionSlots, HydratedDocument>({ name: 'searchHyd
 
 const HYDRATE = [
   read<Slots, HydratedDocument>({ name: 'searchHydration.spores', sql:
-    `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, COALESCE(NULLIF(s.agent_line, ''), s.observation_type) AS title, s.agent_line AS line, ${textOf('s.content')},
+    `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, substr(s.content, 1, ${SEARCH_PREVIEW_CHARS}) AS title, s.agent_line AS line, ${textOf('s.content')},
       s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, ${sporeLearnedAtSql('s', 'se')} AS learned_at,
       (SELECT json_group_array(target) FROM (
         SELECT e.new_spore_id AS target FROM resolution_events e WHERE e.project_id=s.project_id AND e.spore_id=s.id

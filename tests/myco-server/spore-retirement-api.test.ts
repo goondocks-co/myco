@@ -96,6 +96,7 @@ describe('retiring and restoring a spore from the dashboard', () => {
       return selected.items.map(item => item.id).sort();
     };
     expect([await byMeaning(), await served()]).toEqual([['sp1', 'sp2'], ['sp1', 'sp2']]);
+    expect((await semanticSearch(h.db, h.scope, semantic, ['spore'], { query: 'cobalt' }, 10)).hits.find(hit => hit.id === 'sp1')?.title).toBe('cobalt finding sp1');
 
     const retired = await h.post(`${SPORE}/retire`, { reason: 'Out of date', revision: (await h.read()).spore.revision });
     expect([await byMeaning(), await served(), await h.found()]).toEqual([['sp2'], ['sp2'], ['sp2']]);

@@ -90,7 +90,7 @@ export const AGENT_LINE_MAX_CHARS = MAX_LINE_CHARS - MAX_PREFIX_CHARS;
 /** Drafting room per short word, including its separating space. */
 export const AGENT_LINE_WORD_ROOM_CHARS = 10;
 export const AGENT_LINE_TARGET_WORDS = Math.floor(AGENT_LINE_MAX_CHARS / AGENT_LINE_WORD_ROOM_CHARS);
-export const AGENT_LINE_EXAMPLE = 'Changing run tools: declare write operations so dry runs enforce the same policy.';
+export const AGENT_LINE_EXAMPLE = "When a preview changes real data, declare the tool's writes so dry runs refuse them.";
 export const AGENT_LINE_GUIDANCE = `Aim for at most ${AGENT_LINE_TARGET_WORDS} short words in agent_line; use plain words and keep long identifiers in content. The hard limit remains ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: ${AGENT_LINE_EXAMPLE}`;
 
 /** The leaves this selector reads. */

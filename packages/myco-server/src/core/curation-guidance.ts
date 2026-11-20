@@ -1,4 +1,0 @@
-export const CURATION_GUIDANCE_RULES = 'The line names no file path, flag or code symbol. Deterministic validation rejects backticks; home, dot-relative or drive-rooted paths; slash-separated paths ending in a 1–5-letter extension; lower-case source filenames; lower-case or upper-case words joined by underscores; double-dash flags; and lower-case call notation immediately followed by an opening parenthesis. Routes without file extensions, Node.js(22) and numeric prose such as 1(retry) are allowed. camelCase and other ambiguous names require editorial judgment.';
-
-/** Explicit lexical notation, with route and prose forms left to editorial judgment. */
-export const CURATION_CODE_NOTATION = /[\x60]|(?:^|\s)(?:[A-Za-z]:[\\/]|~\/|\.\.?\/|--[A-Za-z])|[\w.-]+\/[\w./-]*\.[A-Za-z]{1,5}\b|(?<![\w.-])[a-z0-9][\w.-]*\.(?:tsx?|jsx?|[cm]js|json|ya?ml|py|rs|go|sh|sql)\b|\b[a-z][a-z0-9]*_[a-z0-9_]+\b|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b|(?<![\w.])[a-z_$][\w$]*(?:\.[a-z_$][\w$]*)*\(/;

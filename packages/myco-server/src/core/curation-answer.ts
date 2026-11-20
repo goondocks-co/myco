@@ -1,6 +1,5 @@
 import { CURATION_BODY_OVER_LIMIT } from '@goondocks/myco-shared/call-words';
-import { admitAgentLine } from './agent-line.js';
-import { CURATION_CODE_NOTATION } from './curation-guidance.js';
+import { admitAgentLine, agentLineNotation } from './agent-line.js';
 import { AGENT_LINE_MAX_CHARS } from './injection.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES, type CurationAnswer, type CurationNote } from './spore-curation-contract.js';
 
@@ -44,8 +43,8 @@ export function checkCurationAnswer(input: Record<string, unknown>, memberIds: r
     const admitted = admitAgentLine(raw.agent_line);
     if ('error' in admitted) return `notes[${index}].${admitted.error}; limit ${AGENT_LINE_MAX_CHARS}`;
     const line = admitted.line;
-    const notation = CURATION_CODE_NOTATION.exec(line);
-    if (notation !== null) return `notes[${index}].agent_line contains code notation ${shown(notation[0])}; use plain situation and guidance, with no path, flag or symbol`;
+    const notation = agentLineNotation(line);
+    if (notation !== null) return `notes[${index}].agent_line contains code notation ${shown(notation)}; use plain situation and guidance, with no path, flag or symbol`;
     notes.push({ sources: raw.sources as string[], observation_type: raw.observation_type, agent_line: line, content: raw.content });
   }
   for (const id of input.keep) { const bad = use(id, 'keep'); if (bad !== null) return bad; }

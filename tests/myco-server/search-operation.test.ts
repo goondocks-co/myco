@@ -50,6 +50,12 @@ describe('a word search', () => {
     expect((await f.search('cobalt', { mode: 'semantic', status: 'in_progress' })).fallback_reason).not.toBe('history');
   });
 
+  it('titles a spore with no agent line by its body\'s opening, never its type', async () => {
+    const f = fixture();
+    f.spore('plain', '## Cobalt eviction\nKeep the cobalt cache bounded.');
+    expect((await f.search('cobalt', { mode: 'fts' })).hits[0]).toMatchObject({ id: 'plain', title: 'Cobalt eviction' });
+  });
+
   it(`ranks only the newest ${SEARCH_WINDOW} matches of a kind: a better but older match waits for a later page, and with fewer matches it ranks first`, async () => {
     const f = fixture();
     f.spore('best-but-oldest', 'zircon detail', { agent_line: 'zircon', created_at: 1_000 });
