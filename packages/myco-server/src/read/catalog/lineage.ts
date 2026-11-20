@@ -1,3 +1,5 @@
+import type { ProjectSet } from '../scope.js';
+import { extendTelemetryLineage } from '../telemetry-lineage.js';
 import type { RelationalStore as lineage_import_RelationalStore } from "../../core/adapters.js";
 import { lineageChildIds, lineageSessionRows, type LineageSessionRow } from "../../db/sessions/lineage.js";
 import { inListChunks as lineage_import_inListChunks } from "../scope.js";
@@ -16,6 +18,13 @@ const lineage_LINEAGE_EDGE_KINDS = ['launched', 'continuation'] as const;
 type lineage_LineageEdgeKind = (typeof lineage_LINEAGE_EDGE_KINDS)[number];
 
 interface lineage_LineageEdge {
+  parentProjectId?: string;
+  childProjectId?: string;
+  source?: 'telemetry';
+  keyId?: string;
+  keyLabel?: string;
+  serviceName?: string | null;
+  inferred?: boolean;
   parentId: string;
   childId: string;
   kind: lineage_LineageEdgeKind;
@@ -24,6 +33,7 @@ interface lineage_LineageEdge {
 }
 
 interface lineage_LineageNode {
+  projectId?: string;
   sessionId: string;
   /** False for a parent this Project holds no session for: it is named by a child's record alone. */
   captured: boolean;
@@ -45,6 +55,7 @@ interface lineage_SessionLineage {
   edges: lineage_LineageEdge[];
   /** True when a bound stopped the walk with sessions left unread. */
   truncated: boolean;
+  reports?: lineage_LineageEdge[];
 }
 
 type lineage_Row = LineageSessionRow;
@@ -95,7 +106,7 @@ async function lineage_childIdsOf(db: lineage_import_RelationalStore, scope: lin
  */
 const lineage_sessionLineage = lineage_sessionLineageImpl;
 
-async function lineage_sessionLineageImpl(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, sessionId: string): Promise<lineage_SessionLineage | null> {
+async function lineage_sessionLineageImpl(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, sessionId: string, visibleProjects: ProjectSet = { all: false, projectIds: [scope.projectId] }): Promise<lineage_SessionLineage | null> {
   const [self] = await lineage_sessionsNamed(db, scope, [sessionId]);
   if (self === undefined) return null;
   const rows = new Map<string, lineage_Row>([[sessionId, self]]);
@@ -136,7 +147,7 @@ async function lineage_sessionLineageImpl(db: lineage_import_RelationalStore, sc
   }
 
   const edges = [...rows.values()].flatMap(lineage_parentEdges).filter((edge) => rows.has(edge.parentId) || uncaptured.has(edge.parentId));
-  return { nodes: lineage_placed(rows, uncaptured, edges, roots, sessionId), edges, truncated };
+  return extendTelemetryLineage(db, scope.projectId, visibleProjects, { nodes: lineage_placed(rows, uncaptured, edges, roots, sessionId), edges, truncated });
 }
 
 /** The sessions of the lineage no edge within it leads to. A lineage that is all cycle is rooted at the session read. */

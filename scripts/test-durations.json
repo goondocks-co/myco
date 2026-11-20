@@ -360,6 +360,7 @@
     "tests/myco-server-ui/spores.test.tsx": 975,
     "tests/myco-server-ui/stored-text.test.tsx": 147,
     "tests/myco-server-ui/tasks.test.tsx": 1047,
+    "tests/myco-server-ui/telemetry-keys.test.tsx": 800,
     "tests/myco-server-ui/today.test.tsx": 1292,
     "tests/myco-server-ui/work-now.test.tsx": 2500,
     "tests/myco-server-ui/work.test.tsx": 1744,
@@ -543,6 +544,8 @@
     "tests/myco-server/one-scheduler.test.ts": 1287,
     "tests/myco-server/orphan-sweep-runtime.test.ts": 15349,
     "tests/myco-server/orphan-sweep.test.ts": 480,
+    "tests/myco-server/otlp-cost.test.ts": 100000,
+    "tests/myco-server/otlp-receiver.test.ts": 6000,
     "tests/myco-server/owned-paths.test.ts": 20630,
     "tests/myco-server/owner-auth.test.ts": 5600,
     "tests/myco-server/owner-lifecycle.test.ts": 23000,
@@ -970,10 +973,12 @@
     "tests/myco-server/spore-curation-cost.test.ts": 12000,
     "tests/myco-server/spore-curation-discovery.test.ts": 10000,
     "tests/myco-server/spore-curation-undo.test.ts": 4000,
-    "tests/myco-server/session-transcript-truth.test.ts": 24000
+    "tests/myco-server/session-transcript-truth.test.ts": 24000,
+    "tests/myco-server/otlp-security.test.ts": 9000
   },
   "parity": {
     "session activity: request clocks distinguish live work from late capture while older members retain receipt-time liveness": 2000,
+    "OpenTelemetry: ingest-only key, immutable retry, standard lineage, revocation": 6000,
     "github app: sign-in beside the App, and admin-only setup status": 500,
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,

@@ -591,6 +591,8 @@ describe('versioned schema steps', () => {
     const source = sqliteEnv();
     const promptId = crypto.randomUUID();
     const writerRows = new Map<string, Record<string, unknown>>();
+    writerRows.set('telemetry_session_changes', { session_id: 'grammar-session', scope: 'session', revision: 1, cursor_trace: '', cursor_key: '' });
+    writerRows.set('telemetry_lineage_reports', { session_id: 'grammar-session', parent_project_id: 'proj_test', parent_session_id: 'parent', key_id: 'key', matched_by: 'exact', service_name: 'sender', trace_id: '1'.repeat(32), span_id: '1'.repeat(16) });
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
     writerRows.set('session_title_work', { session_id: 'grammar-session', mode: 'claim' });
     writerRows.set('release_check_due', { next_at: 0, revision: 'r' });
@@ -654,6 +656,7 @@ describe('versioned schema steps', () => {
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
           : ['document_publication_contributions','document_publication_totals'].includes(t) && c.name === 'kind' ? "'source'"
           : t === 'publication_dependencies' && c.name === 'prerequisite_kind' ? "'read'" : t === 'publication_dependencies' && c.name === 'outcome' ? "'waiting'"
+          : t === 'telemetry_resolutions' && c.name === 'matched_by' ? "'exact'"
           : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
           : t === 'embedding_work_state' && c.name === 'kind' ? `'embedding'`
           : t === 'raw_resources' && c.name === 'provenance' ? `'missing'`
@@ -691,7 +694,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'context_delivery_anchors', 'tool_prompt_links',
+      'telemetry_lineage_reports', 'telemetry_session_changes', 'telemetry_resolutions', 'context_delivery_anchors', 'tool_prompt_links',
       'publication_dependencies','session_lifecycle_facts','session_title_work','session_statistics','session_attachment_counts','context_placement_days','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',

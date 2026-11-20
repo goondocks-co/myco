@@ -1,3 +1,4 @@
+import { TELEMETRY_TABLES } from './telemetry-policy.js';
 import { initializeCurationHistory } from '../db/spores/curation-history.js';
 import { classify, emit } from '../telemetry.js';
 import { pinBackup } from '../db/storage/backup-pin.js';
@@ -135,6 +136,7 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * its stored rankings are rebuilt from the records an artifact carries.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
+  ...TELEMETRY_TABLES,
   'document_rebuild_receipts', 'document_rebuild_totals',
   'document_transcript_pins', 'document_group_pins', 'document_pin_totals',
   'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',

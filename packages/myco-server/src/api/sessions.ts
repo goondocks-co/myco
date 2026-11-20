@@ -1,3 +1,4 @@
+import { resolveProjectSet } from './scope.js';
 import { learningAgedOutAt } from '../db/learning/state.js';
 import {
   hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
@@ -231,7 +232,9 @@ export async function handleSessionLineage(env: ServerEnv, ctx: OwnerContext): P
   if (sessionId === null) return notFound();
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  const lineage = await sessionLineage(env.db, scope, sessionId);
+  const visible = await resolveProjectSet(env.db, ctx.member, []);
+  if (visible === null) return notFound();
+  const lineage = await sessionLineage(env.db, scope, sessionId, visible);
   return lineage === null ? notFound() : ok(lineage);
 }
 

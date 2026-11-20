@@ -1,3 +1,4 @@
+import { sessionTurnInvocationFacts } from '../db/telemetry/invocations.js';
 import type { RelationalStore } from '../core/adapters.js';
 import type { ReadScope } from './scope.js';
 
@@ -15,7 +16,7 @@ export interface SessionInvocation {
 export type InvocationProvider = (db: RelationalStore, scope: ReadScope, sessionId: string) => Promise<readonly SessionInvocation[]>;
 
 /** Invocation facts are display evidence and may arrive after transcript publication. */
-export const sessionInvocationFacts: InvocationProvider = async () => [];
+export const sessionInvocationFacts: InvocationProvider = (db,scope,sessionId) => sessionTurnInvocationFacts(db,{projectId:scope.projectId,sessionId,tolerance:INVOCATION_START_TOLERANCE_MS});
 
 /** Only one invocation starting near a turn head supplies display attribution. */
 export async function sessionTurnInvocations(db: RelationalStore, scope: ReadScope, sessionId: string,

@@ -358,6 +358,8 @@ export function createServer(deps: ServerDeps) {
     }
     const anonymous = async () => ((await env.sourceLimit.limit({ key: source })).success ? unauthorized() : limited());
 
+    if (matched?.route.auth === 'telemetry') return matched.route.handler(env, request, now, source);
+
     // The human surface sits BELOW source identity so it is metered like any other
     // credential-free traffic: an auth route makes an outbound call to GitHub, and a
     // session route without a valid cookie is as cheap to send as an anonymous member

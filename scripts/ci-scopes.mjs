@@ -8,6 +8,7 @@
  * (nightly and release) runs them. A pull request keeps one fast critical-flow file for each area.
  */
 export const HEAVY_AND_SCALE_SUITES = [
+  'tests/myco-server/otlp-cost.test.ts',
   'tests/cli/cutover-projects.test.ts',
   'tests/cli/login-exit.test.ts',
   'tests/install/install-ps1.test.ts',

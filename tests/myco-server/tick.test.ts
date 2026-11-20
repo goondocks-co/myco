@@ -1,3 +1,7 @@
+import { insertTelemetryKey } from '@myco-server-worker/db/telemetry/keys.js';
+import { storeTelemetrySpans } from '@myco-server-worker/db/telemetry/ingest.js';
+import { parseTraces } from '@myco-server-worker/core/otlp.js';
+import { telemetrySpan, telemetryBatch } from './helpers/telemetry.js';
 /**
  * The tick: what one wake does, and that a second wake on the same clock does
  * nothing more. The jobs it runs converge on a state; these hold each job's
@@ -133,17 +137,25 @@ describe('the power state a tick resolves', () => {
     const f = fixture();
     f.seedSession('s1', NOW);
     const ran = (await runTick(f.env, NOW)).jobs.map((j) => j.name);
-    // A tick an owner requests runs every job but the clock-owned ones; the target's own clock runs those too.
-    expect([...ran].sort()).toEqual(SERVER_JOBS.filter((j) => j.wake === undefined).map((j) => j.name).sort());
+    expect(ran).not.toContain('telemetry-reconcile');
+    // Clock-owned jobs require the target's clock; telemetry requires a due work flag.
+    expect([...ran].sort()).toEqual(SERVER_JOBS.filter((j) => j.wake === undefined && j.name !== 'telemetry-reconcile').map((j) => j.name).sort());
     expect(ran[0]).toBe('transcript-parse');
     expect(ran.indexOf('storage-content-cleanup')).toBeGreaterThan(ran.indexOf('raw-provenance-backfill'));
-    expect((await runTick(f.env, NOW, { wake: 'clock' })).jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.map((j) => j.name).sort());
+    expect((await runTick(f.env, NOW, { wake: 'clock' })).jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter(j => j.name !== 'telemetry-reconcile').map((j) => j.name).sort());
     expect(ran).toEqual(expect.arrayContaining(['agent-run-retention', 'run-stale-sweep', 'search-index', 'embedding-reconcile']));
   });
 
-  it('runs nothing when the Deployment never saw activity: nothing to keep, and no wake to pay for', async () => {
+  it('settles telemetry without recording interactive activity and leaves an idle Deployment asleep', async () => {
     const f = fixture();
     expect(await runTick(f.env, NOW)).toMatchObject({ state: 'deep_sleep', idleMs: null, jobs: [], nextWakeMs: null });
+    await insertTelemetryKey(f.env.db,{id:'tick-key',hash:'tick-hash',label:'Tick sender',actor:'member',now:NOW});
+    await storeTelemetrySpans(f.env.db,{key:'tick-key',spans:parseTraces(telemetryBatch([telemetrySpan(1)]),NOW).spans,now:NOW});
+    const working=await runTick(f.env,NOW);
+    expect(working).toMatchObject({state:'sleep',idleMs:null});
+    expect(working.jobs).toContainEqual(expect.objectContaining({name:'telemetry-reconcile',more:false}));
+    expect(await runTick(f.env,NOW+WAKE_INTERVALS.sleepMs)).toMatchObject({state:'deep_sleep',idleMs:null,jobs:[],nextWakeMs:null});
+
   });
 });
 
@@ -252,7 +264,7 @@ describe('run-stale-sweep', () => {
     const broken: ServerEnv = { ...f.env, db: retire.store };
     const report = await runTick(broken, NOW);
     expect(retire.failures()).toBeGreaterThan(0);
-    expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name).sort());
+    expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined && j.name !== 'telemetry-reconcile').map((j) => j.name).sort());
     expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
     expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
   });

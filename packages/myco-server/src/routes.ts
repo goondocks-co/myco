@@ -1,3 +1,8 @@
+import { TELEMETRY_BODY_BYTES } from './core/telemetry-policy.js';
+import { receiveTelemetry } from './core/telemetry-receiver.js';
+import { handleSessionInvocations } from './api/telemetry-invocations.js';
+import { TELEMETRY_INGEST_POLICY } from './auth/telemetry-policy.js';
+import { handleTelemetryKeys, handleIssueTelemetryKey, handleRevokeTelemetryKey, handleForgetTelemetryKey } from './api/telemetry-keys.js';
 import { handleSporeCurationUndo, handleUndoCuration } from './api/curation-undo.js';
 import { handleCurationAnswer, handleCurationCoverage } from './api/curation.js';
 import { MAX_REPOSITORY_REQUEST_BYTES } from '@goondocks/myco-shared/repository';
@@ -124,6 +129,7 @@ export type Route = { authorization: AuthorizationDeclaration } & (
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'refreshed' | 'persisted'; capture: false; scope: 'credential'; admitsLapsed?: true; mintsAuthority?: true; credential: CredentialHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; auth: 'member'; bodyMode: 'json'; shape: 'persisted'; capture: false; scope: 'deployment'; maxBodyBytes?: number; mintsAuthority?: true; deployment: DeploymentHandler; handler?: never; grant?: never; run?: never; legacyRunRoute?: never }
   | { method: string; path: string; pattern: RegExp; auth: 'member'; bodyMode: 'stream'; shape: 'stored'; capture?: boolean; maxBodyBytes: number; handler: StreamHandler; legacyRunRoute?: true }
+  | { method: string; path: string; auth: 'telemetry'; bodyMode: 'json'; maxBodyBytes: number; handler: (env: ServerEnv, request: Request, now: number, source: string) => Promise<Response> }
   | { method: string; path: string; auth: 'auth'; unconfiguredSignIn?: 'json' | 'browser'; handler: AuthHandler }
   | { method: string; path: string; auth: 'enroll'; subject?: 'enrollment' | 'runner-registration'; handler: EnrollHandler }
   | { method: string; path: string; auth: 'runner'; bodyMode: 'json'; shape: 'persisted'; admitsLapsed?: true; runner: RunnerHandler }
@@ -147,6 +153,11 @@ async function health(): Promise<Response> {
 }
 
 const ROUTE_DECLARATIONS: readonly Route[] = [
+  ...(['/v1/traces', '/v1/logs', '/v1/metrics'] as const).map(path => ({ authorization: TELEMETRY_INGEST_POLICY, method: 'POST', path, auth: 'telemetry' as const, bodyMode: 'json' as const, maxBodyBytes: TELEMETRY_BODY_BYTES, handler: receiveTelemetry })),
+  { authorization: httpPolicy('settings', 'admin', 'deployment'), method: 'GET', path: '/api/telemetry/keys', auth: 'session', authority: 'admin', handler: handleTelemetryKeys },
+  { authorization: httpPolicy('settings', 'admin', 'deployment'), method: 'POST', path: '/api/telemetry/keys', auth: 'session', authority: 'admin', handler: handleIssueTelemetryKey },
+  { authorization: httpPolicy('settings', 'admin', 'deployment'), method: 'DELETE', path: '/api/telemetry/keys/{keyId}', pattern: /^\/api\/telemetry\/keys\/(?<keyId>[A-Za-z0-9_-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleForgetTelemetryKey },
+  { authorization: httpPolicy('settings', 'admin', 'deployment'), method: 'POST', path: '/api/telemetry/keys/{keyId}/revoke', pattern: /^\/api\/telemetry\/keys\/(?<keyId>[A-Za-z0-9_-]{1,64})\/revoke$/, auth: 'session', authority: 'admin', handler: handleRevokeTelemetryKey },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/auth/device/start', auth: 'enroll', handler: handleDeviceStart },
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['enrollment']), method: 'POST', path: '/auth/device/poll', auth: 'enroll', handler: handleDevicePoll },
   { authorization: httpPolicy('directory', 'read', 'deployment'), method: 'POST', path: '/api/device/preview', auth: 'session', authority: 'member', handler: handleDevicePreview },
@@ -266,6 +277,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/artifacts', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/artifacts$/, auth: 'session', authority: 'member', handler: handleSessionArtifacts },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/activity', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/activity$/, auth: 'session', authority: 'member', handler: handleSessionActivity },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/lineage', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/lineage$/, auth: 'session', authority: 'member', handler: handleSessionLineage },
+  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/invocations', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/invocations$/, auth: 'session', authority: 'member', handler: handleSessionInvocations },
   { authorization: httpPolicy('raw-index', 'enumerate', 'raw', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/transcript', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/transcript$/, auth: 'session', authority: 'member', raw: { resource: 'transcript', action: 'enumerate' }, handler: handleTranscript },
   { authorization: httpPolicy('plan', 'status', 'project', ['member']), method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/status$/, auth: 'session', authority: 'member', handler: handleSetPlanStatus },
   { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/title', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/title$/, auth: 'session', authority: 'admin', handler: handleTitleSession },

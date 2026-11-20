@@ -2,11 +2,11 @@ import { isSystemMember } from './member-kind.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { readAuthorization, type AuthorizationSnapshot, type MemberAuthorityRow } from '../db/auth/authorization.js';
 
-export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'runner', 'runner-registration', 'internal'] as const;
+export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'runner', 'runner-registration', 'internal', 'telemetry'] as const;
 export type SubjectKind = typeof SUBJECT_KINDS[number];
 export const ACTIONS = ['read', 'enumerate', 'append', 'bootstrap', 'edit', 'status', 'admin', 'owner', 'enroll.self', 'claimant.read', 'claimant.edit', 'cancel', 'execute', 'capture', 'dispatch', 'create', 'protocol', 'claim', 'lease', 'never'] as const;
 export type Action = typeof ACTIONS[number];
-export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner', 'legacy-worker'] as const;
+export const RESOURCE_KINDS = ['protocol', 'settings', 'secret', 'directory', 'member', 'credential', 'machine', 'machine-settings', 'project', 'processed', 'plan', 'spore', 'raw', 'raw-index', 'run', 'grant', 'enrollment', 'backup', 'queue', 'runner', 'legacy-worker', 'telemetry'] as const;
 export type ResourceKind = typeof RESOURCE_KINDS[number];
 export type Transport = 'http' | 'mcp';
 
@@ -54,7 +54,7 @@ export interface AuthorizationDeclaration {
 }
 
 export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly AuthorizationDeclaration['resolver'][]>> = {
-  protocol: ['protocol'], settings: ['deployment', 'project'], secret: ['deployment', 'project'],
+  telemetry: ['deployment'], protocol: ['protocol'], settings: ['deployment', 'project'], secret: ['deployment', 'project'],
   directory: ['deployment'], member: ['member', 'deployment'], credential: ['credential', 'deployment', 'machine'],
   machine: ['machine', 'deployment'], 'machine-settings': ['machine'], project: ['project', 'deployment'],
   processed: ['project', 'deployment'], plan: ['project', 'deployment'], spore: ['project', 'deployment'],
@@ -63,7 +63,7 @@ export const RESOURCE_RESOLVERS: Readonly<Record<ResourceKind, readonly Authoriz
 };
 
 export const RESOURCE_ACTIONS: Readonly<Record<ResourceKind, readonly Action[]>> = {
-  protocol: ['protocol', 'never'], settings: ['read', 'admin'], secret: ['admin'],
+  telemetry: ['append'], protocol: ['protocol', 'never'], settings: ['read', 'admin'], secret: ['admin'],
   directory: ['read'], member: ['read', 'admin', 'owner', 'bootstrap'], credential: ['read', 'edit', 'admin'],
   machine: ['read', 'edit', 'capture'], 'machine-settings': ['claimant.read', 'claimant.edit', 'capture'],
   project: ['read', 'create', 'admin'], processed: ['read', 'admin', 'capture'],
@@ -78,6 +78,8 @@ export function authorize(subject: AuthorizationSubject, action: Action, resourc
   if (!SUBJECT_KINDS.includes(subject.kind) || !RESOURCE_ACTIONS[resource.kind]?.includes(action)) return false;
   if (subject.transport !== 'http' && subject.transport !== 'mcp') return false;
   if (action === 'never') return false;
+  if (subject.kind === 'telemetry') return subject.transport === 'http' && resource.kind === 'telemetry' && action === 'append';
+  if (resource.kind === 'telemetry') return false;
   if (resource.kind === 'protocol') return action === 'protocol' && subject.kind !== 'internal';
   if (subject.kind === 'public' || subject.kind === 'account' || subject.kind === 'enrollment' || subject.kind === 'runner-registration') return false;
   if (subject.kind === 'internal') return false;

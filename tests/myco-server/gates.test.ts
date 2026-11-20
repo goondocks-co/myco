@@ -484,8 +484,8 @@ describe('gates', () => {
     expect(ROUTES.filter((r) => r.auth === 'member').map((r) => `${r.method} ${r.path}`).sort()).toEqual(Object.keys(FIXTURES).sort());
     const machineless: Record<string, unknown>[] = [];
     for (const r of ROUTES) {
-      expect(['public', 'member', 'auth', 'session', 'enroll', 'runner']).toContain(r.auth);
-      if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll' || r.auth === 'runner') continue;
+      expect(['public', 'member', 'auth', 'session', 'enroll', 'runner', 'telemetry']).toContain(r.auth);
+      if (r.auth === 'auth' || r.auth === 'session' || r.auth === 'enroll' || r.auth === 'runner' || r.auth === 'telemetry') continue;
       expect(['none', 'json', 'stream']).toContain(r.bodyMode);
       if (r.auth === 'public') continue;
       const fixture = FIXTURES[`${r.method} ${r.path}`];
