@@ -23,7 +23,7 @@ export const TELEMETRY_MAX_SPAN_MS = 60 * 60 * 1000;
 export const TELEMETRY_DAY_MS = 86_400_000;
 export const TELEMETRY_RETENTION_MS = 30 * TELEMETRY_DAY_MS;
 export const TELEMETRY_MATCH_WAIT_MS = 7 * TELEMETRY_DAY_MS;
-/** Two seconds admits ordinary clock skew without assigning a whole neighbouring turn. */
+/** Turn starts within two seconds of an invocation start are eligible. */
 export const TELEMETRY_CLOCK_TOLERANCE_MS = 2_000;
 export const TELEMETRY_TRACE_PAGE = 8;
 export const TELEMETRY_ANCESTOR_LIMIT = 32;

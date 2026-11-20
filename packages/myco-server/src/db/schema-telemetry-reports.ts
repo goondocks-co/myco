@@ -11,7 +11,7 @@ const add = (
  WHERE ${row}.parent_session_id IS NOT NULL ON CONFLICT DO UPDATE SET claims=claims+1;`;
 const remove = (row: string) => `UPDATE telemetry_lineage_reports SET claims=claims-1 WHERE ${profile(row)};
  DELETE FROM telemetry_lineage_reports WHERE ${profile(row)} AND claims=0;`;
-/** A repeated invocation contributes to its report profile rather than growing the lineage read. */
+/** Resolution contributions maintain one row per lineage report profile. */
 export const TELEMETRY_REPORT_DDL = [
   `CREATE TABLE IF NOT EXISTS telemetry_lineage_reports(project_id TEXT NOT NULL CHECK(${projectIdGrammar('project_id')}),session_id TEXT NOT NULL,
  parent_project_id TEXT NOT NULL CHECK(${projectIdGrammar('parent_project_id')}),parent_session_id TEXT NOT NULL,key_id TEXT NOT NULL REFERENCES telemetry_keys(id),

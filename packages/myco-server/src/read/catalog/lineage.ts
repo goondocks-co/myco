@@ -21,8 +21,8 @@ interface lineage_LineageEdge {
   parentProjectId?: string;
   childProjectId?: string;
   source?: 'telemetry';
-  keyId?:string;
-  keyLabel?:string;
+  keyId?: string;
+  keyLabel?: string;
   serviceName?: string | null;
   inferred?: boolean;
   parentId: string;
@@ -55,7 +55,7 @@ interface lineage_SessionLineage {
   edges: lineage_LineageEdge[];
   /** True when a bound stopped the walk with sessions left unread. */
   truncated: boolean;
-  reports?:lineage_LineageEdge[];
+  reports?: lineage_LineageEdge[];
 }
 
 type lineage_Row = LineageSessionRow;
@@ -106,7 +106,7 @@ async function lineage_childIdsOf(db: lineage_import_RelationalStore, scope: lin
  */
 const lineage_sessionLineage = lineage_sessionLineageImpl;
 
-async function lineage_sessionLineageImpl(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, sessionId: string, visibleProjects:ProjectSet={all:false,projectIds:[scope.projectId]}): Promise<lineage_SessionLineage | null> {
+async function lineage_sessionLineageImpl(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, sessionId: string, visibleProjects: ProjectSet = { all: false, projectIds: [scope.projectId] }): Promise<lineage_SessionLineage | null> {
   const [self] = await lineage_sessionsNamed(db, scope, [sessionId]);
   if (self === undefined) return null;
   const rows = new Map<string, lineage_Row>([[sessionId, self]]);

@@ -131,7 +131,7 @@ function nano(value: unknown): string {
 const nullable = (attrs: Record<string, string | number>, key: string) =>
   typeof attrs[key] === 'string' && attrs[key] !== '' ? (attrs[key] as string) : null;
 
-/** OTLP/HTTP JSON with hex ids, integer enums and decimal-string uint64 timestamps. */
+/** OTLP/HTTP JSON with hex ids, integer enums and uint64 timestamps as strings or safe integers. */
 export function parseTraces(raw: unknown): ParsedTraces {
   const root = object(raw);
   if (root === null || (root.resourceSpans !== undefined && !Array.isArray(root.resourceSpans)))

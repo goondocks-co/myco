@@ -101,9 +101,9 @@ it('lists disagreeing key reports without presenting either as the selected pare
   });
   globalThis.fetch = (async () =>
     Response.json({
-      nodes: [node('worker'), node('lead-a'), node('lead-b')],
+      nodes: [node('worker'), node('lead-a'), { ...node('lead-a'), projectId: 'proj_2', label: 'Other Project lead' }],
       edges: [],
-      reports: [report('lead-a', 'First key'), report('lead-b', 'Second key')],
+      reports: [report('lead-a', 'First key'), { ...report('lead-a', 'Second key'), parentProjectId: 'proj_2' }],
       truncated: false,
     })) as typeof fetch;
   render(
@@ -115,6 +115,6 @@ it('lists disagreeing key reports without presenting either as the selected pare
   );
   expect(await screen.findByText('Reports disagree about the parent. No reported parent is selected.')).toBeTruthy();
   expect(screen.getByText(/reported by First key/)).toBeTruthy();
-  expect(screen.getByText(/reported by Second key/)).toBeTruthy();
+  expect(screen.getByText(/Other Project lead · reported by Second key/)).toBeTruthy();
   expect(screen.queryByText(/Child of/)).toBeNull();
 });

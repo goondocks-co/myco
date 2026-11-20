@@ -6,6 +6,7 @@ import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.
 import { telemetryReconciliationDue } from '@myco-server-worker/db/telemetry/matching.js';
 import { pruneTelemetry, telemetryRetentionDue } from '@myco-server-worker/db/telemetry/retention.js';
 import { cleanRevokedTelemetry, revokedTelemetryDue } from '@myco-server-worker/db/telemetry/revocation.js';
+import { telemetrySessionChangesDue } from '@myco-server-worker/db/telemetry/changes.js';
 import { lineage_sessionLineage } from '@myco-server-worker/read/catalog/lineage.js';
 import { d1TwoScale, eachUnit, expectTwoScale } from './helpers/two-scale.js';
 import { telemetryBatch, telemetrySpan, telemetryTrace } from './helpers/telemetry.js';
@@ -96,6 +97,8 @@ it('ingest, lineage and an unchanged wake remain bounded as settled history grow
           await reconcileTelemetry(db, NOW);
           expect(await telemetryReconciliationDue(db, NOW)).toBe(false);
           expect(await telemetryRetentionDue(db, NOW)).toBe(false);
+          expect(await revokedTelemetryDue(db)).toBe(false);
+          expect(await telemetrySessionChangesDue(db)).toBe(false);
         },
       },
     ],

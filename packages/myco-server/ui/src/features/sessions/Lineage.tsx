@@ -31,20 +31,22 @@ function spanWords(node: LineageNode, now: number): string {
 }
 
 const sameEdge = (edge: LineageEdge, other: LineageEdge | null): boolean =>
-  other !== null && edge.parentId === other.parentId && edge.kind === other.kind;
+  other !== null && edge.parentId === other.parentId && edge.parentProjectId === other.parentProjectId && edge.kind === other.kind;
+
+const sessionKey = (projectId: string, sessionId: string) => JSON.stringify([projectId, sessionId]);
 
 /** The lineage as nested lanes: each node under the one it is placed under, its other parents named in its detail. */
 export function lineageLanes(lineage: SessionLineage, projectId: string, now: number): Lane[] {
-  const byId = new Map(lineage.nodes.map((node) => [node.sessionId, node]));
+  const byId = new Map(lineage.nodes.map((node) => [sessionKey(node.projectId ?? projectId, node.sessionId), node]));
   const lanes = new Map<string, Lane & { lanes: Lane[] }>();
   const roots: Lane[] = [];
   for (const node of lineage.nodes) {
-    const relations = lineage.edges.filter((edge) => edge.childId === node.sessionId).map((edge) =>
+    const relations = lineage.edges.filter((edge) => edge.childId === node.sessionId && (edge.childProjectId ?? projectId) === (node.projectId ?? projectId)).map((edge) =>
       sameEdge(edge, node.placedUnder)
         ? (edge.kind === 'launched' && edge.source !== 'telemetry' ? 'Child session' : parentWords(edge, 'its parent'))
-        : parentWords(edge, lineageName(byId.get(edge.parentId))));
+        : parentWords(edge, lineageName(byId.get(sessionKey(edge.parentProjectId ?? projectId, edge.parentId)))));
     const lane: Lane & { lanes: Lane[] } = {
-      key: node.sessionId,
+      key: sessionKey(node.projectId ?? projectId, node.sessionId),
       name: lineageName(node),
       ...(node.captured && !node.current ? { to: sessionPagePath(node.projectId ?? projectId, node.sessionId) } : {}),
       detail: node.captured ? [agentName(node.agent), ...(node.current ? ['This session'] : []), ...relations].join(' · ') : relations.join(' · ') || undefined,
@@ -54,8 +56,8 @@ export function lineageLanes(lineage: SessionLineage, projectId: string, now: nu
       current: node.current,
       lanes: [],
     };
-    lanes.set(node.sessionId, lane);
-    const parent = node.placedUnder === null ? undefined : lanes.get(node.placedUnder.parentId);
+    lanes.set(lane.key, lane);
+    const parent = node.placedUnder === null ? undefined : lanes.get(sessionKey(node.placedUnder.parentProjectId ?? projectId, node.placedUnder.parentId));
     if (parent === undefined) roots.push(lane); else parent.lanes.push(lane);
   }
   return roots;
@@ -66,10 +68,15 @@ export function SessionLineageTab({ projectId, sessionId, now }: { projectId: st
   const lineage = useSessionLineage(projectId, sessionId);
   if (lineage.isPending) return <LoadingState label="Loading the lineage" count={3} />;
   if (lineage.error) return <ErrorState error={lineage.error} onRetry={() => void lineage.refetch()} />;
-  if (lineage.data.nodes.length <= 1&&!lineage.data.reports?.length) return <EmptyState title="No parent or child sessions were recorded for this session." />;
+  if (lineage.data.nodes.length <= 1 && !lineage.data.reports?.length) return <EmptyState title="No parent or child sessions were recorded for this session." />;
   return (
     <div className="flex flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s3" data-lineage="">
-      {lineage.data.reports?.length ? <div><p>Reports disagree about the parent. No reported parent is selected.</p><ul>{lineage.data.reports.map((report,index)=><li key={index}>{lineageName(lineage.data.nodes.find(node=>node.sessionId===report.parentId))} · reported by {report.keyLabel}{report.serviceName ? ` (sender claims ${report.serviceName})` : ''}</li>)}</ul></div> : null}
+      {lineage.data.reports?.length ? <div>
+        <p>Reports disagree about the parent. No reported parent is selected.</p>
+        <ul>{lineage.data.reports.map((report, index) => <li key={index}>
+          {lineageName(lineage.data.nodes.find(node => node.sessionId === report.parentId && (node.projectId ?? projectId) === (report.parentProjectId ?? projectId)))} · reported by {report.keyLabel}{report.serviceName ? ` (sender claims ${report.serviceName})` : ''}
+        </li>)}</ul>
+      </div> : null}
       <LaneTimeline lanes={lineageLanes(lineage.data, projectId, now)} label="Lineage" now={now} />
       {lineage.data.truncated && <p className="px-s3 t-small text-muted">Only part of this family is shown: it reaches past what one page reads.</p>}
     </div>
