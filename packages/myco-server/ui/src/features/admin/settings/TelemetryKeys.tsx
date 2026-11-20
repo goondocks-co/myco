@@ -21,6 +21,8 @@ interface TelemetryKey {
   cleanupDone: boolean;
   usedSpans: number;
   spanQuota: number;
+  dailySpans: number;
+  clockSkewMs: number | null;
   quotaReached: boolean;
   id: string;
   label: string;
@@ -43,7 +45,8 @@ export function TelemetryKeys() {
   const refresh = () => client.invalidateQueries({ queryKey: QUERY });
   const issue = useMutation({
     gcTime: 0,
-    mutationFn: (label: string) => postJson<{ key: string; headers: string; endpoint: string }>(PATH, { label }),
+    mutationFn: (label: string) =>
+      postJson<{ key: string; headers: string; endpoint: string }>(PATH, { label }),
     onSuccess: refresh,
   });
   const revoke = useMutation({
@@ -73,7 +76,8 @@ export function TelemetryKeys() {
     >
       <CommandBlock caption="OTLP endpoint base" command={keys.data?.endpoint ?? window.location.origin} />
       <p className="t-small text-muted">
-        Configure your sender for OTLP/HTTP using this base address and the header shown when you create a key.
+        Configure your sender for OTLP/HTTP using this base address and the header shown when you create a
+        key.
       </p>
       {keys.isPending ? (
         <LoadingState label="Loading telemetry keys" />
@@ -100,8 +104,15 @@ export function TelemetryKeys() {
                   {key.accepted} accepted · {key.rejected} rejected spans in the last day
                 </span>
                 <span className="t-small text-muted">
-                  {key.usedSpans} / {key.spanQuota} retained spans{key.quotaReached ? ' · Span quota reached' : ''}
+                  {key.usedSpans} / {key.spanQuota} retained spans · about {key.dailySpans} a day over 30 days
+                  {key.quotaReached ? ' · Span quota reached' : ''}
                 </span>
+                {key.clockSkewMs !== null && key.clockSkewMs !== undefined ? (
+                  <span className="t-small text-muted">
+                    This sender's clock or delivery is {Math.round(key.clockSkewMs / 1000)} seconds from this
+                    server.
+                  </span>
+                ) : null}
               </div>
               {key.revokedAt === null ? (
                 <Button
@@ -162,7 +173,10 @@ export function TelemetryKeys() {
           ) : (
             <>
               <CommandBlock caption="OTLP endpoint base" command={revealed.endpoint} />
-              <CommandBlock caption="OTLP headers list (Authorization: Bearer key)" command={revealed.headers} />
+              <CommandBlock
+                caption="OTLP headers list (Authorization: Bearer key)"
+                command={revealed.headers}
+              />
               <p className="t-small text-muted">Save this header now. The key is not shown again.</p>
               <DialogFooter>
                 <Button onClick={close}>Done</Button>

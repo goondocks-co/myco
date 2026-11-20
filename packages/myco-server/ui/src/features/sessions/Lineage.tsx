@@ -1,5 +1,10 @@
 import { EmptyState, ErrorState, LaneTimeline, LoadingState, type Lane } from '../../design';
-import { useSessionLineage, type LineageEdge, type LineageNode, type SessionLineage } from '../../hooks/use-sessions';
+import {
+  useSessionLineage,
+  type LineageEdge,
+  type LineageNode,
+  type SessionLineage,
+} from '../../hooks/use-sessions';
 import { projectPath } from '../../routes/nav';
 import { agentName } from './words';
 import { clockWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
@@ -14,12 +19,15 @@ export function sessionPagePath(projectId: string, sessionId: string): string {
 
 /** A node's name as the lineage shows it. */
 export function lineageName(node: LineageNode | undefined): string {
-  return node === undefined || !node.captured ? NOT_CAPTURED_NAME : node.label ?? 'Untitled session';
+  return node === undefined || !node.captured ? NOT_CAPTURED_NAME : (node.label ?? 'Untitled session');
 }
 
+const reportedBy = (edge: LineageEdge) =>
+  `reported by ${edge.keyLabel ?? 'an OpenTelemetry key'}${edge.serviceName ? ` (sender claims ${edge.serviceName})` : ''}`;
 /** How a child stands to one of its parents, in words. */
 export function parentWords(edge: LineageEdge, parent: string): string {
-  if (edge.kind === 'launched') return `${edge.inferred ? 'Probably started by' : 'Child of'} ${parent}${edge.source === 'telemetry' ? ` · reported by ${edge.keyLabel ?? 'an OpenTelemetry key'}${edge.serviceName ? ` (sender claims ${edge.serviceName})` : ''}` : ''}`;
+  if (edge.kind === 'launched')
+    return `${edge.inferred ? 'Probably started by' : 'Child of'} ${parent}${edge.source === 'telemetry' ? ` · ${reportedBy(edge)}` : ''}`;
   return `Continues ${parent}${edge.reason === null ? '' : ` (${edge.reason})`}`;
 }
 
@@ -31,25 +39,46 @@ function spanWords(node: LineageNode, now: number): string {
 }
 
 const sameEdge = (edge: LineageEdge, other: LineageEdge | null): boolean =>
-  other !== null && edge.parentId === other.parentId && edge.parentProjectId === other.parentProjectId && edge.kind === other.kind;
+  other !== null &&
+  edge.parentId === other.parentId &&
+  edge.parentProjectId === other.parentProjectId &&
+  edge.kind === other.kind;
 
 const sessionKey = (projectId: string, sessionId: string) => JSON.stringify([projectId, sessionId]);
 
 /** The lineage as nested lanes: each node under the one it is placed under, its other parents named in its detail. */
 export function lineageLanes(lineage: SessionLineage, projectId: string, now: number): Lane[] {
-  const byId = new Map(lineage.nodes.map((node) => [sessionKey(node.projectId ?? projectId, node.sessionId), node]));
+  const byId = new Map(
+    lineage.nodes.map((node) => [sessionKey(node.projectId ?? projectId, node.sessionId), node]),
+  );
   const lanes = new Map<string, Lane & { lanes: Lane[] }>();
   const roots: Lane[] = [];
   for (const node of lineage.nodes) {
-    const relations = lineage.edges.filter((edge) => edge.childId === node.sessionId && (edge.childProjectId ?? projectId) === (node.projectId ?? projectId)).map((edge) =>
-      sameEdge(edge, node.placedUnder)
-        ? (edge.kind === 'launched' && edge.source !== 'telemetry' ? 'Child session' : parentWords(edge, 'its parent'))
-        : parentWords(edge, lineageName(byId.get(sessionKey(edge.parentProjectId ?? projectId, edge.parentId)))));
+    const relations = lineage.edges
+      .filter(
+        (edge) =>
+          edge.childId === node.sessionId &&
+          (edge.childProjectId ?? projectId) === (node.projectId ?? projectId),
+      )
+      .map((edge) =>
+        sameEdge(edge, node.placedUnder)
+          ? edge.kind === 'launched' && edge.source !== 'telemetry'
+            ? 'Child session'
+            : parentWords(edge, 'its parent')
+          : parentWords(
+              edge,
+              lineageName(byId.get(sessionKey(edge.parentProjectId ?? projectId, edge.parentId))),
+            ),
+      );
     const lane: Lane & { lanes: Lane[] } = {
       key: sessionKey(node.projectId ?? projectId, node.sessionId),
       name: lineageName(node),
-      ...(node.captured && !node.current ? { to: sessionPagePath(node.projectId ?? projectId, node.sessionId) } : {}),
-      detail: node.captured ? [agentName(node.agent), ...(node.current ? ['This session'] : []), ...relations].join(' · ') : relations.join(' · ') || undefined,
+      ...(node.captured && !node.current
+        ? { to: sessionPagePath(node.projectId ?? projectId, node.sessionId) }
+        : {}),
+      detail: node.captured
+        ? [agentName(node.agent), ...(node.current ? ['This session'] : []), ...relations].join(' · ')
+        : relations.join(' · ') || undefined,
       when: spanWords(node, now),
       start: node.startedAt,
       end: node.endedAt,
@@ -57,28 +86,61 @@ export function lineageLanes(lineage: SessionLineage, projectId: string, now: nu
       lanes: [],
     };
     lanes.set(lane.key, lane);
-    const parent = node.placedUnder === null ? undefined : lanes.get(sessionKey(node.placedUnder.parentProjectId ?? projectId, node.placedUnder.parentId));
-    if (parent === undefined) roots.push(lane); else parent.lanes.push(lane);
+    const parent =
+      node.placedUnder === null
+        ? undefined
+        : lanes.get(sessionKey(node.placedUnder.parentProjectId ?? projectId, node.placedUnder.parentId));
+    if (parent === undefined) roots.push(lane);
+    else parent.lanes.push(lane);
   }
   return roots;
 }
 
 /** The session's family over its parent and child sessions, the session itself marked. */
-export function SessionLineageTab({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
+export function SessionLineageTab({
+  projectId,
+  sessionId,
+  now,
+}: {
+  projectId: string;
+  sessionId: string;
+  now: number;
+}) {
   const lineage = useSessionLineage(projectId, sessionId);
   if (lineage.isPending) return <LoadingState label="Loading the lineage" count={3} />;
   if (lineage.error) return <ErrorState error={lineage.error} onRetry={() => void lineage.refetch()} />;
-  if (lineage.data.nodes.length <= 1 && !lineage.data.reports?.length) return <EmptyState title="No parent or child sessions were recorded for this session." />;
+  if (lineage.data.nodes.length <= 1 && !lineage.data.reports?.length)
+    return <EmptyState title="No parent or child sessions were recorded for this session." />;
+  const labelFor = (sessionId: string, project: string | undefined) =>
+    lineageName(
+      lineage.data.nodes.find(
+        (node) =>
+          sessionKey(node.projectId ?? projectId, node.sessionId) ===
+          sessionKey(project ?? projectId, sessionId),
+      ),
+    );
   return (
     <div className="flex flex-col gap-s3 rounded-card border border-line bg-surface-1 p-s3" data-lineage="">
-      {lineage.data.reports?.length ? <div>
-        <p>Reports disagree about the parent. No reported parent is selected.</p>
-        <ul>{lineage.data.reports.map((report, index) => <li key={index}>
-          {lineageName(lineage.data.nodes.find(node => node.sessionId === report.parentId && (node.projectId ?? projectId) === (report.parentProjectId ?? projectId)))} · reported by {report.keyLabel}{report.serviceName ? ` (sender claims ${report.serviceName})` : ''}
-        </li>)}</ul>
-      </div> : null}
+      {lineage.data.reports?.length ? (
+        <div>
+          <p>Reports disagree about a parent. No disputed parent is selected.</p>
+          <ul>
+            {lineage.data.reports.map((report, index) => (
+              <li key={index}>
+                {labelFor(report.childId, report.childProjectId)}:{' '}
+                {report.inferred ? 'probable parent' : 'reported parent'}{' '}
+                {labelFor(report.parentId, report.parentProjectId)} · {reportedBy(report)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <LaneTimeline lanes={lineageLanes(lineage.data, projectId, now)} label="Lineage" now={now} />
-      {lineage.data.truncated && <p className="px-s3 t-small text-muted">Only part of this family is shown: it reaches past what one page reads.</p>}
+      {lineage.data.truncated && (
+        <p className="px-s3 t-small text-muted">
+          Only part of this family is shown: it reaches past what one page reads.
+        </p>
+      )}
     </div>
   );
 }
