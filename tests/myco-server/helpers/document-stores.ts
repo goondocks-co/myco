@@ -1,7 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { BlobStore, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
@@ -26,6 +25,23 @@ async function seedProjects(db: RelationalStore): Promise<void> {
   for (const project of ['project', 'other']) await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
 }
 
+const WORKER = { modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01' };
+
+/**
+ * Runs `use` on a private native copy of the schema template through step `through`, then on the D1 database `openD1`
+ * answers, each holding two projects. `MYCO_DOCUMENT_TEST_STORE` keeps one store.
+ */
+async function onEachStore(use: DocumentRun, through: number, openD1: () => Promise<RelationalStore>): Promise<void> {
+  const selected = process.env.MYCO_DOCUMENT_TEST_STORE;
+  if (selected !== undefined && !['native', 'D1'].includes(selected)) throw new Error('Unknown document test store');
+  const seeded = async (db: RelationalStore, target: DocumentTarget) => { storeTargets.set(db, target); await seedProjects(db); return db; };
+  if (selected !== 'D1') {
+    const native = schemaSqlite(through === Infinity ? {} : { through });
+    try { await use(await seeded(sqliteRelationalStore(native), 'native'), 'native', native); } finally { native.close(); }
+  }
+  if (selected !== 'native') await use(await seeded(await openD1(), 'D1'), 'D1');
+}
+
 /**
  * One Miniflare for this file. Each case takes the next private D1 database copied from the schema template, and a
  * fresh native copy. A `through` other than the current schema still boots on its own, because that schema differs.
@@ -35,63 +51,29 @@ export function documentFileStores(capacity: number): ((run: DocumentRun, throug
   let mf: Miniflare | null = null;
   let next = 0;
   const open = async (): Promise<Miniflare> => {
-    if (mf !== null) return mf;
-    mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01',
-      d1Databases: ids, resourcePersistencePath: await schemaD1Root(ids) }));
+    mf ??= new Miniflare(convertV4MiniflareOptions({ ...WORKER, d1Databases: ids, resourcePersistencePath: await schemaD1Root(ids) }));
     return mf;
   };
   const run = async (use: DocumentRun, through = Infinity): Promise<void> => {
     if (through !== Infinity) return withDocumentStores(use, through);
-    const selected = process.env.MYCO_DOCUMENT_TEST_STORE;
-    if (selected !== undefined && !['native', 'D1'].includes(selected)) throw new Error('Unknown document test store');
-    let native: Database | null = null;
-    try {
-      if (selected !== 'D1') {
-        native = schemaSqlite();
-        const db = sqliteRelationalStore(native);
-        storeTargets.set(db, 'native');
-        await seedProjects(db);
-        await use(db, 'native', native);
-      }
-      if (selected !== 'native') {
-        const id = ids[next++];
-        if (id === undefined) throw new Error(`document store pool of ${capacity} is exhausted`);
-        const db = await (await open()).getD1Database(id) as RelationalStore;
-        storeTargets.set(db, 'D1');
-        await seedProjects(db);
-        await use(db, 'D1');
-      }
-    } finally { native?.close(); }
+    await onEachStore(use, through, async () => {
+      const id = ids[next++];
+      if (id === undefined) throw new Error(`document store pool of ${capacity} is exhausted`);
+      return await (await open()).getD1Database(id) as RelationalStore;
+    });
   };
   return Object.assign(run, { close: async () => { await mf?.dispose(); mf = null; } });
 }
 
-/** Runs `run` on native SQLite, then on D1 through Miniflare: each a private database holding the schema through step `through`, with two projects. */
+/** Runs `run` on native SQLite, then on D1 through Miniflare: each a private copy of the schema template through step `through`, with two projects. */
 export async function withDocumentStores(run: DocumentRun, through = Infinity): Promise<void> {
-  const selected=process.env.MYCO_DOCUMENT_TEST_STORE;
-  if(selected!==undefined&&!['native','D1'].includes(selected))throw new Error('Unknown document test store');
-  const current=through===Infinity;
-  let native:Database|null=null;
-  let mf:Miniflare|null=null;
+  const held: { mf?: Miniflare } = {};
   try {
-    for (const target of ['native','D1'] as const) {
-      if(selected!==undefined&&selected!==target)continue;
-      let db:RelationalStore;
-      if(target==='native'){
-        native=current?schemaSqlite():new Database(':memory:');
-        if(!current)native.exec('PRAGMA foreign_keys=ON');
-        db=sqliteRelationalStore(native);
-      } else {
-        mf=new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01',
-          d1Databases: ['DB'], ...(current?{resourcePersistencePath:await schemaD1Root()}:{}) }));
-        db=await mf.getD1Database('DB');
-      }
-      storeTargets.set(db,target);
-      if(!current)for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
-      await seedProjects(db);
-      await run(db, target, target==='native'?native!:undefined);
-    }
-  } finally { native?.close(); await mf?.dispose(); }
+    await onEachStore(run, through, async () => {
+      held.mf = new Miniflare(convertV4MiniflareOptions({ ...WORKER, d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root(['DB'], through === Infinity ? undefined : through) }));
+      return await held.mf.getD1Database('DB') as RelationalStore;
+    });
+  } finally { await held.mf?.dispose(); }
 }
 
 /** Transcript fixtures use the upload and capture writers on the selected store. */

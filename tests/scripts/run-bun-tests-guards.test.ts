@@ -27,6 +27,8 @@ const TEMP_LEAK_FIXTURE = 'tests/fixtures/runner/temp_leak_test.ts';
 const TEMP_BOUNDARY_FIXTURE = 'tests/fixtures/runner/temp_boundary_test.ts';
 const STREAM_FAULT_FIXTURE = 'tests/fixtures/runner/stream_fault_test.tsx';
 const BUDGET_MS = 3000;
+/** Bun reports only failures under an agent's markers; a nested run reports every test, as it does in CI. */
+const REPORTS_EVERY_TEST = { CLAUDECODE: '', AGENT: '', REPL_ID: '' };
 // Sampling takes a few seconds per process; anything near this bound means a guard did not fire.
 const RUN_BOUND_MS = 90_000;
 
@@ -195,25 +197,12 @@ describe('run-bun-tests guards', () => {
 
   test.skipIf(process.platform === 'win32')('accepts evidence only when Bun ran tests and both artifacts are readable', () => withReportDir(async (base) => {
     const bin = fakeBun(base);
-    const failed = await runRunner(STDIN_FIXTURE, {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      MYCO_RUNNER_REPORT_DIR: path.join(base, 'log-error'),
-      FAKE_BUN_MODE: 'log-error',
-    });
-    expect(failed.status).toBe(1);
-    expect(failed.output).toContain('Bun reported a failure or error');
-    const passed = await runRunner(STDIN_FIXTURE, {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      MYCO_RUNNER_REPORT_DIR: path.join(base, 'pass'),
-    });
+    const run = (mode: string) => runRunner(STDIN_FIXTURE, { PATH: `${bin}${path.delimiter}${process.env.PATH}`, MYCO_RUNNER_REPORT_DIR: path.join(base, mode), FAKE_BUN_MODE: mode });
+    const passed = await run('pass');
     expect(passed.status).toBe(0);
     expect(passed.output).toContain('FAKE_BUN_EXEC');
-    for (const [mode, diagnostic] of [['junit-fail', 'JUnit aggregated 1 failure'], ['zero', 'zero executed tests']] as const) {
-      const result = await runRunner(STDIN_FIXTURE, {
-        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-        MYCO_RUNNER_REPORT_DIR: path.join(base, mode),
-        FAKE_BUN_MODE: mode,
-      });
+    for (const [mode, diagnostic] of [['log-error', 'Bun reported a failure or error'], ['junit-fail', 'JUnit aggregated 1 failure'], ['zero', 'zero executed tests']] as const) {
+      const result = await run(mode);
       expect({ mode, status: result.status, output: result.output }).toEqual({ mode, status: 1, output: expect.stringContaining(diagnostic) });
     }
   }), RUN_BOUND_MS + 10_000);
@@ -518,6 +507,7 @@ describe('run-bun-tests guards', () => {
   test('samples, kills and fails a group that outlives its budget, leaving none of its processes', () => withReportDir(async (reports) => {
     const pidsFile = path.join(reports, 'fixture-children.pids');
     const { status, output, elapsedMs } = await runRunner(HANG_FIXTURE, {
+      ...REPORTS_EVERY_TEST,
       MYCO_RUNNER_HANG_FIXTURE: '1',
       MYCO_RUNNER_HANG_PIDS_FILE: pidsFile,
       MYCO_RUNNER_GROUP_BUDGET_MS: String(BUDGET_MS),
@@ -528,11 +518,12 @@ describe('run-bun-tests guards', () => {
     expect(status).toBe(124);
     expect(elapsedMs).toBeLessThan(RUN_BOUND_MS);
     expect(output).toContain('KILLED (over budget) node env');
-    expect(output).toMatch(new RegExp(`=== OVER BUDGET \\(killed at ${BUDGET_MS}ms\\) ===[\\s\\S]*${HANG_FIXTURE.replace(/\./g, '\\.')}`));
-
-    const junit = fs.readFileSync(reportFile(reports, 'node-env.junit.xml'), 'utf8');
-    expect(junit).toContain(`file="${HANG_FIXTURE}"`);
-    expect(junit).toContain('<failure type="GroupBudgetExceeded"');
+    // The kill and the summary name the file and the test the group was in, not the last line it printed.
+    const where = `in ${HANG_FIXTURE}, in the test after "finishes before the one that blocks"`;
+    expect(output).toContain(`${where}; killing its process tree`);
+    expect(output).toContain(`=== OVER BUDGET ===\n[node env] killed at its ${BUDGET_MS}ms group budget, ${where}; diagnostics: `);
+    expect(output).toContain(`\n  ${HANG_FIXTURE}`);
+    expect(fs.readFileSync(reportFile(reports, 'node-env.junit.xml'), 'utf8')).toMatch(new RegExp(`file="${HANG_FIXTURE}">\\s*<failure type="GroupBudgetExceeded"`));
 
     const hang = fs.readFileSync(reportFile(reports, 'node-env.hang.txt'), 'utf8');
     expect(hang).toContain('--- lsof');
@@ -550,6 +541,13 @@ describe('run-bun-tests guards', () => {
     expect(Number.isInteger(pgid)).toBe(true);
     for (const pid of [...children, ...hang.match(/^pids: (.+)$/m)![1].split(' ').map(Number)]) expect({ pid, alive: alive(pid) }).toEqual({ pid, alive: false });
     expect(processGroupMembers(pgid)).toEqual([]);
+  }), RUN_BOUND_MS + 10_000);
+
+  test('a group due after the run\'s deadline is not started, and is reported failed with its files', () => withReportDir(async (reports) => {
+    const { status, output } = await runRunner(HANG_FIXTURE, { MYCO_RUNNER_HANG_FIXTURE: '1', MYCO_RUNNER_DEADLINE_AT_MS: String(Date.now() - 1), MYCO_RUNNER_REPORT_DIR: reports });
+    expect(status).toBe(1);
+    expect(output).toMatch(new RegExp(`\\n\\[node env\\] not started: the run's deadline \\(\\S+\\) had passed\\n  ${HANG_FIXTURE}`));
+    expect(fs.readFileSync(reportFile(reports, 'node-env.junit.xml'), 'utf8')).toMatch(new RegExp(`file="${HANG_FIXTURE}">\\s*<failure type="GroupBudgetExceeded"`));
   }), RUN_BOUND_MS + 10_000);
 });
 
