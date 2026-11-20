@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  ActionLink, Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, ExternalLink, FactRow, Input, LoadingState, MoreMenu, Select,
+  ActionLink, Button, Card, ConfirmDialog, Dialog, DialogContent, DialogFooter, ErrorState, ExternalLink, FactRow, Input, LoadingState, MoreMenu, Select, tapTarget,
 } from '../../../design';
 import { GITHUB_APP_SETUP_PATH, githubAppPages, installationPage as installationSettings, ownerWords } from '@goondocks/myco-shared/github-app-setup';
 import {
@@ -163,11 +163,11 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
       {installationPage > 1 && <Button variant="ghost" onClick={() => setInstallationPage(1)}>Back to the first accounts</Button>}
       {accounts.approve.error && <p role="alert" className="t-small text-bad">{settingsRefusalText(accounts.approve.error)}</p>}
       {installations.isSuccess && (
-        <p className="flex flex-col gap-s1 t-small text-muted" data-install-hint="">
+        <div className="flex flex-col items-start t-small text-muted" data-install-hint="">
           {installations.data.installations.length > 0 && <span>Repository not here? Install the App on the account that owns it, or add the repository to that account’s installation, then press Refresh GitHub access.</span>}
-          <ExternalLink href={githubAppPages(installations.data.app.slug, installations.data.app.owner).install}>Install the App in GitHub</ExternalLink>
-          {chosenAccount !== null && <ExternalLink href={installationSettings(chosenAccount.installationId, chosenAccount.account)}>{`Choose ${chosenAccount.account.login}’s repositories in GitHub`}</ExternalLink>}
-        </p>
+          <ExternalLink className={tapTarget} href={githubAppPages(installations.data.app.slug, installations.data.app.owner).install}>Install the App in GitHub</ExternalLink>
+          {chosenAccount !== null && <ExternalLink className={tapTarget} href={installationSettings(chosenAccount.installationId, chosenAccount.account)}>{`Choose ${chosenAccount.account.login}’s repositories in GitHub`}</ExternalLink>}
+        </div>
       )}
       {usable.length > 0 && (
         <Select

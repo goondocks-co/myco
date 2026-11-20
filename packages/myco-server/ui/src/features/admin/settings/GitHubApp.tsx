@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import {
   GITHUB_APPS_LISTS, githubAppChecklist, githubAppHeadline, githubAppPages, ownerWords, SETUP_WORDS, WITHHELD_WORDS,
-  type GitHubAppSetup, type RepositorySuggestion, type SetupStep, type StepState,
+  type GitHubAppSetup, type RepositorySuggestion, type SetupLink, type SetupStep, type StepState,
 } from '@goondocks/myco-shared/github-app-setup';
-import { Button, Card, CommandBlock, ErrorState, ExternalLink, LoadingState, StatusChip, type Tone } from '../../../design';
+import { Button, Card, CommandBlock, ErrorState, ExternalLink, LoadingState, StatusChip, tapTarget, type Tone } from '../../../design';
 import {
   settingsRefusalText, useConnectSuggestion, useGitHubAccountActions, useGitHubAppSetup, useGitHubInstallations, useRepositorySuggestions,
 } from '../../../hooks/use-settings';
@@ -59,16 +59,11 @@ function AppIdentity({ setup }: { setup: GitHubAppSetup }) {
   return <div className="flex flex-col gap-s2" data-app-identity="">
     {app === null ? <>
       <p className="t-body">{SETUP_WORDS.find(setup.expectedName, setup.clientId)}</p>
-      <p className="flex flex-wrap gap-s4 t-small">
-        <ExternalLink href={GITHUB_APPS_LISTS.personal}>Your GitHub Apps</ExternalLink>
-        <ExternalLink href={GITHUB_APPS_LISTS.organizations}>Your organizations</ExternalLink>
-      </p>
+      <GitHubLinks links={[{ label: 'Your GitHub Apps', href: GITHUB_APPS_LISTS.personal }, { label: 'Your organizations', href: GITHUB_APPS_LISTS.organizations }]} />
       {setup.lookupError !== null && <p className="t-small text-muted">{`GitHub’s public page for the App did not answer: ${setup.lookupError}`}</p>}
     </> : <>
       <p className="t-body">{`This server’s App is ${app.name}${app.owner === null ? '' : `, owned by ${ownerWords(app.owner)}`}.`}</p>
-      <p className="flex flex-wrap gap-s4 t-small">
-        <ExternalLink href={pages!.settings ?? pages!.app}>{pages!.settings === null ? 'Open the App on GitHub' : 'Open the App’s settings'}</ExternalLink>
-      </p>
+      <GitHubLinks links={[{ label: pages!.settings === null ? 'Open the App on GitHub' : 'Open the App’s settings', href: pages!.settings ?? pages!.app }]} />
     </>}
     <p className="t-small text-muted">{SETUP_WORDS.confirmAccess}</p>
   </div>;
@@ -92,13 +87,18 @@ function Checklist({ setup }: { setup: GitHubAppSetup }) {
   </div>;
 }
 
+/** Links to GitHub, each its own line and a fingertip tall. */
+function GitHubLinks({ links }: { links: SetupLink[] }) {
+  return <div className="flex flex-col items-start t-small">
+    {links.map((link) => <ExternalLink key={link.href} href={link.href} className={tapTarget}>{link.label}</ExternalLink>)}
+  </div>;
+}
+
 function StepBody({ step }: { step: SetupStep }) {
   return <>
     {step.detail.map((line) => <p key={line} className="t-small text-muted">{line}</p>)}
     {step.commands.map((command) => <CommandBlock key={command} command={command} />)}
-    {step.links.length > 0 && <p className="flex flex-wrap gap-s4 t-small">
-      {step.links.map((link) => <ExternalLink key={link.href} href={link.href}>{link.label}</ExternalLink>)}
-    </p>}
+    {step.links.length > 0 && <GitHubLinks links={step.links} />}
   </>;
 }
 
