@@ -168,11 +168,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, lifecycle: await sessionLifecycleState(env.db, scope.projectId, sessionId), resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
-    counts: {
-      userPrompts: counters?.userTurns ?? 0, mycoCalls: evidence.mycoCalls,
-      prompts: counters?.turns ?? 0, promptEntries: counters?.prompts ?? 0, toolCalls: evidence.toolCalls, failedTools: evidence.failedTools,
-      responses: counters?.replies ?? 0, plans: counters?.plans ?? 0, attachments: counters?.attachments ?? 0,
-    },
+    counts: evidence.counts,
     release: await getReleaseStatus(env.db, scope, 'session', sessionId), outcome: await sessionOutcome(env.db, scope, sessionId), projectId: scope.projectId,
   });
 }

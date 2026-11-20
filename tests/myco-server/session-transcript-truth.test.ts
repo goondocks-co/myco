@@ -61,6 +61,11 @@ for (const [agent, records, calls, edits] of [
         if (!result.more) break;
       }
       const header = await get(session);
+      const mcpResponse = await worker.fetch(memberPost(issued.token, { jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'myco_sessions', arguments: { project: 'proj_1', op: 'get', id: session } } }, '/mcp'), fixture.env);
+      expect(mcpResponse.status).toBe(200);
+      const mcp = await mcpResponse.json() as { result: { structuredContent: { result: { counts: unknown } } } };
+      expect(mcp.result.structuredContent.result.counts).toEqual(header.counts);
       const turns = (await get(session, '/turns?origins=user,system,agent_dispatch,hook_injected,unknown')).rows;
       expect(header.counts).toMatchObject({ prompts: 2, userPrompts: parent === undefined ? 2 : 0, toolCalls: calls[0] + calls[1], failedTools: 1, mycoCalls: 1, plans: 0, attachments: 0 });
       expect(header.filesEdited).toBeNull();

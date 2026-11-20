@@ -379,7 +379,7 @@ describe('POST /mcp', () => {
     const next = (await call(t1.token, 'myco_sessions', { limit: 1, cursor: first.cursor })).result;
     expect([first.sessions[0].id, next.sessions[0].id, next.cursor]).toEqual(['s_done', 's_open', null]);
     const got = (await call(t1.token, 'myco_sessions', { op: 'get', id: 's_done' })).result;
-    expect({ id: got.id, ended_at: got.ended_at, prompts: got.prompt_count, counts: got.counts }).toEqual({ id: 's_done', ended_at: 3_000, prompts: 2, counts: { prompts: 2, toolCalls: 1, responses: 0, plans: 0, attachments: 0 } });
+    expect({ id: got.id, ended_at: got.ended_at }).toEqual({ id: 's_done', ended_at: 3_000 });
     expect((await call(t1.token, 'myco_sessions', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Session not found' });
   });
 

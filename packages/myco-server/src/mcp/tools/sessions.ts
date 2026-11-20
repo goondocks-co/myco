@@ -8,7 +8,8 @@ import { TurnLocatorBuilding } from '../../db/documents/locators.js';
  * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { documentTurnCollection, documentTurnDetail, TURN_COLLECTIONS, type TurnCollection } from '../../content/session-turns.js';
-import { listCatalogTurns } from '../../read/document-catalog.js';
+import { documentCounters, listCatalogTurns } from '../../read/document-catalog.js';
+import { sessionEvidence } from '../../read/session-evidence.js';
 import { decodeCursor } from '../../read/scope.js';
 import { PROMPT_ORIGINS } from '../../ingest/kinds.js';
 import { getReleaseStatus } from '../../core/provenance.js';
@@ -17,7 +18,6 @@ import { plans_getPlan as getPlan } from '../../read/catalog/plans.js';
 import {
   sessions_getSession as getSession,
   sessions_listSessionSummaries as listSessionSummaries,
-  sessions_sessionCounts as sessionCounts,
   type sessions_SessionRow as SessionRow,
 } from '../../read/catalog/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
@@ -36,12 +36,12 @@ interface SessionSummary {
   title: string | null;
   summary: string;
   prompt_count: number;
-  tool_count: number;
+  tool_count: number | null;
   parent_session_id: string | null;
   launch_parent_session_id: string | null;
 }
 
-function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }): SessionSummary {
+function summary(row: SessionRow, counts: { prompts: number; toolCalls: number | null }): SessionSummary {
   return {
     id: row.sessionId,
     agent: row.agent,
@@ -95,8 +95,8 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     const turns = ctx.principal.kind === 'grant' ? undefined : await listCatalogTurns(db, scope, id, {
       origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor,
     });
-    const counts = await sessionCounts(db, scope, id);
-    return { ...summary(row, counts), counts, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
+    const evidence = sessionEvidence(row.agent, await documentCounters(db, scope, id));
+    return { ...summary(row, evidence.counts), ...evidence, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
   }
 
   let sessionId: string | undefined;
