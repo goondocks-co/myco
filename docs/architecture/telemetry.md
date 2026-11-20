@@ -78,7 +78,7 @@ Lineage reads use the caller's canonical visible Project set. A hidden endpoint 
 without its id, Project, title, prompt, agent or times; traversal stops there.
 
 `invocationsForSession` serves a cursor page through the Project-scoped `GET …/sessions/{id}/invocations` API.
-Its cursor includes key identity. `invocationsForTurns` supplies the read-time turn overlay with every competing
+Its cursor includes key identity. `sessionInvocationFacts` supplies the read-time turn overlay with every competing
 fact within the turn-head windows, without a page limit: `{startAt,endAt,matchedBy,keyLabel,serviceName,agentName}`.
 The overlay owns the start ±2-second matching rule. Zero or several facts preserve the stored turn origin.
 Titling, cards and extraction do not consume this display overlay.

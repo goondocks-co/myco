@@ -94,7 +94,7 @@ export async function receiveTelemetry(
                     ? [
                         saved.quotaReached
                           ? `telemetry key span quota reached (${saved.usedSpans}/${saved.spanQuota} spans); wait until retained spans age below the quota or ask an administrator to reduce the number of live senders`
-                          : 'trace or server capacity reached, server capacity reached',
+                          : 'trace or Deployment span capacity reached',
                       ]
                     : []),
                 ].join('; '),

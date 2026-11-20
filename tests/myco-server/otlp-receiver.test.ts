@@ -1,12 +1,13 @@
+import {
+  sessionInvocationFacts,
+  sessionTurnInvocations,
+} from '@myco-server-worker/read/session-invocations.js';
 import { telemetryFixture as fixture } from './helpers/telemetry-fixture.js';
 import { describe, expect, it } from 'bun:test';
 import { runTelemetryWork } from '@myco-server-worker/core/telemetry-work.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.js';
-import {
-  invocationsForSession,
-  invocationsForTurns,
-} from '@myco-server-worker/core/telemetry-invocations.js';
+import { invocationsForSession } from '@myco-server-worker/core/telemetry-invocations.js';
 import { pruneTelemetry } from '@myco-server-worker/db/telemetry/retention.js';
 import {
   TELEMETRY_BODY_BYTES,
@@ -134,6 +135,13 @@ describe('OpenTelemetry receiver', () => {
     const f = await fixture();
     await f.start('lead');
     await f.start('worker /β', 'proj_2');
+    await f.capture(
+      'worker /β',
+      'prompt',
+      { promptId: uuid(123), text: 'A worker turn', origin: 'user' },
+      'proj_2',
+    );
+    await publishFixture(f.e, NOW);
     const body = telemetryTrace('lead', 'worker /β');
     body.resourceSpans[0]!.scopeSpans[0]!.spans[2]!.attributes.push(
       telemetryAttribute('unknown.content', 'must be discarded'),
@@ -174,16 +182,13 @@ describe('OpenTelemetry receiver', () => {
         )
       ).status,
     ).toBe(401);
-    expect(
-      await invocationsForTurns(f.e.db, { projectId: 'proj_2', sessionId: 'worker /β', starts: [NOW - 500] }),
-    ).toEqual([expect.objectContaining({ startAt: NOW, matchedBy: 'exact', keyLabel: 'test sender' })]);
-    expect(
-      await invocationsForTurns(f.e.db, {
-        projectId: 'proj_2',
-        sessionId: 'worker /β',
-        starts: [NOW + 10_000],
-      }),
-    ).toEqual([]);
+
+    const overlay = await sessionTurnInvocations(f.e.db, { projectId: 'proj_2' }, 'worker /β');
+    expect(overlay.show({ createdAt: NOW - 500, origin: 'user' })).toMatchObject({
+      origin: 'agent_dispatch',
+      invocation: { matchedBy: 'exact', keyLabel: 'test sender' },
+    });
+    expect(overlay.show({ createdAt: NOW + 10_000, origin: 'user' }).origin).toBe('user');
     expect((await invocationsForSession(f.e.db, 'proj_1', 'worker /β')).rows).toEqual([]);
     expect(await (await f.owner(`/api/telemetry/keys/${f.id}/revoke`, {})).json()).toEqual({ revoked: true });
     expect((await f.send(body)).status).toBe(401);
@@ -195,6 +200,9 @@ describe('OpenTelemetry receiver', () => {
   it('pages every stored invocation once through the Project-scoped session read', async () => {
     const f = await fixture();
     await f.start('worker');
+    f.advance(NOW + 199_500);
+    await f.capture('worker', 'prompt', { promptId: uuid(124), text: 'A later turn', origin: 'user' });
+    await publishFixture(f.e, NOW + 199_500);
     const spans = Array.from({ length: TELEMETRY_INVOCATIONS_PER_PAGE + 1 }, (_, index) =>
       telemetrySpan(index + 1, { conversation: 'worker', operation: 'invoke_agent', at: NOW + index * 1000 }),
     );
@@ -208,13 +216,7 @@ describe('OpenTelemetry receiver', () => {
     };
     expect([...first.rows, ...last.rows].map((row) => row.spanId)).toEqual(spans.map((span) => span.spanId));
     expect(last.nextCursor).toBeNull();
-    expect(
-      await invocationsForTurns(f.e.db, {
-        projectId: 'proj_1',
-        sessionId: 'worker',
-        starts: [NOW + 199_500],
-      }),
-    ).toHaveLength(3);
+    expect(await sessionInvocationFacts(f.e.db, { projectId: 'proj_1' }, 'worker')).toHaveLength(3);
     f.e.sqlite.close();
   });
 

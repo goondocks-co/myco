@@ -1,3 +1,4 @@
+import { liveGenerationSql } from '../documents/live-generation.js';
 import { liveResolution } from './authority.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, rows } from '../index.js';
@@ -23,7 +24,7 @@ const invocations = read<
     s.start_ms AS startAt,s.end_ms AS endAt,r.matched_by AS matchedBy
     FROM telemetry_resolutions r JOIN telemetry_spans s ON s.key_id=r.key_id AND s.trace_id=r.trace_id AND s.span_id=r.span_id
     JOIN sessions session ON session.project_id=r.project_id AND session.session_id=r.session_id
-    JOIN telemetry_keys k ON k.id=r.key_id AND k.revoked_at IS NULL
+    JOIN telemetry_keys k ON k.id=r.key_id
     WHERE r.project_id=?1 AND r.session_id=?2 AND r.invocation=1 AND ${liveResolution('r')} AND ${notTombstonedSql('session')}
       AND (r.started_at,r.trace_id,r.span_id,r.key_id)>(?3,?4,?5,?6) ORDER BY r.started_at,r.trace_id,r.span_id,r.key_id LIMIT ?7`,
 });
@@ -63,28 +64,22 @@ export interface InvocationDisplayFact {
   serviceName: string | null;
   agentName: string | null;
 }
-const windows = read<
-  [project: string, session: string, starts: string, tolerance: number],
-  InvocationDisplayFact
->({
-  name: 'telemetryInvocations.turnWindows',
-  sql: `WITH wanted AS (SELECT DISTINCT r.key_id,r.trace_id,r.span_id FROM json_each(?3) head
- CROSS JOIN telemetry_resolutions r INDEXED BY idx_telemetry_invocation_window ON r.project_id=?1 AND r.session_id=?2
- AND r.invocation=1 AND r.started_at BETWEEN head.value-?4 AND head.value+?4)
- SELECT s.start_ms AS startAt,s.end_ms AS endAt,r.matched_by AS matchedBy,k.label AS keyLabel,s.service_name AS serviceName,s.agent_name AS agentName
- FROM wanted w JOIN telemetry_resolutions r ON r.key_id=w.key_id AND r.trace_id=w.trace_id AND r.span_id=w.span_id
+
+const sessionWindows = read<[project: string, session: string, tolerance: number], InvocationDisplayFact>({
+  name: 'telemetryInvocations.sessionTurnWindows',
+  sql: `SELECT s.start_ms AS startAt,s.end_ms AS endAt,r.matched_by AS matchedBy,k.label AS keyLabel,s.service_name AS serviceName,s.agent_name AS agentName
+ FROM telemetry_resolutions r INDEXED BY idx_telemetry_invocation_window
  JOIN telemetry_spans s ON s.key_id=r.key_id AND s.trace_id=r.trace_id AND s.span_id=r.span_id
- JOIN telemetry_keys k ON k.id=r.key_id AND k.revoked_at IS NULL
+ JOIN telemetry_keys k ON k.id=r.key_id
  JOIN sessions session ON session.project_id=r.project_id AND session.session_id=r.session_id
- WHERE ${notTombstonedSql('session')}
- ORDER BY s.start_ms,r.key_id,r.trace_id,r.span_id`,
+ WHERE r.project_id=?1 AND r.session_id=?2 AND r.invocation=1 AND ${liveResolution('r')} AND ${notTombstonedSql('session')}
+ AND EXISTS(SELECT 1 FROM session_prompts p INDEXED BY idx_session_prompts_telemetry_time
+ WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=${liveGenerationSql('?1', '?2')} AND p.turn_key=p.prompt_id
+ AND p.created_at BETWEEN r.started_at-?3 AND r.started_at+?3)
+ ORDER BY r.started_at,r.trace_id,r.span_id,r.key_id`,
 });
-/** Includes every competing fact for these turn heads; no session page cursor can hide ambiguity. */
-export const invocationFactsForTurns = (
+/** Every competing fact whose start is near a live turn head, independently of session pagination. */
+export const sessionTurnInvocationFacts = (
   db: RelationalStore,
-  options: { projectId: string; sessionId: string; starts: readonly number[]; tolerance: number },
-) =>
-  rows(
-    db,
-    windows.bind(options.projectId, options.sessionId, JSON.stringify(options.starts), options.tolerance),
-  );
+  options: { projectId: string; sessionId: string; tolerance: number },
+) => rows(db, sessionWindows.bind(options.projectId, options.sessionId, options.tolerance));

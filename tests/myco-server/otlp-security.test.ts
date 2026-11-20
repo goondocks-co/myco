@@ -1,3 +1,5 @@
+import { sessionTurnInvocations } from '@myco-server-worker/read/session-invocations.js';
+import { publishFixture, uuid } from './helpers/fixtures.js';
 import { expect, it } from 'bun:test';
 import { telemetryFixture as fixture } from './helpers/telemetry-fixture.js';
 import {
@@ -16,10 +18,7 @@ import {
   TELEMETRY_MATCH_WAIT_MS,
 } from '@myco-server-worker/core/telemetry-policy.js';
 import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.js';
-import {
-  invocationsForSession,
-  invocationsForTurns,
-} from '@myco-server-worker/core/telemetry-invocations.js';
+import { invocationsForSession } from '@myco-server-worker/core/telemetry-invocations.js';
 import { lineage_sessionLineage } from '@myco-server-worker/read/catalog/lineage.js';
 import { eachUnit } from './helpers/two-scale.js';
 const NOW = 1_800_000_000_000;
@@ -157,6 +156,8 @@ it('keeps parent ids independent by key, accepts long leads and restores the oth
   await f.start('lead');
   await f.start('decoy', 'proj_2');
   await f.start('worker');
+  await f.capture('worker', 'prompt', { promptId: uuid(125), text: 'A relayed instruction', origin: 'user' });
+  await publishFixture(f.e, NOW);
   const other = (await (await f.owner('/api/telemetry/keys', { label: 'Other sender' })).json()) as {
     key: string;
     id: string;
@@ -189,11 +190,20 @@ it('keeps parent ids independent by key, accepts long leads and restores the oth
   expect(lineage?.edges).toEqual([]);
   expect(lineage?.reports?.map((row) => row.keyLabel).sort()).toEqual(['Other sender', 'test sender']);
   expect(
-    await invocationsForTurns(f.e.db, { projectId: 'proj_1', sessionId: 'worker', starts: [NOW] }),
-  ).toHaveLength(2);
+    (await sessionTurnInvocations(f.e.db, { projectId: 'proj_1' }, 'worker')).show({
+      createdAt: NOW,
+      origin: 'user',
+    }).origin,
+  ).toBe('user');
   f.advance(NOW + TELEMETRY_MATCH_WAIT_MS + 10_000);
   await f.owner(`/api/telemetry/keys/${other.id}/revoke`, {});
   expect((await invocationsForSession(f.e.db, 'proj_1', 'worker')).rows).toHaveLength(1);
+  expect(
+    (await sessionTurnInvocations(f.e.db, { projectId: 'proj_1' }, 'worker')).show({
+      createdAt: NOW,
+      origin: 'user',
+    }).origin,
+  ).toBe('agent_dispatch');
   expect((await lineage_sessionLineage(f.e.db, { projectId: 'proj_1' }, 'worker'))?.edges).toContainEqual(
     expect.objectContaining({ parentId: 'lead', keyLabel: 'test sender' }),
   );

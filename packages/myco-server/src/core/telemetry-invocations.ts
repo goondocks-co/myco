@@ -1,6 +1,6 @@
 import type { RelationalStore } from './adapters.js';
-import { invocationRows, invocationFactsForTurns, type InvocationFact } from '../db/telemetry/invocations.js';
-import { TELEMETRY_CLOCK_TOLERANCE_MS, TELEMETRY_INVOCATIONS_PER_PAGE } from './telemetry-policy.js';
+import { invocationRows, type InvocationFact } from '../db/telemetry/invocations.js';
+import { TELEMETRY_INVOCATIONS_PER_PAGE } from './telemetry-policy.js';
 
 export type { InvocationFact } from '../db/telemetry/invocations.js';
 export interface InvocationCursor {
@@ -40,9 +40,3 @@ export async function invocationsForSession(
         : null,
   };
 }
-
-/** Read-time turn overlays receive all competing facts in their turn-head windows. */
-export const invocationsForTurns = (
-  db: RelationalStore,
-  options: { projectId: string; sessionId: string; starts: readonly number[] },
-) => invocationFactsForTurns(db, { ...options, tolerance: TELEMETRY_CLOCK_TOLERANCE_MS });
