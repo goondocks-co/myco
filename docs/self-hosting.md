@@ -120,8 +120,8 @@ A home holding `server/` or a Cloudflare operator record refuses purge unless yo
 
 Dashboard **Settings → Sign-in and access → GitHub App** carries the whole setup as a checklist. Each step is read live from GitHub and this server when the section opens and when you press **Check again**; nothing is marked done by hand. It names this server's App and its owner, links straight to the App's own pages, and shows the one command that needs the operator's machine with this Deployment's target and address filled in:
 
-1. **Sign-in works through this App.**
-2. **Repository permissions are read-only.** The step names each missing permission and links to the App's permissions page: set repository Contents, Pull requests and Metadata to Read-only and save; leave account permissions and the callback URL unchanged. GitHub then asks each account the App is installed on to accept the change. An App installed nowhere yet has nothing to accept.
+1. **Sign-in is configured.** This server holds the App's Client ID and secret; the step does not run a sign-in itself.
+2. **The App requests read-only repository permissions.** The step names each missing permission and links to the App's permissions page: set repository Contents, Pull requests and Metadata to Read-only and save; leave account permissions and the callback URL unchanged. GitHub then asks each account the App is installed on to accept the change. An App installed nowhere yet has nothing to accept. The step reflects what the App requests; an installation that has not accepted them is named under the next step, when GitHub's installation detail says so.
 3. **The private key is imported.** On the App's settings page, generate a private key. GitHub moves its settings pages: look for the App's private keys, today under Credentials → Key pairs → New key. GitHub downloads a `.pem` file; import it with the command the step shows, for example:
 
    ```sh
@@ -134,7 +134,9 @@ Dashboard **Settings → Sign-in and access → GitHub App** carries the whole s
 
 4. **Installed on an account.** Install the App, from the step's link, on each account that owns repositories code tasks should read, choosing **Only select repositories**. An organization owner may need to approve the installation.
 5. **Approved here.** The App is public so anyone can sign in with it, which also means anyone can install it. The step lists installations by accounts this server has not approved, each with **Approve**. Approve only accounts you own or trust.
-6. **A Project reads its repository.** Connect a repository to a Project (below). The section says "Repository access is set up" only once GitHub lets the App read a connected Project's repository; until then it says how many steps remain and which is next.
+6. **A Project reads its repository.** Connect a repository to a Project (below). The section says "Repository access is set up" only once GitHub lets the App read a connected Project's repository. It tries at most three connected Projects, most recently connected first. When none of those can be read and others were not tried, it says access could not be confirmed for the Projects checked, names them, and how to check another: open that Project's Settings → Repository and save its repository again, which checks it with GitHub. Otherwise it says how many steps remain and which is next.
+
+A rate limit on GitHub's side reads as "GitHub's rate limit was reached; try again after …", never as a rejected key.
 
 GitHub may ask you to confirm access (your password, passkey or two-factor code) before it opens an App's settings; confirm, and the page opens.
 
@@ -156,7 +158,7 @@ Myco reads Project repositories only through this Deployment's App. Nothing else
 2. Choose an approved account, then one of the repositories its installation selected, and the branch. **Save repository**. The server confirms the choice with GitHub before storing it, by GitHub's numeric repository and installation ids.
 3. When the App is installed nowhere, or the repository is not listed, the dialog links to the App's install page and to the chosen account's installation settings in GitHub. Install it or add the repository there, return, and press **Refresh GitHub access**.
 
-**Find repositories for my Projects**, in the GitHub App section, proposes for each Project with no repository the one repository, across approved accounts' installations, whose name equals the Project's (ignoring case), with its default branch. A Project with no such repository, or more than one, gets no proposal. Nothing is connected until you press **Connect** on a row or **Connect all**; each connection is saved and checked with GitHub exactly as the dialog saves it.
+**Find repositories for my Projects**, in the GitHub App section, proposes for each Project with no repository the one repository, across approved accounts' installations, whose name equals the Project's (ignoring case), with its default branch. A Project with no such repository, or more than one, gets no proposal. Up to five pages (500 repositories) of each approved account, on the first page of installations, are searched; when that does not cover everything, nothing is proposed, and each Project with a same-named repository seen reads "Not every repository could be checked; connect this one by hand from its Settings → Repository." Nothing is connected until you press **Connect** on a row or **Connect all**; each connection is saved and checked with GitHub exactly as the dialog saves it.
 
 The GitHub App section lists the approved accounts; **Remove approval** stops new tokens for that account's installations. Release tracking reads the same connected repository; it has no repository or token of its own.
 

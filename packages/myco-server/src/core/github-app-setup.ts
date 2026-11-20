@@ -31,20 +31,22 @@ export async function githubAppSetup(env: ServerEnv, now: number): Promise<GitHu
   }
   const projects = githubAppProjects(env, () => now);
   const refused = (error: unknown): string => { if (error instanceof GitHubAccessRefused) return error.message; throw error; };
-  let installations: GitHubAppSetup['installations'] = null;
+  let installations: GitHubAppSetup['installations'] = key.state === 'rate_limited' ? { error: key.reason } : null;
   if (keyWorks) {
     try { const page = await projects.installations(1); installations = { list: page.installations, more: page.more }; }
     catch (error) { installations = { error: refused(error) }; }
   }
   const connected = await connectedProjects(env.db, READ_PROBES);
   let repository: GitHubAppSetup['repository'] = null;
-  if (keyWorks) {
+  if (keyWorks && connected.projects.length > 0) {
+    const failed: Array<{ project: string; error: string }> = [];
     for (const project of connected.projects) {
       try {
         repository = { project: project.name, fullName: (await projects.verify(project.installationId, project.repositoryId)).fullName };
         break;
-      } catch (error) { const reason = refused(error); repository ??= { project: project.name, error: reason }; }
+      } catch (error) { failed.push({ project: project.name, error: refused(error) }); }
     }
+    repository ??= { failed, unchecked: connected.total - failed.length };
   }
   return {
     target: env.platform.name === 'cloudflare' ? 'cloudflare' : 'local', origin: env.origin ?? null, clientId,
@@ -55,11 +57,13 @@ export async function githubAppSetup(env: ServerEnv, now: number): Promise<GitHu
 /**
  * For each live Project with no repository, the one repository across approved installations whose name equals the
  * Project's, ignoring case, with its default branch. A Project with no such repository, or more than one, gets none.
- * Nothing is connected here; an admin saves each proposal through the repository connection.
+ * Uniqueness is claimed only from a complete search: when an installation page or a repository page was left unread,
+ * no Project gets a proposal and each with a same-named repository seen is withheld. Nothing is connected here; an
+ * admin saves each proposal through the repository connection.
  */
 export async function repositorySuggestions(env: ServerEnv, now: number): Promise<RepositorySuggestions> {
   const waiting = await unconnectedProjects(env.db, SUGGESTION_PROJECTS);
-  if (waiting.length === 0) return { suggestions: [], complete: true };
+  if (waiting.length === 0) return { suggestions: [], complete: true, withheld: [] };
   const projects = githubAppProjects(env, () => now);
   const listed = await projects.installations(1);
   const byName = new Map<string, Array<{ installationId: number; repository: RepositoryChoice }>>();
@@ -75,10 +79,13 @@ export async function repositorySuggestions(env: ServerEnv, now: number): Promis
       if (page === SUGGESTION_PAGES) complete = false;
     }
   }
+  const seen = waiting.map((project) => ({ project, matches: byName.get(project.name.toLowerCase()) ?? [] }));
+  if (!complete) {
+    return { complete, suggestions: [], withheld: seen.filter(({ matches }) => matches.length > 0).map(({ project }) => ({ projectId: project.projectId, project: project.name })) };
+  }
   return {
-    complete,
-    suggestions: waiting.flatMap((project) => {
-      const matches = byName.get(project.name.toLowerCase()) ?? [];
+    complete, withheld: [],
+    suggestions: seen.flatMap(({ project, matches }) => {
       if (matches.length !== 1) return [];
       const [{ installationId, repository }] = matches as [typeof matches[number]];
       return [{ projectId: project.projectId, project: project.name, installationId, repositoryId: repository.id, fullName: repository.fullName, defaultBranch: repository.defaultBranch }];

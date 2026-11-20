@@ -226,7 +226,7 @@ const INSTALLATIONS_KEY = [GITHUB_APP_KEY, 'installations'] as const;
 
 /** The live facts behind the GitHub App setup checklist, asked of GitHub when the section opens and when an admin checks again. */
 export function useGitHubAppSetup() {
-  return useQuery({ queryKey: [GITHUB_APP_KEY, 'setup'], retry: false, queryFn: ({ signal }) => fetchJson<GitHubAppSetup>('/api/github-app', signal), ...live('heavy') });
+  return useQuery({ queryKey: [GITHUB_APP_KEY, 'setup'], retry: false, queryFn: ({ signal }) => fetchJson<GitHubAppSetup>('/api/github-app', signal), ...live('heavy'), refetchOnMount: 'always' });
 }
 
 /** A repository proposed for each Project with none, asked of GitHub only when an admin asks. */

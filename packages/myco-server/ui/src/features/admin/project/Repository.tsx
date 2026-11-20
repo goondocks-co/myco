@@ -110,12 +110,13 @@ function InstallationLine({ installation, onApprove, pending }: { installation: 
   if (!installation.approved) {
     return (
       <div className="flex items-center justify-between gap-s3" data-installation={installation.installationId}>
-        <p className="t-small">{`Installed by an account this server has not approved: ${who}`}</p>
+        <p className="t-small">{`Installed by an account this server has not approved: ${who}${installation.permissionsAccepted ? '' : '; has not accepted the new permissions'}`}</p>
         <Button onClick={onApprove} pending={pending}>Approve</Button>
       </div>
     );
   }
-  return <p className="t-small text-muted" data-installation={installation.installationId}>{installation.suspended ? `${who}: suspended in GitHub` : `${who}: approved`}</p>;
+  const unaccepted = installation.permissionsAccepted ? '' : '; has not accepted the new permissions';
+  return <p className="t-small text-muted" data-installation={installation.installationId}>{installation.suspended ? `${who}: suspended in GitHub` : `${who}: approved${unaccepted}`}</p>;
 }
 
 function RepositoryForm({ projectId, connection, onClose }: { projectId: string; connection: RepositoryRow | null; onClose: () => void }) {

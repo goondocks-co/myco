@@ -45,8 +45,8 @@ const RELEASES = {
 /** The server's App installed by the operator's organization, approved here, and by a look-alike account never approved. */
 const INSTALLATIONS = {
   installations: [
-    { installationId: 41, account: { id: 9001, login: 'goondocks-co', type: 'Organization' }, approved: true, suspended: false },
-    { installationId: 666, account: { id: 6660, login: 'go0ndocks-co', type: 'Organization' }, approved: false, suspended: false },
+    { installationId: 41, account: { id: 9001, login: 'goondocks-co', type: 'Organization' }, approved: true, suspended: false, permissionsAccepted: true },
+    { installationId: 666, account: { id: 6660, login: 'go0ndocks-co', type: 'Organization' }, approved: false, suspended: false, permissionsAccepted: true },
   ],
   accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW - HOUR }],
   page: 1, more: true, app: { slug: 'myco-app', owner: { login: 'goondocks-co', type: 'Organization' } },

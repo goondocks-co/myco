@@ -45,7 +45,7 @@ export interface RepositoryAnswer {
 
 /** `GET /api/github-app/installations?page=`: one page of the server's App installations, and the accounts approved here. */
 export interface InstallationAccount { id: number; login: string; type: 'User' | 'Organization' }
-export interface InstallationRow { installationId: number; account: InstallationAccount; approved: boolean; suspended: boolean }
+export interface InstallationRow { installationId: number; account: InstallationAccount; approved: boolean; suspended: boolean; permissionsAccepted: boolean }
 export interface ApprovedAccountRow { accountId: number; login: string; type: 'User' | 'Organization'; approvedBy: string; approvedAt: number }
 /** `app` names the App these install, by slug and owner, for its install page. */
 export interface InstallationsAnswer {

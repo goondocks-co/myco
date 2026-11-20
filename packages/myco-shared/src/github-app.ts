@@ -1,5 +1,5 @@
 /** GitHub App identity and signing, shared by operator validation and the Deployment. */
-import { GitHubAppError, githubApi, type FetchImpl } from './github-api.js';
+import { GitHubAppError, githubApi, MAX_GITHUB_APP_ANSWER_BYTES, rateLimitOf, rateLimitWords, readGitHubJson, type FetchImpl } from './github-api.js';
 export const GITHUB_APP_PERMISSIONS = { contents: 'read', pull_requests: 'read', metadata: 'read' } as const;
 /**
  * The permissions an installation token is minted with, per purpose; a token never asks for more than its purpose
@@ -32,7 +32,9 @@ export interface GitHubAppIdentity {
 export type GitHubAppStatus =
   | { state: 'key_absent' }
   | { state: 'ready' | 'permissions_missing'; app: GitHubAppIdentity; missing: string[] }
-  | { state: 'unavailable'; reason: string };
+  | { state: 'unavailable'; reason: string }
+  /** GitHub throttled the check; the key was not judged. */
+  | { state: 'rate_limited'; reason: string };
 
 
 const base64url = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -60,29 +62,48 @@ export function githubAppAccess(options: { clientId: string; privateKey: string;
     app,
     async identity(): Promise<GitHubAppIdentity> {
       const response = await app('/app', { next: 'Check connectivity and run the import again.' });
+      const limited = response.status === 200 ? null : await rateLimitOf(response);
+      if (limited !== null) throw new GitHubAppError(rateLimitWords(limited.until), response.status, true);
       if (response.status !== 200) throw new GitHubAppError(`GitHub refused App verification (HTTP ${response.status}). Check the key belongs to this server’s App and run the import again.`, response.status);
       let body: unknown;
-      try { body = await response.json(); } catch { throw new GitHubAppError('GitHub returned an invalid App response. Run the import again.'); }
-      if (body === null || typeof body !== 'object') throw new GitHubAppError('GitHub returned an invalid App identity. Run the import again.');
-      const identity = body as Record<string, unknown>;
-      if (!Number.isSafeInteger(identity.id) || Number(identity.id) <= 0 || typeof identity.slug !== 'string' || identity.slug === '' || identity.client_id !== options.clientId
-        || identity.permissions === null || typeof identity.permissions !== 'object' || Array.isArray(identity.permissions)
-        || !Object.values(identity.permissions).every((v) => typeof v === 'string')) {
+      try { body = await readGitHubJson(response, MAX_GITHUB_APP_ANSWER_BYTES); } catch { throw new GitHubAppError('GitHub returned an invalid App response. Run the import again.'); }
+      const identity = appAnswerOf(body);
+      if (identity === null || identity.clientId !== options.clientId) {
         throw new GitHubAppError('GitHub did not confirm this server’s App client id and permissions. Nothing was saved; check the App and run the import again.');
       }
-      return {
-        id: Number(identity.id), clientId: options.clientId, slug: identity.slug, name: typeof identity.name === 'string' ? identity.name : identity.slug,
-        owner: ownerOf(identity.owner), permissions: identity.permissions as Record<string, string>,
-      };
+      return identity;
     },
   };
 }
 
-/** An App's owner as GitHub names it, when it is an account. */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const SLUG = /^[a-z0-9][a-z0-9-]{0,99}$/;
+const PERMISSION = /^[a-z_]{1,64}$/;
+const LEVEL = /^[a-z_]{1,16}$/;
+const MAX_NAME_CHARS = 100;
+const MAX_CLIENT_ID_CHARS = 64;
+const MAX_PERMISSIONS = 100;
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** An App's owner as GitHub names it, when it is an account with a valid login. */
 export function ownerOf(value: unknown): GitHubAppOwner | null {
-  if (value === null || typeof value !== 'object') return null;
-  const { login, type } = value as Record<string, unknown>;
-  return typeof login === 'string' && (type === 'User' || type === 'Organization') ? { login, type } : null;
+  if (!isRecord(value)) return null;
+  const { login, type } = value;
+  return typeof login === 'string' && LOGIN.test(login) && (type === 'User' || type === 'Organization') ? { login, type } : null;
+}
+
+/**
+ * The fields Myco reads from GitHub's answer for an App (`GET /app` or `GET /apps/{slug}`), each of the type and
+ * length GitHub gives them; null when any is missing or out of shape. https://docs.github.com/en/rest/apps/apps#get-an-app
+ */
+export function appAnswerOf(value: unknown): GitHubAppIdentity | null {
+  if (!isRecord(value)) return null;
+  const { id, client_id: clientId, slug, name, permissions } = value;
+  if (!Number.isSafeInteger(id) || Number(id) <= 0 || typeof clientId !== 'string' || clientId === '' || clientId.length > MAX_CLIENT_ID_CHARS
+    || typeof slug !== 'string' || !SLUG.test(slug) || !(name === undefined || (typeof name === 'string' && name !== '' && name.length <= MAX_NAME_CHARS))
+    || !isRecord(permissions) || Object.keys(permissions).length > MAX_PERMISSIONS
+    || !Object.entries(permissions).every(([key, level]) => PERMISSION.test(key) && typeof level === 'string' && LEVEL.test(level))) return null;
+  return { id: Number(id), clientId, slug, name: typeof name === 'string' ? name : slug, owner: ownerOf(value.owner), permissions: permissions as Record<string, string> };
 }
 
 export function gitHubAppPermissionIssues(app: Pick<GitHubAppIdentity, 'permissions'>): string[] {

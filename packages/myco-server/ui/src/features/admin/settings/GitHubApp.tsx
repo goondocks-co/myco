@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  GITHUB_APPS_LISTS, githubAppChecklist, githubAppHeadline, githubAppPages, ownerWords, SETUP_WORDS,
+  GITHUB_APPS_LISTS, githubAppChecklist, githubAppHeadline, githubAppPages, ownerWords, SETUP_WORDS, WITHHELD_WORDS,
   type GitHubAppSetup, type RepositorySuggestion, type SetupStep, type StepState,
 } from '@goondocks/myco-shared/github-app-setup';
 import { Button, Card, CommandBlock, ErrorState, ExternalLink, LoadingState, StatusChip, type Tone } from '../../../design';
@@ -77,15 +77,15 @@ function AppIdentity({ setup }: { setup: GitHubAppSetup }) {
 function Checklist({ setup }: { setup: GitHubAppSetup }) {
   const steps = githubAppChecklist(setup, window.location.origin);
   return <div className="flex flex-col gap-s3">
-    <p role="status" className="t-body font-medium text-ink" data-setup-headline="">{githubAppHeadline(steps)}</p>
+    <p role="status" className="t-body font-medium text-ink" data-setup-headline="">{githubAppHeadline(steps, setup)}</p>
     <ol className="flex flex-col divide-y divide-line" aria-label="Repository access setup">
       {steps.map((step) => <li key={step.id} className="flex flex-col gap-s2 py-s3" data-step={step.id} data-state={step.state}>
         <div className="flex flex-wrap items-start gap-s2">
           <StatusChip tone={STATE[step.state].tone}>{STATE[step.state].label}</StatusChip>
           <span className="min-w-0 flex-1 t-body">{step.title}</span>
         </div>
-        {step.state !== 'done' && <StepBody step={step} />}
-        {step.id === 'approved' && step.state === 'todo' && <Unapproved setup={setup} />}
+        <StepBody step={step} />
+        {step.id === 'approved' && <Unapproved setup={setup} />}
         {step.id === 'connected' && step.state !== 'waiting' && <ProjectRepositories />}
       </li>)}
     </ol>
@@ -107,9 +107,10 @@ function Unapproved({ setup }: { setup: GitHubAppSetup }) {
   const accounts = useGitHubAccountActions();
   const waiting = setup.installations !== null && 'list' in setup.installations
     ? setup.installations.list.filter((installation) => !installation.approved && !installation.suspended) : [];
+  if (waiting.length === 0 && !accounts.approve.error) return null;
   return <div className="flex flex-col gap-s2">
     {waiting.map((installation) => <div key={installation.installationId} className="flex flex-wrap items-center justify-between gap-s3" data-installation={installation.installationId}>
-      <span className="t-small">{`Installed by an account this server has not approved: ${ownerWords(installation.account)}`}</span>
+      <span className="t-small">{`Installed by an account this server has not approved: ${ownerWords(installation.account)}${installation.permissionsAccepted ? '' : '; has not accepted the new permissions'}`}</span>
       <Button pending={accounts.approve.isPending && accounts.approve.variables === installation.installationId}
         onClick={() => accounts.approve.mutate(installation.installationId)}>Approve</Button>
     </div>)}
@@ -143,6 +144,9 @@ function ProjectRepositories() {
         </li>)}
       </ul>)}
     {open.length > 1 && <div><Button variant="primary" disabled={connect.isPending} onClick={() => void connectAll()}>{`Connect all ${open.length}`}</Button></div>}
-    {proposals.data?.complete === false && <p className="t-small text-muted">Some accounts hold more repositories than were searched. Connect the rest from each Project’s Settings → Repository.</p>}
+    {proposals.data?.complete === false && <p className="t-small text-muted">Some accounts hold more repositories than were searched, so no repository is proposed: another of the same name could be among those not searched.</p>}
+    {(proposals.data?.withheld.length ?? 0) > 0 && <ul className="flex flex-col gap-s2" aria-label="Projects to connect by hand">
+      {proposals.data!.withheld.map((project) => <li key={project.projectId} className="t-small" data-withheld={project.projectId}>{`${project.project}: ${WITHHELD_WORDS}`}</li>)}
+    </ul>}
   </div>;
 }

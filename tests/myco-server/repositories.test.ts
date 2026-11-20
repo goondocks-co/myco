@@ -3,6 +3,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { GitHubAccessRefused, githubAppProjects } from '@myco-server-worker/core/github-app.js';
+import { SUGGESTION_PAGES } from '@myco-server-worker/core/github-app-setup.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import { githubAppChecklist, githubAppHeadline, type GitHubAppSetup } from '@goondocks/myco-shared/github-app-setup';
@@ -38,7 +39,7 @@ function rig(options: { key?: boolean } = {}) {
   const setup = async () => {
     const answer = await call('GET', '/api/github-app');
     const steps = githubAppChecklist(answer.body as GitHubAppSetup, ORIGIN);
-    return { ...answer, headline: githubAppHeadline(steps), step: Object.fromEntries(steps.map(step => [step.id, step])) };
+    return { ...answer, headline: githubAppHeadline(steps, answer.body as GitHubAppSetup), step: Object.fromEntries(steps.map(step => [step.id, step])) };
   };
   return { ...fixture, github, env, call, asMember, setup, publicPage };
 }
@@ -114,11 +115,14 @@ describe('a Project repository connected through the Deployment’s GitHub App',
       app: { slug: 'myco-myco-example-com', owner: { login: 'operator-org', type: 'Organization' }, source: 'public' } });
     expect(before.step.permissions).toMatchObject({ state: 'todo', title: 'Repository permissions need changes: contents must be read-only (currently absent); pull_requests must be read-only (currently absent).',
       links: [{ label: 'Open the App’s permissions', href: 'https://github.com/organizations/operator-org/settings/apps/myco-myco-example-com/permissions' }] });
+    expect(before.step['sign-in'].title).toBe('Sign-in is configured: this server holds the App’s Client ID and secret.');
     expect(before.step.key).toMatchObject({ state: 'todo', commands: [`myco server github-app --target cloudflare --url ${ORIGIN} --private-key-file <downloaded.pem>`] });
     expect(before.step.installed).toMatchObject({ state: 'waiting', links: [{ href: 'https://github.com/apps/myco-myco-example-com/installations/new' }] });
     expect(before.headline).toBe('Repository access is not set up yet: 5 of 6 steps remain. Next: Repository permissions need changes: contents must be read-only (currently absent); pull_requests must be read-only (currently absent).');
     keyless.publicPage.current = { ...keyless.publicPage.current, client_id: 'another-app' };
     expect((await keyless.setup()).body).toMatchObject({ app: null, expectedName: 'Myco (myco.example.com)' });
+    keyless.publicPage.current = { ...keyless.publicPage.current, client_id: OWNER_ENV.GITHUB_CLIENT_ID, name: 'x'.repeat(70_000) };
+    expect((await keyless.setup()).body).toMatchObject({ app: null, lookupError: expect.stringContaining('at most 65536 are read') });
 
     const r = rig();
     const installed = await r.setup();
@@ -128,8 +132,11 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
     expect((await r.setup()).step.connected).toMatchObject({ state: 'todo', title: 'Connect a repository to a Project.' });
     await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
+    r.github.state.installationGranted = { contents: 'read', metadata: 'read' };
     const done = await r.setup();
     expect(done.headline).toBe('Repository access is set up: a reads example/source.');
+    expect(done.step.installed.detail).toContain('operator-org (an organization) has not accepted the new permissions. It accepts them in GitHub, in its installation’s settings.');
+    r.github.state.installationGranted = null;
     r.github.state.suspended.add(OPERATOR.installationId);
     expect((await r.setup()).step.connected).toMatchObject({ state: 'failed', title: expect.stringContaining('a’s repository can’t be read: The App installation was removed or suspended') });
     expect(r.github.state.revoked).toEqual(r.github.state.issued.map(entry => entry.token));
@@ -138,17 +145,50 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     expect(await r.asMember('GET', '/api/github-app')).toBe(403);
   });
 
+  it('calls a failed sample of connections inconclusive, and keeps a throttled App check from reading as a rejected key', async () => {
+    const r = rig();
+    await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
+    await r.call('POST', '/api/github-app/accounts', { installationId: STRANGER.installationId });
+    await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
+    await Bun.sleep(5);
+    for (const id of ['proj_c', 'proj_d']) expect((await r.call('POST', '/api/projects', { projectId: id, name: id.slice(-1) })).status).toBe(201);
+    for (const id of ['proj_2', 'proj_c', 'proj_d']) await r.call('PUT', `/api/projects/${id}/repository`, { installationId: STRANGER.installationId, repositoryId: 7770001, branch: 'main', revision: null });
+    r.github.state.suspended.add(STRANGER.installationId);
+    const sampled = await r.setup();
+    expect(sampled.headline).toMatch(/^Repository access could not be confirmed for the Projects checked: (?=.*\bb\b)(?=.*\bc\b)(?=.*\bd\b)[bcd, ]+\. To check another, open that Project’s Settings → Repository and save its repository again; saving checks it with GitHub\.$/);
+    expect(sampled.step.connected.detail).toContain('1 other connected Project was not checked. To check another, open that Project’s Settings → Repository and save its repository again; saving checks it with GitHub.');
+    r.github.state.appLimitedUntil = Date.UTC(2026, 10, 19, 14, 5) / 1000;
+    const throttled = await r.setup();
+    expect(throttled.body.key).toEqual({ state: 'rate_limited', reason: 'GitHub’s rate limit was reached; try again after 14:05 UTC.' });
+    expect(throttled.step.key).toMatchObject({ state: 'waiting', title: 'GitHub’s rate limit was reached; try again after 14:05 UTC.', commands: [] });
+    expect(throttled.step.installed.title).toBe('GitHub did not list the App’s installations: GitHub’s rate limit was reached; try again after 14:05 UTC.');
+    expect((await r.call('GET', '/api/github-app/installations')).body).toMatchObject({ failure: 'rate_limited' });
+  });
+
   it('proposes the one same-named repository for each Project with none, and connects nothing itself', async () => {
     const r = rig();
     expect((await r.call('POST', '/api/projects', { projectId: 'proj_source', name: 'Source' })).status).toBe(201);
     const proposals = () => r.call('GET', '/api/github-app/suggestions');
-    expect((await proposals()).body).toEqual({ suggestions: [], complete: true });
+    expect((await proposals()).body).toEqual({ suggestions: [], complete: true, withheld: [] });
     await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
     const proposal = { projectId: 'proj_source', project: 'Source', installationId: OPERATOR.installationId, repositoryId: SOURCE.id, fullName: 'example/source', defaultBranch: 'main' };
-    expect((await proposals()).body).toEqual({ suggestions: [proposal], complete: true });
-    expect((await r.call('GET', '/api/projects/proj_source/repository')).body.repository).toBeNull();
+    expect((await proposals()).body).toEqual({ suggestions: [proposal], complete: true, withheld: [] });
+    const withheld = { suggestions: [], complete: false, withheld: [{ projectId: 'proj_source', project: 'Source' }] };
+    // A second match on an installation page that was not read.
+    const later = { installationId: 77, account: { id: 7700, login: 'later-org', type: 'Organization' as const } };
+    r.github.state.laterInstallations.push(later);
+    r.github.repositories.set(later.installationId, [{ id: 7700001, full_name: 'later-org/source', default_branch: 'main', private: true }]);
+    await r.call('POST', '/api/github-app/accounts', { installationId: later.installationId });
+    expect((await proposals()).body).toEqual(withheld);
+    r.github.state.laterInstallations.length = 0;
+    // A second match past the repository pages read.
+    const filler = Array.from({ length: SUGGESTION_PAGES * 100 }, (_, index) => ({ id: 8_000_000 + index, full_name: `operat0r-org/filler-${index}`, default_branch: 'main', private: true }));
+    r.github.repositories.set(STRANGER.installationId, [...filler, { id: 7770001, full_name: 'operat0r-org/source', default_branch: 'main', private: false }]);
     await r.call('POST', '/api/github-app/accounts', { installationId: STRANGER.installationId });
-    expect((await proposals()).body.suggestions).toEqual([]);
+    expect((await proposals()).body).toEqual(withheld);
+    r.github.repositories.set(STRANGER.installationId, [{ id: 7770001, full_name: 'operat0r-org/source', default_branch: 'main', private: false }]);
+    expect((await r.call('GET', '/api/projects/proj_source/repository')).body.repository).toBeNull();
+    expect((await proposals()).body).toEqual({ suggestions: [], complete: true, withheld: [] });
     await r.call('DELETE', `/api/github-app/accounts/${STRANGER.account.id}`);
     await r.call('PUT', '/api/projects/proj_source/repository', { installationId: proposal.installationId, repositoryId: proposal.repositoryId, branch: proposal.defaultBranch, revision: null });
     expect((await proposals()).body.suggestions).toEqual([]);

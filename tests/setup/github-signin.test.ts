@@ -18,10 +18,12 @@ import type { CommandRunner } from '@myco/server/runner.js';
 import { APP_PEM, fakeGitHub, SETUP_APP } from './fixtures/github.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { APP_NAME_MAX } from '@goondocks/myco-shared/github-app-setup';
+import { APP_NAME_MAX, appSlugOf } from '@goondocks/myco-shared/github-app-setup';
 import { convertedBeforeInstall } from './fixtures/interrupted-state.js';
 
 const URL_ = 'https://setup.invalid';
+/** The one public read the command makes to identify a configured App: its page at the slug `Myco (setup.invalid)` implies. */
+const PUBLIC_LOOKUP = 'https://api.github.com/apps/myco-setup-invalid';
 const roots: string[] = [];
 const handlers: BunHandler[] = [];
 afterEach(async () => {
@@ -297,7 +299,7 @@ describe('durable registration recovery', () => {
     const f = hosted();
     const result = await registerGitHubApp({ ...f.options, existing: SETUP_APP });
     expect(result.verified).toEqual({ ok: true });
-    expect(f.github.calls.filter((call) => call.url.endsWith('/conversions'))).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app') && call.url !== PUBLIC_LOOKUP)).toHaveLength(0);
     expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
     expect(fs.existsSync(signInPendingPath(f.options.target))).toBe(false);
   });
@@ -308,7 +310,7 @@ describe('durable registration recovery', () => {
     await expect(registerGitHubApp({ ...f.options, existing: SETUP_APP })).rejects.toThrow(/interrupted|installation did not finish/);
     await expect(registerGitHubApp({ ...f.options, existing: { clientId: 'another', clientSecret: 'regenerated' } })).rejects.toThrow(/different client id/);
     expect((await registerGitHubApp(f.options)).verified.ok).toBe(true);
-    expect(f.github.calls.filter((call) => call.url.endsWith('/conversions'))).toHaveLength(0);
+    expect(f.github.calls.filter((call) => !call.url.endsWith('/app') && call.url !== PUBLIC_LOOKUP)).toHaveLength(0);
     expect(f.installs.filter(value => value.GITHUB_CLIENT_ID)).toHaveLength(1);
   });
 
@@ -417,7 +419,8 @@ describe('durable registration recovery', () => {
     atomicWriteFileSync(signInPendingPath(target), JSON.stringify({ ...record, installed: true }), { mode: 0o600, durable: true });
     const github = fakeGitHub();
     await registerThroughBrowser({ url, target, fetchImpl: github.registrationFetch, timeoutMs: 1000 });
-    expect(github.calls.filter((call) => call.url.endsWith('/conversions'))).toHaveLength(0);
+    const lookup = `https://api.github.com/apps/${appSlugOf(await defaultAppName(url))}`;
+    expect(github.calls.filter((call) => call.url !== lookup)).toHaveLength(0);
     expect(fs.existsSync(signInPendingPath(target))).toBe(false);
   });
 
