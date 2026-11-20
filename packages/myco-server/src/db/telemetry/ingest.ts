@@ -70,7 +70,7 @@ const count = write<
 });
 
 export const telemetryKeyEnded = (error: unknown): boolean => refused(error, keyEnded);
-/** One span insert for the whole request; duplicate ids retain their first key and first immutable facts. */
+/** One span insert for the whole request; duplicate ids retain their key's first immutable facts. */
 export async function storeTelemetrySpans(
   db: RelationalStore,
   request: { key: string; spans: readonly TelemetrySpan[]; now: number },

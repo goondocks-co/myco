@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, rows, write, commit } from '../index.js';
-import { TELEMETRY_DAY_MS, TELEMETRY_RETENTION_MS } from '../../core/telemetry-policy.js';
+import { TELEMETRY_DAY_MS, TELEMETRY_HOUR_MS, TELEMETRY_RETENTION_MS } from '../../core/telemetry-policy.js';
 export interface TelemetryWork {
   keys: number;
   work_due: number | null;
@@ -21,7 +21,7 @@ const deadline = `CASE WHEN EXISTS(SELECT 1 FROM telemetry_keys WHERE revoked_at
  OR EXISTS(SELECT 1 FROM telemetry_traces WHERE spans=0) THEN 0 ELSE NULLIF(MIN(
  COALESCE((SELECT MIN(next_check) FROM telemetry_trace_keys WHERE next_check IS NOT NULL AND spans>0),${UNSCHEDULED}),
  COALESCE((SELECT MIN(received_at)+${TELEMETRY_RETENTION_MS} FROM telemetry_spans),${UNSCHEDULED}),
- COALESCE((SELECT MIN(hour)*3600000+${TELEMETRY_DAY_MS}+3600000 FROM telemetry_counts),${UNSCHEDULED})),${UNSCHEDULED}) END`;
+ COALESCE((SELECT MIN(hour)*${TELEMETRY_HOUR_MS}+${TELEMETRY_DAY_MS}+${TELEMETRY_HOUR_MS} FROM telemetry_counts),${UNSCHEDULED})),${UNSCHEDULED}) END`;
 const refresh = write<[]>({
   name: 'telemetryWork.refresh',
   sql: `UPDATE telemetry_totals SET work_due=${deadline} WHERE id=1 AND work_due IS NOT (${deadline})`,

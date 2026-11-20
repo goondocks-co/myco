@@ -1,4 +1,5 @@
 import { telemetryKeyUseSql } from './telemetry/key-use.js';
+import { TELEMETRY_DAY_MS, TELEMETRY_HOUR_MS } from '../core/telemetry-policy.js';
 import { TELEMETRY_REPORT_DDL } from './schema-telemetry-reports.js';
 import { TELEMETRY_WORK_DDL } from './schema-telemetry-work.js';
 import { projectIdGrammar } from './project-id.js';
@@ -46,6 +47,9 @@ export const TELEMETRY_STEPS: readonly SchemaStep[] = [
       accepted INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,logs INTEGER NOT NULL DEFAULT 0,metrics INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(key_id,hour)) WITHOUT ROWID`,
       'CREATE INDEX IF NOT EXISTS idx_telemetry_counts_expiry ON telemetry_counts(hour,key_id)',
+      `CREATE TRIGGER IF NOT EXISTS telemetry_count_added AFTER INSERT ON telemetry_counts BEGIN
+      UPDATE telemetry_totals SET work_due=NEW.hour*${TELEMETRY_HOUR_MS}+${TELEMETRY_DAY_MS}+${TELEMETRY_HOUR_MS} WHERE id=1
+      AND (work_due IS NULL OR work_due>NEW.hour*${TELEMETRY_HOUR_MS}+${TELEMETRY_DAY_MS}+${TELEMETRY_HOUR_MS}); END`,
       ...TELEMETRY_WORK_DDL,
       ...TELEMETRY_REPORT_DDL,
       `CREATE TRIGGER IF NOT EXISTS telemetry_key_added AFTER INSERT ON telemetry_keys BEGIN UPDATE telemetry_totals SET keys=keys+1 WHERE id=1; END`,

@@ -4,8 +4,16 @@ import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { parseTraces as parseAtReceipt } from '@myco-server-worker/core/otlp.js';
-import { storeTelemetrySpans } from '@myco-server-worker/db/telemetry/ingest.js';
-import { insertTelemetryKey, revokeTelemetryKey } from '@myco-server-worker/db/telemetry/keys.js';
+import {
+  countTelemetry,
+  storeTelemetrySpans,
+  telemetryCounts,
+} from '@myco-server-worker/db/telemetry/ingest.js';
+import {
+  insertTelemetryKey,
+  revokeTelemetryKey,
+  telemetryKeys,
+} from '@myco-server-worker/db/telemetry/keys.js';
 import { runTelemetryWork } from '@myco-server-worker/core/telemetry-work.js';
 import { reconcileTelemetry } from '@myco-server-worker/core/telemetry-matching.js';
 import { telemetryReconciliationDue } from '@myco-server-worker/db/telemetry/matching.js';
@@ -225,6 +233,11 @@ it('receiver no-ops write nothing and idle work reads one flag as live keys grow
           actor: 'member',
           now: NOW,
         });
+      if (from === 0) {
+        await countTelemetry(db, { key: 'http-0', now: NOW - 2 * 86400000, rejected: 1 });
+        await runTelemetryWork(db, NOW);
+        expect(await telemetryCounts(db, NOW - 3 * 86400000)).toEqual([]);
+      }
       await storeTelemetrySpans(db, {
         key: 'http-0',
         spans: parseTraces(telemetryBatch([telemetrySpan(1, { trace: 9999 })])).spans,
@@ -266,6 +279,27 @@ it('receiver no-ops write nothing and idle work reads one flag as live keys grow
           while (pending.length) await pending.shift()!();
         },
       })),
+      {
+        name: 'repeated rejection in one minute',
+        extra: 16,
+        run: async (db, { store, scale }) => {
+          const receipt = NOW + (scale * 3 + 3) * 60000;
+          const reject = (target: typeof db, now: number) =>
+            receiveTelemetry(
+              { ...base.serverEnv, db: target },
+              new Request('https://s/v1/traces', {
+                method: 'POST',
+                headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+                body: JSON.stringify(telemetryBatch([{ ...telemetrySpan(1), name: '' }])),
+              }),
+              now,
+              'cost',
+            );
+          expect((await reject(store, receipt)).status).toBe(200);
+          expect((await reject(db, receipt + 1)).status).toBe(200);
+          expect((await telemetryKeys(store)).find((held) => held.id === 'http-0')?.last_used_at).toBe(receipt);
+        },
+      },
       {
         name: 'idle work flag',
         run: async (db, { store }) => {

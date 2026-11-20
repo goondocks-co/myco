@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS telemetry_counts(key_id TEXT NOT NULL REFERENCES tele
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_counts_expiry ON telemetry_counts(hour,key_id);
 
+CREATE TRIGGER IF NOT EXISTS telemetry_count_added AFTER INSERT ON telemetry_counts BEGIN
+      UPDATE telemetry_totals SET work_due=NEW.hour*3600000+86400000+3600000 WHERE id=1
+      AND (work_due IS NULL OR work_due>NEW.hour*3600000+86400000+3600000); END;
+
 CREATE TABLE IF NOT EXISTS telemetry_trace_keys(trace_id TEXT NOT NULL,
     key_id TEXT NOT NULL REFERENCES telemetry_keys(id),spans INTEGER NOT NULL DEFAULT 0,next_check INTEGER,revision INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(trace_id,key_id),FOREIGN KEY(key_id,trace_id) REFERENCES telemetry_traces(key_id,trace_id) ON DELETE CASCADE) WITHOUT ROWID;
@@ -180,7 +184,7 @@ CREATE TRIGGER IF NOT EXISTS telemetry_span_added AFTER INSERT ON telemetry_span
       UPDATE telemetry_totals SET spans=spans+1,wake_revision=wake_revision+(work_due IS NOT 0),work_due=0 WHERE id=1;
       UPDATE telemetry_keys SET spans=spans+1,clock_skew_ms=NEW.received_at-COALESCE(NEW.receipt_newest_ms,NEW.end_ms) WHERE id=NEW.key_id;
       UPDATE telemetry_keys SET last_used_at=NEW.received_at WHERE id=NEW.key_id AND revoked_at IS NULL
- AND (last_used_at IS NULL OR last_used_at/60000<NEW.received_at/60000);
+ AND (last_used_at IS NULL OR CAST(last_used_at/60000 AS INTEGER)<CAST(NEW.received_at/60000 AS INTEGER));
       INSERT INTO telemetry_traces(key_id,trace_id,received_at,last_received_at,next_check,revision,spans) VALUES(NEW.key_id,NEW.trace_id,NEW.received_at,NEW.received_at,NULL,1,1)
         ON CONFLICT(key_id,trace_id) DO UPDATE SET last_received_at=MAX(last_received_at,NEW.received_at),revision=revision+1,spans=spans+1;
       INSERT INTO telemetry_trace_keys(trace_id,key_id,spans,next_check) VALUES(NEW.trace_id,NEW.key_id,1,0)
