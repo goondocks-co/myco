@@ -34,6 +34,13 @@ async function grow(db: RelationalStore, from: number, to: number) {
     SELECT 'proj_1','old-'||i,'m_live','mt_0',?3-i*?4,?3-i*?4,?3-i*?4,?3-i*?4+1 FROM n`, NOW - 30 * DAY, MINUTE);
   await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at)
     SELECT 'proj_2','older-'||i,'m_live','mt_0',?3-i*?4,?3-i*?4,?3-i*?4,?3-i*?4+1 FROM n`, NOW - 90 * DAY, MINUTE);
+  await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,latest_activity_at,has_activity,ended_at)
+    SELECT 'proj_1','deleted-'||i,'m_live','mt_0',?4,?3,?4,?4,1,?4 FROM n`, NOW, NOW - 120 * DAY);
+  await eachUnit(db, from, to, `INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
+    SELECT 'proj_1','deleted-'||i,?3,'mem_a' FROM n`, NOW);
+  await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,latest_activity_at,has_activity,ended_at,working_since)
+    SELECT 'proj_1','empty-'||i,'m_live','mt_0',?3,?3,?3-i,?4,0,CASE WHEN i%2=0 THEN ?4 ELSE NULL END,?4 FROM n`, NOW, NOW - DAY);
+
 }
 
 const ids = (page: { rows: readonly { sessionId: string }[] }) => page.rows.map((row) => row.sessionId);

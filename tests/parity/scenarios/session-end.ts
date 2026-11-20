@@ -1,6 +1,7 @@
+import { context } from '../clients/capture.ts';
 import { expect } from 'bun:test';
 import { MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { event } from '../clients/requests.ts';
+import { event, owner } from '../clients/requests.ts';
 
 /**
  * A person's end of a session on both targets: the owner route ends an open
@@ -57,5 +58,33 @@ export const sessionEnd: ParityScenario = {
     await post('session.end', first.endedAt + 2_000, { endedAt: first.endedAt + 2_000 });
     expect((await listed())?.endedAt).toBe(first.endedAt + 2_000);
     expect(await endedBy()).toBeNull();
+  },
+};
+
+export const sessionActivity: ParityScenario = {
+  name: 'session activity: late capture stays ended, empty sessions disappear only after going quiet, and future clocks are bounded',
+  async run(target) {
+    const now = Date.now(), day = 86_400_000;
+    const late = `late-${now}`, empty = `empty-${now}`, future = `future-${now}`;
+    const list = async () => (await owner(target, `/api/projects/${target.projectId}/sessions`)).body.rows;
+    await event(target, late, 'session.start', { agent: 'claude-code', startedAt: now - day }, now - day);
+    await event(target, late, 'prompt', { promptId: crypto.randomUUID(), text: 'Yesterday work', origin: 'user' }, now - day);
+    expect((await list()).find((row: any) => row.sessionId === late)).toMatchObject({ live: false, liveUntil: null });
+    await event(target, empty, 'session.start', { agent: 'claude-code' });
+    expect((await list()).find((row: any) => row.sessionId === empty)).toMatchObject({ live: true });
+    await event(target, empty, 'session.end', {});
+    expect((await list()).some((row: any) => row.sessionId === empty)).toBe(false);
+    await event(target, future, 'session.start', { agent: 'claude-code' });
+    const before = (await list()).find((row: any) => row.sessionId === future).liveUntil;
+    await event(target, future, 'prompt', { promptId: crypto.randomUUID(), text: 'Clock ahead', origin: 'user' }, now + 120_000);
+    const row = (await list()).find((row: any) => row.sessionId === future);
+    expect(row.live).toBe(true);
+    expect(row.liveUntil - before).toBeLessThan(60_000);
+    const working = `working-${now}`;
+    await event(target, working, 'session.start', { agent: 'claude-code' }, now - 2 * 3_600_000);
+    await context(target, 'prompt', { sessionId: working, promptId: crypto.randomUUID(), text: 'Working on the first turn', identity: 1, at: Date.now() });
+    expect((await owner(target, '/api/sessions')).body.rows.find((row: any) => row.sessionId === working)).toMatchObject({ working: true, live: false });
+    await event(target, working, 'session.end', {});
+    expect((await list()).some((row: any) => row.sessionId === working)).toBe(false);
   },
 };

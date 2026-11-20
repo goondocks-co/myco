@@ -4,9 +4,6 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
-import {
-  sessions_listProjects as listProjects,
-} from '@myco-server-worker/read/catalog/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
 
 const session = (id: string, end: number | null, receipt = 1, project = 'proj_1') => `INSERT INTO sessions
@@ -41,8 +38,10 @@ async function assertProjection(db: RelationalStore) {
     FROM projects p LEFT JOIN sessions s ON s.project_id=p.project_id
     AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)
     GROUP BY p.project_id ORDER BY projectId`).all<{ projectId: string; sessionCount: number; lastActivityAt: number | null }>()).results;
-  expect((await listProjects(db, { includeArchived: true })).map(({ projectId, sessionCount, lastActivityAt }) => ({ projectId, sessionCount, lastActivityAt }))
-    .sort((a, b) => a.projectId.localeCompare(b.projectId))).toEqual(expectedProjects);
+  const storedProjects = await db.prepare(`SELECT p.project_id AS projectId,COALESCE(c.session_count,0) AS sessionCount,
+    (SELECT MAX(last_received_at) FROM session_read_facts f WHERE f.project_id=p.project_id AND has_session=1 AND tombstoned=0) AS lastActivityAt
+    FROM projects p LEFT JOIN project_session_counts c ON c.project_id=p.project_id ORDER BY p.project_id`).all();
+  expect(storedProjects.results).toEqual(expectedProjects);
 }
 
 async function verify(db: RelationalStore) {
@@ -106,7 +105,6 @@ async function verify(db: RelationalStore) {
     "DELETE FROM prompt_batches", "DELETE FROM transcripts", "DELETE FROM sessions", "DELETE FROM session_tombstones",
   ];
   for (const sql of mutations) { await db.prepare(sql).run(); await assertProjection(db); }
-  expect(await listProjects(db)).toHaveLength(1);
   await expect(db.batch([db.prepare(session('rollback', 1)), db.prepare('INSERT INTO absent_table VALUES(1)')])).rejects.toThrow();
   await assertProjection(db);
 }

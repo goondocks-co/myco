@@ -262,7 +262,7 @@ export async function planEventWrite(
   // absent, so a derived event is never refused for want of one.
   const writer = { project: ctx.projectId, session: e.sessionId, machine: ctx.machineId, token: ctx.tokenId, event: e.eventId, nonce: write.nonce };
   const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: e.kind === 'session.start' ? (p.agent as string) : null,
-    live: e.channel !== 'import', start: e.kind === 'session.start' });
+    live: e.channel !== 'import', start: e.kind === 'session.start', hasActivity: e.kind === 'prompt' || e.kind === 'tool.use' || e.kind === 'tool.failure' });
 
   // The nonce, not a change count, decides whether THIS write stored the row: reading it back asks the store what
   // happened instead of asking the driver.

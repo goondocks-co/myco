@@ -1,3 +1,4 @@
+import { sessionActivityAssignments, sessionActivityAdvances } from './activity.js';
 /** The statements beside a captured event's raw insert: its byte charge, its session receipt, and the reads that decide the answer. */
 import { TOKEN_LIVE } from '../identity/capture-credential.js';
 import { read, write, type Bound } from '../index.js';
@@ -12,14 +13,15 @@ const charge = write<[bytes: number, token: string]>({ name: 'capture.chargeByte
   'UPDATE member_credentials SET bytes_written = bytes_written + (?1 * changes()) WHERE id = ?2' });
 const uncharged = read<[], { uncharged: number }>({ name: 'capture.uncharged', sql: 'SELECT 1 AS uncharged' });
 
-type Receipt = [project: string, session: string, machine: string, token: string, first: number, last: number, agent: string | null, event: string, nonce: string, liveAt: number | null, liveStartAt: number | null];
-const RECEIPT_ROW = `INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, last_live_received_at, last_trust_start_at)
-      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?10, ?11 WHERE ${storedByThisRequest('?1', '?8', '?9')}`;
+type Receipt = [project: string, session: string, machine: string, token: string, first: number, last: number, agent: string | null, event: string, nonce: string, liveAt: number | null, liveStartAt: number | null, activityAt: number, hasActivity: number | null];
+const RECEIPT_ROW = `INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, last_live_received_at, last_trust_start_at, latest_activity_at, has_activity)
+      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?10, ?11, ?12, ?13 WHERE ${storedByThisRequest('?1', '?8', '?9')}`;
 const liveFields = LIVE_CAPTURE_FIELDS.map(column => `${column}=${liveEvidenceMax('sessions', column)}`).join(',');
+const activityFields = sessionActivityAssignments('sessions', 'excluded.latest_activity_at', 'excluded.has_activity');
 const memberReceipt = write<Receipt>({ name: 'capture.memberReceipt', sql:
-  `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at,${liveFields}` });
-const deploymentReceipt = write<Receipt>({ name: 'capture.deploymentReceipt', sql: `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET ${liveFields}
-    WHERE ${LIVE_CAPTURE_FIELDS.map(column => liveEvidenceAdvances('sessions', column)).join(' OR ')}` });
+  `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at,${activityFields},${liveFields}` });
+const deploymentReceipt = write<Receipt>({ name: 'capture.deploymentReceipt', sql: `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET ${activityFields},${liveFields}
+    WHERE ${LIVE_CAPTURE_FIELDS.map(column => liveEvidenceAdvances('sessions', column)).join(' OR ')} OR ${sessionActivityAdvances('sessions', 'excluded.latest_activity_at', 'excluded.has_activity')}` });
 
 const stored = read<[project: string, event: string, machine: string], { envelope_hash: string; ingest_nonce: string }>({ name: 'capture.storedEvent', sql:
   `SELECT ev.envelope_hash, ev.ingest_nonce FROM events ev JOIN sessions s ON s.project_id = ev.project_id AND s.session_id = ev.session_id
@@ -37,9 +39,9 @@ export const chargeStoredBytes = (charged: boolean, bytes: number, token: string
  * The stored event's session receipt. Member contact moves the receipt date; Deployment parsing retains it.
  * Live-channel receipts advance activity. Starts retain the earlier client or receipt clock independently of harness reports.
  */
-export function sessionReceipt(w: Writer, receipt: { charged: boolean; now: number; createdAt: number; agent: string | null; live: boolean; start: boolean }): Bound {
+export function sessionReceipt(w: Writer, receipt: { charged: boolean; now: number; createdAt: number; agent: string | null; live: boolean; start: boolean; hasActivity: boolean }): Bound {
   const at = receipt.charged ? receipt.now : receipt.createdAt;
-  return (receipt.charged ? memberReceipt : deploymentReceipt).bind(w.project, w.session, w.machine, w.token, at, at, receipt.agent, w.event, w.nonce, receipt.live ? receipt.now : null, receipt.live && receipt.start ? Math.min(receipt.now, receipt.createdAt) : null);
+  return (receipt.charged ? memberReceipt : deploymentReceipt).bind(w.project, w.session, w.machine, w.token, at, at, receipt.agent, w.event, w.nonce, receipt.live ? receipt.now : null, receipt.live && receipt.start ? Math.min(receipt.now, receipt.createdAt) : null, Math.min(receipt.now, receipt.createdAt), receipt.hasActivity ? 1 : receipt.live && receipt.start ? 0 : null);
 }
 
 /** The stored event as its session's machine sees it: the nonce, not a change count, says whether this request wrote it. */

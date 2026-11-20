@@ -1,3 +1,5 @@
+import { commit } from '../db/index.js';
+import { parsedSessionActivity } from '../db/capture/activity.js';
 import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
 /**
  * The session document publisher.
@@ -386,6 +388,11 @@ class SessionPublication {
             outcome: { ordinal: 0, offset: event.outcomeOffset ?? event.offset, origin: event.outcomeOrigin ?? 'reported' },
           });
         }).filter((record): record is DocRecord => record !== null);
+        if (records.length > 0) await commit(this.db, parsedSessionActivity({
+          project: this.projectId, session: this.sessionId,
+          at: records.reduce((at, record) => Math.max(at, Math.min(record.created_at, record.received_at as number)), Number.NEGATIVE_INFINITY),
+          hasActivity: records.some(record => record.k === 'prompt' || record.k === 'tool'),
+        }));
         const placed = await this.placedOf(publication, records);
         const rest = records.slice(placed);
         const adoptClaims = () => {

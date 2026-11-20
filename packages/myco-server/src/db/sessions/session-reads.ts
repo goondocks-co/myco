@@ -1,3 +1,4 @@
+import { visibleLastReceipt, visibleSessionCount } from './visibility.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { jsonPages } from '../json-pages.js';
 import { read, readSet } from '../index.js';
@@ -55,19 +56,17 @@ const counts = read<Session, SessionCountsRow>({ name: 'sessionReads.counts', sq
 
 export interface ProjectListRow { project_id: string; name: string; created_at: number; archived_at: number | null; archived_by: string | null; session_count: number; last_activity_at: number | null }
 const PROJECT_LIST = (where: string) => `SELECT p.project_id, p.name, p.created_at, p.archived_at, p.archived_by,
-    COALESCE(c.session_count, 0) AS session_count,
-    (SELECT f.last_received_at FROM session_read_facts f
-      WHERE f.project_id = p.project_id AND f.has_session = 1 AND f.tombstoned = 0
-      ORDER BY f.last_received_at DESC LIMIT 1) AS last_activity_at
+    ${visibleSessionCount('p.project_id', '?1', '?2', 'COALESCE(c.session_count,0)')} AS session_count,
+    ${visibleLastReceipt('p.project_id', '?1', '?2')} AS last_activity_at
     FROM projects p LEFT JOIN project_session_counts c ON c.project_id = p.project_id
     ${where}
     ORDER BY last_activity_at DESC NULLS LAST, p.created_at DESC`;
-const projectsAccepting = read<[], ProjectListRow>({ name: 'sessionReads.projectsAccepting', sql: PROJECT_LIST('WHERE p.archived_at IS NULL') });
-const projectsEvery = read<[], ProjectListRow>({ name: 'sessionReads.projectsEvery', sql: PROJECT_LIST('') });
+const projectsAccepting = read<[quiet: number, workingAfter: number], ProjectListRow>({ name: 'sessionReads.projectsAccepting', sql: PROJECT_LIST('WHERE p.archived_at IS NULL') });
+const projectsEvery = read<[quiet: number, workingAfter: number], ProjectListRow>({ name: 'sessionReads.projectsEvery', sql: PROJECT_LIST('') });
 
 /** Every project with its live session count and latest live receipt, most recently active first; archived ones only when asked. */
-export async function projectListRows(db: RelationalStore, includeArchived: boolean): Promise<ProjectListRow[]> {
-  const [rows] = await readSet(db, (includeArchived ? projectsEvery : projectsAccepting).bind());
+export async function projectListRows(db: RelationalStore, options: { includeArchived: boolean; quietBefore: number; workingAfter: number }): Promise<ProjectListRow[]> {
+  const [rows] = await readSet(db, (options.includeArchived ? projectsEvery : projectsAccepting).bind(options.quietBefore, options.workingAfter));
   return rows;
 }
 
