@@ -6,11 +6,11 @@ health:
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .copilot
 pluginRootEnvVar: COPILOT_PLUGIN_ROOT
-# A person moves this folder with COPILOT_HOME. Copilot writes `config.json` and `session-state/` on its first run there.
+# A person moves this folder with COPILOT_HOME. Copilot writes `config.json`, `session-state/` and `installed-plugins/` on its first run there.
 settingsFolder:
   path: ~/.copilot
   variable: COPILOT_HOME
-  markers: [config.json, session-state]
+  markers: { files: [config.json], directories: [session-state, installed-plugins] }
 # PascalCase hook registrations select Copilot CLI's compatible snake_case payload.
 # https://docs.github.com/en/copilot/reference/hooks-reference
 hookFields:

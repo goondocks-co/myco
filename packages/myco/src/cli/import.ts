@@ -225,7 +225,7 @@ async function runImportCommand(args: readonly string[], deps: ImportCliDeps = {
   if (parsed.legacy !== undefined) {
     const legacy = await runLegacyImport(
       { sources: parsed.legacy, serverUrl: parsed.options.serverUrl, dryRun, project: parsed.options.project },
-      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, signal: deps.signal, pace: IMPORT_PACE_PER_MINUTE, progress: (l) => err(`myco import: ${l}`) },
+      { fetch: deps.fetch, now: deps.now, mycoHome: deps.mycoHome, machineId, sleep: deps.sleep, signal: deps.signal, pace: IMPORT_PACE_PER_MINUTE, progress: (l) => err(`myco import: ${l}`), discovery: folderTranscriptDiscovery },
     );
     if (legacy.refused !== undefined) { for (const line of legacyReportLines(legacy, dryRun)) out(line); return refuse(legacy.refused); }
     for (const line of legacyReportLines(legacy, dryRun)) out(line);

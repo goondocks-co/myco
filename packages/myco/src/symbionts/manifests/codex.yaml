@@ -11,7 +11,7 @@ detectionDir: ~/.codex
 settingsFolder:
   path: ~/.codex
   variable: CODEX_HOME
-  markers: [installation_id, sessions]
+  markers: { files: [installation_id], directories: [sessions] }
 pluginRootEnvVar: CODEX_PLUGIN_ROOT
 settingsPath: .codex/config.toml
 resumeCommand: "codex resume {sessionId}"

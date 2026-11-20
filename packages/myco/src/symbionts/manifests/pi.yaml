@@ -10,7 +10,7 @@ detectionDir: ~/.pi
 settingsFolder:
   path: ~/.pi/agent
   variable: PI_CODING_AGENT_DIR
-  markers: [models-store.json, sessions]
+  markers: { files: [models-store.json], directories: [sessions] }
 pluginRootEnvVar: PI_PLUGIN_ROOT
 hookFields:
   sessionId: session_id

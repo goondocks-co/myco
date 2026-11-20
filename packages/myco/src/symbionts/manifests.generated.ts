@@ -195,9 +195,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "settingsFolder": {
       "path": "~/.claude",
       "variable": "CLAUDE_CONFIG_DIR",
-      "markers": [
-        ".claude.json"
-      ],
+      "markers": {
+        "files": [
+          ".claude.json"
+        ],
+        "directories": []
+      },
       "carries": {
         "~/.claude.json": ".claude.json"
       }
@@ -679,10 +682,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "settingsFolder": {
       "path": "~/.cline",
       "variable": "CLINE_DIR",
-      "markers": [
-        "data/settings",
-        "data/logs"
-      ]
+      "markers": {
+        "files": [
+          "data/logs/cline.log",
+          "data/settings/providers.json"
+        ],
+        "directories": []
+      }
     },
     "health": {
       "installLocations": [
@@ -910,10 +916,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "settingsFolder": {
       "path": "~/.codex",
       "variable": "CODEX_HOME",
-      "markers": [
-        "installation_id",
-        "sessions"
-      ]
+      "markers": {
+        "files": [
+          "installation_id"
+        ],
+        "directories": [
+          "sessions"
+        ]
+      }
     },
     "health": {
       "installLocations": [
@@ -1360,10 +1370,15 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "settingsFolder": {
       "path": "~/.copilot",
       "variable": "COPILOT_HOME",
-      "markers": [
-        "config.json",
-        "session-state"
-      ]
+      "markers": {
+        "files": [
+          "config.json"
+        ],
+        "directories": [
+          "session-state",
+          "installed-plugins"
+        ]
+      }
     },
     "health": {
       "installLocations": [],
@@ -2163,10 +2178,14 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "settingsFolder": {
       "path": "~/.pi/agent",
       "variable": "PI_CODING_AGENT_DIR",
-      "markers": [
-        "models-store.json",
-        "sessions"
-      ]
+      "markers": {
+        "files": [
+          "models-store.json"
+        ],
+        "directories": [
+          "sessions"
+        ]
+      }
     },
     "health": {
       "installLocations": [

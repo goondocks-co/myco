@@ -5,8 +5,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { expandHome } from '@myco/paths/home.js';
-import { settingsFoldersOf } from './settings-folders.js';
+import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
+import { harnessSettingsFolders, settingsFolderCandidates } from './settings-folders.js';
 
 const MANIFESTS_SUBDIR = 'symbionts/manifests';
 
@@ -79,8 +79,10 @@ export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
 
 function movedSettingsFolderFound(manifest: SymbiontManifest): boolean {
   // As for the declared directory, a folder that cannot be read is not detected.
-  try { return settingsFoldersOf(manifest).length > 1; }
-  catch { return false; }
+  try {
+    const mycoHome = resolveMycoHome();
+    return harnessSettingsFolders(manifest, mycoHome).length > 1 || settingsFolderCandidates([manifest], mycoHome).size > 0;
+  } catch { return false; }
 }
 
 function installedDirectory(location: string): boolean {

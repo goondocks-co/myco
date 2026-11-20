@@ -4,6 +4,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { readProvisionRecordStrict } from '@myco/symbionts/member-provision-record.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { harnessSettingsFolders } from '@myco/symbionts/settings-folders.js';
 
 const MEMBER_REPAIR_WAIT_MS = 15_000;
 
@@ -30,9 +31,12 @@ export function reconcileProjectMcp(root: string, mycoHome: string, opts: { pack
     const record = readProvisionRecordStrict(mycoHome);
     const ready: string[] = [];
     for (const manifest of loadManifests().filter(manifest => record?.agents.includes(manifest.name) && manifest.registration?.memberMcpRouting !== undefined)) {
-      const installer = new SymbiontInstaller(manifest, root, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome);
-      installer.reconcileMemberProjectMcp();
-      if (installer.inspectMemberMcp().some(scope => scope.readable && scope.present && scope.scope === 'local')) ready.push(manifest.name);
+      const local = harnessSettingsFolders(manifest, mycoHome).map(folder => {
+        const installer = new SymbiontInstaller(manifest, root, opts.packageRoot ?? resolvePackageRoot(), false, mycoHome).inSettingsFolder(folder);
+        installer.reconcileMemberProjectMcp();
+        return installer.inspectMemberMcp().some(scope => scope.readable && scope.present && scope.scope === 'local');
+      });
+      if (local[0]) ready.push(manifest.name);
     }
     return ready;
   }, { wait: true });

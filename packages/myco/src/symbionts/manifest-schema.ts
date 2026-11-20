@@ -1023,6 +1023,8 @@ const ToolResultSchema = z.custom<ToolResultDeclaration>((value) => {
   try { assertToolResultDeclaration('', value); return true; } catch { return false; }
 }, { message: 'toolResult must declare a failure field or its absence, with evidence' });
 
+const MarkerPathSchema = z.string().min(1).refine((marker) => !marker.startsWith('/') && !marker.split('/').includes('..'), 'A marker is a path inside the folder');
+
 /**
  * The harness's own settings folder and how a person moves it. Every manifest path under `path` resolves inside a
  * moved folder, as do the home paths `carries` names; any other path stays where the manifest puts it.
@@ -1030,10 +1032,15 @@ const ToolResultSchema = z.custom<ToolResultDeclaration>((value) => {
 const SettingsFolderSchema = z.object({
   /** The folder the harness uses when nothing moves it. */
   path: z.string().regex(/^~\/[^/]/, 'A settings folder is a path under the home folder, written ~/...'),
-  /** The environment variable the harness reads for a moved folder. */
+  /** The environment variable the harness reads for a moved folder; a relative value is read against its working directory. */
   variable: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
-  /** Relative paths that, all present, mark a folder as this harness's settings folder. */
-  markers: z.array(z.string().min(1).refine((marker) => !marker.startsWith('/') && !marker.split('/').includes('..'), 'A marker is a path inside the folder')).min(1),
+  /**
+   * What the harness writes in a folder on its first run there: files and directories that, all present as that type,
+   * mark a direct child of the home folder as a candidate settings folder of this harness. A candidate is reported,
+   * never written to.
+   */
+  markers: z.object({ files: z.array(MarkerPathSchema).default([]), directories: z.array(MarkerPathSchema).default([]) })
+    .refine((markers) => markers.files.length + markers.directories.length > 0, 'A settings folder declares at least one marker'),
   /** Home paths outside `path` that live inside a moved folder, by the relative path they take there. */
   carries: z.record(z.string().regex(/^~\//), z.string().min(1)).optional(),
 });

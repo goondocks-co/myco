@@ -14,7 +14,7 @@ import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import path from 'node:path';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveHomeDir } from '../paths/home.js';
-import { pathInSettingsFolder } from './settings-folder-paths.js';
+import { pathInSettingsFolder, settingsVariableFolder } from './settings-folder-paths.js';
 import { resolveWorktreeRoot } from '../project-root.js';
 import { remainingMs, type HookBudget } from './budget.js';
 import { recordSessionLoss } from './capture-loss.js';
@@ -48,8 +48,8 @@ export function resolvePlanDir(dir: string, projectRoot: string): string {
 function agentPlanDirs(agent: string, env: NodeJS.ProcessEnv = process.env): string[] {
   const dirs = HOOK_CONFIG[agent]?.planDirs ?? [];
   const manifest = BUNDLED_MANIFESTS.find(candidate => candidate.name === agent);
-  const moved = manifest?.settingsFolder === undefined ? undefined : env[manifest.settingsFolder.variable]?.trim();
-  if (manifest === undefined || moved === undefined || !path.isAbsolute(moved)) return dirs;
+  const moved = manifest === undefined ? null : settingsVariableFolder(manifest, env);
+  if (manifest === undefined || moved === null) return dirs;
   const home = resolveHomeDir();
   const inMoved = dirs.filter(dir => dir.startsWith('~/')).map(dir => pathInSettingsFolder(manifest, dir, { path: moved, origin: 'variable' }, home))
     .filter(dir => !dirs.some(own => path.join(home, own.slice(2)) === dir));

@@ -44,14 +44,23 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
   }, { strict: true });
 }
 
-/** Record the settings folders beyond its default one that `agent` is set up in, under the record lease. */
-export function recordSettingsFolders(mycoHome: string, agent: string, folders: readonly string[]): void {
+/** Record that `agent` is set up in `folder`, a settings folder beyond its default one, under the record lease. */
+export function recordSettingsFolder(mycoHome: string, agent: string, folder: string): void {
   updateProvisionRecord(mycoHome, record => {
-    if (record === null) return;
-    const wanted = [...new Set(folders)].sort();
-    if (JSON.stringify(record.settingsFolders?.[agent] ?? []) === JSON.stringify(wanted)) return;
+    const held = record?.settingsFolders?.[agent] ?? [];
+    if (record === null || held.includes(folder)) return;
+    return { ...record, settingsFolders: { ...record.settingsFolders, [agent]: [...held, folder].sort() } };
+  });
+}
+
+/** Stop recording `folder` for `agent`, once Myco's entries there are removed or the person retires it. */
+export function forgetSettingsFolder(mycoHome: string, agent: string, folder: string): void {
+  updateProvisionRecord(mycoHome, record => {
+    const held = record?.settingsFolders?.[agent] ?? [];
+    if (record === null || !held.includes(folder)) return;
     const { [agent]: _, ...others } = record.settingsFolders ?? {};
-    return { ...record, settingsFolders: wanted.length === 0 ? others : { ...others, [agent]: wanted } };
+    const kept = held.filter(entry => entry !== folder);
+    return { ...record, settingsFolders: kept.length === 0 ? others : { ...others, [agent]: kept } };
   });
 }
 

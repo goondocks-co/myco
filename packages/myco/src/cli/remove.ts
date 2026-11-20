@@ -241,8 +241,10 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       reconciliation.attempt(manifest, () => {
         if (registered) installer.uninstallMemberRegistration();
         removeSkills();
-        if (provision?.agents.includes(manifest.name)) forgetProvision(home, manifest.name);
       });
+    }
+    for (const agent of new Set(registrations.map(({ manifest }) => manifest.name))) {
+      if (provision?.agents.includes(agent) && !problems.has(agent)) forgetProvision(home, agent);
     }
     if (problems.size > 0) return;
     if (purge) removeProjectPinTrust(canonical);

@@ -11,7 +11,7 @@ detectionDir: ~/.claude
 settingsFolder:
   path: ~/.claude
   variable: CLAUDE_CONFIG_DIR
-  markers: [.claude.json]
+  markers: { files: [.claude.json] }
   carries: { "~/.claude.json": .claude.json }
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json

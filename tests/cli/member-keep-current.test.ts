@@ -40,7 +40,7 @@ beforeEach(() => {
   process.env.HOME = agentHome;
   process.env.MYCO_HOME = home;
   process.env.CODEX_HOME = path.join(agentHome, '.codex');
-  process.env.CLAUDE_CONFIG_DIR = path.join(agentHome, '.claude');
+  delete process.env.CLAUDE_CONFIG_DIR;
   const bin = path.join(agentHome, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   for (const binary of ['codex', 'claude']) fs.writeFileSync(path.join(bin, binary), '#!/bin/sh\nexit 0\n', { mode: 0o755 });

@@ -4,6 +4,7 @@ import { joinSentences } from '@myco/utils/sentences.js';
 import { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
 export { MYCO_MCP_SERVER_NAME, rawHasMycoOwnershipSignal } from '@myco/member/registration-ownership.js';
 import type { SymbiontManifest } from './manifest-schema.js';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { assertBareCommandArgument, commandLine } from '@goondocks/myco-shared/shell-command';
 import os from 'node:os';
@@ -28,7 +29,7 @@ import { parseCredentialFlag } from '../member/credential.js';
 import { admitMemberServerUrl, memberServerDialUrl } from '../member/server-url.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readRegistryEntryResult, readDeploymentMembershipResult } from '../member/registry.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
-import { MCP_ROOT_FLAG, MCP_CLIENT_ROOTS_FLAG, mcpProjectFolder } from '@myco/cli/flags.js';
+import { MCP_ROOT_FLAG, MCP_CLIENT_ROOTS_FLAG, SETTINGS_FOLDER_FLAG, mcpProjectFolder } from '@myco/cli/flags.js';
 import { privateMcpProjects, reconcilePrivateMcpProjects } from './member-mcp-projects.js';
 import { MCP_PATH } from '../plugins/spec.js';
 import { MCP_HEADERS_ARGS, MEMBER_MCP_LEVERS, memberMcpTemplate, memberRemoteMcp } from './member-hooks.js';
@@ -39,6 +40,7 @@ import { managedBinaryPath } from '../install/managed-binary.js';
 import { resolveBinary } from '../runtime/binary-resolution.js';
 import { BUNDLED_TEMPLATES } from './templates.generated.js';
 import { pathInSettingsFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
+import { settingsFolderEscapes } from './settings-folders.js';
 
 function managedHookGroup(group: Record<string, unknown>, matches = isMycoHookCommand): Record<string, unknown> {
   if (!Array.isArray(group.hooks)) return group;
@@ -48,6 +50,9 @@ function managedHookGroup(group: Record<string, unknown>, matches = isMycoHookCo
 const TEMPLATES_SUBDIR = 'src/symbionts/templates';
 
 const REMOTE_MCP_TYPE = 'http';
+
+/** Hex characters of a target path's digest naming that target's installer state file. */
+const TARGET_STATE_KEY_LENGTH = 16;
 
 export class MemberProvisionConflictError extends Error {
   constructor(readonly problem: string, readonly remedy: string, options?: ErrorOptions) {
@@ -453,6 +458,7 @@ export class SymbiontInstaller {
 
   install(scan = this.scanMemberRegistrations()): InstallResult {
     this.assertMemberProvisionAllowed();
+    this.assertTargetsInSettingsFolder();
     // Ownership and settings are admitted before the first write.
     if (this.isMemberPluginFile()) {
       this.assertMemberMcpWritable(scan);
@@ -1008,6 +1014,26 @@ export class SymbiontInstaller {
     return this;
   }
 
+  /**
+   * In a folder other than the default one, refuse before any write when a target the folder holds would land outside
+   * it once its links are followed. Targets the manifest keeps outside every folder (a shared skills folder) are not
+   * the folder's.
+   */
+  private assertTargetsInSettingsFolder(): void {
+    const folder = this.settingsFolder;
+    const reg = this.manifest.registration;
+    if (folder === undefined || folder.origin === 'default' || !reg) return;
+    const declared = [reg.globalHooksTarget, reg.globalSettingsTarget, reg.globalSkillsTarget, ...(reg.globalMcpTarget ?? []).map(entry => entry.path)]
+      .filter((target): target is string => typeof target === 'string');
+    const held = [...new Set(declared.filter(target => this.homeTarget(target) !== expandHome(target)).map(target => this.homeTarget(target)))];
+    const [escaped] = settingsFolderEscapes(folder.path, held);
+    if (escaped === undefined) return;
+    throw new MemberProvisionConflictError(
+      `${this.manifest.displayName}'s ${escaped} leads outside ${folder.path}, so nothing was written in that folder.`,
+      `Replace the link with a file or folder inside ${folder.path}, then run \`myco member provision ${this.manifest.name} ${SETTINGS_FOLDER_FLAG} ${folder.path}\`.`,
+    );
+  }
+
   forProjectFolder(folder: string | undefined): this {
     if (folder !== undefined) this.projectFolder = path.resolve(folder);
     return this;
@@ -1136,8 +1162,11 @@ export class SymbiontInstaller {
   }
 
   scanMemberRegistrations(): MemberRegistrationScan {
+    const own = this.settingsFolder === undefined || this.settingsFolder.origin === 'default' ? null
+      : new Set([this.resolveAbsoluteTarget('hooks'), this.resolveAbsoluteTarget('settings'), ...this.resolveAbsoluteMcpTargets().map(target => throughLink(target.path))]);
     return scanLegacyRegistrations({ homeDir: process.env.HOME ?? os.homedir(), legacyHomes: this.legacyHomes, ownHome: this.memberHomeDir(), allClaudeProjects: true })
-      .findings.filter(finding => finding.location.agent === this.manifest.name).map(finding => ({ ...finding, target: throughLink(finding.file), replacementBinary: findingOwnedBinary(finding) })).filter(finding => finding.verdict === 'stale' || this.takesOverFinding(finding));
+      .findings.filter(finding => finding.location.agent === this.manifest.name).map(finding => ({ ...finding, target: throughLink(finding.file), replacementBinary: findingOwnedBinary(finding) }))
+      .filter(finding => (finding.verdict === 'stale' || this.takesOverFinding(finding)) && (own === null || own.has(finding.target)));
   }
 
   private blocksRegistration(target: string | null, surface: 'hooks' | 'mcp' | 'settings', scan: MemberRegistrationScan): boolean {
@@ -1257,7 +1286,19 @@ export class SymbiontInstaller {
   }
 
   private retiredSettingsReportPath(): string {
-    return path.join(this.memberHomeDir(), 'installer-audit', `${this.manifest.name}-retired-hook-settings.json`);
+    return this.targetStatePath('retired-hook-settings', 'hooks');
+  }
+
+  /**
+   * The installer's state file for one configuration target: the agent's default target keeps its own name, and every
+   * other target's file is named for that target, so each folder's prior values and ownership are its own.
+   */
+  private targetStatePath(kind: string, field: 'hooks' | 'settings'): string {
+    const file = path.join(this.memberHomeDir(), 'installer-audit', `${this.manifest.name}-${kind}`);
+    const target = this.resolveAbsoluteTarget(field);
+    const declared = field === 'hooks' ? this.manifest.registration?.globalHooksTarget : this.manifest.registration?.globalSettingsTarget;
+    if (target === null || declared == null || target === throughLink(expandHome(declared))) return `${file}.json`;
+    return `${file}-${createHash('sha256').update(path.resolve(target)).digest('hex').slice(0, TARGET_STATE_KEY_LENGTH)}.json`;
   }
 
   private retiredSettingsReported(): RetiredSettingsReport {
@@ -1726,8 +1767,7 @@ export class SymbiontInstaller {
   }
 
   private getSettingsAuditPath(): string {
-    const stateRoot = this.memberHomeDir();
-    return path.join(stateRoot, 'installer-audit', `${this.manifest.name}-global-settings.json`);
+    return this.targetStatePath('global-settings', 'settings');
   }
 
   private preflightMemberSettings(): void {
