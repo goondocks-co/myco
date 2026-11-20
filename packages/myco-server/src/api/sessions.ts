@@ -164,7 +164,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   const evidence = sessionEvidence(session.agent, counters);
   return ok({
     learningAgedOutAt: await learningAgedOutAt(env.db, scope.projectId, sessionId),
-    filesEdited: evidence.filesEdited, observedFilesEdited: evidence.observedFilesEdited, visibility: evidence.visibility,
+    filesEdited: evidence.filesEdited, observedFilesEdited: evidence.observedFilesEdited, fileEdits: evidence.fileEdits, visibility: evidence.visibility,
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
     session, lifecycle: await sessionLifecycleState(env.db, scope.projectId, sessionId), resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),

@@ -7,7 +7,7 @@ import type { ToolRollup } from '../content/tool-rollup.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
-import { documentCountersRow, liveDocumentHasUserPrompt, turnAnchor } from '../db/documents/catalog-reads.js';
+import { documentCountersRow, liveDocumentHasInstruction, turnAnchor } from '../db/documents/catalog-reads.js';
 import { promptLocator } from '../db/documents/prompt-locator.js';
 import { turnPageRows, type OriginScope } from '../db/documents/turn-pages.js';
 
@@ -89,7 +89,7 @@ interface DocumentCounters {
   turns: number;
   userTurns: number;
   prompts: number;
-  userPrompts: number;
+  instructionPrompts: number;
   replies: number;
   toolCalls: number;
   failedTools: number;
@@ -106,11 +106,11 @@ export async function documentCounters(db: RelationalStore, scope: ReadScope, se
   const row = await documentCountersRow(db, scope.projectId, sessionId);
   return row === null ? null : {
     turns: Number(row.turns), userTurns: Number(row.user_turns),
-    prompts: Number(row.prompts), userPrompts: Number(row.user_prompts), replies: Number(row.replies), toolCalls: Number(row.tool_calls),
+    prompts: Number(row.prompts), instructionPrompts: Number(row.instruction_prompts), replies: Number(row.replies), toolCalls: Number(row.tool_calls),
     failedTools: Number(row.failed_tools), filesEdited: Number(row.files_edited), mycoCalls: Number(row.myco_calls), plans: Number(row.plans), attachments: Number(row.attachments), lastRecordAt: (row.last_record_at as number | null) ?? null,
     firstPrompt: (row.first_prompt as string | null) ?? null,
   };
 }
 
-/** True when the session's live document holds a user prompt. */
-export const sessionHasUserPrompt = (db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> => liveDocumentHasUserPrompt(db, projectId, sessionId);
+/** True when the session's live document holds an instruction. */
+export const sessionHasInstruction = (db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> => liveDocumentHasInstruction(db, projectId, sessionId);

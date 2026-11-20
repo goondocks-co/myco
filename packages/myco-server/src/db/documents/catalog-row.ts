@@ -2,13 +2,13 @@ import { write, type Bound } from '../index.js';
 
 /** What one document commit adds to the session's catalog row: counter deltas, the turn fields it settles, and its chunk numbering. */
 export interface CatalogDelta {
-  prompts: number; userPrompts: number; replies: number; toolCalls: number; failedTools: number; plans: number; mycoCalls: number;
+  prompts: number; instructionPrompts: number; replies: number; toolCalls: number; failedTools: number; plans: number; mycoCalls: number;
   firstPrompt: string | null; openTurn: string | null; lastRecordAt: number | null; nextChunk: number; now: number;
   /** The first page chunk this commit rewrote, or null: a summary catch-up past it starts over from there. */
   rewrittenBefore: number | null;
 }
 
-type Delta = [project: string, session: string, prompts: number, userPrompts: number, replies: number, toolCalls: number, failedTools: number,
+type Delta = [project: string, session: string, prompts: number, instructionPrompts: number, replies: number, toolCalls: number, failedTools: number,
   plans: number, mycoCalls: number, firstPrompt: string | null, openTurn: string | null, lastRecordAt: number | null, nextChunk: number, now: number,
   rewrittenBefore: number | null];
 
@@ -28,7 +28,7 @@ const published = write<Delta>({ name: 'documents.catalogAfterPublication', sql:
 const restored = write<[...Delta, generation: number, build: string | null]>({ name: 'documents.catalogAfterRestore', sql:
   `UPDATE session_documents SET state='live',generation=?16,restore_hold=NULL,due_at=0,build=?17,${SET} WHERE project_id=?1 AND session_id=?2` });
 
-const delta = (project: string, session: string, d: CatalogDelta): Delta => [project, session, d.prompts, d.userPrompts, d.replies, d.toolCalls,
+const delta = (project: string, session: string, d: CatalogDelta): Delta => [project, session, d.prompts, d.instructionPrompts, d.replies, d.toolCalls,
   d.failedTools, d.plans, d.mycoCalls, d.firstPrompt, d.openTurn, d.lastRecordAt, d.nextChunk, d.now, d.rewrittenBefore];
 
 /** The session's catalog row after a publication commit. */

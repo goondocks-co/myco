@@ -1,4 +1,5 @@
 import { ToolPromptLinks } from '@goondocks/myco-shared/record-identity';
+import { isInstructionOrigin } from '../read/extraction-origins.js';
 import { toolPromptLinkStatements } from '../db/capture/tool-delivery-links.js';
 import { priorTurnFingerprints } from '../db/documents/turn-fingerprints.js';
 import { contentContribution, contentFingerprint, sourceBytes } from '../content/turn-source.js';
@@ -120,11 +121,11 @@ const transcriptPlanRows = (plans: ReadonlyMap<string, TranscriptPlan>) => [...p
  * first turn's prompt and its latest record.
  */
 function sessionRowStatements(projectId: string, sessionId: string, generation: number, tokenId: string,
-  plans: ReadonlyMap<string, TranscriptPlan>, latestUserPrompt: number | null, lastRecordAt: number | null, now: number): Bound[] {
+  plans: ReadonlyMap<string, TranscriptPlan>, latestInstruction: number | null, lastRecordAt: number | null, now: number): Bound[] {
   return [
     ...jsonPages(transcriptPlanRows(plans)).flatMap(page => transcriptPlanWrites(projectId, sessionId, tokenId, now, JSON.stringify(page))),
     ensureSessionLifecycle(projectId, sessionId),
-    ...(latestUserPrompt !== null ? [settlePublishedTurn(projectId, sessionId)] : []),
+    ...(latestInstruction !== null ? [settlePublishedTurn(projectId, sessionId)] : []),
     presentedDatesAfterPublication(projectId, sessionId, generation, lastRecordAt),
   ];
 }
@@ -134,7 +135,7 @@ interface TurnAdded { tools: number; replies: number; children: number; plans: n
 export class DocumentBatch {
   readonly writer: DocumentWriter;
   private readonly toolPrompts = new ToolPromptLinks();
-  readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
+  readonly counts = { prompts: 0, instruction_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
   records = 0;
   calls = 0;
   lastRecordAt: number | null = null;
@@ -171,8 +172,8 @@ export class DocumentBatch {
   private floor = 0;
   /** The latest appearance this batch placed of each plan a transcript holds, with its content hash. */
   private readonly transcriptPlans = new Map<string, TranscriptPlan>();
-  /** The latest top-level user prompt this batch added. */
-  private latestUserPrompt: number | null = null;
+  /** The latest top-level instruction this batch added. */
+  private latestInstruction: number | null = null;
 
   constructor(
     private readonly env: Pick<ServerEnv, 'db' | 'blobs'>,
@@ -308,13 +309,13 @@ export class DocumentBatch {
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
     added: Map<string, TurnAdded>; toolPrompts: ToolPromptLinks;
     resolved: Set<string>; paths: Map<string, { n: number; edits: number; at: number; turn: string | null }>; toolChanges: number; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
-    transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
+    transcriptPlans: Map<string, TranscriptPlan>; latestInstruction: number | null } {
     this.floor = this.writer.versions;
     return {
       writer: this.writer.mark(), toolPrompts: new ToolPromptLinks(this.toolPrompts), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
       newPrompts: this.newPrompts.length, turns: new Map(this.turns), added: new Map([...this.added].map(([owner, held]) => [owner, { ...held }])), resolved: new Set(this.resolved), paths: new Map(this.paths),
-      toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
+      toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestInstruction: this.latestInstruction,
     };
   }
 
@@ -322,7 +323,7 @@ export class DocumentBatch {
     this.writer.undo(mark.writer);
     Object.assign(this.counts, mark.counts);
     Object.assign(this, { records: mark.records, lastRecordAt: mark.lastRecordAt, openTurn: mark.openTurn, firstPrompt: mark.firstPrompt,
-      unplaced: mark.unplaced, unresolved: mark.unresolved, latestUserPrompt: mark.latestUserPrompt });
+      unplaced: mark.unplaced, unresolved: mark.unresolved, latestInstruction: mark.latestInstruction });
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
     this.toolChanges.splice(mark.toolChanges);
@@ -439,13 +440,14 @@ export class DocumentBatch {
       }
       if (record.k === 'prompt') {
         this.counts.prompts += 1;
-        if (record.origin === 'user') this.counts.user_prompts += 1;
+        const instruction = isInstructionOrigin(record.origin);
+        if (instruction) this.counts.instruction_prompts += 1;
         const turnKey = owner === SESSION_OWNER ? null : owner;
         this.newPrompts.push({ record, turnKey });
         if (turnKey === record.id) {
           this.openTurn = record.id;
-          if (record.origin === 'user') this.latestUserPrompt = Math.max(this.latestUserPrompt ?? 0, record.created_at);
-          if (this.firstPrompt === null && record.origin === 'user') this.firstPrompt = preview(record.text);
+          if (instruction) this.latestInstruction = Math.max(this.latestInstruction ?? 0, record.created_at);
+          if (this.firstPrompt === null && instruction) this.firstPrompt = preview(record.text);
         }
       } else if (record.k === 'reply') this.counts.replies += 1;
       else if (record.k === 'plan') {
@@ -622,7 +624,7 @@ export class DocumentBatch {
     for (const page of jsonPages(settled)) statements.push(...this.cardStatements(page, chunkState === 'building', now));
     for (const page of jsonPages(settled)) statements.push(settleTurnsWrite(key, JSON.stringify(page)));
     statements.push(...turnStatisticsStatements(key, statistics, statistics.map(change => change.id)));
-    if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
+    if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(p, s, g, this.doc.token_id, this.transcriptPlans, this.latestInstruction, this.lastRecordAt, now));
     if (this.paths.size > 0) {
       statements.push(...sessionEditPaths(p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)));
       for (const page of jsonPages([...this.paths].filter(([, held]) => held.n <= 0).map(([path, held]) => ({ path, ...held })))) statements.push(...shrinkPathWrites(key, JSON.stringify(page)));
@@ -654,7 +656,7 @@ export class DocumentBatch {
   /** What this batch adds to the session's catalog row: its counters, chunk numbering and turn fields. */
   private catalogDelta(now: number): CatalogDelta {
     const c = this.counts;
-    return { prompts: c.prompts, userPrompts: c.user_prompts, replies: c.replies, toolCalls: c.tool_calls, failedTools: c.failed_tools, plans: c.plans,
+    return { prompts: c.prompts, instructionPrompts: c.instruction_prompts, replies: c.replies, toolCalls: c.tool_calls, failedTools: c.failed_tools, plans: c.plans,
       mycoCalls: c.myco_calls, firstPrompt: this.firstPrompt, openTurn: this.openTurn, lastRecordAt: this.lastRecordAt, nextChunk: this.writer.nextChunk,
       now, rewrittenBefore: this.rewrittenBefore };
   }

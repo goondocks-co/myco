@@ -41,13 +41,13 @@ function fileRead(record: DocRecord, prompt: string): boolean {
   });
 }
 
-/** Person-authored head and tail turns with closing replies; file context comes only from that turn's stored read. */
+/** Instruction turns with closing replies; file context comes only from that turn's stored read. */
 export async function singleTurnMaterial(env: ContentStore, project: string, session: string) {
   const held = await titleMaterialSnapshot(env.db, project, session);
   const doc = await SessionDocument.open(env, project, session);
-  if (held === null || doc === null || doc.generation !== held.generation || held.userPrompts === 0) throw new Error('title_material_unavailable');
+  if (held === null || doc === null || doc.generation !== held.generation || held.instructionPrompts === 0) throw new Error('title_material_unavailable');
   const turns = await titleMaterialTurns(env.db, project, session, held);
-  const lines = [`The session has ${held.userPrompts} prompts from the person.`];
+  const lines = [`The session has ${held.instructionPrompts} instructions.`];
   for (const turn of turns) {
     if (!turn.full) { lines.push(`[Middle prompt] ${clip(turn.preview ?? '', MIDDLE_CHARS)}`); continue; }
     const section: string[] = [];
@@ -57,7 +57,8 @@ export async function singleTurnMaterial(env: ContentStore, project: string, ses
     if (prompt === undefined) throw new Error('title_prompt_unavailable');
     const text = await doc.body(prompt, 'text');
     if (text === null) throw new Error('title_prompt_unavailable');
-    section.push(`[Person] ${clip(text, PROMPT_CHARS)}`);
+    const speaker = prompt.origin === 'agent_dispatch' ? 'Another agent' : prompt.origin === 'user' ? 'Person' : 'Instruction';
+    section.push(`[${speaker}] ${clip(text, PROMPT_CHARS)}`);
     if (text.length <= SHORT_PROMPT_CHARS) {
       const read = records.find(record => fileRead(record, text));
       const output = read?.output_preview;

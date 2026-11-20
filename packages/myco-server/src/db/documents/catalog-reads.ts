@@ -4,17 +4,17 @@ import { liveGenerationSql } from './live-generation.js';
 
 export interface DocumentCountersRow {
   turns: number; user_turns: number;
-  prompts: number; user_prompts: number; replies: number; tool_calls: number; failed_tools: number; files_edited: number; myco_calls: number; plans: number;
+  prompts: number; instruction_prompts: number; replies: number; tool_calls: number; failed_tools: number; files_edited: number; myco_calls: number; plans: number;
   last_record_at: number | null; first_prompt: string | null; attachments: number;
 }
 
 const counters = read<[project: string, session: string], DocumentCountersRow>({ name: 'documentCatalog.counters', sql:
   `WITH totals AS (SELECT COUNT(*) AS turns,COALESCE(SUM(origin='user'),0) AS user_turns FROM session_prompts
       WHERE project_id=?1 AND session_id=?2 AND generation=${liveGenerationSql('?1', '?2')} AND turn_key=prompt_id)
-    SELECT prompts, user_prompts, replies, tool_calls, failed_tools, files_edited, myco_calls, plans, last_record_at, first_prompt,totals.turns,totals.user_turns,
+    SELECT prompts, user_prompts AS instruction_prompts, replies, tool_calls, failed_tools, files_edited, myco_calls, plans, last_record_at, first_prompt,totals.turns,totals.user_turns,
       (SELECT COUNT(*) FROM attachments a WHERE a.project_id = d.project_id AND a.session_id = d.session_id) AS attachments
     FROM session_documents d CROSS JOIN totals WHERE project_id = ?1 AND session_id = ?2 AND state = 'live'` });
-const userPrompt = read<[project: string, session: string], { held: number }>({ name: 'documentCatalog.hasUserPrompt', sql:
+const instruction = read<[project: string, session: string], { held: number }>({ name: 'documentCatalog.hasInstruction', sql:
   `SELECT 1 AS held FROM session_documents WHERE project_id = ?1 AND session_id = ?2 AND state = 'live' AND user_prompts > 0` });
 const anchor = read<[project: string, session: string, prompt: string], { ord: number; created_at: number | null; prompt_id: string }>({ name: 'documentCatalog.turnAnchor', sql:
   `SELECT p.ord,c.created_at,p.prompt_id FROM session_prompts p
@@ -28,9 +28,9 @@ export async function documentCountersRow(db: RelationalStore, project: string, 
   return row ?? null;
 }
 
-/** True when the session's live document holds a user prompt. */
-export async function liveDocumentHasUserPrompt(db: RelationalStore, project: string, session: string): Promise<boolean> {
-  const [rows] = await readSet(db, userPrompt.bind(project, session));
+/** True when the session's live document holds an instruction. */
+export async function liveDocumentHasInstruction(db: RelationalStore, project: string, session: string): Promise<boolean> {
+  const [rows] = await readSet(db, instruction.bind(project, session));
   return rows.length > 0;
 }
 

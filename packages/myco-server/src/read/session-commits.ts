@@ -47,6 +47,7 @@ interface CommitReleaseCheck {
 }
 
 interface SessionCommits {
+  range: { visibility: 'not_visible'; reason: 'member_report_required' };
   /** Start first, then end. */
   observations: CommitObservation[];
   release: CommitReleaseCheck | null;
@@ -68,6 +69,7 @@ export async function sessionCommits(db: RelationalStore, scope: ReadScope, sess
     };
   }
   return {
+    range: { visibility: 'not_visible', reason: 'member_report_required' },
     observations: rows.map((row) => ({ point: row.point, headSha: row.headSha, branch: row.branch, changes: CHANGES[row.cleanliness], capturedAt: row.capturedAt })),
     release,
   };

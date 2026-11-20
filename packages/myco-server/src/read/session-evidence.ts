@@ -10,8 +10,11 @@ const UNSEEN_TRANSCRIPT_EVIDENCE: TranscriptEvidence = {
 export function sessionEvidence(agent: string | null, counts: Awaited<ReturnType<typeof documentCounters>>) {
   const visibility = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === agent)?.transcriptEvidence ?? UNSEEN_TRANSCRIPT_EVIDENCE;
   const visible = (kind: 'toolCalls' | 'failedTools' | 'mycoCalls') => visibility[kind] === 'not_visible' ? null : counts?.[kind] ?? 0;
-  return { visibility, toolCalls: visible('toolCalls'), failedTools: visible('failedTools'), mycoCalls: visible('mycoCalls'),
-    filesEdited: null, observedFilesEdited: counts?.filesEdited ?? 0,
+  const observedFilesEdited = counts?.filesEdited ?? 0;
+  const fileEdits = visibility.filesEdited === 'recorded' ? { state: 'count' as const, count: observedFilesEdited }
+    : visibility.filesEdited === 'observed' ? { state: 'unknown' as const, observed: observedFilesEdited } : { state: 'not_visible' as const };
+  return { visibility: { ...visibility, commits: 'not_visible' as const }, toolCalls: visible('toolCalls'), failedTools: visible('failedTools'), mycoCalls: visible('mycoCalls'),
+    fileEdits, filesEdited: fileEdits.state === 'count' ? fileEdits.count : null, observedFilesEdited,
     counts: { userPrompts: counts?.userTurns ?? 0, mycoCalls: visible('mycoCalls'), prompts: counts?.turns ?? 0,
       promptEntries: counts?.prompts ?? 0, toolCalls: visible('toolCalls'), failedTools: visible('failedTools'),
       responses: counts?.replies ?? 0, plans: counts?.plans ?? 0, attachments: counts?.attachments ?? 0 } };

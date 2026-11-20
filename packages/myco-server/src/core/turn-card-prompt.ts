@@ -24,13 +24,13 @@ A later agent reads only these cards to learn what is worth remembering from the
 /** The fields every card carries, and how exactly it quotes the turn. */
 const CARD_FIELDS = `## Card fields (all required; use "" or [] when empty)
 
-- \`asked\`: what the person asked for, in their words where short.
+- \`asked\`: the instruction that began the work, in its words where short; keep the recorded speaker attribution.
 - \`done\`: what the agent actually did.
 - \`outcome\`: how the turn ended: done, partly done, failed, or abandoned.
 - \`decisions\`: [{ "decision", "reason" }] choices made and why.
 - \`rejected\`: [{ "approach", "reason" }] approaches tried or proposed and dropped, and why.
 - \`errors\`: [{ "error", "fix" }] each error with the fix that worked, or "" when none did.
-- \`corrections\`: [{ "wrong", "right" }] where the person corrected the agent ("no, don't", "that's wrong"): what was wrong and what was right.
+- \`corrections\`: [{ "wrong", "right" }] where a person or another agent corrected the work ("no, don't", "that's wrong"): what was wrong and what was right.
 - \`files\`: paths that mattered.
 - \`commands\`: commands that mattered, with their flags.
 - \`open_questions\`: what was left unresolved.

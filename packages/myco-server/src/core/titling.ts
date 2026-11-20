@@ -20,7 +20,7 @@ import {
   type TitleCandidate,
   type TitleWindow,
 } from '../db/sessions/title-work.js';
-import { sessionHasUserPrompt } from '../read/document-catalog.js';
+import { sessionHasInstruction } from '../read/document-catalog.js';
 import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from '../db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
 import type { PowerState } from './power.js';
@@ -121,7 +121,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     const prepared = provider === null ? await prepareDispatch(env, TITLING_TASK, projectId) : null;
     if (prepared !== null && !prepared.ok) return skipped(REFUSAL_OUTCOME[prepared.refusal]);
 
-    if (!(await sessionHasUserPrompt(env.db, projectId, sessionId))) return skipped('no_material');
+    if (!(await sessionHasInstruction(env.db, projectId, sessionId))) return skipped('no_material');
 
     // Both execution paths hold the same session claim.
     const claim = mode === 'owner'

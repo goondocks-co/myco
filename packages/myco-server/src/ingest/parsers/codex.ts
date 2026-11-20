@@ -1,3 +1,4 @@
+import { isInstructionOrigin } from '../../read/extraction-origins.js';
 /**
  * Codex's rollout file: one JSON object per line, wrapping a `response_item`.
  *
@@ -145,13 +146,14 @@ export const codexParser: TranscriptParser = {
           }
           const decision = evaluatePromptRules(CAPTURE_RULE_BUNDLES, 'codex', { prompt: text, transcriptPath: sessionId, transcriptMeta: metadata, record: value });
           if (decision.action === 'drop') continue;
-          const opensTurn = decision.origin === undefined || decision.origin === 'human' || decision.origin === 'agent_dispatch';
+          const origin = decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin;
+          const opensTurn = isInstructionOrigin(origin);
           const capturedPromptId = await promptIdUnder(scheme, sessionId, offset,
             () => ({ turnId: held.turn!.id, submission: submissionIn(held.turn!, opensTurn, acceptanceOrder(value), offset) }), input);
           if (opensTurn) {
             promptId = capturedPromptId;
           }
-          events.push({ kind: 'prompt', payload: { promptId: capturedPromptId, text: decision.prompt, origin: decision.origin === undefined || decision.origin === 'human' ? 'user' : decision.origin,
+          events.push({ kind: 'prompt', payload: { promptId: capturedPromptId, text: decision.prompt, origin,
             promptKind: 'message',
             ...(scheme === 'codex-turn-v1' ? { promptKeyHash: await promptKeyHash(sha256Hex, decision.prompt) } : {}) }, createdAt, offset, opensTurn });
           if (opensTurn) events.push(...await pastedPlansInPrompt(decision.prompt, this.planTags, input, this.agent, value, { promptId: capturedPromptId, offset, createdAt }));

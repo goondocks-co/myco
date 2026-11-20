@@ -1,3 +1,4 @@
+import { isInstructionOrigin } from '../../read/extraction-origins.js';
 /**
  * Claude Code's transcript: one JSON object per line, `type` naming the record.
  *
@@ -195,7 +196,7 @@ export const claudeCodeParser: TranscriptParser = {
         ...(row.key === undefined ? {} : { sourceKey: row.key }), sourceThread: row.thread, ...(row.record === undefined ? {} : { sourceRecord: row.record }),
       }, createdAt, offset, ...(row.claim === 'context' ? { opensTurn: false } : {}) });
       if (row.claim !== 'context') promptId = row.id;
-      if (row.claim !== 'context' && row.origin === 'user') events.push(...await pastedPlansInPrompt(row.text, this.planTags, input, this.agent, sourceRecord, { promptId: row.id, offset, createdAt }));
+      if (row.claim !== 'context' && isInstructionOrigin(row.origin)) events.push(...await pastedPlansInPrompt(row.text, this.planTags, input, this.agent, sourceRecord, { promptId: row.id, offset, createdAt }));
     };
 
     const flushReply = async (): Promise<void> => {

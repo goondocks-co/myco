@@ -4,7 +4,7 @@ export const TranscriptEvidenceSchema = z.object({
   toolCalls: z.enum(['recorded', 'not_visible']),
   failedTools: z.enum(['recorded', 'not_visible']),
   mycoCalls: z.enum(['recorded', 'not_visible']),
-  filesEdited: z.enum(['observed', 'not_visible']),
+  filesEdited: z.enum(['recorded', 'observed', 'not_visible']),
   commits: z.literal('member_report_required'),
 });
 export type TranscriptEvidence = z.infer<typeof TranscriptEvidenceSchema>;
