@@ -25,6 +25,7 @@ import { MOVING_MS } from '../../packages/myco-server/ui/src/lib/live';
 import { dailyLimitWords, runLineWords, failureDetail, failureWords, fullErrorWords, runErrorWords } from '../../packages/myco-server/ui/src/features/work/words';
 import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { EFFORT_UNAPPLIED } from '@goondocks/myco-shared/execution-profile';
+import { CURATION_BODY_OVER_LIMIT } from '@goondocks/myco-shared/call-words';
 import { rawIdsIn } from '../helpers/raw-ids';
 import {
   ADMIN, BUILDBOX_ID, HOUR, MEMBER, MEMBERS, MINUTE, NOW, P, PROJECTS, runDetail, S1, S2, sessionAnswer, STUDIO_ID, TASK_RUNS, taskRunsFor, WEEK_SPORES, WEEK_WORK,
@@ -788,7 +789,7 @@ describe('stored run audit evidence', () => {
   it('renders requested and actual models and flags a mismatch in the summary', async () => {
     const open = await openAudit();
     const summary = open.querySelector('header')!;
-    expect(summary.textContent).toContain('Requested: high · opus · high effort');
+    expect(summary.textContent).toContain('Requested: opus · high effort');
     expect(summary.textContent).toContain('Actual: claude-sonnet-4-6');
     expect(summary.textContent).toContain('Ran a different model than requested');
   });
@@ -827,9 +828,14 @@ describe('stored run audit evidence', () => {
       retire: [{ id: 'gotcha-d', reason: 'The merged spore already says this.', made_unnecessary_by: 'new:0' }] };
     const source = (id: string, content: string, revision = 0) => ({ id, revision: 0, current: { revision, status: 'active', observationType: 'gotcha', agentLine: `When ${id} applies.`, content } });
     const detail = (who: typeof ADMIN | typeof MEMBER) => server(routes({ who, detail: {
-      [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail({ ...mapRuns[1]!, task: 'curate-spores' }, { run: { dryRun: true, result: 'unchanged' } })),
+      [`/api/projects/${P}/runs/run_c19f7a0e55`]: () => Response.json(runDetail({ ...mapRuns[1]!, task: 'curate-spores' }, {
+        run: { dryRun: true, result: 'unchanged', requested: { tier: 'low', model: 'sonnet', effort: 'medium', sources: { tier: 'task', model: 'default' } } },
+        toolCalls: [
+          { id: 1, status: 'failed', tool: 'myco_run_curation', op: 'answer', recordedAt: NOW - 2 * MINUTE, durationMs: 12, failure: { code: 'tool_failure', message: `Not saved: curation answer; notes[0].content ${CURATION_BODY_OVER_LIMIT}: it has 1630 characters; submission 1 of 2. Next call: myco_run_curation {}.` } },
+          { id: 2, status: 'success', tool: 'myco_run_curation', op: 'answer', recordedAt: NOW - MINUTE, durationMs: 30 },
+        ] })),
       [`/api/projects/${P}/curation/answers/run_c19f7a0e55`]: () => Response.json({ applied: false, checked: { answer },
-        sources: [source('decision-a', 'Body of a.'), source('gotcha-b', 'Edited body of b.', 1), source('wisdom-c', 'Body of c.'), { id: 'gotcha-d', revision: 0, current: null }] }),
+        sources: [source('decision-a', 'Body of a.'), source('gotcha-b', 'Edited body of b.', 1), source('wisdom-c', 'When wisdom-c applies. Body of c.'), { id: 'gotcha-d', revision: 0, current: null }] }),
     } }));
     detail(ADMIN);
     mount(`/p/${P}/work/runs/run_c19f7a0e55`);
@@ -840,8 +846,11 @@ describe('stored run audit evidence', () => {
     expect([...change.querySelectorAll('[data-curation-body]')].map((body) => body.textContent)).toEqual(['Body of a.', 'Edited body of b.', 'Retain queued capture until the destination acknowledges it.']);
     expect(change.querySelector('[data-curation-source="changed"]')!.textContent).toContain('Changed since this preview; shown as it reads now.');
     expect(decision.querySelector('[data-curation-retire]')!.textContent).toContain('Would retire this sporeThe merged spore already says this. Covered by the new spore “When delivery stalls, retain queued capture.”This spore is no longer held');
-    expect(decision.querySelector('[data-curation-keep]')!.textContent).toBe('Would keep this spore as it isGotchaWhen wisdom-c applies.Body of c.');
     expect(decision.textContent).not.toContain('made_unnecessary_by');
+    expect(decision.querySelector('[data-curation-keep]')!.textContent).toBe('Would keep this spore as it isGotchaWhen wisdom-c applies. Body of c.');
+    const open = await panel();
+    expect(open.querySelector('header [data-model-summary]')!.textContent).toBe('Requested: sonnet · medium effort');
+    await waitFor(() => expect(open.querySelector('[data-run-summary]')!.textContent).toBe('Called Myco twice. Myco checked the answer twice: the first was refused for length and corrected.'));
     cleanup();
     const { asked } = detail(MEMBER);
     mount(`/p/${P}/work/runs/run_c19f7a0e55`);

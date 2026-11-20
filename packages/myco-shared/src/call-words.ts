@@ -1,4 +1,5 @@
 const CALL_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  myco_run_curation: { answer: 'Submitted its curation answer' },
   myco_run_map: { get: 'Read the code map', write: 'Wrote the code map' },
   myco_run: { report: 'Reported', state_get: 'Read its saved progress', state_set: 'Saved its progress' },
   myco_run_spores: { list: 'Listed spores', get: 'Read a spore' },
@@ -38,4 +39,17 @@ export function callStepWords(tool: string, op: string | null): string | null {
 /** A call's operation in reader words; unfamiliar operations make no claim about their effect. */
 export function callWords(tool: string, op: string | null): string {
   return labels.get(`${tool}/${op ?? '*'}`) ?? labels.get(`${tool}/*`) ?? 'Called Myco';
+}
+
+/** The words a refused curation answer names a note body over the length limit with; a run's account reads the cause from them. */
+export const CURATION_BODY_OVER_LIMIT = 'is longer than the note body limit';
+
+/** Whether a call submits an answer Myco checks before keeping anything, so a refused one the run corrects is that check at work. */
+export function isCheckedAnswer(tool: string, op: string | null): boolean {
+  return tool === 'myco_run_curation' && op === 'answer';
+}
+
+/** What a refused call was refused for, in reader words, where its recorded refusal names a cause Myco describes; null otherwise. */
+export function callRefusalCause(tool: string, op: string | null, message: string): string | null {
+  return isCheckedAnswer(tool, op) && message.includes(CURATION_BODY_OVER_LIMIT) ? 'for length' : null;
 }

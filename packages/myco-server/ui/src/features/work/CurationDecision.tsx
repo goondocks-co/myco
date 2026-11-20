@@ -41,11 +41,20 @@ function sourceState(source: CurationSource, preview: boolean): string | null {
   return status === '' ? null : status.trim();
 }
 
+const spaced = (text: string): string => text.trim().replace(/\s+/g, ' ');
+
+/** Whether the body's first sentence is the line itself, so showing the line above it would say it twice. */
+function opensWith(body: string, line: string): boolean {
+  const said = spaced(line).replace(/[.!?:;]+$/, '');
+  const text = spaced(body);
+  return said !== '' && text.startsWith(said) && (text.length === said.length || /^[.!?:;]/.test(text.slice(said.length)));
+}
+
 function Text({ type, line, body }: { type: string; line: string | null; body: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-s1">
       <TypeChip className="self-start">{sporeTypeWord(type)}</TypeChip>
-      {line !== null && line.trim() !== '' && <p className="break-words t-small font-medium text-ink" data-curation-line="">{line}</p>}
+      {line !== null && line.trim() !== '' && !opensWith(body, line) && <p className="break-words t-small font-medium text-ink" data-curation-line="">{line}</p>}
       <p className="whitespace-pre-wrap break-words t-small text-ink-2" data-curation-body="">{body}</p>
     </div>
   );

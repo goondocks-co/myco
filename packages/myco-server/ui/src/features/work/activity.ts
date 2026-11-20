@@ -15,7 +15,7 @@
  */
 import { commandShape, pathShape } from '@goondocks/myco-shared/command-shape';
 import { ELIDED, mycoToolOf, stepWords } from '@goondocks/myco-shared/step-words';
-import { callWords } from './call-words';
+import { callRefusalCause, callWords, isCheckedAnswer } from './call-words';
 import { count, listed } from '../today/words';
 import { times } from './words';
 import type { RunAttempt, RunAudit, RunCall, RunStep } from './wire';
@@ -348,13 +348,25 @@ export function summaryWords(rows: readonly ActivityRow[], known: boolean, files
   if (parts.length === 0) parts.push(known ? `took ${count(rows.length, 'step')}` : `made ${count(rows.length, 'call')}`);
   const sentence = listed(parts);
   const noun = known ? 'step' : 'call';
-  const failed = rows.filter((row) => row.state === 'failed');
-  const refused = rows.filter((row) => row.state === 'refused');
+  const answers = rows.filter((row) => row.call !== null && isCheckedAnswer(row.call.tool, row.call.op));
+  const corrected = answers.filter((row) => failedState(row.state) && row.laterSuccess);
+  const failed = rows.filter((row) => row.state === 'failed' && !corrected.includes(row));
+  const refused = rows.filter((row) => row.state === 'refused' && !corrected.includes(row));
   const failures = [
     ...(failed.length > 0 ? [outcomeClause(failed, noun, 'failed')] : []),
     ...(refused.length > 0 ? [outcomeClause(refused, noun, refused.length === 1 ? 'wasn’t allowed' : 'weren’t allowed')] : []),
   ];
-  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}${failures.map((words) => `; ${words}`).join('')}.`;
+  const checked = corrected.length === 0 ? '' : ` ${checkedWords(answers.length, corrected)}`;
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}${failures.map((words) => `; ${words}`).join('')}.${checked}`;
+}
+
+/** "Myco checked the answer twice: the first was refused for length and corrected." */
+function checkedWords(answers: number, corrected: readonly ActivityRow[]): string {
+  const lead = `Myco checked the answer ${times(answers)}:`;
+  if (corrected.length > 1) return `${lead} ${corrected.length.toLocaleString()} were refused before one was accepted.`;
+  const call = corrected[0]!.call!;
+  const cause = callRefusalCause(call.tool, call.op, call.failure?.message ?? '');
+  return `${lead} the first was refused${cause === null ? '' : ` ${cause}`} and corrected.`;
 }
 
 /** "1 step failed and was retried", "3 steps failed, 1 of them retried". */

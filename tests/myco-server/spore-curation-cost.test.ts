@@ -47,7 +47,7 @@ const cases: CostCase[] = [
   {name:'a full preview page budget',run:async db=>{
     const f = await curationFixture();
     try { expect(await discoverCurationPreview({ ...f.env, db }, { projectId: project, now: f.now,
-      continuation: { version: 1, projectId: project, position: { after_at: 10, after_id: '', priority_at: 0, history_at: 0, history_id: '' } },
+      continuation: { version: 2, projectId: project, position: { after_at: 10, after_id: '', priority_at: 0, history_at: 0, history_id: '' }, shown: [] },
     })).toMatchObject({ outcome: 'vectors_pending', continuation: { projectId: project } }); } finally { f.sqlite.close(); }
   }},
   {name:'undo of the largest answer',extra:1,run:async(db,{scale})=>expect(await undoSporeCuration(db,{projectId:project,unitId:'largest-'+scale,actor:'admin',now:3})).toMatchObject({ok:true})},

@@ -1,3 +1,4 @@
+import { CURATION_BODY_OVER_LIMIT } from '@goondocks/myco-shared/call-words';
 import { admitAgentLine } from './agent-line.js';
 import { CURATION_CODE_NOTATION } from './curation-guidance.js';
 import { AGENT_LINE_MAX_CHARS } from './injection.js';
@@ -35,6 +36,10 @@ export function checkCurationAnswer(input: Record<string, unknown>, memberIds: r
     for (const id of raw.sources) { const bad = use(id, 'sources', true); if (bad !== null) return bad; }
     if (typeof raw.observation_type !== 'string' || !(CURATION_TYPES as readonly string[]).includes(raw.observation_type))
       return `notes[${index}].observation_type is ${shown(raw.observation_type)}; expected ${CURATION_TYPES.join('|')}`;
+    if (typeof raw.content === 'string' && raw.content.length > CURATION_BODY_CHARS) {
+      const over = raw.content.length - CURATION_BODY_CHARS;
+      return `notes[${index}].content ${CURATION_BODY_OVER_LIMIT}: it has ${raw.content.length} characters, ${over} more than the ${CURATION_BODY_CHARS} allowed, counting spaces and line breaks; shorten that body by at least ${over} character${over === 1 ? '' : 's'}`;
+    }
     if (!text(raw.content, CURATION_BODY_CHARS)) return `notes[${index}].content has ${size(raw.content)} characters; expected 1–${CURATION_BODY_CHARS}`;
     const admitted = admitAgentLine(raw.agent_line);
     if ('error' in admitted) return `notes[${index}].${admitted.error}; limit ${AGENT_LINE_MAX_CHARS}`;

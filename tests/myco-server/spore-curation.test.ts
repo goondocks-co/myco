@@ -111,10 +111,28 @@ test('an invalid answer changes no notes and its one correction may succeed', as
   } finally { f.sqlite.close(); }
 });
 
+test('a note body is counted in characters with spaces and line breaks: the instruction states the limit, 1501 refuses the whole answer naming the excess, and 1500 and 1499 are kept', async () => {
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('decision-a'); await f.add('gotcha-b'); await f.discover();
+    const claim=await f.poll(); if(!claim.claimed) throw new Error('group not claimed');
+    const instruction=claim.run.instruction!;
+    expect(instruction).toContain(`at most ${CURATION_BODY_CHARS} characters, counting every character of the content including spaces`);
+    expect(instruction).toContain('is refused whole');
+    const body=(chars:number)=>'When delivery stalls, retain queued capture.\n\nKeep it until acknowledged. '.repeat(40).slice(0,chars);
+    const split=(first:number)=>({...keepAnswer(['gotcha-b']),notes:[note(['decision-a'],body(first)),note(['decision-a'],body(CURATION_BODY_CHARS-1))]});
+    const refused=await f.call(claim.run.runToken,'myco_run_curation',split(CURATION_BODY_CHARS+1)) as {error:string};
+    expect(refused.error).toContain(`Not saved: curation answer; notes[0].content is longer than the note body limit: it has ${CURATION_BODY_CHARS+1} characters, 1 more than the ${CURATION_BODY_CHARS} allowed, counting spaces and line breaks; shorten that body by at least 1 character; submission 1 of 2.`);
+    expect((await readCurationAnswer(f.db,'proj_1',claim.run.id))!.answer).toBeNull();
+    expect(await f.call(claim.run.runToken,'myco_run_curation',split(CURATION_BODY_CHARS))).toMatchObject({completed:true,applied:true});
+    const stored=JSON.parse((await readCurationAnswer(f.db,'proj_1',claim.run.id))!.answer!) as {answer:{notes:{content:string}[]}};
+    expect(stored.answer.notes.map(kept=>kept.content.length)).toEqual([CURATION_BODY_CHARS,CURATION_BODY_CHARS-1]);
+  } finally { f.sqlite.close(); }
+});
+
 test('refusals name coverage, bounds and lexical code notation; exhausted attempts cannot apply', async () => {
   const cases = [
     { answer: {keep:['decision-a','gotcha-b'],reason:'   '}, error:'reason has 0 non-whitespace (3 raw) characters' },
-    { answer: {notes:[note(['decision-a'],'x'.repeat(CURATION_BODY_CHARS+1))],keep:['gotcha-b']}, error: `content has ${CURATION_BODY_CHARS+1} characters; expected 1–${CURATION_BODY_CHARS}` },
     { answer: {notes:Array.from({length:CURATION_NEW_NOTES+1},()=>note(['decision-a'])),keep:['gotcha-b']}, error: `notes has ${CURATION_NEW_NOTES+1} entries; limit ${CURATION_NEW_NOTES}` },
     { answer: {keep:['decision-a']}, error:'answer omits 1 members' },
     { answer: {notes:[{...note(['decision-a']),agent_line:'Use capture_spool() to retain data.'}],keep:['gotcha-b']}, error:'contains code notation' },

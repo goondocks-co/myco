@@ -6,6 +6,10 @@ export const CURATION_CLUSTER_CAP = 12;
 export const CURATION_REASON_CHARS = 2048;
 export const CURATION_MATERIAL_BYTES = 32_000;
 export const CURATION_BODY_CHARS = 1500;
+/** The body length a run drafts to, leaving room under the limit for a miscount. */
+const CURATION_BODY_AIM_CHARS = 1200;
+/** The body limit as a run reads it: what is counted, and what an over-length body costs. */
+export const CURATION_BODY_RULE = `Each new note’s content, its body, is at most ${CURATION_BODY_CHARS} characters, counting every character of the content including spaces, punctuation and line breaks; the agent_line is separate and not counted. A body of ${CURATION_BODY_CHARS + 1} characters is refused whole, never shortened for you: the entire answer is refused, nothing is saved, and the correction costs another submission. Draft each body to at most about ${CURATION_BODY_AIM_CHARS} characters and count it before you submit; when it runs long, cut repetition and wording, not the specifics.`;
 export const CURATION_NEW_NOTES = 24;
 export const CURATION_ANSWER_ATTEMPTS = 2;
 export const CURATION_TYPES = OBSERVATION_TYPES;
@@ -16,7 +20,7 @@ export const CURATION_ANSWER_EXAMPLE = {
   retire: [],
   reason: 'One note needed a focused opening; the other already covers one situation.',
 };
-export const CURATION_ANSWER_BOUNDS = `Write 0–${CURATION_NEW_NOTES} notes. Each has 1–${CURATION_CLUSTER_CAP} distinct exact source ids, observation_type (${CURATION_TYPES.join('|')}), nonempty content of at most ${CURATION_BODY_CHARS} characters, and agent_line normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${CURATION_GUIDANCE_RULES} Keep uses exact member ids. Retire entries have id, reason (1–${CURATION_REASON_CHARS} characters), and made_unnecessary_by (a kept member id or new:<zero-based note index>). Every assigned id occurs in exactly one disposition; a source may recur across new notes only for a split. reason is 1–${CURATION_REASON_CHARS} characters. Dates are derived by the server from sources; omit observed. Correct a refused answer once, at most ${CURATION_ANSWER_ATTEMPTS} submissions. Example: ${JSON.stringify(CURATION_ANSWER_EXAMPLE)}`;
+export const CURATION_ANSWER_BOUNDS = `Write 0–${CURATION_NEW_NOTES} notes. Each has 1–${CURATION_CLUSTER_CAP} distinct exact source ids, observation_type (${CURATION_TYPES.join('|')}), nonempty content (the note body) of at most ${CURATION_BODY_CHARS} characters, counting spaces and line breaks, and agent_line normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${CURATION_GUIDANCE_RULES} Keep uses exact member ids. Retire entries have id, reason (1–${CURATION_REASON_CHARS} characters), and made_unnecessary_by (a kept member id or new:<zero-based note index>). Every assigned id occurs in exactly one disposition; a source may recur across new notes only for a split. reason is 1–${CURATION_REASON_CHARS} characters. Dates are derived by the server from sources; omit observed. Correct a refused answer once, at most ${CURATION_ANSWER_ATTEMPTS} submissions. Example: ${JSON.stringify(CURATION_ANSWER_EXAMPLE)}`;
 
 export interface CurationNote {
   sources: string[];
