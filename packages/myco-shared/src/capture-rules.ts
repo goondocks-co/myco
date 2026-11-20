@@ -67,7 +67,7 @@ export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boo
   }
   return false;
 }
-const ENCLOSING_ENVELOPE = /^<([A-Za-z][\w-]*)(\s[^>]*)?>[\s\S]*<\/\1>$|^<([A-Za-z][\w-]*)(\s[^>]*)?\/>$/;
+const ENCLOSING_ENVELOPE = /^<([A-Za-z][\w.-]*)(\s[^>]*)?>[\s\S]*<\/\1>$|^<([A-Za-z][\w.-]*)(\s[^>]*)?\/>$/;
 
 export function isEnclosingEnvelope(prompt: string): boolean {
   return ENCLOSING_ENVELOPE.test(prompt.trim());

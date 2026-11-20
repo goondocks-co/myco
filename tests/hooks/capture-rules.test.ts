@@ -720,7 +720,7 @@ describe('codex manifest — structural envelope classification (real config)', 
     expect(d).toEqual({ action: 'rewrite', prompt: 'real request', reason: 'codex-desktop-file-preamble' });
   });
   it('unknown Codex envelopes are system context', () => {
-    const d = evaluateUserPromptRules('codex', { prompt: '<future-thing>y</future-thing>', transcriptPath });
+    const d = evaluateUserPromptRules('codex', { prompt: '<future.thing>y</future.thing>', transcriptPath });
     expect(d).toMatchObject({ origin: 'system' });
   });
 });
