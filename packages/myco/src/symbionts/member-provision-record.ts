@@ -5,12 +5,13 @@
 import { deploymentUrl, readDeploymentMembershipResult } from '../member/registry.js';
 import { normalizeMemberServerAddress } from '../member/server-url.js';
 import { readHookRepairGeneration, updateProvisionRecord, type ProvisionRecord } from '../member/provision-record.js';
+import { canonicalFolder } from '../member/settings-folder-paths.js';
 export { PROVISION_RECORD, UnreadableProvisionRecordError, provisionRecordPath, readProvisionRecord, readProvisionRecordStrict, recordProvision, type ProvisionRecord } from '../member/provision-record.js';
 
-function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout'> {
+function retainedProvisionMetadata(record: ProvisionRecord | null, agents: readonly string[]): Pick<ProvisionRecord, 'binaries' | 'pendingTrust' | 'pendingLogout' | 'settingsFolders' | 'excludedSettingsFolders'> {
   const retain = <V>(entries: Record<string, V> | undefined): Record<string, V> | undefined => entries === undefined ? undefined
     : Object.fromEntries(Object.entries(entries).filter(([id]) => agents.includes(id)));
-  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout) };
+  return { binaries: retain(record?.binaries), pendingTrust: retain(record?.pendingTrust), pendingLogout: retain(record?.pendingLogout), settingsFolders: retain(record?.settingsFolders), excludedSettingsFolders: retain(record?.excludedSettingsFolders) };
 }
 
 /** Hold a hook trust action until its report is accepted. */
@@ -42,6 +43,45 @@ export function reconcileProvisionAgents(mycoHome: string, provision: Pick<Provi
       ...retainedProvisionMetadata(before, agents),
     };
   }, { strict: true });
+}
+
+type FolderLists = Record<string, string[]> | undefined;
+
+/**
+ * `lists` with `folder`, a folder's identity (`canonicalFolder`), added to `agent`'s list, or with every spelling of
+ * it removed; an emptied list is dropped.
+ */
+function withFolder(lists: FolderLists, agent: string, folder: string, held: boolean): FolderLists {
+  const { [agent]: current = [], ...others } = lists ?? {};
+  const kept = current.filter(entry => entry !== folder && canonicalFolder(entry) !== folder);
+  const next = held ? [...kept, folder].sort() : kept;
+  return next.length === 0 ? others : { ...others, [agent]: next };
+}
+
+/**
+ * Record that `agent` is set up in `folder`, a settings folder beyond its default one, by its identity, under the
+ * record lease. A folder the person names is no longer excluded.
+ */
+export function recordSettingsFolder(mycoHome: string, agent: string, folder: string, opts: { named?: boolean } = {}): void {
+  folder = canonicalFolder(folder);
+  updateProvisionRecord(mycoHome, record => {
+    if (record === null) return;
+    const next = { ...record, settingsFolders: withFolder(record.settingsFolders, agent, folder, true), ...(opts.named ? { excludedSettingsFolders: withFolder(record.excludedSettingsFolders, agent, folder, false) } : {}) };
+    return JSON.stringify(next) === JSON.stringify(record) ? undefined : next;
+  });
+}
+
+/**
+ * Stop recording `folder` for `agent` once Myco's entries there are removed, and record that the person retired it,
+ * so the home folder scan does not set it up again.
+ */
+export function forgetSettingsFolder(mycoHome: string, agent: string, folder: string): void {
+  folder = canonicalFolder(folder);
+  updateProvisionRecord(mycoHome, record => {
+    if (record === null) return;
+    const next = { ...record, settingsFolders: withFolder(record.settingsFolders, agent, folder, false), excludedSettingsFolders: withFolder(record.excludedSettingsFolders, agent, folder, true) };
+    return JSON.stringify(next) === JSON.stringify(record) ? undefined : next;
+  });
 }
 
 /** Remove an opted-out harness and its registration metadata under the record lease. */

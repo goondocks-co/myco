@@ -5,6 +5,8 @@
 // loadManifests() in symbionts/detect.ts prefers the filesystem candidates
 // (source/dist layouts) when they're populated and falls back to this array
 // for the compiled-Bun case where manifest YAMLs aren't enumerable on disk.
+// A manifest's `runner:` block is read from the runner-harnesses and worker
+// harnesses files generated beside this one, so it is not repeated here.
 
 import type { SymbiontManifest } from './manifest-schema.js';
 
@@ -160,186 +162,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ]
     },
     "hooks": {},
-    "runner": {
-      "order": 5,
-      "asking": {
-        "kind": "unheld"
-      },
-      "credential": {
-        "provider": "google",
-        "slot": null,
-        "variables": [
-          "GEMINI_API_KEY"
-        ]
-      },
-      "profile": {
-        "models": {
-          "low": null,
-          "default": null,
-          "high": null
-        },
-        "efforts": {
-          "low": "low",
-          "default": "medium",
-          "high": "high"
-        },
-        "allowedEfforts": [],
-        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
-        "modelHint": "Model selection is unavailable for this agent."
-      },
-      "diagnostics": [
-        {
-          "code": "login_missing",
-          "pattern": "\\bunauthenticated\\b|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)|not logged in|authentication required"
-        },
-        {
-          "code": "rate_limited",
-          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|resource_exhausted|too many requests|rate[_ -]?limit|\\bquota\\b"
-        },
-        {
-          "code": "model_refused",
-          "pattern": "\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available)\\b"
-        },
-        {
-          "code": "timed_out",
-          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|deadline exceeded|idle timeout|request timeout"
-        }
-      ],
-      "worker": {
-        "signInHint": {
-          "default": "Open Antigravity on this runner and complete its sign-in."
-        },
-        "binary": "agy",
-        "launch": {
-          "kind": "sidecar",
-          "binary": "agy_acp_server.par"
-        },
-        "login": {
-          "kind": "file",
-          "path": "~/.gemini/antigravity-cli/settings.json",
-          "requires": []
-        },
-        "isolation": {
-          "kind": "additive"
-        },
-        "sourceGit": "none",
-        "modelSetting": "none",
-        "steps": [
-          {
-            "toolPrefix": "mcp__myco__",
-            "kind": "myco",
-            "target": [
-              "rawInput.op",
-              "rawInput.args.op",
-              "rawInput.arguments.op"
-            ]
-          },
-          {
-            "category": "read",
-            "kind": "read",
-            "target": [
-              "locations.0.path",
-              "rawInput.path",
-              "rawInput.filePath",
-              "rawInput.file_path"
-            ]
-          },
-          {
-            "category": "search",
-            "kind": "search",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "edit",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path",
-              "rawInput.filePath",
-              "rawInput.file_path"
-            ]
-          },
-          {
-            "category": "delete",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "move",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "execute",
-            "kind": "command",
-            "target": [
-              "rawInput.command",
-              "rawInput.cmd"
-            ]
-          },
-          {
-            "category": "fetch",
-            "kind": "fetch",
-            "target": [
-              "rawInput.url",
-              "rawInput.query"
-            ]
-          },
-          {
-            "category": "think",
-            "kind": "tool",
-            "target": [],
-            "words": "Thought it through"
-          },
-          {
-            "category": "switch_mode",
-            "kind": "tool",
-            "target": [],
-            "words": "Switched its mode"
-          }
-        ],
-        "stepTool": "category",
-        "notSteps": [
-          "session/update:plan",
-          "session/update:available_commands_update",
-          "session/update:current_mode_update",
-          "session/update:user_message_chunk"
-        ],
-        "mycoCalls": {
-          "names": [
-            "mcp__myco__{tool}",
-            "myco_{tool}"
-          ],
-          "input": {
-            "server": "rawInput.providerIdentifier",
-            "tool": "rawInput.toolName"
-          }
-        },
-        "accounting": {
-          "reported": "acp-session",
-          "modelSources": [
-            "session.models",
-            "session.configOptions",
-            "session.currentModelId"
-          ],
-          "launchFallback": "none",
-          "zeroDollars": "unavailable",
-          "provider": {
-            "kind": "unavailable"
-          },
-          "tokenScope": "unverified"
-        }
-      }
-    },
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "member-transcript-v1"
@@ -370,6 +192,19 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "claude",
     "configDir": ".claude",
     "detectionDir": "~/.claude",
+    "settingsFolder": {
+      "path": "~/.claude",
+      "variable": "CLAUDE_CONFIG_DIR",
+      "markers": {
+        "files": [
+          ".claude.json"
+        ],
+        "directories": []
+      },
+      "carries": {
+        "~/.claude.json": ".claude.json"
+      }
+    },
     "health": {
       "installLocations": [
         "~/.claude",
@@ -753,302 +588,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ]
       }
     },
-    "runner": {
-      "order": 1,
-      "asking": {
-        "kind": "native"
-      },
-      "credential": {
-        "provider": "anthropic",
-        "slot": "anthropic",
-        "variables": [
-          "CLAUDE_CODE_OAUTH_TOKEN",
-          "ANTHROPIC_API_KEY"
-        ],
-        "accepts": [
-          "subscription",
-          "api-key"
-        ]
-      },
-      "profile": {
-        "models": {
-          "low": "haiku",
-          "default": "sonnet",
-          "high": "opus"
-        },
-        "efforts": {
-          "low": "low",
-          "default": "medium",
-          "high": "high"
-        },
-        "allowedEfforts": [
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "modelPattern": "^(haiku|sonnet|opus|fable|claude-[A-Za-z0-9][A-Za-z0-9._-]{0,240})$",
-        "modelHint": "Use haiku, sonnet, opus, fable, or a claude-* model ID.",
-        "modelFamilies": [
-          "haiku",
-          "sonnet",
-          "opus",
-          "fable"
-        ],
-        "modelFamilyPrefix": "claude-"
-      },
-      "diagnostics": [
-        {
-          "code": "login_missing",
-          "pattern": "\\bauthentication_(?:failed|error)\\b|failed to authenticate|invalid api key|api key is invalid|please run /login|not logged in|oauth token (?:has )?expired|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"
-        },
-        {
-          "code": "rate_limited",
-          "pattern": "\\brate[_ -]?limit|(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|usage limit|too many requests"
-        },
-        {
-          "code": "model_refused",
-          "pattern": "\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not available|does not exist|is not supported)\\b|invalid model|\\bmodel_not_found\\b"
-        },
-        {
-          "code": "timed_out",
-          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|idle timeout|request timeout"
-        }
-      ],
-      "worker": {
-        "signInHint": {
-          "default": "Run claude, then /login on this runner.",
-          "darwin": "Open a GUI Terminal on this Mac, run claude, then /login."
-        },
-        "retryFirstLoginMissing": true,
-        "binary": "claude",
-        "omitInherited": [
-          "ANTHROPIC_MODEL",
-          "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-          "ANTHROPIC_DEFAULT_SONNET_MODEL",
-          "ANTHROPIC_DEFAULT_OPUS_MODEL",
-          "CLAUDE_CODE_USE_BEDROCK",
-          "CLAUDE_CODE_USE_VERTEX",
-          "CLAUDE_CODE_USE_FOUNDRY",
-          "ANTHROPIC_BASE_URL",
-          "CLAUDE_CODE_CLIENT_DATA_URL",
-          "ANTHROPIC_SMALL_FAST_MODEL"
-        ],
-        "launch": {
-          "kind": "native"
-        },
-        "login": {
-          "kind": "command",
-          "args": [
-            "auth",
-            "status"
-          ]
-        },
-        "isolation": {
-          "kind": "flag",
-          "args": [
-            "--strict-mcp-config"
-          ]
-        },
-        "sourceGit": "shim",
-        "modelSetting": "flag",
-        "models": {
-          "kind": "exchange",
-          "args": [
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--strict-mcp-config",
-            "--setting-sources",
-            "project,local",
-            "--no-session-persistence"
-          ],
-          "send": [
-            {
-              "type": "control_request",
-              "request_id": "myco-models",
-              "request": {
-                "subtype": "initialize"
-              }
-            }
-          ],
-          "answer": {
-            "where": {
-              "type": "control_response",
-              "response.request_id": "myco-models"
-            },
-            "list": "response.response.models"
-          },
-          "fields": {
-            "id": "value",
-            "label": "displayName",
-            "resolvesTo": "resolvedModel",
-            "efforts": "supportedEffortLevels"
-          }
-        },
-        "steps": [
-          {
-            "tool": "Read",
-            "kind": "read",
-            "target": [
-              "file_path"
-            ]
-          },
-          {
-            "tool": "LS",
-            "kind": "search",
-            "target": [
-              "path"
-            ]
-          },
-          {
-            "tool": "NotebookRead",
-            "kind": "read",
-            "target": [
-              "notebook_path"
-            ]
-          },
-          {
-            "tool": "Glob",
-            "kind": "search",
-            "target": [
-              "path"
-            ]
-          },
-          {
-            "tool": "Grep",
-            "kind": "search",
-            "target": [
-              "path"
-            ]
-          },
-          {
-            "tool": "Write",
-            "kind": "edit",
-            "target": [
-              "file_path"
-            ]
-          },
-          {
-            "tool": "Edit",
-            "kind": "edit",
-            "target": [
-              "file_path"
-            ]
-          },
-          {
-            "tool": "MultiEdit",
-            "kind": "edit",
-            "target": [
-              "file_path"
-            ]
-          },
-          {
-            "tool": "NotebookEdit",
-            "kind": "edit",
-            "target": [
-              "notebook_path"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "kind": "command",
-            "target": [
-              "command"
-            ]
-          },
-          {
-            "tool": "WebFetch",
-            "kind": "fetch",
-            "target": [
-              "url"
-            ]
-          },
-          {
-            "tool": "WebSearch",
-            "kind": "fetch",
-            "target": [
-              "query"
-            ]
-          },
-          {
-            "toolPrefix": "mcp__myco__",
-            "kind": "myco",
-            "target": [
-              "op"
-            ]
-          },
-          {
-            "tool": "ToolSearch",
-            "kind": "tool",
-            "target": [],
-            "words": "Looked up a tool"
-          },
-          {
-            "tool": "TodoWrite",
-            "kind": "tool",
-            "target": [],
-            "words": "Updated its to-do list"
-          }
-        ],
-        "stepTool": "name",
-        "notSteps": [
-          "system/thinking_tokens",
-          "rate_limit_event",
-          "system/commands_changed",
-          "system/status",
-          "system/compact_boundary",
-          "system/hook_started",
-          "system/hook_progress",
-          "system/hook_response"
-        ],
-        "accounting": {
-          "reported": "claude-stream",
-          "modelSources": [
-            "system.init.model",
-            "assistant.message.model",
-            "result.modelUsage"
-          ],
-          "launchFallback": "none",
-          "primarySources": [
-            "system.init.model"
-          ],
-          "modelVariants": [
-            {
-              "suffix": "[1m]",
-              "context": "1m"
-            }
-          ],
-          "zeroDollars": "reported",
-          "provider": {
-            "kind": "environment",
-            "default": "anthropic",
-            "selectors": [
-              {
-                "variable": "CLAUDE_CODE_USE_BEDROCK",
-                "provider": "bedrock"
-              },
-              {
-                "variable": "CLAUDE_CODE_USE_VERTEX",
-                "provider": "vertex"
-              },
-              {
-                "variable": "CLAUDE_CODE_USE_FOUNDRY",
-                "provider": "foundry"
-              }
-            ],
-            "unknownIfSet": [
-              "ANTHROPIC_BASE_URL",
-              "CLAUDE_CODE_CLIENT_DATA_URL"
-            ]
-          },
-          "tokenScope": "attempt"
-        }
-      }
-    },
     "promptIdentity": {
       "kind": "harness-key",
       "scheme": "claude-v2",
@@ -1140,6 +679,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "cline",
     "configDir": ".cline",
     "detectionDir": "~/.cline",
+    "settingsFolder": {
+      "path": "~/.cline",
+      "variable": "CLINE_DIR",
+      "markers": {
+        "files": [
+          "data/logs/cline.log",
+          "data/settings/providers.json"
+        ],
+        "directories": []
+      }
+    },
     "health": {
       "installLocations": [
         "~/.cline"
@@ -1363,6 +913,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "codex",
     "configDir": ".codex",
     "detectionDir": "~/.codex",
+    "settingsFolder": {
+      "path": "~/.codex",
+      "variable": "CODEX_HOME",
+      "markers": {
+        "files": [
+          "installation_id"
+        ],
+        "directories": [
+          "sessions"
+        ]
+      }
+    },
     "health": {
       "installLocations": [
         "~/.codex",
@@ -1705,173 +1267,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         ]
       }
     },
-    "runner": {
-      "order": 2,
-      "asking": {
-        "kind": "sandbox"
-      },
-      "credential": {
-        "provider": "openai",
-        "slot": "own",
-        "ownSlotLabel": "Codex (OpenAI)",
-        "variables": [
-          "OPENAI_API_KEY"
-        ]
-      },
-      "profile": {
-        "models": {
-          "low": null,
-          "default": null,
-          "high": null
-        },
-        "efforts": {
-          "low": "low",
-          "default": "medium",
-          "high": "high"
-        },
-        "allowedEfforts": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh"
-        ],
-        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
-        "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
-      },
-      "diagnostics": [
-        {
-          "code": "login_missing",
-          "pattern": "\\b401 Unauthorized\\b|\\bunauthorized\\b|not logged in|codex login|missing (?:openai )?api key|invalid_api_key|incorrect api key|\\btoken (?:is |has )?expired"
-        },
-        {
-          "code": "rate_limited",
-          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
-        },
-        {
-          "code": "model_refused",
-          "pattern": "\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available|unsupported)\\b|\\bmodel_not_found\\b|unsupported model"
-        },
-        {
-          "code": "timed_out",
-          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|deadline exceeded|idle timeout|request timeout"
-        }
-      ],
-      "worker": {
-        "signInHint": {
-          "default": "Run codex login on this runner."
-        },
-        "binary": "codex",
-        "launch": {
-          "kind": "native"
-        },
-        "login": {
-          "kind": "file",
-          "path": "~/.codex/auth.json",
-          "requires": [
-            "OPENAI_API_KEY",
-            "tokens",
-            "personal_access_token"
-          ]
-        },
-        "isolation": {
-          "kind": "home",
-          "env": "CODEX_HOME"
-        },
-        "sourceGit": "none",
-        "modelSetting": "config",
-        "models": {
-          "kind": "exchange",
-          "args": [
-            "app-server"
-          ],
-          "send": [
-            {
-              "jsonrpc": "2.0",
-              "id": 1,
-              "method": "initialize",
-              "params": {
-                "clientInfo": {
-                  "name": "myco",
-                  "version": "1"
-                }
-              }
-            },
-            {
-              "jsonrpc": "2.0",
-              "method": "initialized"
-            },
-            {
-              "jsonrpc": "2.0",
-              "id": 2,
-              "method": "model/list",
-              "params": {}
-            }
-          ],
-          "answer": {
-            "where": {
-              "id": 2
-            },
-            "list": "result.data"
-          },
-          "page": {
-            "cursor": "result.nextCursor",
-            "param": "params.cursor"
-          },
-          "fields": {
-            "id": "id",
-            "label": "displayName",
-            "isDefault": "isDefault",
-            "upgrade": "upgrade",
-            "efforts": "supportedReasoningEfforts[].reasoningEffort"
-          }
-        },
-        "steps": [
-          {
-            "tool": "command_execution",
-            "kind": "command",
-            "target": [
-              "command"
-            ]
-          },
-          {
-            "tool": "file_change",
-            "kind": "edit",
-            "target": [
-              "changes.0.path"
-            ]
-          },
-          {
-            "tool": "web_search",
-            "kind": "fetch",
-            "target": [
-              "query"
-            ]
-          },
-          {
-            "category": "mcp",
-            "kind": "myco",
-            "target": [
-              "op"
-            ]
-          }
-        ],
-        "stepTool": "name",
-        "notSteps": [],
-        "accounting": {
-          "reported": "codex-session",
-          "modelSources": [
-            "session.turn_context.model"
-          ],
-          "launchFallback": "resolved-config",
-          "provider": {
-            "kind": "session-config",
-            "default": "openai"
-          },
-          "tokenScope": "attempt"
-        }
-      }
-    },
     "promptIdentity": {
       "kind": "harness-key",
       "scheme": "codex-turn-v1",
@@ -1972,6 +1367,19 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "displayName": "GitHub Copilot",
     "binary": "copilot",
     "configDir": ".copilot",
+    "settingsFolder": {
+      "path": "~/.copilot",
+      "variable": "COPILOT_HOME",
+      "markers": {
+        "files": [
+          "config.json"
+        ],
+        "directories": [
+          "session-state",
+          "installed-plugins"
+        ]
+      }
+    },
     "health": {
       "installLocations": [],
       "activityLocations": [
@@ -2548,195 +1956,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ]
     },
     "hooks": {},
-    "runner": {
-      "order": 4,
-      "asking": {
-        "kind": "run-home",
-        "env": "CURSOR_CONFIG_DIR",
-        "sourceReads": "unheld"
-      },
-      "credential": {
-        "provider": "cursor",
-        "slot": "own",
-        "ownSlotLabel": "Cursor",
-        "variables": [
-          "CURSOR_API_KEY"
-        ],
-        "accepts": [
-          "api-key"
-        ]
-      },
-      "profile": {
-        "models": {
-          "low": null,
-          "default": null,
-          "high": null
-        },
-        "efforts": {
-          "low": "low",
-          "default": "medium",
-          "high": "high"
-        },
-        "allowedEfforts": [],
-        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
-        "modelHint": "Model selection is unavailable for this agent."
-      },
-      "diagnostics": [
-        {
-          "code": "login_missing",
-          "pattern": "authentication required|not logged in|\\blogin\\b[^\\n]{0,40}\\brequired\\b|agent login|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"
-        },
-        {
-          "code": "rate_limited",
-          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
-        },
-        {
-          "code": "model_refused",
-          "pattern": "cannot use this model|\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available)\\b"
-        },
-        {
-          "code": "timed_out",
-          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|idle timeout|request timeout"
-        }
-      ],
-      "worker": {
-        "signInHint": {
-          "default": "Run cursor-agent login on this runner."
-        },
-        "binary": "cursor-agent",
-        "launch": {
-          "kind": "subcommand",
-          "args": [
-            "acp"
-          ]
-        },
-        "login": {
-          "kind": "command",
-          "args": [
-            "status"
-          ]
-        },
-        "isolation": {
-          "kind": "additive"
-        },
-        "sourceGit": "none",
-        "modelSetting": "none",
-        "steps": [
-          {
-            "toolPrefix": "mcp__myco__",
-            "kind": "myco",
-            "target": [
-              "rawInput.op",
-              "rawInput.args.op",
-              "rawInput.arguments.op"
-            ]
-          },
-          {
-            "category": "read",
-            "kind": "read",
-            "target": [
-              "locations.0.path",
-              "rawInput.path",
-              "rawInput.filePath",
-              "rawInput.file_path"
-            ]
-          },
-          {
-            "category": "search",
-            "kind": "search",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "edit",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path",
-              "rawInput.filePath",
-              "rawInput.file_path"
-            ]
-          },
-          {
-            "category": "delete",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "move",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "execute",
-            "kind": "command",
-            "target": [
-              "rawInput.command",
-              "rawInput.cmd"
-            ]
-          },
-          {
-            "category": "fetch",
-            "kind": "fetch",
-            "target": [
-              "rawInput.url",
-              "rawInput.query"
-            ]
-          },
-          {
-            "category": "think",
-            "kind": "tool",
-            "target": [],
-            "words": "Thought it through"
-          },
-          {
-            "category": "switch_mode",
-            "kind": "tool",
-            "target": [],
-            "words": "Switched its mode"
-          }
-        ],
-        "stepTool": "category",
-        "notSteps": [
-          "session/update:plan",
-          "session/update:available_commands_update",
-          "session/update:current_mode_update",
-          "session/update:user_message_chunk"
-        ],
-        "mycoCalls": {
-          "names": [
-            "mcp__myco__{tool}",
-            "myco_{tool}"
-          ],
-          "input": {
-            "server": "rawInput.providerIdentifier",
-            "tool": "rawInput.toolName"
-          }
-        },
-        "accounting": {
-          "reported": "acp-session",
-          "modelSources": [
-            "session.models",
-            "session.configOptions",
-            "session.currentModelId"
-          ],
-          "launchFallback": "none",
-          "zeroDollars": "unavailable",
-          "provider": {
-            "kind": "unavailable"
-          },
-          "tokenScope": "unverified"
-        }
-      }
-    },
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "offset-v1"
@@ -2910,235 +2129,6 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ]
     },
     "hooks": {},
-    "runner": {
-      "order": 3,
-      "asking": {
-        "kind": "run-agent",
-        "env": "OPENCODE_CONFIG_CONTENT",
-        "extensionsOff": {
-          "OPENCODE_PURE": "1"
-        },
-        "sourceReads": {
-          "read": "ask",
-          "glob": "ask",
-          "grep": "ask",
-          "list": "ask",
-          "external_directory": "ask"
-        }
-      },
-      "credential": {
-        "provider": "anthropic",
-        "slot": "anthropic",
-        "variables": [
-          "ANTHROPIC_API_KEY"
-        ],
-        "accepts": [
-          "api-key"
-        ]
-      },
-      "profile": {
-        "models": {
-          "low": null,
-          "default": null,
-          "high": null
-        },
-        "efforts": {
-          "low": "low",
-          "default": "medium",
-          "high": "high"
-        },
-        "allowedEfforts": [
-          "minimal",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
-        "modelHint": "Use provider/model. An unset model holds runs at this tier.",
-        "providerAliasPattern": "^openrouter/~",
-        "presets": [
-          {
-            "id": "openrouter-claude-latest",
-            "provider": "openrouter",
-            "label": "Newest Claude through OpenRouter",
-            "description": "Haiku, Sonnet and Opus through OpenRouter, always the newest version.",
-            "models": {
-              "low": "openrouter/~anthropic/claude-haiku-latest",
-              "default": "openrouter/~anthropic/claude-sonnet-latest",
-              "high": "openrouter/~anthropic/claude-opus-latest"
-            }
-          }
-        ]
-      },
-      "diagnostics": [
-        {
-          "code": "login_missing",
-          "pattern": "ProviderAuthError|LoadAPIKeyError|api key is missing|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)|not authenticated|authentication required"
-        },
-        {
-          "code": "rate_limited",
-          "pattern": "(?:HTTP|status|status code|error_status)[ :=\"]*429\\b|\\b429 Too Many\\b|\\(429\\)|too many requests|rate[_ -]?limit|usage limit|\\bquota\\b"
-        },
-        {
-          "code": "model_refused",
-          "pattern": "ModelNotFound|\\bmodel\\b[^\\n]{0,80}\\b(?:not found|not supported|does not exist|not available)\\b"
-        },
-        {
-          "code": "timed_out",
-          "pattern": "\\btimed[ -]?out\\b|\\bETIMEDOUT\\b|idle timeout|request timeout"
-        }
-      ],
-      "worker": {
-        "signInHint": {
-          "default": "Run opencode auth login on this runner."
-        },
-        "binary": "opencode",
-        "launch": {
-          "kind": "subcommand",
-          "args": [
-            "acp"
-          ]
-        },
-        "login": {
-          "kind": "file",
-          "path": "~/.local/share/opencode/auth.json",
-          "requires": []
-        },
-        "isolation": {
-          "kind": "additive"
-        },
-        "sourceGit": "shim",
-        "modelSetting": "config",
-        "models": {
-          "kind": "command",
-          "args": [
-            "models"
-          ],
-          "format": "lines",
-          "provider": "id-prefix"
-        },
-        "steps": [
-          {
-            "toolPrefix": "mcp__myco__",
-            "kind": "myco",
-            "target": [
-              "rawInput.op",
-              "rawInput.args.op",
-              "rawInput.arguments.op"
-            ]
-          },
-          {
-            "category": "read",
-            "kind": "read",
-            "target": [
-              "locations.0.path",
-              "rawInput.path",
-              "rawInput.filePath",
-              "rawInput.file_path"
-            ]
-          },
-          {
-            "category": "search",
-            "kind": "search",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "edit",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path",
-              "rawInput.filePath",
-              "rawInput.file_path"
-            ]
-          },
-          {
-            "category": "delete",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "move",
-            "kind": "edit",
-            "target": [
-              "locations.0.path",
-              "rawInput.path"
-            ]
-          },
-          {
-            "category": "execute",
-            "kind": "command",
-            "target": [
-              "rawInput.command",
-              "rawInput.cmd"
-            ]
-          },
-          {
-            "category": "fetch",
-            "kind": "fetch",
-            "target": [
-              "rawInput.url",
-              "rawInput.query"
-            ]
-          },
-          {
-            "category": "think",
-            "kind": "tool",
-            "target": [],
-            "words": "Thought it through"
-          },
-          {
-            "category": "switch_mode",
-            "kind": "tool",
-            "target": [],
-            "words": "Switched its mode"
-          }
-        ],
-        "stepTool": "category",
-        "notSteps": [
-          "session/update:plan",
-          "session/update:available_commands_update",
-          "session/update:current_mode_update",
-          "session/update:user_message_chunk"
-        ],
-        "mycoCalls": {
-          "names": [
-            "mcp__myco__{tool}",
-            "myco_{tool}"
-          ],
-          "input": {
-            "server": "rawInput.providerIdentifier",
-            "tool": "rawInput.toolName"
-          }
-        },
-        "accounting": {
-          "reported": "acp-session",
-          "modelSources": [
-            "session.models",
-            "session.configOptions",
-            "session.currentModelId"
-          ],
-          "launchFallback": "none",
-          "zeroDollars": "unavailable",
-          "provider": {
-            "kind": "model-prefix"
-          },
-          "tokenScope": "unverified",
-          "lastResponseVersions": [
-            "1.18.21",
-            "1.18.29"
-          ]
-        }
-      }
-    },
     "promptIdentity": {
       "kind": "stamped",
       "scheme": "stamp-or-offset-v1"
@@ -3185,6 +2175,18 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "binary": "pi",
     "configDir": ".pi",
     "detectionDir": "~/.pi",
+    "settingsFolder": {
+      "path": "~/.pi/agent",
+      "variable": "PI_CODING_AGENT_DIR",
+      "markers": {
+        "files": [
+          "models-store.json"
+        ],
+        "directories": [
+          "sessions"
+        ]
+      }
+    },
     "health": {
       "installLocations": [
         "~/.pi"

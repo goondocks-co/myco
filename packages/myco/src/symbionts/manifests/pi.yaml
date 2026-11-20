@@ -6,6 +6,11 @@ health:
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .pi
 detectionDir: ~/.pi
+# A person moves this folder with PI_CODING_AGENT_DIR. Pi writes `models-store.json` and `sessions/` on its first run there.
+settingsFolder:
+  path: ~/.pi/agent
+  variable: PI_CODING_AGENT_DIR
+  markers: { files: [models-store.json], directories: [sessions] }
 pluginRootEnvVar: PI_PLUGIN_ROOT
 hookFields:
   sessionId: session_id

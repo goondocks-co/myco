@@ -7,6 +7,8 @@ import {
   type LogoutDeps, type LogoutReport, type LogoutRuntime,
 } from '../member/logout.js';
 import { prepareMemberSkillRemoval, skillsFolder } from './member-skill-links.js';
+import { harnessSettingsFolders } from './settings-folders.js';
+import { pathInSettingsFolder } from '../member/settings-folder-paths.js';
 import { loadManifests, resolvePackageRoot } from './detect.js';
 import { MemberFileReconciliation, SymbiontInstaller } from './installer.js';
 import { readProvisionRecord, reconcileProvisionDeployment } from './member-provision-record.js';
@@ -50,15 +52,18 @@ export function logoutDeployment(
       const packageRoot = deps.packageRoot ?? resolvePackageRoot();
       const reconciliation = new MemberFileReconciliation();
       const { problems } = reconciliation;
-      for (const manifest of loadManifests()) {
-        const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, mycoHome).withoutProjectRoot();
-        reconciliation.attempt(manifest, () => installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks));
+      const settingsFolders = new Map(loadManifests().map(manifest => [manifest, harnessSettingsFolders(manifest, mycoHome)] as const));
+      for (const [manifest, folders] of settingsFolders) {
+        for (const folder of folders) {
+          const installer = new SymbiontInstaller(manifest, mycoHome, packageRoot, false, mycoHome).withoutProjectRoot().inSettingsFolder(folder);
+          reconciliation.attempt(manifest, () => installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks));
+        }
       }
       reconciliation.finish(
         () => {
           if (!keepHooks && problems.size === 0) {
-            const folders = new Set(loadManifests().flatMap(manifest => manifest.registration?.globalSkillsTarget
-              ? [skillsFolder(manifest.registration.globalSkillsTarget)] : []));
+            const folders = new Set([...settingsFolders].flatMap(([manifest, found]) => manifest.registration?.globalSkillsTarget
+              ? found.map(folder => skillsFolder(pathInSettingsFolder(manifest, manifest.registration!.globalSkillsTarget!, folder))) : []));
             const removals = [...folders].map(folder => prepareMemberSkillRemoval(mycoHome, folder));
             for (const remove of removals) remove();
           }

@@ -53,13 +53,36 @@ Shipped skills are linked to the agent's live skills location:
 | Antigravity | `~/.gemini/config/skills` |
 | Cline | `~/.cline/skills` |
 
+### Several accounts for one agent
+
+Some agents let you keep a settings folder per account and choose one with a variable: Claude Code (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`), Copilot CLI (`COPILOT_HOME`), Pi (`PI_CODING_AGENT_DIR`) and Cline (`CLINE_DIR`). Myco sets up each such folder the way it sets up the default one, and the paths in the tables above move into that folder. Claude Code's tools configuration moves too, to `.claude.json` inside the folder. Shared locations such as `~/.agents/skills` stay where they are.
+
+Myco sets up a folder, and keeps it current with every refresh, when:
+
+- the agent's variable names it in the shell you run Myco from (a relative value is read from that shell's working directory, as the agent reads it);
+- it sits directly in your home folder and holds, as real files or folders and not links, what the agent writes there on its first run (for Claude Code, `.claude.json`);
+- you name it: `myco member provision claude-code --settings-folder ~/accounts/claude-work`;
+- Myco set it up before.
+
+A folder that holds those files but fails a check (one is a link, or a file Myco would write leads outside the folder) is not written to. `myco doctor` lists every folder Myco set up and how it found it, names a folder it would not set up with the reason and the command that does, names a recorded folder that has gone, and names hooks that wait for your review in each folder.
+
+To stop setting up one folder, remove Myco's entries from it and keep it from being set up again:
+
+```bash
+myco member provision claude-code --forget-settings-folder ~/.claude-old
+```
+
+Myco leaves a retired folder alone even while the agent's variable names it; naming the folder with `--settings-folder` sets it up again. Myco knows each folder by its real path, so an alias of a folder is the same folder.
+
+Cursor keeps its hooks and tools in `~/.cursor` whatever account is signed in. Antigravity documents no way to move its settings. Myco does not cover moved folders for OpenCode or Windsurf yet.
+
 To disconnect one agent:
 
 ```bash
 myco member provision --remove claude-code
 ```
 
-This removes that agent's Myco hooks, tools and skill links. A shared skills folder keeps its links while another connected agent uses it. To sign the whole machine out, use `myco logout <address>`; see [Leaving a Myco](quickstart.md#leaving-a-myco).
+This removes that agent's Myco hooks, tools and skill links from every settings folder Myco set up for it. A shared skills folder keeps its links while another connected agent uses it. To sign the whole machine out, use `myco logout <address>`; see [Leaving a Myco](quickstart.md#leaving-a-myco).
 
 ## What is captured
 

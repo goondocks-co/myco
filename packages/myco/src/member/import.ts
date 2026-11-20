@@ -39,6 +39,7 @@ import { assertMemberTranscriptDestination, TranscriptDestinationError } from '.
 import fs from 'node:fs';
 import { transcriptPlacer, type DirectoryMapping } from '../symbionts/transcript-attribution.js';
 import { enumerateTranscripts, manifestTranscriptDiscovery } from '../symbionts/transcript-discovery.js';
+import type { TranscriptDiscovery } from '../symbionts/manifest-schema.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { evaluateSessionCaptureRules } from '../hooks/capture-rules.js';
 import { readTranscriptMeta } from '../hooks/transcript-meta.js';
@@ -133,7 +134,12 @@ export interface ImportDeps {
   machineId: string;
   progress?: (line: string) => void;
   signal?: AbortSignal;
+  /** Each agent's transcript layout, where a caller finds its stores in more than the manifest's own folders. */
+  discovery?: TranscriptLayouts;
 }
+
+/** An agent's transcript layout under a member home. */
+export type TranscriptLayouts = (agent: string, mycoHome: string) => TranscriptDiscovery | undefined;
 
 /** What one agent's store yielded for one Project. Counts rather than a capability table: what a store holds is measured, not declared. */
 export interface AgentTally {
@@ -276,6 +282,7 @@ export function collectCandidates(
     exclude?: ReadonlySet<string>;
     destinationForRoot?: (root: string) => RegistryEntry | undefined;
     repositoryRoots?: Iterable<string>;
+    discovery?: TranscriptLayouts;
   } = {},
 ): CollectedCandidates {
   const place = transcriptPlacer(roots, { mappings: opts.mappings, repositoryRoots: opts.repositoryRoots });
@@ -288,7 +295,7 @@ export function collectCandidates(
 
   scan: for (const agent of agents) {
     if (shouldStop()) break;
-    const discovery = manifestTranscriptDiscovery(agent);
+    const discovery = opts.discovery === undefined ? manifestTranscriptDiscovery(agent) : opts.discovery(agent, mycoHome);
     if (discovery === undefined) continue;
     // Enumerated WHOLE, and trimmed only after the sort. A walk answers in
     // directory order, so a cap applied during it keeps whatever the
@@ -370,6 +377,7 @@ export async function runImport(opts: ImportOptions, deps: ImportDeps): Promise<
   const collected = collectCandidates(agents, bound.keys(), deps.machineId, mycoHome, now(), {
     shouldStop: () => deps.signal?.aborted === true || (opts.until !== undefined && now() >= opts.until),
     mappings: opts.mappings, exclude, repositoryRoots: entries.flatMap((entry) => entry.root === undefined ? [] : [entry.root]), destinationForRoot: (root) => bound.get(root),
+    discovery: deps.discovery,
   });
   const { candidates, unattributable, active } = collected;
 

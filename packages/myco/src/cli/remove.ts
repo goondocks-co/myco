@@ -11,6 +11,8 @@ import { loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberFileReconciliation, SymbiontInstaller } from '../symbionts/installer.js';
 import { forgetProvision, readProvisionRecord } from '../symbionts/member-provision-record.js';
 import { prepareMemberSkillRemoval, skillsFolder } from '../symbionts/member-skill-links.js';
+import { folderWords, harnessSettingsFolders } from '../symbionts/settings-folders.js';
+import { pathInSettingsFolder } from '../member/settings-folder-paths.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
 import { sweepWorkerServices, type WorkerServiceDeps } from './worker-service.js';
 import { withCloudflareOperation } from '../server/cloudflare-operation.js';
@@ -208,22 +210,22 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
   const deployment = provision?.serverUrl ?? readDefaultDeployment(home)?.serverUrl ?? null;
   const reconciliation = new MemberFileReconciliation();
   const { problems } = reconciliation;
-  const registrations = loadManifests().flatMap(manifest => {
-    const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot();
+  const registrations = loadManifests().flatMap(manifest => harnessSettingsFolders(manifest, home).flatMap(folder => {
+    const installer = new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot().inSettingsFolder(folder);
     if (deployment !== null) installer.forDeployment(deployment);
     const registration = reconciliation.attempt(manifest, () => {
       installer.assertMemberFilesReadable();
       const hooks = installer.inspectMemberHooks();
       const mcp = installer.inspectMemberMcp();
-      if (!hooks.readable || mcp.some(entry => !entry.readable)) throw new Error(`Cannot read ${manifest.displayName}'s member registration; removal aborted.`);
+      if (!hooks.readable || mcp.some(entry => !entry.readable)) throw new Error(`Cannot read ${manifest.displayName}'s member registration in ${folderWords(folder.path)}; removal aborted.`);
       const registered = hooks.member || mcp.some(entry => entry.carriesCredential);
       if (registered) installer.assertMemberUninstallable();
       const target = manifest.registration?.globalSkillsTarget;
-      const removeSkills = target && (memberOwned || registered) ? prepareMemberSkillRemoval(home, skillsFolder(target)) : () => {};
+      const removeSkills = target && (memberOwned || registered) ? prepareMemberSkillRemoval(home, skillsFolder(pathInSettingsFolder(manifest, target, folder))) : () => {};
       return { manifest, installer, registered, removeSkills };
     });
     return registration === null ? [] : [registration];
-  });
+  }));
   if (problems.size > 0) {
     for (const problem of problems.values()) console.warn(`myco remove: ${problem}`);
     console.warn('Cannot read every agent\'s member registration; removal aborted.');
@@ -239,8 +241,10 @@ export async function run(args: string[], deps: RemoveDeps = {}): Promise<void> 
       reconciliation.attempt(manifest, () => {
         if (registered) installer.uninstallMemberRegistration();
         removeSkills();
-        if (provision?.agents.includes(manifest.name)) forgetProvision(home, manifest.name);
       });
+    }
+    for (const agent of new Set(registrations.map(({ manifest }) => manifest.name))) {
+      if (provision?.agents.includes(agent) && !problems.has(agent)) forgetProvision(home, agent);
     }
     if (problems.size > 0) return;
     if (purge) removeProjectPinTrust(canonical);

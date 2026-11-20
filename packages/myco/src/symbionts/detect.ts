@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { expandHome } from '@myco/paths/home.js';
+import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
+import { harnessSettingsFolders } from './settings-folders.js';
 
 const MANIFESTS_SUBDIR = 'symbionts/manifests';
 
@@ -69,11 +70,19 @@ function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
   return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-/** Installed agents use their declared directory, or executable and installation locations. */
+/** Installed agents use their declared directory or another settings folder of theirs, or executable and installation locations. */
 export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
   return loadManifests().filter(m => m.detectionDir === null ? false : m.detectionDir
-    ? installedDirectory(m.detectionDir)
+    ? installedDirectory(m.detectionDir) || movedSettingsFolderFound(m)
     : hasSymbiontInstallation(m));
+}
+
+function movedSettingsFolderFound(manifest: SymbiontManifest): boolean {
+  // As for the declared directory, a folder that cannot be read is not detected.
+  try {
+    const mycoHome = resolveMycoHome();
+    return harnessSettingsFolders(manifest, mycoHome).length > 1;
+  } catch { return false; }
 }
 
 function installedDirectory(location: string): boolean {

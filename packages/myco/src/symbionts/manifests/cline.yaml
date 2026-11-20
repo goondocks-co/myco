@@ -6,6 +6,11 @@ health:
   activityLocations: [{ kind: file, path: "~/.cline/data/tasks/{sessionId}/api_conversation_history.json" }]
 configDir: .cline
 detectionDir: ~/.cline
+# A person moves this folder with CLINE_DIR. Cline writes `data/logs/cline.log` and `data/settings/providers.json` on its first run there.
+settingsFolder:
+  path: ~/.cline
+  variable: CLINE_DIR
+  markers: { files: [data/logs/cline.log, data/settings/providers.json] }
 pluginRootEnvVar: CLINE_PLUGIN_ROOT
 resumeCommand: "cline --id {sessionId}"
 hookFields:

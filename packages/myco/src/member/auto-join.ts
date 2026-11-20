@@ -29,6 +29,7 @@ import { canonicalPath, canonicalRootIdentity, rootIdentityMayMatch } from '../u
 import { temporaryFolders, isAgentScratchDirectory } from '../utils/temporary-folders.js';
 export { temporaryFolders } from '../utils/temporary-folders.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
+import { movedSettingsFolders } from './settings-folder-paths.js';
 import { repositoryName, repositoryRemote } from '@myco/utils/git.js';
 import { LifecycleLock, type LockHandle } from '../utils/lifecycle-lock.js';
 import { assertMemberPathContained, ensureMemberDir, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
@@ -360,7 +361,8 @@ function within(child: string, parent: string): boolean {
 
 /**
  * Whether the machine never captures the repository at `root` and never mentions it: no git work tree, the home
- * folder or the filesystem root, a temporary folder, an agent's own home, or a Myco home (where the worker's runs live).
+ * folder or the filesystem root, a temporary folder, an agent's own home or a settings folder a person moved it to,
+ * or a Myco home (where the worker's runs live).
  */
 export function silentRepository(root: string, opts: { mycoHome: string; env?: NodeJS.ProcessEnv; home?: string }): boolean {
   const env = opts.env ?? process.env;
@@ -369,6 +371,7 @@ export function silentRepository(root: string, opts: { mycoHome: string; env?: N
   const at = real(root);
   if (temporaryFolders(env).some((dir) => within(at, real(dir)))) return true;
   if (AGENT_HOMES.some((dir) => within(at, path.join(home, dir)))) return true;
+  if (movedSettingsFolders(opts.mycoHome, env).some((dir) => within(at, real(dir)))) return true;
   if (within(at, real(opts.mycoHome))) return true;
   // Every Myco home directly under the home folder: the default home and any separately named homes.
   const rel = path.relative(home, at);

@@ -6,6 +6,13 @@ health:
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .claude
 detectionDir: ~/.claude
+# A person moves this folder with CLAUDE_CONFIG_DIR, one folder per account; a moved folder also holds `.claude.json`,
+# which Claude Code creates on its first session or subcommand there.
+settingsFolder:
+  path: ~/.claude
+  variable: CLAUDE_CONFIG_DIR
+  markers: { files: [.claude.json] }
+  carries: { "~/.claude.json": .claude.json }
 pluginRootEnvVar: CLAUDE_PLUGIN_ROOT
 settingsPath: .claude/settings.json
 resumeCommand: "claude --resume {sessionId}"

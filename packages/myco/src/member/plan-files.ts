@@ -14,6 +14,7 @@ import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import path from 'node:path';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { resolveHomeDir } from '../paths/home.js';
+import { pathInSettingsFolder, settingsVariableFolder } from './settings-folder-paths.js';
 import { resolveWorktreeRoot } from '../project-root.js';
 import { remainingMs, type HookBudget } from './budget.js';
 import { recordSessionLoss } from './capture-loss.js';
@@ -38,6 +39,21 @@ export function planRootFor(credentialRoot: string | undefined, cwd: string | un
 export function resolvePlanDir(dir: string, projectRoot: string): string {
   const expanded = dir.startsWith('~/') ? path.join(resolveHomeDir(), dir.slice(2)) : dir;
   return path.isAbsolute(expanded) ? expanded : path.resolve(projectRoot, expanded);
+}
+
+/**
+ * The agent's plan directories as its manifest names them, and, when this process runs under a settings folder the
+ * agent's own variable moved, each of them that lives in its default settings folder inside the moved one.
+ */
+function agentPlanDirs(agent: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const dirs = HOOK_CONFIG[agent]?.planDirs ?? [];
+  const manifest = BUNDLED_MANIFESTS.find(candidate => candidate.name === agent);
+  const moved = manifest === undefined ? null : settingsVariableFolder(manifest, env);
+  if (manifest === undefined || moved === null) return dirs;
+  const home = resolveHomeDir();
+  const inMoved = dirs.filter(dir => dir.startsWith('~/')).map(dir => pathInSettingsFolder(manifest, dir, { path: moved, origin: 'variable' }, home))
+    .filter(dir => !dirs.some(own => path.join(home, own.slice(2)) === dir));
+  return [...dirs, ...inMoved];
 }
 
 /** True when the file sits inside one of the directories — on a directory boundary, never a sibling with the same prefix. */
@@ -72,7 +88,7 @@ export function planWritePaths(agent: string, toolName: string | undefined, tool
     const value = input.file_path ?? input.path ?? input.filePath;
     if (typeof value === 'string') paths.push(value);
   }
-  const dirs = [...(HOOK_CONFIG[agent]?.planDirs ?? []), ...machineDirs];
+  const dirs = [...agentPlanDirs(agent), ...machineDirs];
   return [...new Set(paths.filter(file => file.length > 0 && PLAN_FILE_EXTENSIONS.includes(path.extname(file).toLowerCase())
     && isInPlanDirectory(file, dirs, projectRoot)).map(file => path.resolve(projectRoot, file)))];
 }

@@ -78,6 +78,7 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { legacyStrayHistoryLines, dismissLegacyEarlierCopies } from '@myco/member/legacy-strays.js';
 import { planLegacyProjects, repositoryPresent, type LegacyDestination } from '@myco/member/legacy-placement.js';
 import { cutoverAbsentFolder, cutoverForeignBinding } from '@goondocks/myco-shared/setup-guidance';
+import { folderTranscriptDiscovery } from '../symbionts/settings-folders.js';
 
 export const CUTOVER_HELP = `Usage: myco cutover [options]
 
@@ -890,7 +891,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           }
           const transcripts: ImportReport = await importUntilSettled(
             { serverUrl: dest.serverUrl, project: project.projectId, mappings: parsed.mappings, windowDays: LEGACY_WINDOW_DAYS, maxPerAgent: LEGACY_MAX_PER_AGENT, exclude: new Set(deleted) },
-            { ...importDeps, progress: (l) => out(`   ${l}`) },
+            { ...importDeps, discovery: folderTranscriptDiscovery, progress: (l) => out(`   ${l}`) },
           );
           const transcriptsComplete = transcriptImportComplete(transcripts) && transcripts.projects.every((p) => !p.notAttempted);
           if (!transcriptsComplete && completedLegacyVault(receipt?.vault)) {
