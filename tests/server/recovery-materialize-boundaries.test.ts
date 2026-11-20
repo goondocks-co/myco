@@ -60,18 +60,18 @@ it('refuses a different snapshot of the same Deployment into a destination, and 
 });
 
 it('binds the artifact to the configuration and inventory the staging recorded', async () => {
-  for (const change of [
-    (manifest: Record<string, unknown>) => ({ ...manifest, configuration: { accountId: 'other-account' } }),
-    (manifest: Record<string, unknown>) => ({ ...manifest, credentialsRequired: ['OTHER_KEY'] }),
-    (manifest: Record<string, unknown>) => ({ ...manifest, exportBookmark: 'a-later-bookmark' }),
-  ]) {
-    const f = stagingFixture();
-    try {
-      expect((await f.materialize()).status).toBe('complete');
+  const f = stagingFixture();
+  try {
+    expect((await f.materialize()).status).toBe('complete');
+    for (const change of [
+      (manifest: Record<string, unknown>) => ({ ...manifest, configuration: { accountId: 'other-account' } }),
+      (manifest: Record<string, unknown>) => ({ ...manifest, credentialsRequired: ['OTHER_KEY'] }),
+      (manifest: Record<string, unknown>) => ({ ...manifest, exportBookmark: 'a-later-bookmark' }),
+    ]) {
       f.write(change(f.manifest as unknown as Record<string, unknown>));
       await expect(f.materialize()).rejects.toThrow('holds a different snapshot of this Deployment');
-    } finally { f.cleanup(); }
-  }
+    }
+  } finally { f.cleanup(); }
 });
 
 it('consumes only bytes it has held to a digest when the staging changes mid-materialization', async () => {

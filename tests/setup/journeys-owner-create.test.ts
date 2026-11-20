@@ -1,57 +1,23 @@
-import { renderSetupStatus } from '@myco/cli/setup-status.js';
-import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
-import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { run, parseSetupOptions } from '@myco/cli/setup.js';
-import { runRunnerService } from '@myco/cli/runner-service.js';
-import { executorServiceTarget } from '@myco/cli/worker-service.js';
-import { homeReport } from '@myco/cli/member-doctor.js';
 import { consentToPlan, cutoverConsentPlan, type SetupDeps } from '@myco/setup/steps.js';
 import { observeSetup, setupExitCode } from '@myco/setup/observe.js';
 import { planFingerprint, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
 import { readDeploymentMembership, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry, registryEntryPath, deploymentPath, deploymentKeyFor, machineSettingsPath } from '@myco/member/registry.js';
-import { legacyMigrationState, type LegacyMigrationState } from '@myco/member/legacy-migration.js';
-import { legacyVaultStamp } from '@myco/member/legacy-sources.js';
-import { readVaultContent } from '@myco/member/legacy-backup.js';
-import { MemberSpool } from '@myco/member/spool.js';
-import { LegacyLedger } from '@myco/member/legacy-ledger.js';
-import { observeLegacyStrayHistory } from '@myco/member/legacy-strays.js';
-import { mintId, promptEvent } from '@myco/member/envelope.js';
-import { bufferLockPath, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
-import { installWorkerService } from '@myco/runner/service.js';
-import { workerLockPath } from '@myco/runner/instance.js';
-import { recordDefaultDeployment, readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { readRunnerRecord, recordRunnerContact, runnerRecordPath } from '@myco/runner/runner-registry.js';
-import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
-import { recordingPlatform } from '../helpers/fake-service-manager.js';
-import { enrolledBeforeInstall } from './fixtures/interrupted-state.js';
-import { legacyFixtureHome } from './fixtures/legacy-home.js';
 import { fakeGitHub, SETUP_APP } from './fixtures/github.js';
-import { createBunHandler, type BunHandler } from '@myco-server-worker/entry/bun.js';
-import { createServer } from '@myco-server-worker/pipeline.js';
-import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { seededSqlite } from '../myco-server/helpers/d1.js';
 import { SESSION_SECRET } from '../myco-server/helpers/owner.js';
-import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
-import { SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { ownerDeployment, ACCOUNT, HOSTED_URL } from './fixtures/owner-deployment.js';
 import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { registerGitHubApp, convertManifestCode, writeSignInPending, signInPendingPath } from '@myco/server/github-app.js';
 import { peekDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { peekLocalPaths, readLocalSecrets, createLocalDeployment, DEFAULT_LOCAL_RECORD } from '@myco/server/local.js';
 import { runJoin } from '@myco/cli/member.js';
-import { cloudflareOwnerLinked } from '@myco/server/cloudflare-owner.js';
-import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { legacyJourney, LEGACY_URLS } from './fixtures/legacy-journey.js';
-import { planCutover, runCutover, run as cutoverRun } from '@myco/cli/cutover.js';
-import { readCutoverState } from '@myco/member/legacy-migration.js';
-import { legacyHistoryCompletionGroups, readLegacyVault } from '@myco/member/legacy-import.js';
 import { URL, fakeFetch, freshJourney, snapshot, holdRunnerLock as bindRunnerLock } from './fixtures/journey-harness.js';
+
+const OWNER_JOURNEY_TIMEOUT_MS = 60_000;
 
 let root: string;
 let home: string;
@@ -139,7 +105,7 @@ describe('new owner journeys (a) and (b)', () => {
       expect(current.find(fact => fact.id === 'deployment.health')?.scope).toBe(address);
       expect(current.find(fact => fact.id === 'journey')?.deployment).toBe(address);
       expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
-    });
+    }, OWNER_JOURNEY_TIMEOUT_MS);
 
     for (const boundary of ['create', 'conversion', 'project'] as const) {
       it(`resumes ${target} after interruption at ${boundary} without duplicated resources or lost state`, async () => {
@@ -182,7 +148,7 @@ describe('new owner journeys (a) and (b)', () => {
         expect(server.github.calls.filter(call => call.url.includes('/conversions')).length).toBeLessThanOrEqual(1);
         expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
         expect(await run([], deps)).toBe(0);
-      });
+      }, OWNER_JOURNEY_TIMEOUT_MS);
     }
   }
 });

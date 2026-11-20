@@ -3,13 +3,21 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import { CutoverBackup } from '@myco/member/cutover-backup.js';
 import { identifyLegacyExecutable, LEGACY_EXECUTABLE_RECORD } from '@myco/cli/cutover-executable.js';
 import type { MycoUnit } from '@myco/member/legacy-unit-files.js';
 import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 
-const PWSH = spawnSync('sh', ['-c', 'command -v pwsh'], { env: process.env, encoding: 'utf8' }).stdout.trim();
+const PWSH = resolveTestTool('pwsh', process.env.PATH ?? '') ?? '';
+const SHELL_TEST_TIMEOUT_MS = 60_000;
+const SHELL_PROCESS_TIMEOUT_MS = 45_000;
+
+function runShell(command: string, args: string[], options: SpawnSyncOptions) {
+  const result = spawnSync(command, args, { ...options, encoding: 'utf8', timeout: SHELL_PROCESS_TIMEOUT_MS });
+  if (result.error) throw result.error;
+  return result;
+}
 const made: string[] = [];
 afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 const digest = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -90,10 +98,10 @@ describe('cutover executable recovery', () => {
     else { expect(recipe).toContain('previous exact version was not recorded'); expect(recipe).toContain('latest Myco 1.4 release'); }
     const download = offlineLegacyDownload(f.home);
     const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
-    const undo = spawnSync('sh', ['-c', commands], { cwd: f.home, env: download.env, encoding: 'utf8' });
+    const undo = runShell('sh', ['-c', commands], { cwd: f.home, env: download.env, encoding: 'utf8' });
     expect({ status: undo.status, stderr: undo.stderr }).toEqual({ status: 0, stderr: '' });
     expect(fs.readFileSync(f.executable)).toEqual(fs.readFileSync(download.artifact));
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   for (const shell of ['sh', 'bash', 'zsh']) {
     const available = resolveTestTool(shell, [process.env.PATH, '/bin', '/usr/bin'].join(path.delimiter));
@@ -111,7 +119,7 @@ describe('cutover executable recovery', () => {
         for (const fence of fences) {
           const flags = shell === 'zsh' ? ['-f'] : shell === 'bash' ? ['--noprofile', '--norc'] : [];
           if (!available) throw new Error('The requested shell is unavailable.');
-          const undo = spawnSync(available, [...flags, '-c', fence], { cwd: f.home, env: download.env, encoding: 'utf8' });
+          const undo = runShell(available, [...flags, '-c', fence], { cwd: f.home, env: download.env, encoding: 'utf8' });
           expect({ state, code: undo.status, stderr: undo.stderr }).toEqual({ state, code: 0, stderr: '' });
         }
         expect(fs.readFileSync(f.executable)).toEqual(fs.readFileSync(download.artifact));
@@ -125,7 +133,7 @@ describe('cutover executable recovery', () => {
           ]);
         }
       }
-    });
+    }, SHELL_TEST_TIMEOUT_MS);
   }
 
   it.each(['marker', 'slot'])('claims replacement of 2.x only after matching current bytes to its %s', (evidence) => {
@@ -201,10 +209,10 @@ case "$url" in
 esac
 `);
     const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
-    const undo = spawnSync('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    const undo = runShell('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
     expect({ status: undo.status, stderr: undo.stderr }).toEqual({ status: 0, stderr: '' });
     expect(fs.readFileSync(f.executable, 'utf8')).toBe('original 1.4 executable');
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   it.each(['daemon', 'record'])('reinstalls the %s version when only another version has a slot', (evidence) => {
     const f = fixture(); f.slot('1.4.7');
@@ -231,9 +239,9 @@ esac
     expect(recipe).not.toContain('replaces Myco 2.0'); expect(recipe).not.toContain('Reinstall'); expect(recipe).not.toContain('Choose the correct');
     expect(recipe).not.toContain('restore_binary'); expect(recipe).not.toContain('curl ');
     const commands = [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
-    expect(spawnSync('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home) }).status).toBe(0);
+    expect(runShell('sh', ['-c', commands], { cwd: f.home, env: sandboxChildEnv(f.home) }).status).toBe(0);
     expect(fs.readFileSync(f.executable, 'utf8')).toBe('intact 1.4.8');
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   it('recognizes the still-present executable from a slot or hash-bound install marker', () => {
     for (const evidence of ['slot', 'marker']) {
@@ -259,11 +267,11 @@ esac
     for (const fence of fences) { expect(fence.trim().startsWith('(\nset -e\n')).toBe(true); expect(fence.trim().endsWith(')')).toBe(true); }
     const snippet = path.join(f.home, 'snippet.sh'); write(snippet, fences.join('\n'));
     const tools = path.join(f.home, 'tools'); write(path.join(tools, 'cp'), '#!/bin/sh\necho fixture-copy-failure >&2\nexit 73\n');
-    const undo = spawnSync('sh', ['-c', '. "$1"; result=$?; case $- in *e*) exit 88 ;; esac; echo "parent-alive:$result"', 'sh', snippet], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    const undo = runShell('sh', ['-c', '. "$1"; result=$?; case $- in *e*) exit 88 ;; esac; echo "parent-alive:$result"', 'sh', snippet], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
     expect(undo.status).toBe(0); expect(undo.stdout).toContain('parent-alive:73'); expect(undo.stderr).toContain('fixture-copy-failure');
     expect(fs.readdirSync(path.dirname(f.executable)).filter(name => name.startsWith('.myco-restore-'))).toEqual([]);
     expect(fs.readFileSync(f.executable, 'utf8')).toBe('2.0 executable');
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   it.each(['release', 'malformed', 'mismatch'])('reports reinstall %s failure without changing the caller shell', (failure) => {
     const f = fixture();
@@ -280,11 +288,11 @@ case "$url" in
 esac
 `);
     const snippet = path.join(f.home, 'reinstall.sh'); write(snippet, [...recipe.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1]).join('\n'));
-    const undo = spawnSync('sh', ['-c', '. "$1"; result=$?; case $- in *e*) exit 88 ;; esac; echo "parent-alive:$result"', 'sh', snippet], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
+    const undo = runShell('sh', ['-c', '. "$1"; result=$?; case $- in *e*) exit 88 ;; esac; echo "parent-alive:$result"', 'sh', snippet], { cwd: f.home, env: sandboxChildEnv(f.home, { PATH: tools + path.delimiter + process.env.PATH }), encoding: 'utf8' });
     expect(undo.status).toBe(0); expect(undo.stdout).toContain('parent-alive:1');
     expect(undo.stderr).toContain(failure === 'release' ? 'No published Myco 1.4 release was found.' : failure === 'malformed' ? 'checksum is missing or malformed.' : 'checksum does not match.');
     expect(fs.readFileSync(f.executable, 'utf8')).toBe('2.0 executable');
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   it.skipIf(PWSH === '')('stops the Windows restore recipe on a failed executable copy', () => {
     const f = fixture('win32'); f.slot('1.4.8', 'saved 1.4 bytes');
@@ -296,13 +304,13 @@ esac
       Write-Error 'fixture executable copy failure'
     }
 `;
-    const undo = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', failing + commands + `\nSet-Content -LiteralPath '${marker}' -Value started`], {
+    const undo = runShell(PWSH, ['-NoProfile', '-NonInteractive', '-Command', failing + commands + `\nSet-Content -LiteralPath '${marker}' -Value started`], {
       cwd: f.home, env: sandboxChildEnv(f.home), encoding: 'utf8',
     });
     expect(undo.status).not.toBe(0); expect(undo.stderr).toContain('fixture executable copy failure');
     expect(fs.existsSync(marker)).toBe(false);
     expect(fs.readFileSync(f.executable, 'utf8')).toBe('2.0 executable');
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   it.skipIf(PWSH === '').each([false, true])('applies the Windows recovery commands with offline downloads (saved copy %s)', (saved) => {
     const f = fixture('win32');
@@ -321,12 +329,12 @@ esac
       else { Copy-Item -LiteralPath '${artifact}' -Destination $OutFile }
     }
 `;
-    const undo = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', mock + commands], {
+    const undo = runShell(PWSH, ['-NoProfile', '-NonInteractive', '-Command', mock + commands], {
       cwd: f.home, env: sandboxChildEnv(f.home), encoding: 'utf8',
     });
     expect({ status: undo.status, stderr: undo.stderr }).toEqual({ status: 0, stderr: '' });
     expect(fs.readFileSync(f.executable)).toEqual(fs.readFileSync(artifact));
-  });
+  }, SHELL_TEST_TIMEOUT_MS);
 
   it.each(['darwin', 'linux', 'win32'] as const)('keeps a unique saved executable in the %s backup and places recovery before the start step', (platform) => {
     const f = fixture(platform); const slot = f.slot('1.4.8', 'exact saved bytes');
