@@ -839,6 +839,7 @@ describe('the prerequisites every verb checks first', () => {
       const home = freshHome();
       if (verb !== 'create') recordFor(home);
       await expect(run({ accountId: ACCOUNT, mycoHome: home }, absent())).rejects.toThrow(WranglerAbsent);
+      await expect(run({ accountId: ACCOUNT, mycoHome: home }, { run: async () => { throw Object.assign(new Error('spawn npx'), { code: 'ENOENT' }); } })).rejects.toThrow('Node.js is not installed');
       expect({ verb, calls: calls.map((c) => c.args.join(' ')) })
         .toEqual({ verb, calls: ['--no-install wrangler --version'] });
     }
