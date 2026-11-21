@@ -1,4 +1,4 @@
-import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS, SEARCH_TYPES, SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
+import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS, SEARCH_TYPES, SEARCH_WORD_CEILING } from '@goondocks/myco-shared/search-types';
 import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
@@ -117,10 +117,10 @@ describe('tool parity', () => {
         const type = frozen.inputSchema.properties.type as { enum: string[] };
         type.enum = type.enum.filter((value) => value !== 'skill');
         expect(current.description).not.toContain('skills');
-        // One search operation (#2101 S5c): a conversation's turns are the one kind `card`, a word search ranks a bounded
-        // window of the newest matches and continues into older ones, and the tool states its limits from the server's own.
+        // Word search declares common-word admission and its conversation-card kind.
         expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual([...SEARCH_TYPES, 'all']);
-        expect(current.description).toContain(`ranks the newest ${SEARCH_WINDOW} matches`);
+        expect(current.description).toContain(`more than ${SEARCH_WORD_CEILING} records`);
+        expect(current.description).toContain('candidateWords lists these very common words');
         expect(current.description).toContain('never counts its matches');
         expect(current.cortex?.guidance).toContain('card hits identify the session and prompt');
         current.description = frozen.description;

@@ -9,12 +9,17 @@ export const SEARCH_MAX_LIMIT = 100;
 export const SEARCH_QUERY_MAX_CHARS = 512;
 /** The most words a search matches; words in `SEARCH_STOPWORDS` are not counted. */
 export const SEARCH_MAX_TERMS = 16;
+/** A word found in at most this many scoped documents brings all of them into the first ranking, however old. */
+export const SEARCH_WORD_CEILING = 128;
 /**
- * The newest matches a relevance search ranks in one step, shared among the kinds searched. When more match, the answer
- * is `partial` and later pages continue into older matches.
+ * The newest matches one ranking reads, shared among kinds; less common words add their older matches to it.
+ * When more may match, the answer is `partial`;
+ * later pages finish the stored ranking then continue through the remaining matches in historical windows.
  */
 export const SEARCH_WINDOW = 500;
-/** How long a search's later pages stay available after its first continuation. */
+/** Relative weights of word presence in the headline and body. */
+export const SEARCH_RELEVANCE_WEIGHTS = { headline: 2, body: 1 } as const;
+/** How long a search's later pages stay available after its ranking is stored. */
 export const SEARCH_WINDOW_TTL_MS = 15 * 60_000;
 /** Common English words a search ignores: they name nothing a record is about. */
 export const SEARCH_STOPWORDS: readonly string[] = [
@@ -45,7 +50,7 @@ export interface SearchOptions {
   agent?: string;
   /** The branch of the session a match belongs to, exactly. */
   branch?: string;
-  /** `relevance` (the default): the best of the newest matches first. `time`: one type's matches oldest first. Both page by `cursor`. */
+  /** `relevance` (the default): global relevance candidates first, then locally ranked historical windows. `time`: one type's matches oldest first. Both page by `cursor`. */
   order?: string;
   /** `all` (the default): a match holds every word. `any`: a match holds at least one. */
   match?: string;
@@ -107,7 +112,7 @@ export interface SearchCoverage {
   state: 'ready' | 'building';
   /** Plan bodies stored apart that the index has not finished reading; `building` until that count is kept. */
   pendingBlobs: number | 'building';
-  /** On a partial answer, the time of the oldest record this page's ranking reached, in epoch milliseconds; otherwise null. */
+  /** The historical window's time edge in epoch milliseconds on a partial answer; null for a global relevance window or an exhausted search. */
   horizon: number | null;
 }
 
@@ -115,12 +120,14 @@ export interface SearchAnswer {
   hits: SearchResult[];
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
-  /** Present when word search uses only the first meaningful words of the question. */
-  wordTruncation?: { actual: number; searched: number };
+  /** Present when word search shortens the question, with counts and the meaningful words selected by bounded frequency probes. */
+  wordTruncation?: { actual: number; searched: number; words?: string[] };
+  /** Words too common to select relevance candidates, by document kind; they still contribute to scoring. */
+  candidateWords?: { kind: SearchType | 'chunk'; omitted: string[] }[];
   /** Why a requested semantic search used the word path. */
   fallback_reason?: 'no_vectors' | 'history' | 'empty_semantic' | 'provider_unavailable' | 'filtered';
   coverage: SearchCoverage;
-  /** True when older matches exist than the ones this answer ranked; the next page reaches them. */
+  /** True when matches remain outside this ranking window; nextCursor continues through them after this window. */
   partial: boolean;
   /** When the ranking these hits come from was made, in epoch milliseconds. */
   asOf: number;

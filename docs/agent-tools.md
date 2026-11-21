@@ -21,6 +21,34 @@ Project instructions arrive at session start. Relevant spores and plans return w
 
 These tools read and edit project intelligence. Administration belongs in the dashboard and CLI. See [Actors & boundaries](architecture/actors-and-boundaries.md).
 
+### Word search
+
+`myco_search` searches sessions, spores, plans and conversation cards. Use `mode: "fts"` to search
+words. Search by meaning falls back to words when it cannot answer. `match: "all"` requires every
+searched word, including words held across a plan's title and stored body. `match: "any"` accepts
+any searched word.
+
+Word search returns its best matches first, with title or line matches counted twice as much as body
+matches. It ranks the newest matches together with every match of the question's less common words,
+however old. A word found in more than 128 records of one kind is too common to bring older records
+in for that kind, but still counts when scoring; `candidateWords` lists those words by kind (`chunk`
+means a stored plan body). `nextCursor` continues through the remaining matches, newest first. Ties
+favor newer records.
+
+`partial: true` means more history remains outside the current window. `coverage.horizon` gives
+the window's time edge when newer history was selected, otherwise null. A partial answer can have
+no hits when its filters exclude the current window; follow `nextCursor` to continue checking.
+`coverage.state` and `pendingBlobs` report whether older records or stored plan bodies are still
+being made searchable. Later pages remain available for 15 minutes after the second page; restart
+without a cursor after `cursor_expired`. `order: "time"` lists one type (spore, plan or card) oldest first.
+
+Repeated words and case variants count once. Questions with more than 16 distinct meaningful words
+use the rarer words; `wordTruncation` reports `actual`, `searched` and the selected `words`, including
+fallback from search by meaning. A short or long `match: "all"` question holding a word absent from
+the records returns no hits. Search by meaning still uses the whole original question.
+
+Example: `{"query":"repair windows service absolute path","type":"spore","mode":"fts","match":"any"}`.
+
 ### Name the project
 
 Every tool accepts `project`: the project ID or the repository's Git remote. Pass it on every call. A read without it may use the connection's default project; a write without it is refused. Use `myco_cortex` with `op: "instructions"` to learn the project ID.
