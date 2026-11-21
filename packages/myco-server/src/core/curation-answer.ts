@@ -1,6 +1,6 @@
 import { CURATION_BODY_OVER_LIMIT } from '@goondocks/myco-shared/call-words';
-import { admitAgentLine, agentLineNotation } from './agent-line.js';
-import { AGENT_LINE_MAX_CHARS } from './injection.js';
+import { admitAgentLine, agentLineNotation, normalizeAgentLine } from './agent-line.js';
+import { AGENT_LINE_MAX_CHARS, AGENT_LINE_TARGET_WORDS } from './injection.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES, type CurationAnswer, type CurationNote } from './spore-curation-contract.js';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -9,7 +9,20 @@ const size = (value: unknown): string => typeof value === 'string' ? value.trim(
 const shown = (value: unknown): string => JSON.stringify(value)?.replaceAll(':', '\\u003a') ?? 'missing';
 const keys = (value: Record<string, unknown>, allowed: string[]): string | null => Object.keys(value).find(key => !allowed.includes(key)) ?? null;
 
-export function checkCurationAnswer(input: Record<string, unknown>, memberIds: readonly string[]): CurationAnswer | string {
+/** What a member's stored agent_line breaks of the rule every new note meets, in plain words, or null when it meets it. */
+export function curationLineCheck(stored: string | null): string | null {
+  const line = normalizeAgentLine(stored ?? '');
+  if (line.length === 0) return 'The agent_line is missing.';
+  if (line.length > AGENT_LINE_MAX_CHARS) return `The agent_line has ${line.length} characters, over the ${AGENT_LINE_MAX_CHARS} allowed.`;
+  const notation = agentLineNotation(line);
+  return notation === null ? null : `The agent_line carries code notation ${JSON.stringify(notation)}.`;
+}
+
+/** A group member as the check reads it: its id and what the server found wrong with its agent_line. */
+export interface CheckedMember { id: string; lineCheck: string | null }
+
+export function checkCurationAnswer(input: Record<string, unknown>, group: readonly CheckedMember[]): CurationAnswer | string {
+  const memberIds = group.map(member => member.id), lineChecks = new Map(group.map(member => [member.id, member.lineCheck]));
   const extra = keys(input, ['op', 'project', 'notes', 'keep', 'retire', 'reason']);
   if (extra !== null) return `argument ${shown(extra)} is not declared; omit it`;
   if (input.op !== 'answer') return `op is ${shown(input.op)}; expected answer`;
@@ -41,13 +54,19 @@ export function checkCurationAnswer(input: Record<string, unknown>, memberIds: r
     }
     if (!text(raw.content, CURATION_BODY_CHARS)) return `notes[${index}].content has ${size(raw.content)} characters; expected 1–${CURATION_BODY_CHARS}`;
     const admitted = admitAgentLine(raw.agent_line);
-    if ('error' in admitted) return `notes[${index}].${admitted.error}; limit ${AGENT_LINE_MAX_CHARS}`;
+    const length = typeof raw.agent_line === 'string' ? normalizeAgentLine(raw.agent_line).length : 0;
+    if (length > AGENT_LINE_MAX_CHARS) return `notes[${index}].agent_line has ${length} characters after whitespace normalization, ${length - AGENT_LINE_MAX_CHARS} more than the ${AGENT_LINE_MAX_CHARS} allowed; shorten that line by at least ${length - AGENT_LINE_MAX_CHARS} characters, to about ${AGENT_LINE_TARGET_WORDS} short words, moving detail into the content`;
+    if ('error' in admitted) return `notes[${index}].${admitted.error}`;
     const line = admitted.line;
     const notation = agentLineNotation(line);
     if (notation !== null) return `notes[${index}].agent_line contains code notation ${shown(notation)}; use plain situation and guidance, with no path, flag or symbol`;
     notes.push({ sources: raw.sources as string[], observation_type: raw.observation_type, agent_line: line, content: raw.content });
   }
-  for (const id of input.keep) { const bad = use(id, 'keep'); if (bad !== null) return bad; }
+  for (const id of input.keep) {
+    const bad = use(id, 'keep'); if (bad !== null) return bad;
+    const found = lineChecks.get(id as string);
+    if (found != null) return `member ${shown(id)} cannot be kept as it is: ${found} Remove it from keep and write it again as a new note with sources [${shown(id)}], an agent_line that meets the rule and a body that keeps every specific of the old note, or include it in a merge or split`;
+  }
   const retire: CurationAnswer['retire'] = [];
   for (const [index, raw] of input.retire.entries()) {
     if (!object(raw)) return `retire[${index}] is not an object`;
