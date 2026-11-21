@@ -80,7 +80,8 @@ describe('the Tasks view reads the registry', () => {
   it('renders every returned task and every displayed fact from its registry row', async () => {
     const asked = server();
     mount(`/p/${P}/work/tasks`);
-    await screen.findByRole('heading', { level: 1, name: 'Tasks' });
+    await screen.findByRole('heading', { level: 1, name: 'Myco’s work' });
+    expect(screen.getByRole('link', { name: 'Tasks', current: 'page' })).toBeTruthy();
     await screen.findByRole('heading', { name: TASKS[0]!.name });
     expect(document.querySelectorAll('article[data-task]')).toHaveLength(TASKS.length);
     for (const task of TASKS) {

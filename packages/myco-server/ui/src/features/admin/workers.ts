@@ -7,7 +7,7 @@
  * by its machine and a run by its project's name: never by an id.
  */
 import type { HealthTone } from '../../design';
-import type { WorkerRow, WorkerStatus } from '../../lib/api';
+import type { WorkerRow } from '../../lib/api';
 import { formatUntil } from '../../lib/format';
 import { harnessLabel } from '../../lib/harness';
 import { agoWords } from '@goondocks/myco-shared/time-words';
@@ -28,13 +28,6 @@ export const REASON_WORDS: Record<NonNullable<WorkerRow['lastReason']>, string> 
   paused: 'paused; assigned work may finish',
 };
 
-/** How a person sets a machine to run Myco's work, said wherever none is: the words around the command, and the command. */
-export const ATTACH_WORDS = {
-  before: 'On a machine you want to use, run myco runner register <address>. After approval, running',
-  command: 'myco runner install',
-  after: 'starts the enrolled runner at login.',
-} as const;
-
 /** What Myco's tasks are called, by the task name a run carries. */
 const TASK_WORDS: Readonly<Record<string, string>> = {
   'extract-curate': 'learning',
@@ -50,15 +43,8 @@ const TASK_WORDS: Readonly<Record<string, string>> = {
 /** A task in words: "learning", "titling", else "a task". */
 export const taskWords = (task: string | null): string => (task === null ? 'a task' : TASK_WORDS[task] ?? 'a task');
 
-export interface WorkerNames {
-  /** The worker's machine, by name. */
-  machine: string;
-  /** A project's name, or null where the dashboard does not know it. */
-  project: (projectId: string) => string | null;
-}
-
 /** One worker's state in one line without its name, and the tone of its dot: for a row that already names its machine. */
-export function workerState(worker: WorkerRow, now: number, project: WorkerNames['project']): { tone: HealthTone; line: string } {
+export function workerState(worker: WorkerRow, now: number, project: (projectId: string) => string | null): { tone: HealthTone; line: string } {
   if (worker.runnerDetails !== undefined) {
     const runner = worker.runnerDetails;
     return { tone: runner.display === 'Busy' || runner.display === 'Online' ? 'ok' : runner.display === 'Not ready' ? 'bad' : 'faint',
@@ -89,12 +75,6 @@ export function workerKindWords(worker: Pick<WorkerRow, 'runner'>): string {
   return worker.runner ? 'Registered runner' : LEGACY_WORKER_LABEL;
 }
 
-/** One worker's state in one line, led by its machine's name, and the tone of its dot. */
-export function workerLine(worker: WorkerRow, now: number, names: WorkerNames): { tone: HealthTone; line: string } {
-  const state = workerState(worker, now, names.project);
-  return { tone: state.tone, line: `${worker.runner ? worker.runner.name : names.machine} · ${workerKindWords(worker)} · ${state.line}` };
-}
-
 /** Why the last claim took nothing, when it took nothing: that poll's answer, never the queue's. */
 export function lastClaimWords(worker: WorkerRow): string | null {
   if (worker.busy !== null || worker.lastReason === null || worker.lastSeenAt === 0) return null;
@@ -112,28 +92,4 @@ export function agentsWords(worker: WorkerRow): string {
   if (signedIn.length === 0) return worker.offers.length === 0 ? 'Reported no agents.' : 'Reported no agent signed in.';
   const names = signedIn.length === 1 ? signedIn[0]! : `${signedIn.slice(0, -1).join(', ')} and ${signedIn[signedIn.length - 1]}`;
   return `Reports ${names} signed in; their providers aren’t tested here.`;
-}
-
-/** A worker counts as attached while it drives a run, or while it is heard from lately on a credential the claim route admits. */
-export function isAttached(worker: WorkerRow): boolean {
-  return worker.busy !== null || (worker.recent && worker.eligible);
-}
-
-/** The fleet in one line, and its tone: how many machines run Myco's work, and what waits. */
-export function fleetLine(workers: WorkerStatus, now: number): { tone: HealthTone; attached: number; line: string } {
-  if (!workers.available || workers.fleet === null || workers.runsQueued === null) return { tone: 'bad', attached: 0, line: 'Machine and queue information is unavailable.' };
-  const attached = workers.fleet.filter(isAttached);
-  const queued = workers.runsQueued;
-  const waiting = queued === 0 ? 'Nothing is waiting.' : `${queued} ${queued === 1 ? 'task is' : 'tasks are'} waiting.`;
-  if (attached.length > 0) {
-    const busy = attached.filter((w) => w.busy !== null).length;
-    return {
-      tone: 'ok',
-      attached: attached.length,
-      line: `${attached.length} ${attached.length === 1 ? 'machine is' : 'machines are'} running Myco’s work, ${busy} busy now. ${waiting}`,
-    };
-  }
-  const last = Math.max(0, ...workers.fleet.filter((w) => w.eligible).map((w) => w.lastSeenAt));
-  const contact = last > 0 ? `A machine last checked in ${sinceWords(last, now)}.` : 'No machine has checked in yet.';
-  return { tone: queued > 0 ? 'bad' : 'faint', attached: 0, line: `No machine is running Myco’s work. ${contact} ${waiting}` };
 }

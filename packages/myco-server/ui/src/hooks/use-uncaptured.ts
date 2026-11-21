@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
-import type { ConnectAnswer, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../features/today/wire';
+import type { ConnectAnswer, ConnectRequest, DismissAnswer, DismissRequest, UncapturedAnswer, UncapturedRootItem } from '../features/today/wire';
 import { live } from '../lib/live';
 
 export type { UncapturedAnswer, UncapturedRootItem } from '../features/today/wire';
@@ -27,6 +27,16 @@ export function useConnectUncaptured() {
   return useMutation({
     mutationFn: ({ item, projectId }: { item: Pick<UncapturedRootItem, 'machineId' | 'rootKey'>; projectId: string | null }) =>
       postJson<ConnectAnswer>(connectPath(item), (projectId === null ? {} : { projectId }) satisfies ConnectRequest),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['uncaptured'] }),
+  });
+}
+
+/** Stop asking about one of them, and with a folder, about every repository under it on that machine; the list is read again after. */
+export function useDismissUncaptured() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ item, folder }: { item: Pick<UncapturedRootItem, 'machineId' | 'rootKey'>; folder?: string }) =>
+      postJson<DismissAnswer>(`/api/uncaptured/${encodeURIComponent(item.machineId)}/${encodeURIComponent(item.rootKey)}/dismiss`, (folder === undefined ? {} : { folder }) satisfies DismissRequest),
     onSuccess: () => client.invalidateQueries({ queryKey: ['uncaptured'] }),
   });
 }

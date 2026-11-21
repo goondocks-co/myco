@@ -19,7 +19,7 @@ export async function handleAttention(env: ServerEnv, ctx: OwnerContext): Promis
     const requirement = await projectRepositoryNeeded(env, scope);
     const streaks = await readRepositoryAttention(env, scope.projectId);
     return ok({ items: [...(requirement === null ? [] : [{ kind: 'repository_missing', tone: 'warn', ...requirement }]),
-      ...streaks.map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak }))], unavailable: [] });
+      ...streaks.map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak, retrying: !streak.backoff }))], unavailable: [] });
   }
   return ok(await readAttention(env, ctx.now));
 }

@@ -117,7 +117,7 @@ describe('Needs you', () => {
   });
 
   it('names a learning or map outcome that failed until a later run of its task completes, and never a failure that saved its spores', async () => {
-    const { run, spore, read, kinds } = harness();
+    const { run, spore, read, kinds, sqlite } = harness();
     run('proj_1', 'run_l1', 'extract-curate', 'failed', NOW - 2 * HOUR);
     spore('proj_1', 'sp1', 'run_l1');
     expect(await kinds()).toEqual([]);
@@ -126,9 +126,15 @@ describe('Needs you', () => {
     run('proj_2', 'run_m2', 'canopy-map', 'failed', NOW - 2 * HOUR);
     const { items } = await read();
     expect(items).toEqual([
-      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_1', outcome: 'learn', task: 'extract-curate', failures: 1, since: NOW - HOUR, latestAt: NOW - HOUR, runId: 'run_l2' },
-      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_2', outcome: 'map', task: 'canopy-map', failures: 2, since: NOW - 3 * HOUR, latestAt: NOW - 2 * HOUR, runId: 'run_m2' },
+      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_1', outcome: 'learn', task: 'extract-curate', failures: 1, since: NOW - HOUR, latestAt: NOW - HOUR, runId: 'run_l2', retrying: false },
+      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_2', outcome: 'map', task: 'canopy-map', failures: 2, since: NOW - 3 * HOUR, latestAt: NOW - 2 * HOUR, runId: 'run_m2', retrying: true },
     ]);
+    // A session's learning that failed is taken again by itself, until its interruptions reach the bound.
+    sqlite.run(`UPDATE agent_runs SET subject = 'session:s1' WHERE id = 'run_l2'`);
+    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_l2')).toMatchObject({ retrying: true });
+    sqlite.run(`UPDATE agent_runs SET error_code = 'run_interrupted_repeated' WHERE id = 'run_l2'`);
+    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_l2')).toMatchObject({ retrying: false });
+    sqlite.run(`UPDATE agent_runs SET subject = NULL, error_code = NULL WHERE id = 'run_l2'`);
     run('proj_1', 'run_l3', 'extract-curate', 'completed', NOW - 30 * MINUTE);
     expect((await read()).items.map((i) => ('projectId' in i ? i.projectId : null))).toEqual(['proj_2']);
     // A failure older than the lookback is no longer news.

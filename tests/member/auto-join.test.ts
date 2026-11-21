@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markLeft, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
+  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markLeft, markSweepDone, placeRepository, notCapturedNotice, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -149,6 +149,11 @@ describe('where a repository stands', () => {
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, leaves)).toBe('eligible');
     expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, leaves)).toBe('outside_folders');
     expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, connectRoots: { [rootKeyFor(outside, mycoHome)]: '' } })).toBe('connected');
+    // A folder never asked about, or a repository dismissed from "Needs you", is quiet; a captured folder still wins.
+    expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, quietRoots: [base] })).toBe('quiet');
+    expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { ...leaves, quietRoots: [base] })).toBe('eligible');
+    expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, dismissedRoots: [rootKeyFor(outside, mycoHome)] })).toBe('quiet');
+    expect(notCapturedNotice({ outcome: 'outside_folders', serverUrl: 'https://s', placement: 'quiet' }, [], null)).toBeNull();
     // `~/` names a folder under the home folder; a relative entry names none.
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['~/Repos', 'Repos'], connectRoots: {} }, { home: base })).toBe('eligible');
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['Repos'], connectRoots: {} }, { home: base })).toBe('outside_folders');

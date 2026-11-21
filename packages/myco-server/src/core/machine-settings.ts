@@ -23,6 +23,10 @@ import {
  * the project it resolves by its remote or creates. Written by the connect, read by the machine's next hook there.
  */
 const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
+/** The repositories dismissed from "Needs you", by key: written by the dismissal, read when a machine reports one. */
+const DISMISSED_ROOTS_LEAF = 'capture.dismissed_roots';
+/** The folders whose repositories the machine never asks about: the member's own setting, which the machine applies. */
+const QUIET_ROOTS_LEAF = 'capture.quiet_roots';
 
 /** Every leaf a machine holds, with its rule and its default; `serverWritten` leaves are written by the Deployment alone, never set on the dashboard. */
 export const MACHINE_LEAF_SPECS: Readonly<Record<string, { spec: LeafSpec; default: unknown; serverWritten?: true }>> = Object.fromEntries(
@@ -242,34 +246,59 @@ export async function connectMachineRoot(db: RelationalStore, machineId: string,
   return result.applied ? { applied: true } : result;
 }
 
+/** Dismiss one repository of a machine from "Needs you": a report of it is no longer listed. */
+export async function dismissMachineRoot(db: RelationalStore, machineId: string, rootKey: string, actor: string, now: number): Promise<RootsWrite> {
+  return editMachineLeaf<string[]>(db, machineId, DISMISSED_ROOTS_LEAF, actor, now, current => current.includes(rootKey) ? current : [...current, rootKey]);
+}
+
+/** Never ask about a repository under `folder` on this machine: the machine stops reporting them at their next attempt. */
+export async function quietMachineFolder(db: RelationalStore, machineId: string, folder: string, actor: string, now: number): Promise<RootsWrite> {
+  return editMachineLeaf<string[]>(db, machineId, QUIET_ROOTS_LEAF, actor, now, current => current.includes(folder) ? current : [...current, folder]);
+}
+
+/** Whether a machine's repository was dismissed from "Needs you". */
+export async function dismissedRoot(db: RelationalStore, machineId: string, rootKey: string): Promise<boolean> {
+  const row = await readMachineLeaf(db, machineId, DISMISSED_ROOTS_LEAF);
+  if (row === null) return false;
+  try { return (resolveMachineSetting(DISMISSED_ROOTS_LEAF, JSON.parse(row.value)).effective as string[]).includes(rootKey); }
+  catch (error) { if (error instanceof SyntaxError) return false; throw error; }
+}
+
 type RootsWrite = { applied: true; changed: boolean } | Extract<MachineWrite, { applied: false }>;
 
 /** Recompute a connection edit from the exact stored text that its conditional write replaces. */
-async function editMachineRoots(
+function editMachineRoots(
   db: RelationalStore, machineId: string, actor: string, now: number,
   edit: (current: Record<string, string>) => Record<string, string>,
 ): Promise<RootsWrite> {
+  return editMachineLeaf(db, machineId, CONNECT_ROOTS_LEAF, actor, now, edit);
+}
+
+/** Recompute an edit of one capture leaf from the exact stored text that its conditional write replaces; the rest stand. */
+async function editMachineLeaf<T extends object>(
+  db: RelationalStore, machineId: string, leaf: string, actor: string, now: number, edit: (current: T) => T,
+): Promise<RootsWrite> {
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt++) {
     if (await machineAccess(db, actor, machineId) !== 'allowed') return { applied: false, reason: 'absent' };
-    const row = await readMachineLeaf(db, machineId, CONNECT_ROOTS_LEAF);
-    let current: unknown = {};
+    const row = await readMachineLeaf(db, machineId, leaf);
+    const declared = MACHINE_LEAF_SPECS[leaf]!;
+    let current: unknown = declared.default;
     if (row !== null) {
       try { current = JSON.parse(row.value); }
       catch (error) {
         if (!(error instanceof SyntaxError)) throw error;
-        return { applied: false, reason: 'invalid_value', detail: 'the stored connections cannot be read' };
+        return { applied: false, reason: 'invalid_value', detail: 'the stored value cannot be read' };
       }
     }
-    const spec = MACHINE_LEAF_SPECS[CONNECT_ROOTS_LEAF]!.spec;
-    const invalid = leafRuleViolation(spec, current);
+    const invalid = leafRuleViolation(declared.spec, current);
     if (invalid !== null) return { applied: false, reason: 'invalid_value', detail: invalid };
-    const next = edit(current as Record<string, string>);
-    const violation = leafRuleViolation(spec, next);
+    const next = edit(current as T);
+    const violation = leafRuleViolation(declared.spec, next);
     if (violation !== null) return { applied: false, reason: 'invalid_value', detail: violation };
     const value = JSON.stringify(next);
     if (row === null && Object.keys(next).length === 0) return { applied: true, changed: false };
     if (row !== null && value === row.value) return { applied: true, changed: false };
-    if (await writeMachineRoots(db, { machine: machineId, leaf: CONNECT_ROOTS_LEAF, value, actor, now, previous: row?.value ?? null })) {
+    if (await writeMachineRoots(db, { machine: machineId, leaf, value, actor, now, previous: row?.value ?? null })) {
       return { applied: true, changed: true };
     }
   }

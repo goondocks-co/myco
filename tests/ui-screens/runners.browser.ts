@@ -74,7 +74,7 @@ try {
     await context.addCookies([{name:SESSION_COOKIE,value:await cookieFor(OWNER),domain:'127.0.0.1',path:'/',secure:true}]);
     await context.addInitScript(mode=>localStorage.setItem('myco-appearance',JSON.stringify({theme:'sage',mode,font:'default',density:'normal'})),mode);
     const page = await context.newPage();
-    await page.goto(origin+'/runners');
+    await page.goto(origin+'/work/runners');
     await expect(page.getByRole('heading',{name:'homelab-mini'})).toBeVisible();
     for (const [id,,display] of states) {
       const card = page.locator('[data-runner="rn_'+id+'"]');
@@ -119,15 +119,15 @@ try {
     await expect(page.getByRole('heading',{name:'Replace registration for homelab-mini'})).toBeVisible();
     await page.screenshot({path:path.join(output,mode+'-device-replacement.png'),fullPage:true});
     await page.unroute('**/api/device/preview');
-    await page.goto(origin+'/runners');
+    await page.goto(origin+'/work/runners');
     await page.getByRole('button',{name:'Forget this worker',exact:true}).click();
     await expect(page.getByRole('dialog')).toContainText('never revokes the member credential');
     await page.getByRole('dialog').screenshot({path:path.join(output,mode+'-forget-confirmation.png')});
     await page.getByRole('button',{name:'Cancel',exact:true}).click();
-    await page.goto(origin+'/status/health#workers');
+    await page.goto(origin+'/work/runners');
     await expect(page.locator('[data-legacy-worker]')).toContainText('Offline');
-    await page.locator('[data-legacy-worker]').screenshot({path:path.join(output,mode+'-health-legacy.png')});
-    await page.goto(origin+'/runners');
+    await page.locator('[data-legacy-worker]').screenshot({path:path.join(output,mode+'-runners-legacy.png')});
+    await page.goto(origin+'/work/runners');
     await page.route('**/api/runners',route=>route.fulfill({json:{observedAt:now,runners:[],legacyWorkers:[],queue:{observedAt:now,count:0,oldestAt:null,reasons:[],nativeNeedsRunner:false}}}));
     await page.reload();
     await expect(page.getByText('No runners are registered.',{exact:false})).toBeVisible();
@@ -141,7 +141,7 @@ try {
     await page.screenshot({path:path.join(output,mode+'-unavailable.png'),fullPage:true});
     await page.unroute('**/api/runners');
     await context.addCookies([{name:SESSION_COOKIE,value:await cookieFor(READER),domain:'127.0.0.1',path:'/',secure:true}]);
-    await page.goto(origin+'/runners');
+    await page.goto(origin+'/work/runners');
     await expect(page.getByRole('heading',{name:'homelab-mini'})).toBeVisible();
     for (const action of ['Rename','Pause','Remove','Replace registration','Update now','Forget this worker','More actions for homelab-mini'])
       await expect(page.getByRole('button',{name:action,exact:true})).toHaveCount(0);
@@ -156,11 +156,11 @@ try {
   const context = await browser.newContext();
   await context.addCookies([{name:SESSION_COOKIE,value:await cookieFor(OWNER),domain:'127.0.0.1',path:'/',secure:true}]);
   const page = await context.newPage();
-  await page.goto(origin+'/status/health#workers');
+  await page.goto(origin+'/work/runners');
   await page.getByRole('button',{name:'Forget this worker',exact:true}).click();
   await page.getByRole('button',{name:'Forget worker',exact:true}).click();
   await expect(page.locator('[data-legacy-worker]')).toHaveCount(0);
-  await page.goto(origin+'/runners');
+  await page.goto(origin+'/work/runners');
   await expect(page.getByRole('heading',{name:'homelab-mini'})).toBeVisible();
   await expect(page.locator('[data-legacy-worker]')).toHaveCount(0);
   await context.close();

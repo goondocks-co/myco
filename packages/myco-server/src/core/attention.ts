@@ -18,6 +18,10 @@ import { scheduleLeaves, scheduledTasks } from './schedule-rules.js';
  * - the schema the store holds is not the one this server expects.
  * - session reads were refused for inconsistent saved sources within the outcome window.
  *
+ * A failure Myco tries again by itself says so in `retrying`, decided from recorded state alone: a pulled stage whose
+ * subject can still be retried, a task on an enabled schedule, or a repository failure that is not a settings one.
+ * Needs you lists only items with no retry left; the rest belong with Myco's work as stuck or failing.
+ *
  * A rule whose read fails is named in `unavailable` and the others still answer, so one unreadable fact never hides
  * the rest, and an empty list with nothing unavailable means nothing needs anyone.
  */
@@ -46,6 +50,8 @@ import { RUNTIME_SERVED_TASKS } from './worker-selection.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { provisionedHarnessAttention, type HarnessAttentionFact } from './harness-health.js';
 import { stuckRunBodies, type StuckRunBody } from '../db/runs/body-failures.js';
+import { subjectsRetrying } from '../db/runs/outcome-retry.js';
+import { PULLED_STAGES } from './pulled-stages.js';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -65,12 +71,14 @@ const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(
 
 /** The outcome tasks whose failure needs someone: learning and the code map. */
 const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, CURATION_TASK, MAP_TASK];
+/** The tasks a claim takes subject by subject, so a failed subject is taken again while it can still be retried. */
+const PULLED_TASKS: ReadonlySet<string> = new Set(PULLED_STAGES.map(stage => stage.task));
 
 export type AttentionItem =
-  | ({ kind: 'repository_preparation_failed'; tone: 'warn' } & RepositoryFailureStreak)
+  | ({ kind: 'repository_preparation_failed'; tone: 'warn'; retrying: boolean } & RepositoryFailureStreak)
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
-  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; interruptionMachine?: string | null; interruptionCode?: string }
+  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; retrying: boolean; interruptionMachine?: string | null; interruptionCode?: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number>; latestDiagnostic?: import('../ingest/parse.js').ParseDiagnostic }
@@ -106,7 +114,7 @@ async function lastBackup(env: ServerEnv): Promise<number | null> {
 const RULES: readonly Rule[] = [
   {
     kind: 'repository_preparation_failed',
-    read: async (_env, _now, _harnessFacts, _metadata, repositoryFacts) => (await repositoryFacts()).map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak })),
+    read: async (_env, _now, _harnessFacts, _metadata, repositoryFacts) => (await repositoryFacts()).map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak, retrying: !streak.backoff })),
   },
   {
     kind: 'repository_missing',
@@ -140,13 +148,17 @@ const RULES: readonly Rule[] = [
       const held = new Set((await repositoryFacts()).map(row => row.projectId));
       const failures = (await failingOutcomes(env.db, WATCHED_OUTCOME_TASKS, now - OUTCOME_LOOKBACK_MS))
         .filter(f => !held.has(f.projectId) || f.task !== MAP_TASK);
-      const interrupted = await interruptedEndings(env.db, failures.map(f => ({ projectId: f.projectId, runId: f.latestRunId })));
+      const keys = failures.map(f => ({ projectId: f.projectId, runId: f.latestRunId }));
+      const interrupted = await interruptedEndings(env.db, keys);
+      const retried = await subjectsRetrying(env.db, keys);
+      const scheduled = new Set(scheduledTasks((await scheduleLeaves(env)).overrides).map(row => row.task));
       return failures.map(f => {
         const ending = interrupted.find(end => end.runId === f.latestRunId && end.projectId === f.projectId);
         return {
           ...(ending === undefined ? {} : { interruptionMachine: ending.machine, interruptionCode: ending.code }),
           kind: 'outcome_failed', tone: 'bad', projectId: f.projectId, outcome: f.kind, task: f.task,
           failures: f.failures, since: f.since, latestAt: f.latestAt, runId: f.latestRunId,
+          retrying: scheduled.has(f.task) || (PULLED_TASKS.has(f.task) && retried.has(`${f.projectId}/${f.latestRunId}`)),
         };
       });
     },

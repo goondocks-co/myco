@@ -17,11 +17,13 @@ import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_UPDATE_HEADE
 
 const NOW = 1_800_000_000_000;
 /** The auto-join leaves a machine holds (#1547), at their defaults. */
-const AT_DEFAULT = { 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
+const AT_DEFAULT = { 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {}, 'capture.quiet_roots': [], 'capture.dismissed_roots': [] };
 const DEFAULT_ROWS = [
   { leaf: 'capture.prompt_file_roots', configured: false, value: [], updatedAt: null, updatedBy: null },
   { leaf: 'capture.auto_join_roots', configured: false, value: ['~/Repos'], updatedAt: null, updatedBy: null },
   { leaf: 'capture.connect_roots', configured: false, value: {}, updatedAt: null, updatedBy: null },
+  { leaf: 'capture.quiet_roots', configured: false, value: [], updatedAt: null, updatedBy: null },
+  { leaf: 'capture.dismissed_roots', configured: false, value: [], updatedAt: null, updatedBy: null },
 ];
 
 function rig() {

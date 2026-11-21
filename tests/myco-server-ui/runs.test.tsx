@@ -35,7 +35,7 @@ const HOURS: RunHoursAnswer = {
 const RUN = { projectId: 'proj_1', projectName: 'Myco', runId: 'run_1', task: 'embedding-reconcile', result: 'failed', errorCode: 'machine_unresponsive',
   harness: 'claude-code', model: null, runner: { id: 'rn_mini', name: 'homelab-mini' }, completedAt: UNTIL - 3 * HOUR };
 
-function mount(route = '/runs', finished: (cursor: string | null) => unknown = () => ({ rows: [RUN], cursor: null }), hours: RunHoursAnswer = HOURS) {
+function mount(route = '/work/history', finished: (cursor: string | null) => unknown = () => ({ rows: [RUN], cursor: null }), hours: RunHoursAnswer = HOURS) {
   const asked: string[] = [];
   globalThis.fetch = (async (input) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
@@ -53,7 +53,7 @@ function mount(route = '/runs', finished: (cursor: string | null) => unknown = (
 
 describe('Runs page', () => {
   it('lists stopping attempts as failed with their machine and retry bound', async () => {
-    mount('/runs?outcome=failed', () => ({ rows: [{ ...RUN, result: 'failed', errorCode: 'run_interrupted_repeated' }], cursor: null }), { ...HOURS, totals: { ...counts(0, 0, 1), waitedMs: 0 } });
+    mount('/work/history?outcome=failed', () => ({ rows: [{ ...RUN, result: 'failed', errorCode: 'run_interrupted_repeated' }], cursor: null }), { ...HOURS, totals: { ...counts(0, 0, 1), waitedMs: 0 } });
     expect((await screen.findByText(/1 run finished in the last 24 hours/)).textContent).toContain('1 failed');
     expect(await screen.findByText(/interrupted three times, most recently on homelab-mini/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Failed' })).toBeTruthy();
@@ -63,31 +63,31 @@ describe('Runs page', () => {
     mount();
     expect((await screen.findByText(/7 runs finished in the last 24 hours/)).textContent).toBe('7 runs finished in the last 24 hours: 3 worked, 1 changed nothing, 3 failed.');
     const timeline = screen.getByRole('region', { name: 'When runs finished' });
-    expect(within(timeline).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners/rn_mini');
+    expect(within(timeline).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/work/runners/rn_mini');
     expect(within(timeline).getByText(/^Nothing finished .*\(20 hours\)$/)).toBeTruthy();
 
     const failing = screen.getByRole('region', { name: 'What’s failing' });
     const group = within(failing).getByRole('link', { name: new RegExp(RUN_FAILURE_WORDS.machine_unresponsive!.slice(0, 20)) });
     expect(group.textContent).toContain('3 failed runs · Up from 1 the day before');
-    expect(group.getAttribute('href')).toBe('/runs?outcome=failed&cause=machine_unresponsive#runs-all');
+    expect(group.getAttribute('href')).toBe('/work/history?outcome=failed&cause=machine_unresponsive#runs-all');
     fireEvent.click(within(failing).getByRole('button', { name: 'Runner' }));
     expect(within(failing).getByRole('link', { name: /homelab-mini/ }).textContent).toContain('New: none the day before');
-    expect(within(failing).getByRole('link', { name: /No runner/ }).getAttribute('href')).toBe('/runs?group=runner&outcome=failed&noRunner=1#runs-all');
+    expect(within(failing).getByRole('link', { name: /No runner/ }).getAttribute('href')).toBe('/work/history?group=runner&outcome=failed&noRunner=1#runs-all');
 
     const all = screen.getByRole('region', { name: 'All runs' });
     const row = await within(all).findByRole('link', { name: /A search index update · Myco/ });
     expect(row.getAttribute('href')).toBe('/p/proj_1/work/runs/run_1');
     expect(row.textContent).toContain(`Failed · ${RUN_FAILURE_WORDS.machine_unresponsive}`);
-    expect(within(all).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners/rn_mini');
+    expect(within(all).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/work/runners/rn_mini');
   });
 
   it('labels a stored preview in the runs list', async () => {
-    mount('/runs', () => ({ rows: [{ ...RUN, dryRun: true, result: 'unchanged', errorCode: null }], cursor: null }));
+    mount('/work/history', () => ({ rows: [{ ...RUN, dryRun: true, result: 'unchanged', errorCode: null }], cursor: null }));
     expect((await screen.findByText('Preview: nothing was changed', { exact: false })).textContent).toContain('Preview: nothing was changed');
   });
 
   it('narrows the runs to a failure group and clears the narrowing', async () => {
-    const asked = mount('/runs?outcome=failed&cause=machine_unresponsive');
+    const asked = mount('/work/history?outcome=failed&cause=machine_unresponsive');
     const all = await screen.findByRole('region', { name: 'All runs' });
     await waitFor(() => expect(asked.at(-1)).toBe('?window=day&outcome=failed&cause=machine_unresponsive'));
     fireEvent.click(within(all).getByRole('button', { name: /Its time limit passed/ }));
@@ -95,7 +95,7 @@ describe('Runs page', () => {
   });
 
   it('keeps looking when a page checked its share of runs and found none yet', async () => {
-    const asked = mount('/runs?outcome=failed&cause=machine_unresponsive&runner=rn_mini', (cursor) => cursor === null ? { rows: [], cursor: 'next' } : { rows: [RUN], cursor: null });
+    const asked = mount('/work/history?outcome=failed&cause=machine_unresponsive&runner=rn_mini', (cursor) => cursor === null ? { rows: [], cursor: 'next' } : { rows: [RUN], cursor: null });
     fireEvent.click(await screen.findByRole('button', { name: 'Keep looking' }));
     expect((await screen.findByRole('link', { name: /A search index update · Myco/ })).getAttribute('href')).toBe('/p/proj_1/work/runs/run_1');
     expect(asked.at(-1)).toContain('cursor=next');
@@ -105,7 +105,7 @@ describe('Runs page', () => {
     mount();
     const timeline = await screen.findByRole('region', { name: 'When runs finished' });
     expect(within(timeline).getByRole('img', { name: 'homelab-mini checked in during 24 of 24' })).toBeTruthy();
-    expect(within(timeline).getByRole('link', { name: 'studio-m4' }).getAttribute('href')).toBe('/runners/rn_studio');
+    expect(within(timeline).getByRole('link', { name: 'studio-m4' }).getAttribute('href')).toBe('/work/runners/rn_studio');
     expect(within(timeline).getByRole('img', { name: 'studio-m4 checked in during 12 of 24' })).toBeTruthy();
     expect(within(timeline).getByRole('img', { name: /^studio-m4: 0 worked, 0 changed nothing, 0 failed; nothing finished in 24 of 24$/ })).toBeTruthy();
   });
@@ -126,7 +126,7 @@ describe('Runs page', () => {
   });
 
   it('reads a quiet spell as worth a look when queued work waited through it, taken or not, or work queued before it still waits', async () => {
-    mount('/runs', undefined, { ...HOURS, waits: [
+    mount('/work/history', undefined, { ...HOURS, waits: [
       { enteredHour: SINCE + 2 * HOUR, leftHour: SINCE + 5 * HOUR, taken: true, waits: 7 },
       { enteredHour: SINCE + 3 * HOUR, leftHour: UNTIL - 3 * HOUR, taken: false, waits: 2 },
       { enteredHour: SINCE, leftHour: SINCE, taken: true, waits: 4 },
@@ -136,24 +136,24 @@ describe('Runs page', () => {
     expect(within(spell).getByText('Worth a look: queued work waited 9 times')).toBeTruthy();
     expect(within(spell).getByText('Queued work waited 9 times during it: a machine took the run 7 times; it left the queue without a machine twice.')).toBeTruthy();
     cleanup();
-    mount('/runs', undefined, { ...HOURS, stillWaiting: [{ since: SINCE + 4 * HOUR, runs: 3 }] });
+    mount('/work/history', undefined, { ...HOURS, stillWaiting: [{ since: SINCE + 4 * HOUR, runs: 3 }] });
     const still = await openSpell();
     expect(within(still).getByText('Worth a look: work queued before it ended still waits')).toBeTruthy();
     expect(within(still).getByText('Work queued before it ended still waits: 3 runs queued now.')).toBeTruthy();
   });
 
   it('reads a quiet spell over a run that waited and expired unclaimed as worth a look, though no machine took it', async () => {
-    mount('/runs', undefined, { ...HOURS, waits: [{ enteredHour: SINCE, leftHour: UNTIL - 2 * HOUR, taken: false, waits: 1 }] });
+    mount('/work/history', undefined, { ...HOURS, waits: [{ enteredHour: SINCE, leftHour: UNTIL - 2 * HOUR, taken: false, waits: 1 }] });
     const spell = await openSpell();
     expect(within(spell).getByText('Worth a look: queued work waited once')).toBeTruthy();
     expect(within(spell).getByText('Queued work waited once during it: it left the queue without a machine once.')).toBeTruthy();
   });
 
   it('reads a quiet spell as worth a look when no runner checked in, and gives no reading before check-ins were recorded', async () => {
-    mount('/runs', undefined, { ...HOURS, lanes: HOURS.lanes.map((lane) => ({ ...lane, checkins: lane.checkins.filter((hour) => hour < SINCE + HOUR || hour >= UNTIL - 3 * HOUR) })) });
+    mount('/work/history', undefined, { ...HOURS, lanes: HOURS.lanes.map((lane) => ({ ...lane, checkins: lane.checkins.filter((hour) => hour < SINCE + HOUR || hour >= UNTIL - 3 * HOUR) })) });
     expect(within(await openSpell()).getByText('Worth a look: no runner checked in')).toBeTruthy();
     cleanup();
-    mount('/runs', undefined, { ...HOURS, recordedSince: UNTIL - 2 * HOUR });
+    mount('/work/history', undefined, { ...HOURS, recordedSince: UNTIL - 2 * HOUR });
     const unrecorded = await openSpell();
     expect(within(unrecorded).getByText(/^Not recorded: Myco keeps check-ins and waits from /)).toBeTruthy();
     expect(within(unrecorded).queryByText('Looks normal')).toBeNull();

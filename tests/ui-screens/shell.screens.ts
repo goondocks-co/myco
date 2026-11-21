@@ -70,7 +70,7 @@ async function expectScopeInHeader(page: Page): Promise<void> {
 async function expectNavInView(scope: ReturnType<Page['locator']>, role: 'admin' | 'member'): Promise<void> {
   const pages = scope.getByRole('navigation', { name: 'Pages' });
   for (const label of PAGES_NAV) await expect(pages.getByRole('link', { name: label })).toBeInViewport();
-  await expect(pages.getByRole('link', { name: 'Project settings' })).toHaveCount(role === 'admin' ? 1 : 0);
+  await expect(pages.getByRole('link', { name: 'Project settings' })).toHaveCount(0);
   const admin = scope.getByRole('navigation', { name: 'Admin' });
   if (role === 'admin') {
     await expect(admin.getByRole('link', { name: INVITE_CONTROLS.page })).toBeInViewport();

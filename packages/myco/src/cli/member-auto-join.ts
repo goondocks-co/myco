@@ -195,6 +195,12 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     }, mycoHome);
   };
 
+  if (placement === 'quiet') {
+    // Never asked about: the Deployment forgets any report of it, once, and nothing more is said.
+    const told = previous?.placement === 'quiet' && previous.reportedAt !== undefined ? null : await client.post(UNCAPTURED_STATE_PATH, { rootKey: repo.rootKey, state: 'quiet' });
+    recordMiss({ outcome: 'outside_folders', reason: 'outside_folders', ...(told?.ok === true ? { reportedAt: now(), reportedHeld: held } : {}) });
+    return { root, result: 'outside_folders' };
+  }
   if (placement === 'outside_folders') {
     // Reported once a day, and whenever there is something new to say: sessions that met it, or a change in its hold.
     const due = previous?.reportedAt === undefined || now() - previous.reportedAt >= UNCAPTURED_REPORT_INTERVAL_MS

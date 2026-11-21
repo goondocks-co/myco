@@ -5,7 +5,7 @@ import { browser, deviceMachine, person, stopMember } from '../clients/identity.
 /**
  * Repositories a machine joins by itself, or cannot (#1547), on both targets: a repository joins the project created
  * for it, and every clone of it the same project; one a machine cannot capture is listed on the dashboard to its own
- * member and to an administrator, and never to another member, who can neither read nor connect it.
+ * member and to an administrator, and never to another member, who can neither read, connect nor dismiss it.
  */
 export const uncaptured: ParityScenario = {
   name: 'auto-join: a repository joins one project for every clone, and a member reads and connects only their own',
@@ -56,6 +56,14 @@ export const uncaptured: ParityScenario = {
         fetch(`${target.url}/api/uncaptured/${machineId}/${rootKey}/connect`, { method: 'POST', headers, body: '{}' });
       expect((await connect(asOther, MACHINE_ID, keyOf(4))).status).toBe(404);
       expect((await connect(asOther, otherMachine, keyOf(3))).status).toBe(200);
+
+      // Its own member dismisses this machine's repository, with a folder never asked about; reported again, it stays unlisted.
+      const dismiss = (headers: Record<string, string>, body: unknown) =>
+        fetch(`${target.url}/api/uncaptured/${MACHINE_ID}/${keyOf(4)}/dismiss`, { method: 'POST', headers, body: JSON.stringify(body) });
+      expect((await dismiss(asOther, {})).status).toBe(404);
+      expect((await dismiss(owner, { folder: '~/scratch' })).status).toBe(200);
+      expect(await machine(mineHeaders, '/members/uncaptured', { rootKey: keyOf(4), label: 'mine', reason: 'outside_folders' })).toEqual({ persisted: false });
+      expect(await listed(owner)).toEqual([]);
     } finally {
       if (created !== null) expect((await browser(target, `/api/projects/${created}/archive`, target.ownerHeaders(), {})).status).toBe(200);
       if (otherMember !== null) await stopMember(target, otherMember);

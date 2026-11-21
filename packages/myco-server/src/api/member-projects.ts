@@ -22,7 +22,7 @@ import {
 } from '@goondocks/myco-shared/member-protocol';
 import { admitProject, PROJECT_NAME_MAX } from '../db/storage/projects.js';
 import { resolveRepository } from '../core/remotes.js';
-import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
+import { connectedRoot, connectMachineRoot, disconnectMachineRoot, dismissedRoot } from '../core/machine-settings.js';
 import { ROOT_KEY } from '../core/settings.js';
 import { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { commit } from '../db/index.js';
@@ -99,7 +99,8 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
   if (typeof repository === 'string') return ok({ persisted: false, code: 'invalid_field', reason: repository } satisfies RepositoryAnswer);
   const { rootKey, label } = repository;
   const miss = async (reason: UncapturedReason, detail: string): Promise<Response> => {
-    await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey, label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
+    // A repository dismissed from "Needs you" is not asked about again, whatever kept it from joining.
+    if (!(await dismissedRoot(env.db, ctx.machineId, rootKey))) await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey, label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
     return ok({ persisted: false, code: reason, reason: detail } satisfies RepositoryAnswer);
   };
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
@@ -141,6 +142,7 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
   if (!isUncapturedReason(reason) || (reason !== 'outside_folders' && reason !== 'no_remote')) {
     return ok({ persisted: false, code: 'invalid_field', reason: 'reason must be outside_folders or no_remote' });
   }
+  if (await dismissedRoot(env.db, ctx.machineId, repository.rootKey)) return ok({ persisted: false });
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
   const [written] = await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey: repository.rootKey, label: repository.label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
   return ok({ persisted: written.results.length > 0 });
@@ -150,15 +152,16 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
  * `POST /members/uncaptured/state` with `{ rootKey, state }`: what became of a repository the machine reported.
  * `connected` forgets it, as a `myco member join` there connected it; `left` forgets it and stops telling the machine
  * to connect it, as `myco member leave` opted it out; `full` and `expired` record that the machine no longer holds its
- * capture. A repository the machine never reported changes nothing.
+ * capture; `quiet` forgets it, as it lies under a folder the member's machine never asks about. A repository the
+ * machine never reported changes nothing.
  */
 export async function handleUncapturedState(env: ServerEnv, ctx: CredentialContext): Promise<Response> {
   const body = parseJsonObject(ctx.body);
   const rootKey = typeof body?.rootKey === 'string' ? body.rootKey : '';
   if (!ROOT_KEY.test(rootKey)) return ok({ persisted: false, code: 'invalid_field', reason: 'rootKey must be a repository key' });
   const state = body?.state;
-  if (state !== 'connected' && state !== 'left' && state !== 'full' && state !== 'expired') {
-    return ok({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, full or expired' });
+  if (state !== 'connected' && state !== 'left' && state !== 'quiet' && state !== 'full' && state !== 'expired') {
+    return ok({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, quiet, full or expired' });
   }
   if (state === 'left') {
     // Left on the machine: nothing is asked of "Needs you", and the machine is no longer told to connect it.
@@ -167,6 +170,6 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: cleared.results.length > 0 || untold.changed });
   }
-  const [written] = await commit(env.db, state === 'connected' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
+  const [written] = await commit(env.db, state === 'connected' || state === 'quiet' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
   return ok({ persisted: written.results.length > 0 });
 }

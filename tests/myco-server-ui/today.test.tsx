@@ -712,15 +712,14 @@ describe('Today', () => {
     });
     mount('/');
     const panel = (await screen.findByText('Needs you')).closest('[data-needs-you]') as HTMLElement;
-    // Two repositories are one line of "Needs you", losing work where either machine has stopped keeping it, that opens to each.
+    // Two repositories are one line of "Needs you", a count and no names, losing work where either machine has stopped keeping it, that a Review lists.
     const group = await waitFor(() => panel.querySelector('[data-repositories]') as HTMLElement);
     expect(within(panel).getByText('4')).toBeTruthy();
     expect(group.getAttribute('data-needs-you-item')).toBe('bad');
-    expect(group.textContent).toContain('2 repositories aren’t being captured yet');
-    expect(group.textContent).toContain('widget and notes. Work in 1 of them isn’t being kept. Connect each to a project, or let Myco choose.');
-    fireEvent.click(within(group).getByRole('button', { name: 'See each' }));
-    await waitFor(() => expect(panel.querySelectorAll('[data-repository]')).toHaveLength(2));
-    const [widget, notes] = [...panel.querySelectorAll('[data-repository]')] as HTMLElement[];
+    expect(group.textContent).toBe('2 repositories aren’t being captured yetWork in 1 of them isn’t being kept. Connect each to a project, or dismiss the ones Myco shouldn’t ask about.Review');
+    fireEvent.click(within(group).getByRole('button', { name: 'Review' }));
+    const review = await screen.findByRole('dialog', { name: '2 repositories aren’t being captured yet' });
+    const [widget, notes] = [...review.querySelectorAll('[data-repository]')] as HTMLElement[];
     expect(widget!.getAttribute('data-needs-you-item')).toBe('warn');
     expect(widget!.textContent).toContain('widget isn’t being captured yet');
     expect(widget!.textContent).toContain('It’s outside the folders Ada’s studio Mac captures.');
@@ -729,8 +728,8 @@ describe('Today', () => {
     expect(notes!.getAttribute('data-needs-you-item')).toBe('bad');
     expect(notes!.textContent).toContain('It has no git remote');
     expect(notes!.textContent).toContain('Lin’s machine has kept all it can; newer work there isn’t being kept.');
-    expect(panel.textContent).not.toMatch(RAW_ID);
-    expect(panel.textContent).not.toMatch(/uncaptured/i);
+    expect(review.textContent).not.toMatch(RAW_ID);
+    expect(review.textContent).not.toMatch(/uncaptured/i);
 
     fireEvent.click(within(widget!).getByRole('button', { name: 'Connect widget' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
@@ -814,15 +813,44 @@ describe('Today', () => {
     mount('/');
     const row = await present('[data-repository]');
     expect(row.textContent).toContain('The project it belongs to is archived. An admin can restore it from Projects.');
-    expect(within(row).queryByRole('button')).toBeNull();
+    expect(within(row).queryByRole('button', { name: /^Connect/ })).toBeNull();
     expect(within(row).getByRole('link', { name: 'Open Projects →' }).getAttribute('href')).toBe('/projects');
     cleanup();
     client.clear();
     server(day({ uncaptured: { items: [{ ...archived, member: { id: MEMBER.member.id, label: 'Lin' } }] } }, MEMBER));
     mount('/');
     const mine = await present('[data-repository]');
-    expect(within(mine).queryByRole('button')).toBeNull();
+    expect(within(mine).queryByRole('button', { name: /^Connect/ })).toBeNull();
     expect(within(mine).queryByRole('link')).toBeNull();
+  });
+
+  it('stops asking about a repository under a folder its member names, and says when that folder could not be used', async () => {
+    screenWidth(1280);
+    const bodies: unknown[] = [];
+    let waiting = [repository()];
+    server({
+      ...day(),
+      '/api/uncaptured': () => Response.json({ items: waiting }),
+      '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/dismiss': (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { folder?: string };
+        bodies.push(body);
+        if (body.folder === 'scratch') return Response.json({ error: 'bad_request', reason: 'Nothing was dismissed.' }, { status: 400 });
+        waiting = [];
+        return Response.json({ dismissed: true, machineId: 'mt_studio_machine', rootKey: 'a1b2c3d4e5f60718', folder: body.folder ?? null });
+      },
+    });
+    mount('/');
+    const row = await present('[data-repository]');
+    fireEvent.click(within(row).getByRole('button', { name: 'Never ask about a folder…' }));
+    const folder = within(row).getByLabelText('Never ask about anything under this folder');
+    for (const value of ['scratch', '~/scratch']) {
+      fireEvent.change(folder, { target: { value } });
+      fireEvent.click(within(row).getByRole('button', { name: 'Never ask' }));
+      await waitFor(() => expect(bodies).toHaveLength(value === 'scratch' ? 1 : 2));
+      if (value === 'scratch') expect((await within(row).findByRole('alert')).textContent).toBe('Myco couldn’t use that folder. Start it with ~/ or / and name a folder below it.');
+    }
+    await waitFor(() => expect(document.querySelector('[data-repository]')).toBeNull());
+    expect(bodies).toEqual([{ folder: 'scratch' }, { folder: '~/scratch' }]);
   });
 
   it('tells a member when their repositories could not be read, on a wide screen and on a phone', async () => {

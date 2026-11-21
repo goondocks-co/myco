@@ -1,5 +1,5 @@
 /**
- * What an admin reads on Health about the machines running Myco's work.
+ * What an admin reads about the machines running Myco's work, on People & machines and Runners.
  *
  * The words distinguish five situations a single busy count cannot: a machine
  * waiting and ready, one driving a run, one nothing has heard from lately, one
@@ -9,8 +9,8 @@
  * and they name a machine and a project by name, never by an id.
  */
 import { describe, expect, it } from 'bun:test';
-import { agentsWords, fleetLine, lastClaimWords, taskWords, workerLine } from '../../packages/myco-server/ui/src/features/admin/workers';
-import type { WorkerRow, WorkerStatus } from '../../packages/myco-server/ui/src/lib/api';
+import { agentsWords, lastClaimWords, taskWords, workerState } from '../../packages/myco-server/ui/src/features/admin/workers';
+import type { WorkerRow } from '../../packages/myco-server/ui/src/lib/api';
 import { RETAINED_TASKS } from '../../packages/myco-server/src/core/task-catalogue';
 
 const NOW = 1_800_000_000_000;
@@ -29,28 +29,18 @@ const worker = (over: Partial<WorkerRow> = {}): WorkerRow => ({
   ...over,
 });
 
-const status = (over: Partial<WorkerStatus> = {}): WorkerStatus => ({
-  available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [worker()], ...over,
-});
-
-const names = { machine: 'Ada’s studio Mac', project: (id: string) => (id === MYCO ? 'Myco' : null) };
+const project = (id: string) => (id === MYCO ? 'Myco' : null);
 
 describe('a machine running Myco’s work, in words', () => {
-  it('names an enrolled runner separately from member machines', () => {
-    const row = worker({ runner: { id: 'runner-mini', name: 'Homelab mini', state: 'enabled' } });
-    expect(workerLine(row, NOW, names).line).toContain('Homelab mini · Registered runner');
-    expect(workerLine(row, NOW, names).line).not.toContain('member credential');
-  });
-
   it('shows an idle machine as waiting, with the agents it reported and what that does not prove', () => {
-    expect(workerLine(worker(), NOW, names)).toEqual({ tone: 'ok', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work · last checked in 3s ago' });
+    expect(workerState(worker(), NOW, project)).toEqual({ tone: 'ok', line: 'Waiting for work · last checked in 3s ago' });
     expect(agentsWords(worker())).toBe('Reports Codex and Claude Code signed in; their providers aren’t tested here.');
   });
 
   it('shows a busy machine by its lease and the project by name, without promising the lease will be renewed', () => {
     const busy = worker({ busy: { runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'title-summary', leaseExpiresAt: NOW + 62_000 } });
-    const { line } = workerLine(busy, NOW, names);
-    expect(line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running titling in Myco · due to check in within 62s');
+    const { line } = workerState(busy, NOW, project);
+    expect(line).toBe('Running titling in Myco · due to check in within 62s');
     expect(line).not.toMatch(/renew/i);
     expect(line).not.toContain(MYCO);
     expect(lastClaimWords(busy)).toBeNull();
@@ -58,7 +48,7 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('leaves out a project it cannot name rather than showing its id', () => {
     const busy = worker({ busy: { runId: 'run_1', projectId: 'proj_ffffffffffffffffffffffffffffffff', task: null, leaseExpiresAt: NOW + 30_000 } });
-    expect(workerLine(busy, NOW, names).line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running a task · due to check in within 30s');
+    expect(workerState(busy, NOW, project).line).toBe('Running a task · due to check in within 30s');
     expect(taskWords('something-new')).toBe('a task');
   });
 
@@ -69,8 +59,8 @@ describe('a machine running Myco’s work, in words', () => {
   });
 
   it('says a machine has not been heard from lately without claiming it stopped', () => {
-    const { tone, line } = workerLine(worker({ recent: false, lastSeenAt: NOW - 14 * 60_000 }), NOW, names);
-    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Not checking in now · last checked in 14 min ago' });
+    const { tone, line } = workerState(worker({ recent: false, lastSeenAt: NOW - 14 * 60_000 }), NOW, project);
+    expect({ tone, line }).toEqual({ tone: 'faint', line: 'Not checking in now · last checked in 14 min ago' });
     for (const word of [/stopped/i, /terminated/i, /offline/i, /dead/i]) expect(line).not.toMatch(word);
   });
 
@@ -82,7 +72,7 @@ describe('a machine running Myco’s work, in words', () => {
 
   it('does not call a machine ready when it reported no agent signed in', () => {
     const w = worker({ offers: [{ id: 'codex', authenticated: false }] });
-    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work, but reported no agent signed in · last checked in 3s ago' });
+    expect(workerState(w, NOW, project)).toEqual({ tone: 'bad', line: 'Waiting for work, but reported no agent signed in · last checked in 3s ago' });
     expect(agentsWords(w)).toBe('Reported no agent signed in.');
     expect(agentsWords(worker({ offers: [] }))).toBe('Reported no agents.');
   });
@@ -90,39 +80,17 @@ describe('a machine running Myco’s work, in words', () => {
   it('says the agents are unknown rather than none when there is no readable report, and never treats it as ready', () => {
     const w = worker({ offers: null, capabilities: null });
     expect(agentsWords(w)).toBe('Which agents it can run is unknown.');
-    expect(workerLine(w, NOW, names)).toEqual({ tone: 'bad', line: 'Ada’s studio Mac · Legacy worker — uses member credential · Waiting for work, with no readable report of its agents · last checked in 3s ago' });
+    expect(workerState(w, NOW, project)).toEqual({ tone: 'bad', line: 'Waiting for work, with no readable report of its agents · last checked in 3s ago' });
   });
 
   it('says a machine whose claims the server would refuse is not waiting for work', () => {
-    const { line } = workerLine(worker({ eligible: false }), NOW, names);
-    expect(line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · It can’t take work now · last checked in 3s ago');
+    const { line } = workerState(worker({ eligible: false }), NOW, project);
+    expect(line).toBe('It can’t take work now · last checked in 3s ago');
     expect(line).not.toContain('Waiting');
   });
 
   it('shows a lease holder from before contacts were kept as busy, with no invented contact time', () => {
     const w = worker({ lastSeenAt: 0, lastReason: null, recent: false, busy: { runId: 'run_9', projectId: MYCO, task: null, leaseExpiresAt: NOW + 30_000 } });
-    expect(workerLine(w, NOW, names).line).toBe('Ada’s studio Mac · Legacy worker — uses member credential · Running a task in Myco · due to check in within 30s');
-  });
-});
-
-describe('the machines running Myco’s work, in one line', () => {
-  it('says how many are running it and what waits', () => {
-    expect(fleetLine(status({ runsQueued: 1 }), NOW)).toEqual({ tone: 'ok', attached: 1, line: '1 machine is running Myco’s work, 0 busy now. 1 task is waiting.' });
-  });
-
-  it('says none is running it, when one was last heard from, and what waits for one', () => {
-    expect(fleetLine(status({ runsQueued: 3, fleet: [worker({ recent: false, lastSeenAt: NOW - 8 * 86_400_000 })] }), NOW))
-      .toMatchObject({ tone: 'bad', attached: 0, line: expect.stringMatching(/^No machine is running Myco’s work\. A machine last checked in on [A-Z][a-z]{2} \d{1,2}(, \d{4})?\. 3 tasks are waiting\.$/) });
-  });
-
-  it('says no machine has checked in when the fleet holds nothing', () => {
-    expect(fleetLine(status({ runsQueued: 0, fleet: [] }), NOW)).toEqual({ tone: 'faint', attached: 0, line: 'No machine is running Myco’s work. No machine has checked in yet. Nothing is waiting.' });
-  });
-
-  it('does not count a machine whose claims would be refused as running it, or its contact as a worker’s', () => {
-    expect(fleetLine(status({ fleet: [worker({ eligible: false }), worker({ credentialId: 'mt_2', recent: false, lastSeenAt: NOW - 2 * 3_600_000 })] }), NOW).line)
-      .toBe('No machine is running Myco’s work. A machine last checked in 2 h ago. Nothing is waiting.');
-    expect(fleetLine(status({ fleet: [worker({ eligible: false })] }), NOW).line)
-      .toBe('No machine is running Myco’s work. No machine has checked in yet. Nothing is waiting.');
+    expect(workerState(w, NOW, project).line).toBe('Running a task in Myco · due to check in within 30s');
   });
 });

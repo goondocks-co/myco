@@ -8,6 +8,7 @@ import { permissionOf, useMe } from '../../../hooks/use-me';
 import { fetchJson, postJson, type RunnerRow, type WorkerRow } from '../../../lib/api';
 import { harnessLabel } from '../../../lib/harness';
 import { runnerPath, runPath } from '../../../routes/nav';
+import { WorkTabs } from '../../work/WorkTabs';
 import { AdminPage, AdminSection } from '../AdminFrame';
 import { machineOfWorker, useMachines } from '../machines';
 import { LEGACY_WORKER_LABEL, REASON_WORDS, taskWords } from '../workers';
@@ -27,7 +28,8 @@ export function RunnersPage() {
   const machines = useMachines();
   const [setup, setSetup] = useState(false);
   return (
-    <AdminPage name="runners" scope="server" title="Runners" lede="Your machines run Myco’s work: learning from sessions, writing titles and keeping code maps current.">
+    <AdminPage name="runners" scope="server" title="Myco’s work" lede="Your machines run Myco’s work: learning from sessions, writing titles and keeping code maps current.">
+      <WorkTabs projectId={null} section="runners" />
       {runners.isError && <><ErrorState error={runners.error} onRetry={() => void runners.refetch()} /><p className="t-small text-muted">Machine and queue information is unavailable. Last check failed {agoWords(runners.errorUpdatedAt)}.{runners.data !== undefined ? ` Last successful read ${agoWords(runners.data.observedAt)}; the rows below are stale.` : ' Last successful read unavailable.'}</p></>}
       {runners.isPending && <p className="t-body text-muted">Loading machines…</p>}
       {runners.data !== undefined && !runners.isError && <QueueWarning queue={runners.data.queue} />}

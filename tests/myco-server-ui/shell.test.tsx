@@ -116,9 +116,11 @@ describe('the dashboard shell', () => {
     });
     mount('/projects');
     const list = await screen.findByRole('list', { name: 'Projects' });
-    const card = within(list).getByRole('link', { name: /Alpha/ });
+    const card = within(list).getByRole('link', { name: /^Alpha/ });
     expect(card.getAttribute('href')).toBe('/p/proj_1');
     expect(within(list).getByText('3 sessions')).toBeTruthy();
+    // A project's settings are one click from its row.
+    expect(within(list).getByRole('link', { name: 'Settings for Alpha' }).getAttribute('href')).toBe('/p/proj_1/settings');
   });
 
   it('tells a signed-in account that no member is linked to it, naming each way in, and never shows the shell', async () => {
@@ -170,9 +172,8 @@ describe('the nav', () => {
     server(signedIn());
     mount('/p/alpha/sessions');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
-    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work', 'Project settings']);
+    expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work']);
     expect(within(pages).getByRole('link', { name: 'Sessions' }).getAttribute('aria-current')).toBe('page');
-    expect(within(pages).getByRole('link', { name: 'Project settings' }).getAttribute('href')).toBe('/p/alpha/settings');
     await findScope();
     // Which projects a page shows is said in its header; the nav lists pages only.
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
@@ -182,7 +183,7 @@ describe('the nav', () => {
     expect(nav.textContent).not.toContain('All projects');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
     expect(within(admin).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      ['Projects', '/projects'], [INVITE_CONTROLS.page, '/people'], ['Runs', '/runs'], ['Runners', '/runners'], ['Settings', '/settings'], ['Health', '/status/health'],
+      ['Projects', '/projects'], [INVITE_CONTROLS.page, '/people'], ['Settings', '/settings'], ['Health', '/status/health'],
     ]);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1 @octocat' })).toBeTruthy();
@@ -463,12 +464,12 @@ describe('the page titles', () => {
       titleOf('/p/x'), titleOf('/p/x/'), titleOf('/p/x/sessions'), titleOf('/p/x/sessions/abc'), titleOf('/p/x/plans/k1'),
       titleOf('/p/x/knowledge'), titleOf('/p/x/spores/sp1'), titleOf('/p/x/work/runs/r1'), titleOf('/p/x/settings'), titleOf('/p/x/nope'),
       titleOf('/'), titleOf('/projects'), titleOf('/status/health'), titleOf('/people'), titleOf('/me/machines'), titleOf('/settings'), titleOf('/settings/models'), titleOf('/nope'),
-      titleOf('/knowledge'), titleOf('/knowledge/plans'), titleOf('/work'), titleOf('/p/x/work'),
+      titleOf('/knowledge'), titleOf('/knowledge/plans'), titleOf('/work'), titleOf('/p/x/work'), titleOf('/work/history'), titleOf('/work/runners/r1'),
     ]).toEqual([
       'Today', 'Today', 'Sessions', 'Sessions', 'Knowledge',
       'Knowledge', 'Knowledge', 'Myco’s work', 'Project settings', 'Not found',
       'Today', 'Projects', 'Health', INVITE_CONTROLS.page, 'My machines', 'Settings', 'Settings', 'Not found',
-      'Knowledge', 'Knowledge', 'Myco’s work', 'Myco’s work',
+      'Knowledge', 'Knowledge', 'Myco’s work', 'Myco’s work', 'Myco’s work', 'Myco’s work',
     ]);
     // A page whose suffix runs over two segments is found whole, and a project switch keeps it.
     expect([pageSuffix('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge/map/'), titleOf('/p/x/knowledge/map'), pageSuffix('/p/x/knowledge'), pageSuffix('/p/x/knowledge/plans')])

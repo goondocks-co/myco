@@ -62,6 +62,15 @@ const FIELDS: readonly FolderField[] = [
     refusal: captureFolderRefusal,
   },
   {
+    leaf: 'capture.quiet_roots',
+    title: 'Folders Myco never asks about',
+    note: 'A repository in one of these folders is never listed in Needs you or named to your agents. What they do there is still kept for a while, so connecting it later loses nothing. A folder it captures wins over one here.',
+    none: 'None: every repository it doesn’t capture is listed in Needs you.',
+    addLabel: 'Folder never to ask about',
+    placeholder: '~/scratch',
+    refusal: captureFolderRefusal,
+  },
+  {
     leaf: PLAN_DIRS_LEAF,
     title: 'Extra plan folders',
     note: 'Plans your agents write here are captured too, beside each agent’s own plan folder. A folder may be relative to each project, start with ~/, or be absolute.',

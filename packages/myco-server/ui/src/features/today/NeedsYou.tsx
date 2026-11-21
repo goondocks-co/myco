@@ -2,7 +2,7 @@ import { RunTaskConfirm } from '../work/RunTask';
 import { useState, type ReactNode } from 'react';
 import { ActionLink, Button, Card, Disclosure, HealthDot, errorWords, Skeleton, ReadState } from '../../design';
 import { ConnectDialog, connectedWords, losingWork, RepositoryGroup, RepositoryItem, repositoriesTitle, type ConnectTarget } from './Repositories';
-import type { AttentionAnswer, AttentionItem, UncapturedRootItem } from './wire';
+import { retrying, type AttentionAnswer, type AttentionItem, type UncapturedRootItem } from './wire';
 import { ATTENTION_CHECKS, attentionWords, listed, repositoryWords, type NeedsYouWords } from './words';
 
 const TONE_LABEL = { warn: 'Needs attention', bad: 'Failing' } as const;
@@ -65,11 +65,14 @@ interface Row {
  * The Needs you list and the count beside Health in the nav both say this number.
  */
 export function needsYouCount(answer: AttentionAnswer | undefined, repositories: readonly UncapturedRootItem[] | undefined): number {
-  return (answer?.items.length ?? 0) + ((repositories?.length ?? 0) > 0 ? 1 : 0);
+  return needsPerson(answer).length + ((repositories?.length ?? 0) > 0 ? 1 : 0);
 }
 
+/** The attention items a person must act on: those Myco still tries again by itself are Myco's work, stuck or failing. */
+export const needsPerson = (answer: AttentionAnswer | undefined): AttentionItem[] => (answer?.items ?? []).filter((item) => !retrying(item));
+
 function rowsOf({ admin, answer, repositories, now, projectName, viewerId }: NeedsYouProps): Row[] {
-  const attention = (answer?.items ?? []).map((item, index): Row => {
+  const attention = needsPerson(answer).map((item, index): Row => {
     const words = attentionWords(item, now, projectName);
     return { key: `${item.kind}:${index}`, tone: item.tone, title: words.title, render: () => <NeedsYouItem key={`${item.kind}:${index}`} tone={item.tone} words={words} /> };
   });

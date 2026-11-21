@@ -445,7 +445,8 @@ export function createServer(deps: ServerDeps) {
               : badRequest('the project is not on this server');
           }
           if (authorization.resource?.exists === false && (matched.route.authorization?.resource !== 'credential' || matched.route.authorization.resolver === 'machine')) return Response.json({ error: 'not_found' }, { status: 404 });
-          if (matched.route.path.endsWith('/connect')) return Response.json({ error: 'not_found' }, { status: 404 });
+          // Another member's uncaptured repository answers as an unknown one does, for a connect and a dismissal alike.
+          if (matched.route.path.startsWith('/api/uncaptured/')) return Response.json({ error: 'not_found' }, { status: 404 });
           if (matched.route.authorization?.resource === 'machine-settings') return Response.json({ applied: false, reason: 'forbidden', detail: 'only the member this machine belongs to reaches its settings' }, { status: 403 });
           if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.resolver === 'machine') return Response.json({ error: 'not_found' }, { status: 404 });
           if (matched.route.authorization?.resource === 'credential' && matched.route.authorization.action === 'edit') return Response.json({ revoked: matched.route.authorization.resolver === 'machine' ? 0 : false, revokedBy: member?.id });

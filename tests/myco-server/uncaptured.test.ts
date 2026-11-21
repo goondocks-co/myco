@@ -176,6 +176,27 @@ describe('the dashboard', () => {
     expect((await r.dashboard('POST', `/api/uncaptured/machine_1/${KEY_A}/connect`, undefined)).status).toBe(200);
   });
 
+  it('lets a member dismiss their own machine\'s repository, alone or with a folder never asked about, and keeps it dismissed', async () => {
+    const r = await seeded();
+    const dismiss = (body: unknown) => r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/dismiss`, MEMBER_SUB, body);
+    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/dismiss`, undefined, {})).status).toBe(404);
+    const refused = await dismiss({ folder: 'scratch' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.reason).toMatch(/^Nothing was dismissed: .*Next call: POST \/api\/uncaptured\/machine_2\//);
+    expect(await dismiss({ folder: '~/scratch' })).toEqual({ status: 200, body: { dismissed: true, machineId: 'machine_2', rootKey: KEY_B, folder: '~/scratch' } });
+    expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
+    // Reported again, by the machine or by a refused join, it is not asked about.
+    expect(await r.machine(r.member, '/members/uncaptured', { rootKey: KEY_B, label: 'members-repo', reason: 'outside_folders' })).toEqual({ persisted: false });
+    await r.machine(r.member, '/members/projects/resolve', { rootKey: KEY_B, label: 'members-repo' });
+    expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
+    const leaves = (await r.dashboard('GET', '/api/machines/machine_2/settings', MEMBER_SUB)).body.leaves as Array<{ leaf: string; value: unknown }>;
+    expect(leaves.filter((leaf) => leaf.leaf === 'capture.quiet_roots' || leaf.leaf === 'capture.dismissed_roots').map((leaf) => leaf.value)).toEqual([['~/scratch'], [KEY_B]]);
+    // The machine forgets a report under a folder it never asks about.
+    await r.machine(r.member, '/members/uncaptured', { rootKey: KEY_A, label: 'other', reason: 'outside_folders' });
+    expect(await r.machine(r.member, '/members/uncaptured/state', { rootKey: KEY_A, state: 'quiet' })).toEqual({ persisted: true });
+    expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
+  });
+
   it('reports a disconnect that changed the stored connections as changed', async () => {
     const r = await seeded();
     expect(await connectMachineRoot(r.fixture.db, 'machine_2', KEY_B, 'proj_1', MEMBER_PRINCIPAL.id, Date.now())).toEqual({ applied: true });

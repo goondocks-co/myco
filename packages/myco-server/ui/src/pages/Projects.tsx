@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import {
-  Button, ConfirmDialog, ErrorState, focusRing, HealthDot, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
+  ActionLink, Button, ConfirmDialog, ErrorState, focusRing, HealthDot, LoadingState, MoreMenu, type MoreMenuItem, recencyOf, StatusChip,
 } from '../design';
 import { AdminPage, RowCard } from '../features/admin/AdminFrame';
 import { GetStarted } from '../features/today/GetStarted';
@@ -70,7 +70,8 @@ export function Projects() {
         <RowCard>
           <ul aria-label="Projects" className="flex flex-col divide-y divide-line">
             {live.map((p) => (
-              <ProjectRow key={p.projectId} project={p} now={now} menu={admin ? menu(p) : undefined} />
+              <ProjectRow key={p.projectId} project={p} now={now} menu={admin ? menu(p) : undefined}
+                action={admin ? <ActionLink to={projectPath(p.projectId, PROJECT_SETTINGS_SUFFIX)} aria-label={`Settings for ${p.name}`}>Settings</ActionLink> : undefined} />
             ))}
           </ul>
         </RowCard>

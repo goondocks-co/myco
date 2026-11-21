@@ -181,14 +181,20 @@ export const DEFAULT_AUTO_JOIN_ROOTS: readonly string[] = MACHINE_SETTING_SPECS[
 /** The repositories this machine is told to connect from "Needs you", by key: a project id, or `''` for the one its remote names or one created for it. */
 export const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
 
+/** The folders whose repositories this machine never asks about, and the repositories dismissed from "Needs you". */
+const QUIET_ROOTS_LEAF = 'capture.quiet_roots';
+const DISMISSED_ROOTS_LEAF = 'capture.dismissed_roots';
+
 /** The leaves auto-join reads, as `serverUrl` last answered them for this machine, each at its default where nothing is cached. */
-export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { autoJoinRoots: string[]; connectRoots: Record<string, string> } {
+export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { autoJoinRoots: string[]; connectRoots: Record<string, string>; quietRoots: string[]; dismissedRoots: string[] } {
   const leaves = readCachedMachineSettings(machineSettingsPath(serverUrl, mycoHome))?.leaves ?? {};
   const roots = leaves[AUTO_JOIN_ROOTS_LEAF];
   const connect = leaves[CONNECT_ROOTS_LEAF];
   return {
     autoJoinRoots: resolveMachineSetting(AUTO_JOIN_ROOTS_LEAF, roots ?? DEFAULT_AUTO_JOIN_ROOTS).effective as string[],
     connectRoots: resolveMachineSetting(CONNECT_ROOTS_LEAF, connect ?? {}).effective as Record<string, string>,
+    quietRoots: resolveMachineSetting(QUIET_ROOTS_LEAF, leaves[QUIET_ROOTS_LEAF] ?? []).effective as string[],
+    dismissedRoots: resolveMachineSetting(DISMISSED_ROOTS_LEAF, leaves[DISMISSED_ROOTS_LEAF] ?? []).effective as string[],
   };
 }
 

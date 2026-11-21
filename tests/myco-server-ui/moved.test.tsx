@@ -36,6 +36,9 @@ const EXAMPLES: Readonly<Record<string, { from: string; admin: string; member?: 
   '/status': { from: '/status', admin: '/status/health#status' },
   '/measures': { from: '/measures?window=7', admin: '/status/health?window=7#measures' },
   '/operations': { from: '/operations', admin: '/status/health#upkeep' },
+  '/runs': { from: '/runs?window=week&project=proj_1', admin: '/work/history?window=week&project=proj_1' },
+  '/runners': { from: '/runners', admin: '/work/runners' },
+  '/runners/:runnerId': { from: '/runners/runner-mini', admin: '/work/runners/runner-mini' },
 };
 
 const originalFetch = globalThis.fetch;

@@ -11,7 +11,7 @@ import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
-import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, runPath } from '../../routes/nav';
+import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, RUNNERS_PATH, runPath } from '../../routes/nav';
 import { hasRunOutput } from './timeline';
 import type { MachineHarnessHealth, AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 import { agoWords, clockWords, dayWords } from '@goondocks/myco-shared/time-words';
@@ -269,13 +269,13 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       return {
         title: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting for a machine`,
         detail: `${HOLD_WORDS[item.capability] ?? 'No machine heard from lately can run them.'} Waiting since ${clockOrDay(item.since, now)}.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.workers) },
+        action: { label: 'Open Runners', to: RUNNERS_PATH },
       };
     case 'no_worker':
       return {
         title: 'No machine is running Myco’s work',
         detail: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting${item.since === null ? '' : ` since ${clockOrDay(item.since, now)}`}. ${item.lastContactAt === null ? 'No machine has checked in yet.' : `A machine last checked in ${agoWords(item.lastContactAt, now)}.`}`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.workers) },
+        action: { label: 'Open Runners', to: RUNNERS_PATH },
       };
     case 'access_key_expiring':
       return {

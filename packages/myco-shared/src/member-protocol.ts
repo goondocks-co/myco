@@ -133,6 +133,10 @@ export const MACHINE_SETTING_SPECS = {
   'capture.prompt_file_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'prompt-files', default: [] as string[] },
   'capture.auto_join_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'capture', default: ['~/Repos'] },
   'capture.connect_roots': { type: 'root-map', maxItems: 256, default: {} as Record<string, string>, serverWritten: true },
+  /** Folders whose repositories this machine never asks about: none is reported to "Needs you" or named to an agent. */
+  'capture.quiet_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'capture', default: [] as string[] },
+  /** The repositories, by key, dismissed from "Needs you": the Deployment no longer lists them, whatever the machine reports. */
+  'capture.dismissed_roots': { type: 'root-list', maxItems: 1024, default: [] as string[], serverWritten: true },
 } as const;
 export type MachineSettingLeaf = keyof typeof MACHINE_SETTING_SPECS;
 
@@ -144,6 +148,11 @@ export function resolveMachineSetting(leaf: MachineSettingLeaf, value: unknown):
     const entries = Object.entries(value);
     const valid = entries.filter(([key, project]) => ROOT_KEY_PATTERN.test(key) && typeof project === 'string' && (project === '' || /^[A-Za-z0-9._-]{1,64}$/.test(project)));
     return { effective: Object.fromEntries(valid.slice(0, spec.maxItems)), refusal: valid.length !== entries.length || entries.length > spec.maxItems ? 'Some stored repository connections cannot be used.' : null };
+  }
+  if (spec.type === 'root-list') {
+    if (!Array.isArray(value)) return { effective: spec.default, refusal: 'Expected a list of repositories.' };
+    const valid = [...new Set(value.filter((key): key is string => typeof key === 'string' && ROOT_KEY_PATTERN.test(key)))].slice(0, spec.maxItems);
+    return { effective: valid, refusal: valid.length !== value.length ? 'Some stored repositories cannot be used.' : null };
   }
   if (!Array.isArray(value)) return { effective: spec.default, refusal: 'Expected a list of folders.' };
   const rule = folderRule('folders' in spec ? spec.folders : undefined);
@@ -396,7 +405,8 @@ export const REPORT_UNCAPTURED_PATH = '/members/uncaptured';
 /**
  * Where a machine says what became of a repository it reported: `{ rootKey, state }`. `connected` forgets the report
  * (a `myco member join` connected it); `left` forgets it and stops the machine being told to connect it (`myco member
- * leave` opted it out); `full` and `expired` record that the machine stopped holding its capture.
+ * leave` opted it out); `quiet` forgets it, as it lies under a folder the machine never asks about
+(`capture.quiet_roots`); `full` and `expired` record that the machine stopped holding its capture.
  *
  * Every report and resolve also carries `held` (what the machine holds of the repository's capture now) and
  * `sessions` (how many sessions met it after the machine last reported it).

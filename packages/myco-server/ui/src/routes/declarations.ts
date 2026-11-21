@@ -8,8 +8,9 @@ export const TASKS_SUFFIX = '/work/tasks';
 export const RUN_SUFFIX = '/work/runs';
 export const PROJECT_SETTINGS_SUFFIX = '/settings';
 export const PEOPLE_PATH = '/people';
-export const RUNNERS_PATH = '/runners';
-export const RUNS_PATH = '/runs';
+/** Myco's work's tabs that span the server: the machines that run it, and every run it finished. */
+export const RUNNERS_PATH = '/work/runners';
+export const RUNS_PATH = '/work/history';
 export const SETTINGS_PATH = '/settings';
 export const HEALTH_PATH = '/status/health';
 export const MY_MACHINES_PATH = '/me/machines';
@@ -78,6 +79,9 @@ export const movedPaths = {
   status: '/status',
   measures: '/measures',
   operations: '/operations',
+  serverRuns: '/runs',
+  serverRunners: '/runners',
+  serverRunner: '/runners/:runnerId',
 } as const;
 export function routeGroup<P extends Record<string, string>, E extends Record<keyof P, unknown>>(paths: P, elements: E) {
   return Object.entries(paths).map(([key, path]) => ({ path, element: elements[key as keyof E] }));

@@ -11,11 +11,11 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isAdmin } from '../auth/roles.js';
-import { connectMachineRoot } from '../core/machine-settings.js';
+import { connectMachineRoot, dismissMachineRoot, quietMachineFolder } from '../core/machine-settings.js';
 import { recordProjectRemote, remoteHolder } from '../core/remotes.js';
 import { decodeUncapturedCursor, getUncaptured, listUncaptured, UNCAPTURED_CURSOR_REFUSAL } from '../db/sessions/uncaptured-roots.js';
 import { ownMachineNames } from '../read/capture.js';
-import { HELD_STATES, isUncapturedReason, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
+import { captureFolderRefusal, HELD_STATES, isUncapturedReason, MACHINE_SETTING_SPECS, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 
 const isHeldState = (value: string): value is HeldState => (HELD_STATES as readonly string[]).includes(value);
 import { emit } from '../telemetry.js';
@@ -125,4 +125,52 @@ export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext)
   await commit(env.db, clearUncaptured(machineId, rootKey));
   emit({ kind: 'repository_connected', machineId, actor: ctx.member.id });
   return ok({ connected: true, machineId, rootKey, projectId } satisfies ConnectAnswer);
+}
+
+/** `POST /api/uncaptured/{machineId}/{rootKey}/dismiss`: optionally a folder on that machine never to ask about again. */
+export interface DismissRequest {
+  folder?: string;
+}
+
+/** What the dismissal answers: the repository is no longer listed, and the folder rule, when one was given, is saved. */
+export interface DismissAnswer {
+  dismissed: true;
+  machineId: string;
+  rootKey: string;
+  folder: string | null;
+}
+
+const QUIET_FOLDERS = MACHINE_SETTING_SPECS['capture.quiet_roots'];
+
+/**
+ * Stop asking about a repository: it leaves "Needs you" and a later report of it is not listed. With `{ folder }`, the
+ * machine also never asks about any repository under that folder; it stops reporting each at its next attempt there.
+ * Only the member the machine belongs to may, as for connecting it. Nothing is captured or discarded.
+ */
+export async function handleDismissUncaptured(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const machineId = ctx.params.machineId!;
+  const rootKey = ctx.params.rootKey!;
+  const row = await getUncaptured(env.db, machineId, rootKey);
+  if (row === null || row.member.id !== ctx.member.id) return notFound();
+  const body = ctx.request.headers.get('content-length') === '0' ? {} : await readJsonObject(ctx.request) ?? {};
+  const folder = body.folder === undefined ? null : body.folder;
+  const example = `POST /api/uncaptured/${machineId}/${rootKey}/dismiss with {"folder":"~/scratch"}, or with {} to dismiss this repository alone`;
+  if (folder !== null) {
+    const refusal = typeof folder !== 'string' ? 'expected the folder as text'
+      : folder.length > QUIET_FOLDERS.maxChars ? `expected at most ${QUIET_FOLDERS.maxChars} characters, got ${folder.length}` : captureFolderRefusal(folder);
+    if (refusal !== null) return badRequest(`Nothing was dismissed: the folder was refused (${refusal}). Next call: ${example}.`);
+    const quieted = await quietMachineFolder(env.db, machineId, folder as string, ctx.member.id, ctx.now);
+    if (!quieted.applied) return dismissRefused(quieted, example);
+  }
+  const written = await dismissMachineRoot(env.db, machineId, rootKey, ctx.member.id, ctx.now);
+  if (!written.applied) return dismissRefused(written, example);
+  await commit(env.db, clearUncaptured(machineId, rootKey));
+  emit({ kind: 'repository_dismissed', machineId, actor: ctx.member.id });
+  return ok({ dismissed: true, machineId, rootKey, folder: folder as string | null } satisfies DismissAnswer);
+}
+
+function dismissRefused(written: { reason: string; detail?: string }, example: string): Response {
+  if (written.reason === 'absent') return notFound();
+  if (written.reason === 'conflict') return Response.json({ error: 'conflict', reason: `This machine's settings changed while saving; nothing was dismissed. Next call: repeat ${example}.` }, { status: 409 });
+  return badRequest(`Nothing was dismissed: ${written.detail ?? 'the setting could not be saved'}. Next call: ${example}.`);
 }

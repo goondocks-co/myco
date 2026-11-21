@@ -86,7 +86,9 @@ export type LeafSpec =
    */
   | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number; readonly folders?: 'capture' | 'prompt-files' }
   /** Repository keys, each naming the project it connects to or `''` for none chosen: what a machine may join. */
-  | { readonly type: 'root-map'; readonly maxItems: number };
+  | { readonly type: 'root-map'; readonly maxItems: number }
+  /** Repository keys alone: the repositories dismissed from "Needs you". */
+  | { readonly type: 'root-list'; readonly maxItems: number };
 
 const BOOLEAN_SPEC: LeafSpec = { type: 'boolean' };
 /** A dispatch limit: a whole number of runs, or null for none. */
@@ -390,6 +392,13 @@ function rootMapViolation(spec: { maxItems: number }, value: unknown): string | 
   return null;
 }
 
+function rootListViolation(spec: { maxItems: number }, value: unknown): string | null {
+  if (!Array.isArray(value)) return 'expected a list of repository keys';
+  if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} repositories`;
+  const wrong = value.find((key) => typeof key !== 'string' || !ROOT_KEY.test(key));
+  return wrong === undefined ? null : `${String(wrong)} is not a repository key`;
+}
+
 /** What the value violates, or null when it satisfies the leaf's rule. */
 export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unknown): string | null {
   if (!('type' in spec)) return null;
@@ -417,6 +426,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unk
   if (spec.type === 'credential-source') return value === 'deployment' || value === 'worker-login' ? null : 'choose the server login or worker login';
   if (spec.type === 'path-list') return pathListViolation(spec, value);
   if (spec.type === 'root-map') return rootMapViolation(spec, value);
+  if (spec.type === 'root-list') return rootListViolation(spec, value);
   if (spec.type === 'agent') return value === null || (typeof value === 'string' && Object.hasOwn(HARNESS_CREDENTIALS, value)) ? null : 'expected an agent a machine can run, or none';
   if (spec.type === 'agent-list') return agentListViolation(value);
   if (spec.type === 'pattern-list') return patternListViolation(spec, value);
