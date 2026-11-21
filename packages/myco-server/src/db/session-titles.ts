@@ -1,3 +1,5 @@
+import { titleBehindSql, titleTurnRevisionSql, titleAttemptedSql } from './sessions/title-coverage.js';
+import { titleMaterialSnapshot, type TitleSnapshot } from './documents/titling-material.js';
 import { TITLE_WORK_RECHECK_MS } from './sessions/title-work.js';
 import { commit, readSet, read, write, type Bound } from './index.js';
 import { attributedUpdate } from './runs/attribution.js';
@@ -12,22 +14,23 @@ import { PROVIDER_FAULTS } from '../core/completion/provider.js';
 
 const stamp = read<[string, string], { titled_at: number | null }>({ name: 'sessionTitle.stamp', sql: 'SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?' });
 const claimAutomatic = write<[number, string, string, number | null, number, number | null], { session_id: string }>({ name: 'sessionTitle.claimAutomatic', sql: `UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at IS ? AND (ended_at IS NOT NULL OR last_received_at <= ?) AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')} RETURNING session_id` });
-const claimRefresh = write<[number, string, string, number, number], { session_id: string }>({ name: 'sessionTitle.claimRefresh', sql: `UPDATE sessions SET titled_at = ?, title_material_at = COALESCE(title_material_at, titled_at) WHERE project_id = ? AND session_id = ? AND titled_at = ? AND titled_at <= ? AND title IS NOT NULL AND last_received_at > COALESCE(title_material_at, titled_at)
+const claimRefresh = write<[now: number, project: string, session: string, previous: number, retryBefore: number, idleBefore: number], { session_id: string }>({ name: 'sessionTitle.claimRefresh', sql: `UPDATE sessions SET titled_at = ?1, title_attempt_turn_key=(SELECT open_turn_key FROM session_documents WHERE project_id=?2 AND session_id=?3), title_attempt_turn_revision=(SELECT ${titleTurnRevisionSql('d')} FROM session_documents d WHERE project_id=?2 AND session_id=?3), title_material_at = COALESCE(title_material_at, titled_at) WHERE project_id = ?2 AND session_id = ?3 AND titled_at = ?4 AND (titled_at <= ?5 OR NOT EXISTS(SELECT 1 FROM session_documents d WHERE project_id=?2 AND session_id=?3 AND ${titleAttemptedSql('sessions', 'd')})) AND title IS NOT NULL AND (ended_at IS NOT NULL OR last_received_at<=?6)
+      AND EXISTS(SELECT 1 FROM session_documents d WHERE d.project_id=sessions.project_id AND d.session_id=sessions.session_id AND ${titleBehindSql('sessions', 'd')})
       AND NOT ${titleRunInFlightSql('sessions')} AND ${sessionMaterialReadySql('sessions')} RETURNING session_id` });
 const claimOwner = write<[number, string, string, number], { session_id: string }>({ name: 'sessionTitle.claimOwner', sql: `UPDATE sessions SET titled_at = ?, title_material_at = CASE WHEN title IS NULL THEN title_material_at ELSE COALESCE(title_material_at, titled_at) END WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?) AND ${sessionMaterialReadySql('sessions')} RETURNING session_id` });
 const restore = write<[number | null, string, string, number], never>({ name: 'sessionTitle.restore', sql: `UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at = ?` });
 
 const storeTitle = attributedUpdate<[project: string, session: string, title: string, summary: string, mode: string, by: string | null,
-  material: number | null, run: string | null, stamp: number | null, generation: number | null]>(
+  material: number | null, run: string | null, stamp: number | null, generation: number | null, throughTurnKey: string | null, turnRevision: number | null]>(
   'sessionTitle.store', 'sessions',
-  `title=?3,summary=?4,titling_attempts=0,titled_by=CASE WHEN ?5='first' THEN titled_by ELSE ?6 END,title_material_at=COALESCE(?7,titled_at,${SQL_NOW_MS})`,
+  `title=?3,summary=?4,title_through_turn_key=?11,title_through_turn_revision=?12,titling_attempts=0,titled_by=CASE WHEN ?5='first' THEN titled_by ELSE ?6 END,title_material_at=COALESCE(?7,titled_at,${SQL_NOW_MS})`,
   `project_id=?1 AND session_id=?2 AND (?5='overwrite' OR title IS NULL) AND ${notTombstonedSql('sessions')}
-    AND ((?8 IS NULL AND ${transcriptsPublishedSql('sessions')}) OR (?8 IS NOT NULL AND titled_at=?9
+    AND ((?8 IS NULL AND ${transcriptsPublishedSql('sessions')} AND (?10 IS NULL OR EXISTS(SELECT 1 FROM session_documents d WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live' AND d.generation=?10))) OR (?8 IS NOT NULL AND titled_at=?9
       AND EXISTS(SELECT 1 FROM session_documents d WHERE d.project_id=?1 AND d.session_id=?2 AND d.generation=?10 AND d.state='live')
       AND EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=?1 AND r.id=?8 AND r.provider='direct' AND r.status='running')))`,
   'session_id', `project_id=?1 AND session_id=?2 AND title IS ?3 AND summary IS ?4 AND (?5='first' OR titled_by IS ?6)`);
-const titledPrompts = write<[project: string, session: string, generation: number | null, prompts: number | null], never>({
-  name: 'sessionTitle.titledPrompts', sql: `UPDATE session_documents SET titled_user_prompts=CASE WHEN ?4 IS NULL THEN user_prompts
+const titledPrompts = write<[project: string, session: string, generation: number | null, prompts: number | null, turns: number | null], never>({
+  name: 'sessionTitle.titledPrompts', sql: `UPDATE session_documents SET title_through_turn_count=?5,titled_user_prompts=CASE WHEN ?4 IS NULL THEN user_prompts
     ELSE MAX(COALESCE(titled_user_prompts,0),MIN(user_prompts,?4)) END
     WHERE project_id=?1 AND session_id=?2 AND state='live' AND (?3 IS NULL OR generation=?3)`,
 });
@@ -40,16 +43,18 @@ export interface SessionTitleWrite {
   mode: 'first' | 'overwrite';
   by: string | null;
   attribution?: RunWrite;
-  observed?: { runId: string; stamp: number; generation: number; instructionPrompts: number; materialAt: number };
+  snapshot?: TitleSnapshot;
+  observed?: TitleSnapshot & { runId: string; stamp: number };
   after?: readonly Bound[];
 }
 
 /** One writer owns title guards, attribution and the prompts covered by the material used. */
 export async function storeSessionTitle(db: RelationalStore, request: SessionTitleWrite): Promise<boolean> {
   const { projectId, sessionId, title, summary, mode, by, observed } = request;
+  const snapshot = observed ?? request.snapshot ?? await titleMaterialSnapshot(db, projectId, sessionId);
   const result = await commitAttributedWrite(db, { projectId },
-    storeTitle.bind(projectId, sessionId, title, summary, mode, by, observed?.materialAt ?? null, observed?.runId ?? null, observed?.stamp ?? null, observed?.generation ?? null),
-    request.attribution, [titledPrompts.bind(projectId, sessionId, observed?.generation ?? null, observed?.instructionPrompts ?? null), ...(request.after ?? [])]);
+    storeTitle.bind(projectId, sessionId, title, summary, mode, by, snapshot?.materialAt ?? null, observed?.runId ?? null, observed?.stamp ?? null, snapshot?.generation ?? null, snapshot?.throughTurnKey ?? null, snapshot?.throughTurnRevision ?? null),
+    request.attribution, [titledPrompts.bind(projectId, sessionId, snapshot?.generation ?? null, snapshot?.instructionPrompts ?? null, snapshot?.turnCount ?? null), ...(request.after ?? [])]);
   return result.results.length > 0;
 }
 
@@ -70,15 +75,12 @@ export async function claimTitling(db: RelationalStore, projectId: string, sessi
   return { claimed: result.results.length === 1, previous };
 }
 
-/**
- * Claims the refresh of a titled session, open or ended: its title stamped at or before `refreshBefore`, a later receipt, and no
- * title run of it in flight. Stamps `titled_at`, which holds the next refresh off for the interval and leaves `title_material_at`,
- * the material of the standing title, where it is; answers the stamp it replaced so an attempt that never launches can put it back.
- */
-export async function claimRefreshTitling(db: RelationalStore, projectId: string, sessionId: string, nowMs: number, refreshBefore: number): Promise<{ claimed: boolean; previous: number | null }> {
+/** Claims a quiet or ended session whose last published turn is beyond its standing title, retaining retry ownership by turn. */
+export async function claimRefreshTitling(db: RelationalStore, target: { projectId: string; sessionId: string; nowMs: number; retryBefore: number; idleBefore: number }): Promise<{ claimed: boolean; previous: number | null }> {
+  const { projectId, sessionId, nowMs, retryBefore, idleBefore } = target;
   const row = await titlingStamp(db, projectId, sessionId);
   if (row === null || row.titled_at === null) return { claimed: false, previous: null };
-  const [result] = await commit(db, claimRefresh.bind(nowMs, projectId, sessionId, row.titled_at, refreshBefore));
+  const [result] = await commit(db, claimRefresh.bind(nowMs, projectId, sessionId, row.titled_at, retryBefore, idleBefore));
   return { claimed: result.results.length === 1, previous: row.titled_at };
 }
 

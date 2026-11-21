@@ -64,7 +64,10 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
         f.sqlite.run("UPDATE agent_runs SET run_context=? WHERE id='target'", [JSON.stringify({ timeoutSeconds: 300, session_id: 'sess', assignment })]);
         await f.call('myco_run_learning', { op: 'material' });
       }
-      if (op === 'title') f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
+      if (op === 'title') {
+        f.sqlite.run("UPDATE agent_runs SET task = 'title-summary' WHERE id = 'target'");
+        await f.call('myco_run_sessions', { op: 'material' });
+      }
       if (op === 'map') {
         const repository = { url: 'https://example.test/source', branch: 'main', commit: 'a'.repeat(40) };
         f.sqlite.run("INSERT INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) VALUES('proj_1','r1',?,?,1296269,41,0,'test')", [repository.url, repository.branch]);

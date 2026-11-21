@@ -135,7 +135,7 @@ describe('a titling run a worker claimed', () => {
     // mode on the run's context make possible.
     const material = await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material', project: 'proj_1' });
     expect(material.session_id).toBe('s1');
-    expect((material.batches as Array<{ user_prompt: string }>)[0]?.user_prompt).toContain('add a retry to the runner');
+    expect(material.material).toContain('add a retry to the runner');
 
     const written = await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', project: 'proj_1', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
     expect(written).toEqual({ session_id: 's1', written: true });
@@ -210,6 +210,7 @@ describe('what a worker reporting `completed` actually closes', () => {
   it('keeps no error on a run that closed, whatever calls failed along the way', async () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
+    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material' });
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
     await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'titled one session' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3, 'a call failed or was refused: Bash (outside the run\'s grant)')).toEqual({ ended: true, status: 'completed' });
@@ -220,6 +221,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     const r = await rig();
     const run = await r.claimedTitling(NOW + 1);
 
+    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material' });
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
     await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'titled one session' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
@@ -446,6 +448,7 @@ describe('whose title a titling run is held to', () => {
     const r = await rig();
     const run = await r.claimedRetitle(NOW + 1);
 
+    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material' });
     await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'What the session really did', summary: 'A truer summary of the same work.' });
     await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 're-titled it' });
     expect(await r.workerEnds(run.id, 'completed', NOW + 3)).toEqual({ ended: true, status: 'completed' });
@@ -460,6 +463,7 @@ describe('whose title a titling run is held to', () => {
     // `claim` write takes nothing while answering that it ran.
     r.e.sqlite.run(`UPDATE sessions SET title = 'A title that arrived first', summary = 's' WHERE session_id = 's1'`);
 
+    await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material' });
     expect(await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'What this run would have written', summary: 'Its own summary of the work.' }))
       .toEqual({ session_id: 's1', written: false });
     await r.asRun(run.runToken, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'summary', summary: 'tried' });
@@ -475,6 +479,7 @@ describe('a harness error after the task evidence', () => {
       try {
         const run = await r.claimedTitling(NOW + 1);
         if (evidence !== 'missing artifact') {
+          await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material' });
           expect(await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', title: 'The work is done', summary: 'Recorded.' })).toMatchObject({ written: true });
         }
         if (evidence !== 'missing report' && evidence !== 'error before report') {

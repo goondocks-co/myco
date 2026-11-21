@@ -1,3 +1,4 @@
+import { writeTitle } from '@myco-server-worker/db/session-titles.js';
 /**
  * A projected session end records a title request and dispatches nothing as it
  * arrives: the end hook sends the transcript bytes the end closes after it. The
@@ -59,7 +60,7 @@ describe('the events route', () => {
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE id != 'owner-attempt'`).get()).toEqual({ n: 2 });
     // Never over a title that stands.
     e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [rechecked + 1]);
-    e.sqlite.run(`UPDATE sessions SET title = 'A title already written', summary = 'Keep this result' WHERE session_id = 'sess_1'`);
+    await writeTitle(env.db, 'proj_1', 'sess_1', 'A title already written', 'Keep this result');
     expect(await backfillTitles(env, rechecked + 2 * OWNER_TITLING_WINDOW_MS, 'idle')).toBe(0);
   });
 

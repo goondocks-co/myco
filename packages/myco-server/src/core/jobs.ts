@@ -136,7 +136,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
   {
     name: 'titling-backfill',
     runsThrough: 'idle',
-    converges: 'every ended or quiet, untitled session with fully parsed material is claimed, fresh work before older backlog and newest first, until it carries a title or workers have taken the attempt bound on it, and a titled session still open is refreshed after enough new prompts, inside the Deployment\'s daily titling ceiling and pace; a session its own capture owes a title always, a wholly imported one only while the backfill is on',
+    converges: 'every ended or quiet, untitled session with fully parsed material is claimed, fresh work before older backlog and newest first, until it carries a title or workers have taken the attempt bound on it, and a title behind its recorded last turn is refreshed after the session goes quiet or ends, inside the Deployment\'s daily titling ceiling and pace; a session its own capture owes a title always, a wholly imported one only while the backfill is on',
   },
   { name: 'storage-content-cleanup', runsThrough: 'idle', converges: 'selected duplicate event bodies and large tool inputs are durably archived before a bounded atomic clear, and behind-cursor writes remain queued' },
   // #1151 — worker mode

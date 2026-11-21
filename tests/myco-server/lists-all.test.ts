@@ -260,7 +260,7 @@ describe('an activity window: the sessions active in it, however long ago they s
     return { ...h, ran, ids };
   }
 
-  it('lists a session that started yesterday and is live now on today and on yesterday, where the start window lists it yesterday alone', async () => {
+  it('lists a session active across midnight on both activity windows and yesterday alone by start', async () => {
     const { ran, ids, get } = await activity();
     ran('proj_1', 's_live', TODAY - DAY + 3_600_000, TODAY + 20 * 60_000);
     expect(await ids(`/api/sessions?${today}`)).toEqual(['s_live']);
@@ -269,7 +269,7 @@ describe('an activity window: the sessions active in it, however long ago they s
     expect(await ids(`/api/sessions?since=${TODAY}&until=${TODAY + DAY}`)).toEqual([]);
     const row = (await get(`/api/sessions?${today}`)).body.rows[0];
     expect({ startedAt: row.startedAt, endedAt: row.endedAt, lastReceivedAt: row.lastReceivedAt })
-      .toEqual({ startedAt: TODAY - DAY + 3_600_000, endedAt: null, lastReceivedAt: TODAY + 20 * 60_000 });
+      .toEqual({ startedAt: TODAY - DAY + 3_600_000, endedAt: TODAY + 20 * 60_000, lastReceivedAt: TODAY + 20 * 60_000 });
   });
 
   it('admits an event exactly at since and an end exactly at since, and leaves out one a moment before', async () => {

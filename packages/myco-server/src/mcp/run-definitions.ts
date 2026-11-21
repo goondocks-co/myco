@@ -1,3 +1,4 @@
+import { SINGLE_TURN_MATERIAL_CHARS, SINGLE_TURN_MATERIAL_JSON_BYTES } from '../core/titling-params.js';
 import { TURN_SOURCE_PAGES, TURN_SOURCE_CURSOR_MAX_CHARS, TURN_SOURCE_MAX_BYTES, TURN_SOURCE_FAILURE_LIMIT } from '../core/turn-source.js';
 import { CARD_TEXT_FIELDS, CARD_LIST_FIELDS, CARD_PAIR_FIELDS } from '@goondocks/myco-shared/turn-card';
 import { CARD_MAX_CHARS, RUN_ANSWER_BYTES, readWindowFor } from '../core/read-window.js';
@@ -323,7 +324,7 @@ const definitions: readonly RunToolDefinition[] = [
   },
   {
     name: 'myco_run_sessions',
-    description: `This Project's settled sessions (up to ${window.sessionPage} per page), and this run's session. title and summary are both required for title: title 1–${TITLE_MAX_CHARS} characters, summary 1–${SUMMARY_MAX_CHARS} characters after cleanup.`,
+    description: `This Project's settled sessions (up to ${window.sessionPage} per page), and this run's session. title and summary are both required for title: title 1–${TITLE_MAX_CHARS} characters, summary 1–${SUMMARY_MAX_CHARS} characters after cleanup. Call material before title: it records the turn coverage the write will name. The material answer carries one labelled excerpt in material, with the current title and summary when present. The excerpt is at most ${SINGLE_TURN_MATERIAL_CHARS} characters and ${SINGLE_TURN_MATERIAL_JSON_BYTES} JSON bytes, with opening and closing instruction turns and labelled middle previews. Example: ${JSON.stringify({ op: 'title', title: 'Repaired capture delivery', summary: 'The agent repaired capture delivery and verified queued events.' })}.`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
@@ -332,7 +333,7 @@ const definitions: readonly RunToolDefinition[] = [
           type: 'string',
           enum: ['list', 'material', 'title'],
           description:
-            "list: settled sessions, newest first. material: this run's own session as titling material. title: write this run's own session title and summary.",
+            "list: settled sessions, newest first. material: this run's own session as titling material. title: after material, write this run's own session title and summary through the recorded material.",
         },
         limit: {
           type: 'integer',

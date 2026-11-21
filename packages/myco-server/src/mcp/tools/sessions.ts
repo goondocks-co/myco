@@ -34,6 +34,7 @@ interface SessionSummary {
   ended_at: number | null;
   status: 'active' | 'completed';
   title: string | null;
+  titleCoverage: SessionRow['titleCoverage'];
   summary: string;
   prompt_count: number;
   turnCount: number;
@@ -52,6 +53,7 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number; 
     ended_at: row.endedAt,
     status: row.live ? 'active' : 'completed',
     title: row.title,
+    titleCoverage: row.titleCoverage,
     summary: row.summary ?? '',
     prompt_count: counts.prompts,
     turnCount: counts.turns,

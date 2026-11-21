@@ -10,6 +10,7 @@ import { CURATION_ANSWER_STEPS } from './schema-steps-curation-answer.js';
 import { PUBLICATION_MARK_STEPS } from './schema-steps-publication-mark.js';
 import { GITHUB_APP_PROJECT_STEPS } from './schema-steps-github-app-projects.js';
 import { TOOL_DELIVERY_STEPS } from './schema-steps-tool-delivery.js';
+import { SESSION_CURRENT_STEPS } from './schema-steps-session-current.js';
 import { DIRECT_TITLE_STEPS } from './schema-steps-direct-titles.js';
 import { MACHINE_UPDATE_STEPS } from './schema-steps-machine-updates.js';
 import { TURN_COVERAGE_STEPS } from './schema-steps-turn-coverage.js';
@@ -2435,6 +2436,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...TELEMETRY_STEPS.map(stamp),
   ...TELEMETRY_EXACT_STEPS.map(stamp),
   ...NOTE_ORIGIN_STEPS.map(stamp),
+  ...SESSION_CURRENT_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

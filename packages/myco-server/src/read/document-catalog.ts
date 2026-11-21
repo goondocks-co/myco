@@ -25,6 +25,7 @@ export interface CatalogTurnRow {
   childCount: number;
   planCount: number;
   attachmentCount: number;
+  cardCoverage: { sourceHash: string | null; current: boolean; writtenAt: number | null };
   headline: string | null;
   signal: 'high' | 'low' | 'none' | null;
   marks: CardMarks | null;
@@ -65,6 +66,7 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
       textChars: (r.text_chars as number | null) ?? null, blobKey: null, createdAt: Number(r.created_at),
       toolCallCount: Number(r.tools), responseCount: Number(r.replies), childCount: Number(r.children), planCount: Number(r.plans),
       attachmentCount: Number(r.attachments), position: Number(r.position), headline: (r.headline as string | null) ?? null,
+      cardCoverage: { sourceHash: r.card_input_hash, current: r.card_state === 'carded' && r.card_input_hash !== null && r.card_input_hash === r.live_input_hash, writtenAt: r.carded_at },
       signal: (r.signal as CatalogTurnRow['signal']) ?? null, marks: r.marks == null ? null : JSON.parse(String(r.marks)) as CardMarks,
       failedTools: Number(r.failed_tools), mycoCalls: Number(r.myco_calls),
       toolRollup: r.tool_rollup == null ? null : JSON.parse(String(r.tool_rollup)) as ToolRollup,

@@ -1,8 +1,9 @@
 import type { RelationalStore } from '../../core/adapters.js';
+import { titleTurnRevisionSql } from './title-coverage.js';
 import { sessionMaterialReadySql } from './material.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
-import { activityAt, occurredAt, presentedEndedAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
+import { activityAt, occurredAt, presentedEndedAt, presentedCompletionAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
 /** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
@@ -17,9 +18,11 @@ export const PRESENTED_ENDED_AT = presentedEndedAt('s.');
 export const SESSION_OCCURRED_AT = occurredAt('s.');
 
 /** All joins land on primary keys, preserving the session row count. */
-export const SESSION_COLUMNS = `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at, ${activityAt('s.')} AS activity_at,
-     s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${PRESENTED_ENDED_AT} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason, s.launch_parent_session_id,
-     s.title, s.summary, s.titled_at, s.ended_by, ${firstPromptSql('s')} AS first_prompt,
+export const sessionColumns = (quiet: string): string => `s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at, ${activityAt('s.')} AS activity_at,
+     s.agent, s.branch, ${PRESENTED_STARTED_AT} AS started_at, ${presentedCompletionAt(quiet, 's.')} AS ended_at, s.origin_path, s.parent_session_id, s.parent_reason, s.launch_parent_session_id,
+     s.title, s.summary, s.titled_at,s.title_through_turn_key,(SELECT title_through_turn_count FROM session_documents title_doc WHERE title_doc.project_id=s.project_id AND title_doc.session_id=s.session_id AND title_doc.state='live') AS title_through_turn_count,s.title_through_turn_revision,
+     (SELECT ${titleTurnRevisionSql('title_doc')} FROM session_documents title_doc WHERE title_doc.project_id=s.project_id AND title_doc.session_id=s.session_id AND title_doc.state='live') AS last_turn_revision,
+     (SELECT open_turn_key FROM session_documents title_doc WHERE title_doc.project_id=s.project_id AND title_doc.session_id=s.session_id AND title_doc.state='live') AS last_turn_key, s.ended_by, ${firstPromptSql('s')} AS first_prompt,
      c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
 
 /** The session read's joins, with the sessions table read through `indexedBy` where one is named. */
@@ -138,7 +141,7 @@ function variantSql(shape: Shape): string {
     ? `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND (s.project_id < {afterProject} OR (s.project_id = {afterProject} AND s.session_id < {afterId}))))`
     : `${O} <= {at} AND (${O} < {at} OR (${O} = {at} AND s.session_id < {afterId}))`);
   const index = window === 'activity' ? SESSIONS_ACTIVE_INDEX : window === 'working' ? SESSIONS_WORKING_INDEX : across ? SESSIONS_ACROSS_INDEX : '';
-  return `SELECT s.project_id, ${SESSION_COLUMNS}, ${presentedLive('{quiet}', 's.')} AS live ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
+  return `SELECT s.project_id, ${sessionColumns('{quiet}')}, ${presentedLive('{quiet}', 's.')} AS live ${sessionFrom(index)} WHERE ${conditions.join(' AND ')}
     ORDER BY ${O} DESC${across ? ', s.project_id DESC' : ''}, s.session_id DESC LIMIT {limit}`;
 }
 

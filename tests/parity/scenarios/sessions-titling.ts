@@ -32,6 +32,7 @@ export const sessionsTitling: ParityScenario = {
     expect((await sessionDetail(target, session)).body.session.titledAt).toBe(attemptedAt);
     expect(await runsOf(session)).toHaveLength(1);
     const run = await takeRun(target, queued.id);
+    await runTool(target, run, 'myco_run_sessions', { op: 'material' });
     const writes = await Promise.all([
       runTool(target, run, 'myco_run_sessions', { op: 'title', title: 'Runner retry', summary: 'Added a retry to the runner.' }),
       runTool(target, run, 'myco_run_sessions', { op: 'title', title: 'Runner retry', summary: 'Added a retry to the runner.' }),
@@ -46,6 +47,7 @@ export const sessionsTitling: ParityScenario = {
     const asked = await askTitle(target, open);
     expect((await runsOf(open))[0]).toMatchObject({ id: asked, status: 'queued', heldBy: 'worker' });
     const taken = await takeRun(target, asked);
+    await runTool(target, taken, 'myco_run_sessions', { op: 'material' });
     expect(await runTool(target, taken, 'myco_run_sessions', { op: 'title', title: 'Project renamed', summary: 'Renamed the project from its card.' })).toMatchObject({ written: true });
     await report(target, taken, 'summary', 'Renamed the project.');
     expect(await endRun(target, taken)).toMatchObject({ ended: true, status: 'completed' });

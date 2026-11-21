@@ -27,7 +27,7 @@ import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie, settingsRevisionHeaders } from './helpers/owner.js';
 import { overwriteTitle, writeTitle } from '@myco-server-worker/db/session-titles.js';
 import { takeTitleCandidates as listTitleCandidates, untitledReason, type TitleWindow } from '@myco-server-worker/db/sessions/title-work.js';
-import { count, withHarness } from './helpers/fixtures.js';
+import { count, withHarness, publishFixture } from './helpers/fixtures.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 
 const NOW = 1_800_000_000_000;
@@ -181,6 +181,8 @@ describe('the imported-session backfill', () => {
       return id;
     };
     claim('owner');
+    expect(attempts()).toBe(0);
+    claim('refresh');
     expect(attempts()).toBe(0);
     const lapsed = claim('claim', { lapses: 3 });
     expect(attempts()).toBe(1);
@@ -716,116 +718,6 @@ describe('sessions that never end', () => {
     expect(r.runs().map((run) => run.sessionId)).toEqual(['quiet']);
   });
 
-  it('refreshes the title of a live session after enough new prompts and enough time, as a refresh that never counts as an attempt', async () => {
-    const r = rig();
-    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
-    open(r, 'few-prompts', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 9 });
-    open(r, 'just-titled', { title: 'Wire the build', titledAt: NOW - HOUR, prompts: 12 });
-    open(r, 'nothing-since', { title: 'Wire the build', titledAt: NOW + 10, prompts: 12 });
-    // Only a session due a refresh is offered, so one the claim would refuse never takes a place in the page.
-    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 5)).freshRefreshes.map((c) => [c.sessionId, c.mode])).toEqual([['long', 'refresh']]);
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
-    expect(r.runs().map((run) => [run.sessionId, run.mode, run.actor])).toEqual([['long', 'refresh', TITLING_BACKFILL_ACTOR]]);
-    expect(r.titledAt('long')).toBe(NOW);
-    // A worker taking the run costs no attempt: only a `claim` is bounded.
-    r.sqlite.run(`UPDATE agent_runs SET status = 'running' WHERE status = 'queued'`);
-    expect((r.sqlite.query(`SELECT titling_attempts AS n FROM sessions WHERE session_id = 'long'`).get() as { n: number }).n).toBe(0);
-    // A second wake finds the stamp new: the refresh waits out the interval.
-    expect(await backfillTitles(r.env, NOW + 1000, 'idle')).toBe(0);
-    expect(r.runs()).toHaveLength(1);
-  });
-
-  it('refuses a refresh inside the interval at the claim itself, whoever asks', async () => {
-    const r = rig();
-    open(r, 'recent', { title: 'Wire the build', titledAt: NOW - HOUR, prompts: 12 });
-    const refused = await titleSession(r.env, { projectId: 'proj_1', sessionId: 'recent', now: NOW, origin: ORIGIN }, { mode: 'refresh', actor: TITLING_BACKFILL_ACTOR });
-    expect(refused.outcome).toBe('already');
-    expect(r.titledAt('recent')).toBe(NOW - HOUR);
-    expect(r.runs()).toEqual([]);
-  });
-
-  it('offers a refresh only to a session active within the day, however long ago it was titled', async () => {
-    const r = rig();
-    open(r, 'active', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
-    open(r, 'dormant', { title: 'Wire the build', titledAt: NOW - 4 * DAY, prompts: 12, quietFor: 3 * DAY });
-    const candidates = await listTitleCandidates(r.env.db, windowAt(NOW), 5);
-    expect(candidates.freshRefreshes.map((c) => [c.sessionId, c.mode])).toEqual([['active', 'refresh']]);
-    expect(candidates.freshClaims).toEqual([]);
-    expect(candidates.backlogClaims).toEqual([]);
-  });
-
-  it('selects the most recently active refreshes before it limits, so older titled sessions never hide newer ones', async () => {
-    const r = rig();
-    // The oldest titling stamp belongs to the session least recently active.
-    open(r, 'a-day-ago', { title: 'T', titledAt: NOW - 10 * HOUR, prompts: 12, quietFor: 20 * HOUR });
-    open(r, 'hours-ago', { title: 'T', titledAt: NOW - 9 * HOUR, prompts: 12, quietFor: 3 * HOUR });
-    open(r, 'just-now', { title: 'T', titledAt: NOW - 5 * HOUR, prompts: 12, quietFor: 1000 });
-    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 2)).freshRefreshes.map((c) => c.sessionId)).toEqual(['just-now', 'hours-ago']);
-  });
-
-  it('gives a fresh session its first title before any refresh, and keeps the last third of the ceiling from refreshes', async () => {
-    const r = rig();
-    settle(r, 3);
-    for (const id of ['r1', 'r2', 'r3']) open(r, id, { title: 'T', titledAt: NOW - 5 * HOUR, prompts: 12 });
-    open(r, 'never-titled', { quietFor: 3 * HOUR });
-    // Three refreshes are due, but the quiet untitled session is taken first and the refreshes stop at two runs in all.
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(2);
-    const taken = r.runs().map((run) => [run.sessionId.startsWith('r') ? 'refresh' : run.sessionId, run.mode]).sort();
-    expect(taken).toEqual([['never-titled', 'claim'], ['refresh', 'refresh']]);
-    // The held run is still there for the next session to end.
-    r.session('just-ended', { imported: false, endedAt: NOW + 1000 });
-    expect(await backfillTitles(r.env, NOW + 2000, 'idle')).toBe(1);
-    expect(r.runs().map((run) => run.sessionId)).toContain('just-ended');
-  });
-
-  it('keeps a refresh that closed without its write due, since only a written title moves the material it counts from', async () => {
-    const r = rig();
-    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
-    r.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [NOW + 1000]);
-    expect((r.sqlite.query(`SELECT title_material_at AS at FROM sessions WHERE session_id = 'long'`).get() as { at: number }).at).toBe(NOW - 5 * HOUR);
-    // Inside the interval the stamp holds it off; past the interval it is due again on the same prompts.
-    expect(await backfillTitles(r.env, NOW + HOUR, 'idle')).toBe(0);
-    expect(await backfillTitles(r.env, NOW + 5 * HOUR, 'idle')).toBe(1);
-    expect(r.runs().map((run) => run.mode)).toEqual(['refresh', 'refresh']);
-  });
-
-  it('records what a written title read, so the next refresh counts only the prompts after it', async () => {
-    const r = rig();
-    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
-    await overwriteTitle(r.env.db, 'proj_1', 'long', 'Wired the build', 'Done.', null);
-    expect((r.sqlite.query(`SELECT title_material_at AS at, titled_at AS stamp FROM sessions WHERE session_id = 'long'`).get() as { at: number; stamp: number })).toEqual({ at: NOW, stamp: NOW });
-    r.sqlite.run(`UPDATE agent_runs SET status = 'completed', completed_at = ?`, [NOW + 1000]);
-    expect(await backfillTitles(r.env, NOW + 5 * HOUR, 'idle')).toBe(0);
-  });
-
-  it('a refused title write leaves the prompts the standing title covers where they were', async () => {
-    const r = rig();
-    r.session('retried', { transcript: false });
-    r.documented('proj_1', 'retried', 3);
-    expect(await writeTitle(r.env.db, 'proj_1', 'retried', 'First title', 'First summary')).toBe(true);
-    r.documented('proj_1', 'retried', 9);
-    // A retry after a lost answer writes nothing, so the six new prompts stay uncovered.
-    expect(await writeTitle(r.env.db, 'proj_1', 'retried', 'First title', 'First summary')).toBe(false);
-    expect(r.sqlite.query(`SELECT user_prompts, titled_user_prompts FROM session_documents WHERE session_id = 'retried'`).get())
-      .toEqual({ user_prompts: 9, titled_user_prompts: 3 });
-  });
-
-  it('counts new prompts by the server\'s receipt time, so a member whose clock runs behind still gets its refresh', async () => {
-    const r = rig();
-    open(r, 'behind', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12, clockBehind: 6 * HOUR });
-    expect((await listTitleCandidates(r.env.db, windowAt(NOW), 5)).freshRefreshes.map((c) => c.sessionId)).toEqual(['behind']);
-  });
-
-  it('refreshes a session that was titled while idle, resumed, and then ended, leaving its end as it is', async () => {
-    const r = rig();
-    open(r, 'resumed', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12, endedAt: NOW - 500 });
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
-    expect(r.runs().map((run) => [run.sessionId, run.mode])).toEqual([['resumed', 'refresh']]);
-    expect(endedAt(r, 'resumed')).toBe(NOW - 500);
-  });
-
   it('classifies a quiet session of imported transcripts as imported, as it does an ended one', async () => {
     const r = rig();
     open(r, 'quiet-import', { quietFor: 3 * HOUR });
@@ -834,17 +726,6 @@ describe('sessions that never end', () => {
     r.published();
     await titleReadySessions(r.env, NOW);
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1 });
-  });
-
-  it('puts the stamp back when the ceiling refuses a refresh, and leaves the standing title alone', async () => {
-    const r = rig();
-    open(r, 'long', { title: 'Wire the build', titledAt: NOW - 5 * HOUR, prompts: 12 });
-    const refused = await titleSession(r.env, { projectId: 'proj_1', sessionId: 'long', now: NOW, origin: ORIGIN },
-      { mode: 'refresh', actor: TITLING_BACKFILL_ACTOR, ceiling: { actor: TITLING_BACKFILL_ACTOR, task: TITLING_TASK, perDay: 0, sinceMs: NOW - DAY } });
-    expect(refused.outcome).toBe('ceiling');
-    expect(r.titledAt('long')).toBe(NOW - 5 * HOUR);
-    expect(r.runs()).toEqual([]);
-    expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
   });
 
   const settle = (r: ReturnType<typeof rig>, perDay: number) => r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: perDay } } });
@@ -869,15 +750,22 @@ describe('sessions that never end', () => {
       expect(crowded.runs().every((run) => run.sessionId.startsWith('fresh'))).toBe(true);
     });
 
-    it('holds a third of the ceiling for fresh work, so a session ending after the backlog drained the rest is still titled the same day', async () => {
+    it('keeps the fresh-title reserve after runner refreshes fill the backlog share', async () => {
       const r = rig();
       settle(r, 6);
-      for (let i = 0; i < 12; i += 1) backlog(r, `old${i}`, i * 1000);
+      for (let i = 0; i < 12; i += 1) {
+        const id = `old${i}`, at = NOW - 60_000 - i;
+        r.session(id, { imported: false, endedAt: at, title: 'Standing', transcript: false });
+        r.sqlite.run('UPDATE sessions SET titled_at=? WHERE session_id=?', [at - HOUR, id]);
+        r.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+          VALUES('proj_1',?,?,'tok_1','prompt','cli',json_object('promptId',?,'text','Continued work','origin','agent_dispatch'),'h',?,?)`, [id,id,id,at,at]);
+      }
+      await publishFixture({ sqlite: r.sqlite, serverEnv: r.env }, NOW);
       expect(freshReserve(6)).toBe(2);
       // Backlog alone may use four of the six runs.
       expect(await backfillTitles(r.env, NOW, 'idle')).toBe(4);
       expect(await backfillTitles(r.env, NOW + 1000, 'idle')).toBe(0);
-      expect(r.runs()).toHaveLength(4);
+      expect(r.runs().map(run => run.mode)).toEqual(['refresh', 'refresh', 'refresh', 'refresh']);
       // New work, an ended session and a quiet open one, takes the two held runs.
       r.session('ended-later', { imported: false, endedAt: NOW + 2000 });
       open(r, 'went-quiet', { quietFor: -3000 + 3 * HOUR });

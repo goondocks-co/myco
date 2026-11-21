@@ -58,6 +58,10 @@ async function rig() {
     expect((await titleSession(e.serverEnv, { projectId: 'proj_1', sessionId: 's1', now: NOW + 1, origin: ORIGIN })).outcome).toBe('queued');
     const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(workerToken, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 2 });
     if (!claimed.claimed) throw new Error('the titling run was not claimed');
+    await worker.fetch(new Request(`${ORIGIN}/mcp`, {
+      method: 'POST', headers: memberHeaders(claimed.run.runToken, { [PROJECT_HEADER]: 'proj_1' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run_sessions', arguments: { op: 'material' } } }),
+    }), e.env);
     const title = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
       method: 'POST', headers: memberHeaders(claimed.run.runToken, { [PROJECT_HEADER]: 'proj_1' }),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run_sessions', arguments: { op: 'title', title: 'Add a retry to the runner', summary: 'The runner gained a retry.' } } }),

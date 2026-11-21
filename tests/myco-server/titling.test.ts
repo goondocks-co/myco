@@ -21,16 +21,15 @@ import {
   titleSession,
   titleReadySessions,
 } from '@myco-server-worker/core/titling.js';
-import { OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/db/sessions/title-work.js';
+import { OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, TITLING_REFRESH_RETRY_MS } from '@myco-server-worker/db/sessions/title-work.js';
 import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/run-deadline.js';
 import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { titlingParamsOf } from '@myco-server-worker/core/titling-params.js';
-import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { publishFixture, sqliteEnv, withHarness } from './helpers/fixtures.js';
 import { failingStatement } from './helpers/store-faults.js';
-import { documentTitlingMaterial } from '@myco-server-worker/content/titling-material.js';
 
 const NOW = 1_700_000_000_000;
 const ORIGIN = 'https://deployment.example';
@@ -66,8 +65,7 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
   const convert = () => publishFixture({ sqlite: e.sqlite, serverEnv: env }, NOW);
   const title = async (id: string, now = NOW) => { await convert(); return titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }); };
   const ask = async (id: string, now = NOW) => { await convert(); return titleSession(env, { projectId: 'proj_1', sessionId: id, now, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' }); };
-  const material = async (id: string, mode: 'claim' | 'owner' = 'claim') => { await convert(); return documentTitlingMaterial(env, 'proj_1', id, mode); };
-  return { ...e, env, launches, setting, session, prompt, response, row, runRow, runRows, secrets, title, ask, convert, material };
+  return { ...e, env, launches, setting, session, prompt, response, row, runRow, runRows, secrets, title, ask, convert };
 }
 
 /** The same Deployment with the queue's own write refused, so a dispatch that has spent a claim fails after it. */
@@ -274,28 +272,6 @@ describe('titleSession', () => {
     expect(logged.join('\n')).not.toContain(KEY);
   });
 
-  it('bounds the material by prompt count and by characters, and reads only inline user prompts with their first inline response', async () => {
-    const h = harness();
-    h.session('s1');
-    for (let i = 0; i < MAX_MATERIAL_PROMPTS + 3; i += 1) {
-      h.prompt('s1', `p${String(i).padStart(2, '0')}`, `prompt ${i} ${'x'.repeat(MATERIAL_EXCERPT_CHARS + 50)}`, NOW - 20_000 + i);
-      if (i > 1) h.response('s1', `p${String(i).padStart(2, '0')}`, `r${i}`, `response ${i} ${'y'.repeat(MATERIAL_EXCERPT_CHARS + 50)}`, NOW - 20_000 + i);
-    }
-    h.response('s1', 'p00', 'r_late', 'later response', NOW - 19_000);
-    h.response('s1', 'p00', 'r_first', 'first response', NOW - 19_500);
-    h.response('s1', 'p01', 'r_spilled', null, NOW - 19_000);
-    h.prompt('s1', 'p_sys', 'system preamble', NOW - 21_000, 'system');
-    const material = await h.material('s1');
-    expect(material.length).toBeLessThanOrEqual(MAX_MATERIAL_PROMPTS);
-    expect(material.length).toBeGreaterThan(2);
-    expect(material[0].prompt.length).toBe(MATERIAL_EXCERPT_CHARS);
-    expect(material[0].response).toBe('first response');
-    expect(material[1].response).toBeNull();
-    expect(material[2].response?.length).toBe(MATERIAL_EXCERPT_CHARS);
-    expect(material.some((m) => m.prompt.includes('system preamble'))).toBe(false);
-    expect(material.reduce((n, m) => n + m.prompt.length + (m.response?.length ?? 0), 0)).toBeLessThanOrEqual(MAX_MATERIAL_CHARS);
-  });
-
   it('accepts only a bounded title and summary from a run', () => {
     expect(cleanTitle('  Did the thing.  ')).toBe('Did the thing');
     expect(cleanTitle('Two\n lines')).toBe('Two lines');
@@ -353,27 +329,7 @@ describe('titleSession on an owner\'s ask', () => {
     expect(h.runRows()).toHaveLength(2);
   });
 
-  it('reads the opening and the closing prompts inside the budget, so the arc\'s end reaches the run', async () => {
-    const h = harness();
-    h.session('s1');
-    const n = MAX_MATERIAL_PROMPTS + 6;
-    for (let i = 0; i < n; i += 1) {
-      const id = `p${String(i).padStart(2, '0')}`;
-      h.prompt('s1', id, `prompt ${i} ${'x'.repeat(MATERIAL_EXCERPT_CHARS)}`, NOW - 20_000 + i);
-      h.response('s1', id, `r${i}`, `response ${i} ${'y'.repeat(MATERIAL_EXCERPT_CHARS)}`, NOW - 20_000 + i);
-    }
-    const owner = await h.material('s1', 'owner');
-    const claim = await h.material('s1', 'claim');
-    expect(owner.reduce((c, m) => c + m.prompt.length + (m.response?.length ?? 0), 0)).toBeLessThanOrEqual(MAX_MATERIAL_CHARS);
-    expect(owner[0].prompt.startsWith('prompt 0 ')).toBe(true);
-    expect(owner[owner.length - 1].prompt.startsWith(`prompt ${n - 1} `)).toBe(true);
-    expect(claim[claim.length - 1].prompt.startsWith(`prompt ${n - 1} `)).toBe(false);
-    // A short session reads each prompt once.
-    h.session('s2');
-    h.prompt('s2', 'q1', 'one', NOW - 9000);
-    h.prompt('s2', 'q2', 'two', NOW - 8000);
-    expect((await h.material('s2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
-  });
+
 });
 
 
@@ -579,6 +535,61 @@ describe('direct session titles', () => {
     h.sqlite.close();
   });
 
+  it('refreshes a continued session once quiet and writes an ended session through its final turn', async () => {
+    const instructions: string[] = [];
+    const h = direct(async request => {
+      instructions.push(request.messages.map(message => message.content).join('\n'));
+      return { text: JSON.stringify(answer), usage: { input: 100, output: 20 } };
+    });
+    h.sqlite.run("UPDATE sessions SET ended_at=NULL WHERE session_id='direct'");
+    h.sqlite.run("UPDATE events SET payload=json_set(payload,'$.origin','agent_dispatch') WHERE kind='prompt'");
+    await h.ask('direct'); await h.settle();
+    const coverage = () => h.sqlite.query("SELECT title_through_turn_key AS turn FROM sessions WHERE session_id='direct'").get() as { turn: string };
+    expect(coverage().turn).toBe('opening');
+    h.prompt('direct', 'finished', 'Complete the implementation', NOW - 1000, 'agent_dispatch');
+    h.response('direct', 'finished', 'result', 'Committed three changes and verified all checks.', NOW - 500);
+    h.sqlite.run("UPDATE sessions SET last_received_at=? WHERE session_id='direct'", [NOW]);
+    await h.convert();
+    expect(await backfillTitles(h.env, NOW + 1000, 'idle')).toBe(0);
+    const quiet = NOW + 3 * 3_600_000;
+    expect(await backfillTitles(h.env, quiet, 'idle')).toBe(1);
+    await h.settle();
+    expect(coverage().turn).toBe('finished');
+    expect(await backfillTitles(h.env, quiet + 1000, 'idle')).toBe(0);
+    h.response('direct', 'finished', 'final', 'All work is committed.', quiet + 3000);
+    h.sqlite.run("UPDATE sessions SET ended_at=?,last_received_at=? WHERE session_id='direct'", [quiet + 4000, quiet + 4000]);
+    await h.convert();
+    expect(await backfillTitles(h.env, quiet + 60_000, 'idle')).toBe(1);
+    await h.settle();
+    expect(coverage().turn).toBe('finished');
+    expect(instructions.at(-1)).toContain('All work is committed.');
+    expect(instructions.at(-1)).toContain('Recorded person turns: 0');
+    expect(instructions.at(-1)).toContain('never call the actor "the developer" or "the team"');
+    h.sqlite.close();
+  });
+
+  it('waits four hours after a failed refresh of the same revision and admits new work immediately', async () => {
+    let valid = true;
+    const h = direct(async () => ({ text: valid ? JSON.stringify(answer) : '{}', usage: null }));
+    await h.title('direct'); await h.settle();
+    h.prompt('direct', 'continued', 'Continue the work', NOW + 1);
+    h.sqlite.run("UPDATE sessions SET last_received_at=? WHERE session_id='direct'", [NOW + 2]);
+    await h.convert(); valid = false;
+    const quiet = NOW + 3 * 3_600_000;
+    expect(await backfillTitles(h.env, quiet, 'idle')).toBe(1); await h.settle();
+    expect(h.runRows().at(-1)?.status).toBe('failed');
+    expect(await backfillTitles(h.env, quiet + TITLING_REFRESH_RETRY_MS - 1, 'idle')).toBe(0);
+    expect(await backfillTitles(h.env, quiet + TITLING_REFRESH_RETRY_MS + 1, 'idle')).toBe(1); await h.settle();
+    const moved = quiet + TITLING_REFRESH_RETRY_MS + 2000;
+    h.prompt('direct', 'new-work', 'Finish the new work', moved);
+    await h.convert();
+    h.sqlite.run("UPDATE sessions SET ended_at=?,last_received_at=? WHERE session_id='direct'", [moved, moved]);
+    valid = true;
+    expect(await backfillTitles(h.env, moved + SESSION_END_SETTLE_MS + 1, 'idle')).toBe(1); await h.settle();
+    expect(h.runRows().at(-1)?.status).toBe('completed');
+    h.sqlite.close();
+  });
+
   it('does not send archived project material to a provider', async () => {
     let calls = 0;
     const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
@@ -616,12 +627,14 @@ describe('direct session titles', () => {
       h.prompt('direct', 'turn-' + i, 'Human requirement ' + i, NOW - 7000 + i * 10);
       h.response('direct', 'turn-' + i, 'early-' + i, 'I will investigate.', NOW - 6999 + i * 10);
       h.response('direct', 'turn-' + i, 'closing-' + i, 'Completed requirement ' + i, NOW - 6998 + i * 10);
+      if (i === 7) h.prompt('direct', 'middle-notice', 'Recorded harness notice', NOW - 6997 + i * 10, 'system');
     }
     h.prompt('direct', 'notice', 'DO NOT TREAT AS HUMAN', NOW - 1, 'system');
     await h.convert();
     const material = await singleTurnMaterial(h.env, 'proj_1', 'direct');
     expect(material.text).toContain('Human requirement 13');
-    expect(material.text).toContain('Completed requirement 13');
+    expect(material.text).toContain('\n[Agent closing reply] Completed requirement 13');
+    expect(material.text).toContain('\n[Middle turn; Harness] Recorded harness notice');
     expect(material.text).toContain('Build direct session titles');
     expect(material.text).not.toContain('DO NOT TREAT AS HUMAN');
     expect(material.text).not.toContain('DO NOT SEND UNRELATED OUTPUT');
