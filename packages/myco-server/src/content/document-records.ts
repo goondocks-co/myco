@@ -12,7 +12,7 @@ import { filesNamedByToolInput, mycoToolFields } from '@goondocks/myco-shared/me
 import { utf8Preview } from '../hash.js';
 import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../ingest/tool-outcome.js';
 import { TOOL_EVIDENCE_VERSION, DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
-import { isPromptNotice } from './turn-lead.js';
+import { isPromptNotice } from '../read/turn-lead.js';
 
 /** Characters a tool's one-line input summary keeps. */
 const TOOL_SUMMARY_CHARS = 200;

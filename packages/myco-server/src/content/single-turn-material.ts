@@ -2,7 +2,7 @@ import type { ContentStore } from '../core/adapters.js';
 import { titleMaterialSnapshot, titleMaterialTurns } from '../db/documents/titling-material.js';
 import { SessionDocument } from './session-pages.js';
 import { openingRead } from './prompt-file-read.js';
-import { speaker } from './turn-lead.js';
+import { speaker } from '../read/turn-lead.js';
 
 import { answerBytes, headThatFits } from '../core/material-pages.js';
 import { SINGLE_TURN_MATERIAL_CHARS, SINGLE_TURN_MATERIAL_JSON_BYTES, TITLE_HEAD_TURNS, TITLE_TAIL_TURNS, TITLE_TAIL_ANY_TURNS, TITLE_MIDDLE_TURNS } from '../core/titling-params.js';

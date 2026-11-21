@@ -19,7 +19,7 @@ import { releaseBlobs } from '../core/object-release.js';
 import { trimTurn } from '../core/turn-card-rules.js';
 import { TURN_QUIET_MS } from '../db/schema-v110.js';
 import { turnInput } from '../content/turn-material.js';
-import { leadFacts } from '../content/turn-lead.js';
+import { leadFacts } from '../content/lead-facts.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, type DocRecord, type Page } from '../content/document.js';

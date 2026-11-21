@@ -11,7 +11,7 @@ import { documentCountersRow, liveDocumentHasInstruction, turnAnchor } from '../
 import { promptLocator } from '../db/documents/prompt-locator.js';
 import { turnPageRows, type OriginScope, type OriginView } from '../db/documents/turn-pages.js';
 import { turnLeadSession } from '../db/documents/turn-lead-session.js';
-import { turnLead } from '../content/turn-lead.js';
+import { turnLead } from './turn-lead.js';
 
 export interface CatalogTurnRow {
   promptId: string;
