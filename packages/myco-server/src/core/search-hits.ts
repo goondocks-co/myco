@@ -1,3 +1,4 @@
+import { sporeLine } from './spore-line.js';
 import { searchPresentation } from './search-presentation.js';
 import { displayPrompt } from '@goondocks/myco-shared/prompt-text';
 import { SEARCH_PREVIEW_CHARS, SEARCH_WINDOW, type ReleaseAnnotation, type SearchAcrossResult, type SearchType } from '@goondocks/myco-shared/search-types';
@@ -126,7 +127,7 @@ function hitOf(doc: HydratedDocument, input: PageInput, release: ReleaseAnnotati
   const type = typeOf(doc);
   const conversational = type === 'session' || type === 'card';
   const rawTitle = type === 'session' ? (doc.title || `Session ${doc.id.slice(-6)}`)
-    : type === 'plan' ? (doc.title || 'Plan') : type === 'card' ? (doc.title || 'Turn') : (doc.title ?? '');
+    : type === 'plan' ? (doc.title || 'Plan') : type === 'card' ? (doc.title || 'Turn') : sporeLine(doc.line, doc.title ?? '', doc.observation_type ?? type);
   const text = doc.text ?? (type === 'session' ? doc.title : null);
   const preview = doc.line !== null && doc.line !== '' ? doc.line : snippet(text ?? '', input.request.words, (doc.text_start ?? 1) > 1);
   return {

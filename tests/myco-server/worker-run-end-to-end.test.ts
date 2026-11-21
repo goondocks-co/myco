@@ -274,7 +274,7 @@ describe('what a worker reporting `completed` actually closes', () => {
     expect(await runCloseRefusal(r.e.db, { projectId: 'proj_1' }, (await getRun(r.e.db, { projectId: 'proj_1' }, run.id))!)).toBe(RUN_CLOSE_ARTIFACT_ERROR);
 
     // A spore written under the run's credential names the run as its author.
-    const line = 'Wrap only the claim call in the retry: the lease renewal re-claims a run another worker holds (runner/loop.ts).';
+    const line = 'Wrap only the claim call in the retry: the lease renewal re-claims a run another worker holds.';
     const saved = await r.asRun(run.runToken, 'myco_spores', { op: 'save', type: 'gotcha', content: `${line}\n\nThe renewal path is idempotent on the worker that holds the lease and a re-claim on any other.`, tags: ['runner', 'lease'], agent_line: `  ${line}  `, session_id: 's3' });
     expect(saved.id).toEqual(expect.any(String));
     // The spore names the run as its author, and carries the agent line the run gave it, as one line.

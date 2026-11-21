@@ -50,6 +50,16 @@ describe('a word search', () => {
     expect((await f.search('cobalt', { mode: 'semantic', status: 'in_progress' })).fallback_reason).not.toBe('history');
   });
 
+  it('titles a spore with no agent line by the first prose line of its body, never its type or its structure', async () => {
+    const f = fixture();
+    const bodies = { heading: '## Cobalt eviction\nKeep it bounded.', blank: `${'\n'.repeat(400)}Cobalt eviction\nKeep it bounded.`,
+      fence: '```ts\nconst cobalt = 1;\n```\nCobalt eviction', table: '| Cobalt | Value |\n|---|---|\n| a | b |\nCobalt eviction',
+      front: '---\ntoken: cobalt-example\n---\n\n---\nCobalt eviction', code: '```\ncobalt eviction()\n```' };
+    for (const [id, body] of Object.entries(bodies)) f.spore(id, body);
+    const titles = Object.fromEntries((await f.search('cobalt', { mode: 'fts' })).hits.map((hit) => [hit.id, hit.title]));
+    expect(titles).toEqual({ heading: 'Cobalt eviction', blank: 'Cobalt eviction', fence: 'Cobalt eviction', table: 'Cobalt eviction', front: 'Cobalt eviction', code: 'cobalt eviction()' });
+  });
+
   it(`ranks only the newest ${SEARCH_WINDOW} matches of a kind: a better but older match waits for a later page, and with fewer matches it ranks first`, async () => {
     const f = fixture();
     f.spore('best-but-oldest', 'zircon detail', { agent_line: 'zircon', created_at: 1_000 });

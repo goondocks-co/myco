@@ -5,8 +5,7 @@ import { learningMaterialPages } from '@myco-server-worker/core/learning-session
 import { withDocumentStores } from './helpers/document-stores.js';
 import { failingStatement } from './helpers/store-faults.js';
 import { uuid } from './helpers/fixtures.js';
-import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
-import { AGENT_LINE_MAX_CHARS, AGENT_LINE_EXAMPLE } from '@myco-server-worker/core/injection.js';
+import { AGENT_LINE_EXAMPLE } from '@myco-server-worker/core/injection.js';
 import { STATE_CHANGED } from '@myco-server-worker/mcp/tools/run.js';
 import { NOW, DAY, longTurn, heavyCard, learningRun, plainTurns } from './helpers/learning-stages.ts';
 
@@ -187,7 +186,8 @@ it('answers a learning run\'s save with the closest active spores, and that is e
 
     const first = await run.save(AGENT_LINE_EXAMPLE) as { id: string; near_matches: unknown[] };
     expect(first.near_matches).toEqual([]);
-    const second = await run.save('Declaring a run tool op in WRITE_OPS keeps dry runs from writing (packages/myco-server/src/core/tool-catalogue.ts).') as { id: string; near_matches: unknown[] };
+    expect(await run.save('Declaring a run tool op in WRITE_OPS keeps dry runs from writing.')).toMatchObject({ ok: false, error: expect.stringContaining('code notation "WRITE_OPS"; nothing was saved') });
+    const second = await run.save('When a preview changes real data, declare that write op so dry runs refuse it.', 'Declare it in WRITE_OPS.') as { id: string; near_matches: unknown[] };
     expect(second.near_matches).toEqual([{ id: first.id, revision: expect.any(Number), observation_type: 'gotcha', agent_line: AGENT_LINE_EXAMPLE }]);
     const near = second.near_matches[0] as { id: string; revision: number };
 
@@ -195,21 +195,13 @@ it('answers a learning run\'s save with the closest active spores, and that is e
       .toMatchObject({ old_spore: near.id, new_spore: second.id, status: 'superseded' });
     expect(await fullReads()).toEqual({ n: 0 });
 
-    const third = await run.save('Another op in WRITE_OPS: same dry-run rule (packages/myco-server/src/core/tool-catalogue.ts).') as { id: string; revision: number; near_matches: { id: string; revision: number }[] };
+    const third = await run.save('Another write op a preview reaches: the same dry run rule.') as { id: string; revision: number; near_matches: { id: string; revision: number }[] };
     expect(third.near_matches.map((match) => match.id)).toEqual([second.id]);
     expect(await run.call('myco_spores', { op: 'consolidate', session_id: 'long', source_spore_ids: [{ id: third.id, revision: third.revision }, ...third.near_matches.map(({ id, revision }) => ({ id, revision }))],
-      consolidated_content: 'Every write op is declared in WRITE_OPS.', observation_type: 'wisdom', agent_line: 'Every write op is declared in WRITE_OPS.', reason: 'one topic' }))
+      consolidated_content: 'Every write op is declared in WRITE_OPS.', observation_type: 'wisdom', agent_line: 'Declare every write op so previews refuse it.', reason: 'one topic' }))
       .toMatchObject({ status: 'consolidated', sources_consolidated: 2 });
     expect(await fullReads()).toEqual({ n: 0 });
   });
-});
-
-it('states the agent line\'s bound in the rules, by an example inside it, and rules out adding by default', () => {
-  expect(AGENT_LINE_EXAMPLE.length).toBeLessThanOrEqual(AGENT_LINE_MAX_CHARS);
-  expect(EXTRACTION_RULES).toContain(AGENT_LINE_EXAMPLE);
-  expect(EXTRACTION_RULES).toContain(`${AGENT_LINE_MAX_CHARS} characters`);
-  expect(EXTRACTION_RULES).toContain('When in doubt, keep it');
-  expect(EXTRACTION_RULES).toContain('Preserve useful commands');
 });
 
 it('keeps the prior handoff and failure count when every assigned card changes mid-run', async () => {

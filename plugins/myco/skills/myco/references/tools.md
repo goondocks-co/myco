@@ -29,7 +29,7 @@ The preview is for choosing. Fetch the hit in full with the tool that owns it.
 | `consolidate` | merge related spores into a wisdom note |
 | `obsolete` | retire contradicted knowledge or a feature dropped by decision |
 
-Writes need `project`. Pass the current `session_id` when there is one; member spore writes are accepted without it. Explicit PR/commit provenance is optional for members. `save` and `consolidate` also need an actionable `agent_line` of at most 158 characters. `type` names the kind of observation — `gotcha`, `decision` and the rest of the vocabulary the schema lists.
+Writes need `project`. Pass the current `session_id` when there is one; member spore writes are accepted without it. Explicit PR/commit provenance is optional for members. `save` and `consolidate` also need an actionable `agent_line` of at most 158 characters: the situation in plain words, then the guidance. A line carrying a file path, flag or code symbol is refused; keep those in `content`. `type` names the kind of observation — `gotcha`, `decision` and the rest of the vocabulary the schema lists.
 
 An external agent with a per-project access key reaches `list`, `get`, `save` and `supersede` and nothing else, and its writes are attributed to the key rather than to a person.
 

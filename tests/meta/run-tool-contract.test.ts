@@ -18,10 +18,11 @@ import {
   AGENT_LINE_TARGET_WORDS,
   AGENT_LINE_WORD_ROOM_CHARS,
   AGENT_LINE_EXAMPLE,
-  AGENT_LINE_GUIDANCE,
 } from '@myco-server-worker/core/injection.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
+import { AGENT_LINE_RULE } from '@myco-server-worker/core/agent-line.js';
+import { curationPrompt } from '@myco-server-worker/core/spore-curation.js';
 import {
   runRefusal,
   RUN_ACTION_MAX_CHARS,
@@ -384,10 +385,10 @@ it('gives learning, curation, seeding and spore tools the same measured drafting
   for (const text of [
     EXTRACTION_RULES,
     SEEDING_RULES,
-    definitionOf('myco_spores')!.description,
+    curationPrompt(''),
     definitionOf('myco_spores')!.inputSchema.properties.agent_line!.description!,
   ])
-    expect(text).toContain(AGENT_LINE_GUIDANCE);
+    expect(text).toContain(AGENT_LINE_RULE);
 });
 
 it('requires a bare cause so a composed refusal names exactly one next call', () => {
