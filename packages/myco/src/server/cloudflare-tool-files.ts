@@ -38,6 +38,14 @@ export class CloudflareToolFiles {
   unfinished(): string[] {
     return fs.existsSync(this.root) ? fs.readdirSync(this.root).filter(name => STALE_TOOL_DIRECTORY.test(name)).sort() : [];
   }
+  /** Retire unused directories when filesystem locks permit. */
+  private cleanupPublishedTools(): void {
+    try {
+      for (const name of this.unfinished()) {
+        try { fs.rmSync(path.join(this.root, name), { recursive: true, force: true, maxRetries: 3 }); } catch {}
+      }
+    } catch {}
+  }
   install(options: { prepare: (directory: string) => Promise<void>; runner: CommandRunner; env: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<void> {
     return withCloudflareOperation(this.home, async () => {
       fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -45,23 +53,21 @@ export class CloudflareToolFiles {
       let stage: string | undefined;
       let published = false;
       try {
-        for (const name of this.versions()) {
-          const from = path.join(this.root, name);
-          const aside = fs.mkdtempSync(path.join(this.root, '.wrangler-old-'));
-          retired.push({ from, aside });
-          await renameTool(from, path.join(aside, 'tool'));
-        }
         stage = fs.mkdtempSync(path.join(this.root, '.wrangler-'));
         await options.prepare(stage);
         const entry = this.entry(stage);
         if (!fs.existsSync(entry)) throw new Error('Wrangler installation did not create its executable; run `myco setup --create cloudflare`.');
         const version = readWranglerVersion(await options.runner.run('node', [entry, '--version'], { cwd: stage, env: options.env, signal: options.signal, timeoutMs: TOOL_CHECK_TIMEOUT_MS }));
         if (version !== this.version) throw new Error(`Wrangler installation returned ${version}, expected ${this.version}. Run ${CLOUDFLARE_SETUP_COMMAND}.`);
+        for (const name of this.versions()) {
+          const from = path.join(this.root, name);
+          const aside = fs.mkdtempSync(path.join(this.root, '.wrangler-old-'));
+          retired.push({ from, aside });
+          await renameTool(from, path.join(aside, 'tool'));
+        }
         await renameTool(stage, this.directory);
         published = true;
-        for (const name of this.unfinished()) {
-          fs.rmSync(path.join(this.root, name), { recursive: true, force: true });
-        }
+        this.cleanupPublishedTools();
       } catch (error) {
         if (!published) {
           const restoration = await Promise.allSettled(retired.reverse().map(async (item) => {
@@ -73,7 +79,7 @@ export class CloudflareToolFiles {
           if (failures.length) throw new AggregateError([error, ...failures], `Wrangler repair failed; prior tools remain in ${this.root}`);
         }
         throw error;
-      } finally { if (stage !== undefined) fs.rmSync(stage, { recursive: true, force: true }); }
+      } finally { if (stage !== undefined && !published) fs.rmSync(stage, { recursive: true, force: true }); }
     });
   }
 }

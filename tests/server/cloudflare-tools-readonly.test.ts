@@ -35,10 +35,18 @@ it.skipIf(process.platform === 'win32')('doctor and setup status discover operat
     fs.mkdirSync(path.join(installed, 'bin'), { recursive: true });
     fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ name: 'wrangler', bin: { wrangler: 'bin/wrangler.js' } }));
     fs.writeFileSync(path.join(installed, 'bin', 'wrangler.js'), `require('node:module').enableCompileCache?.(); console.log(${JSON.stringify(BUNDLED_WORKER_WRANGLER)});`);
+    const local = path.join(home, 'node_modules', 'wrangler');
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(path.join(local, 'package.json'), 'malformed');
+    expect((await check()).doctor?.status).toBe('ok');
+    const outside = path.join(root, 'outside.cjs');
+    fs.writeFileSync(outside, `console.log(${JSON.stringify(BUNDLED_WORKER_WRANGLER)});`);
+    fs.writeFileSync(path.join(local, 'package.json'), JSON.stringify({ name: 'wrangler', bin: path.relative(local, outside) }));
     const observed = await check();
     expect(observed.doctor?.status).toBe('ok');
     expect(observed.status?.state).toBe('complete');
     expect(observed.doctor?.detail).toContain(installed);
+    expect(observed.doctor?.detail).toContain('node ');
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     fs.rmSync(root, { recursive: true, force: true });

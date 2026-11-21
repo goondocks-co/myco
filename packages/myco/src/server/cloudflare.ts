@@ -26,6 +26,7 @@ import { BUNDLED_WORKER_WRANGLER, BUNDLED_WORKER_NODE } from '../worker-bundle.g
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
 import { withCloudflareOperation } from './cloudflare-operation.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { commandLine } from '@goondocks/myco-shared/shell-command';
 import { connectionFailure, objectReadFailureDetail, ObjectReadError, transientStatus } from './object-read.js';
 
 /** Wrangler refuses to guess between accounts, and guessing is what must not happen. */
@@ -217,17 +218,21 @@ const CLOUDFLARE_IDENTITY = z.object({
   accounts: z.array(z.object({ name: z.string(), id: z.string().regex(/^[0-9a-f]{32}$/) })).optional(),
 });
 
-function cloudflareIdentity(stdout: string): z.infer<typeof CLOUDFLARE_IDENTITY> | null {
-  const document = wranglerJson<unknown>(stdout);
-  if (document === null) return null;
+function cloudflareIdentity(result: CommandResult): z.infer<typeof CLOUDFLARE_IDENTITY> | null {
+  const document = wranglerJson<unknown>(result.stdout);
   const parsed = CLOUDFLARE_IDENTITY.safeParse(document);
+  if ((typeof document === 'object' && document !== null && 'loggedIn' in document && document.loggedIn === false)
+    || (document === null && /\bnot (?:authenticated|logged in)\b/i.test(result.stdout + result.stderr))) throw new WranglerNotSignedIn();
+  if (result.code !== 0) throw new WranglerNotReady(`Wrangler whoami failed: ${versionDiagnostic(result)}`);
+  if (document === null) return null;
   if (!parsed.success) throw new WranglerNotReady('Wrangler whoami --json returned no readable sign-in fact; repair the Wrangler installation and retry.');
   return parsed.data;
 }
 
 async function cloudflareWhoami(runner: CommandRunner, where: RunOptions): Promise<CommandResult> {
   const result = await runner.run('npx', wrangler('whoami', '--json'), where);
-  return result.code !== 0 && wranglerJson(result.stdout) === null
+  const jsonRefused = /\b(?:unknown|unrecognized|unexpected|unsupported)\s+(?:argument|option)s?\b[^\n]*\bjson\b/i.test(result.stdout + result.stderr);
+  return result.code !== 0 && wranglerJson(result.stdout) === null && jsonRefused
     ? runner.run('npx', wrangler('whoami'), where) : result;
 }
 
@@ -236,10 +241,8 @@ export async function listAccounts(runner: CommandRunner = cloudflareRunner(), m
   const cwd = ensureCommandDir(mycoHome);
   const selected = await assertWranglerPresent(runner, cwd, mycoHome);
   const result = await cloudflareWhoami(credentialRunner(selected, process.env), { cwd });
-  if (result.code !== 0) throw new WranglerNotSignedIn();
-  const identity = cloudflareIdentity(result.stdout);
+  const identity = cloudflareIdentity(result);
   if (identity !== null) {
-    if (!identity.loggedIn) throw new WranglerNotSignedIn();
     if (identity.accounts === undefined) throw new WranglerNotReady('Wrangler whoami --json returned no account list; repair the Wrangler installation and retry.');
     return identity.accounts;
   }
@@ -1020,6 +1023,7 @@ export interface WranglerTool {
   ready?: Promise<void>;
   version: string;
   source: string;
+  entry?: string;
   note?: string;
   runner: CommandRunner;
 }
@@ -1058,7 +1062,7 @@ async function selectWrangler(readiness: WranglerReadiness & { runner: CommandRu
   if (selected) return selected;
   const sourceRunner = operationTools.get(runner)?.raw ?? runner;
   const choose = (version: string, source: string, entry?: string, note?: string): WranglerTool => {
-    const tool = { version, source, note, runner: selectedRunner(sourceRunner, entry) };
+    const tool = { version, source, note, entry: entry ?? operatorWranglerEntry(sourceRunner), runner: selectedRunner(sourceRunner, entry) };
     selectedTools.set(tool.runner, tool);
     return tool;
   };
@@ -1113,7 +1117,12 @@ export async function installWrangler(readiness: WranglerReadiness = {}): Promis
   });
 }
 
-export const wranglerToolLine = (tool: WranglerTool): string => `Wrangler ${tool.version}: ${tool.source}.${tool.note ? ` ${tool.note}` : ''}`;
+export function wranglerToolLine(tool: WranglerTool): string {
+  const selected = tool.entry === undefined ? tool.source
+    : process.platform === 'win32' ? `node '${tool.entry.replaceAll("'", "''")}'` : commandLine(['node', tool.entry]);
+  const executable = tool.entry === undefined ? selected : `\`${selected}\`${process.platform === 'win32' ? ' (PowerShell)' : ''}`;
+  return `Wrangler ${tool.version}: ${executable}.${tool.note ? ` ${tool.note}` : ''}`;
+}
 
 /** Raised when wrangler answers but reaches no Cloudflare account, which every command here needs before it touches anything. */
 export class WranglerNotSignedIn extends WranglerNotReady {
@@ -1158,7 +1167,7 @@ export async function assertWranglerReady(readiness: WranglerReadiness = {}): Pr
     const runner = credentialRunner(tool.runner, env);
     if (cloudflareCredentialSource(env) === 'OAuth login') {
       const who = await cloudflareWhoami(runner, { cwd: wranglerCheckDirectory(readiness), env, signal: readiness.signal, timeoutMs: TOOL_CHECK_TIMEOUT_MS });
-      if (who.code !== 0 || cloudflareIdentity(who.stdout)?.loggedIn === false) throw new WranglerNotSignedIn();
+      cloudflareIdentity(who);
     }
     for (const line of cloudflareCredentialLines(env)) readiness.report?.(line);
   })().catch((error: unknown) => { tool.ready = undefined; throw error; });

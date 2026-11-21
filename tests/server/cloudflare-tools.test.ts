@@ -3,7 +3,7 @@ import { afterEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertWranglerReady, operationWranglerRunner, installWrangler, listAccounts, putWorkerSecrets, resolveWrangler, writeDeploymentRecord } from '@myco/server/cloudflare.js';
+import { assertWranglerReady, operationWranglerRunner, installWrangler, listAccounts, putWorkerSecrets, resolveWrangler, wranglerToolLine, writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_NODE, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import type { CommandResult, CommandRunner, RunOptions } from '@myco/server/runner.js';
 import { run } from '@myco/cli/setup.js';
@@ -19,14 +19,16 @@ function host() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tools-'));
   roots.push(home);
   const calls: { command: string; args: readonly string[]; options?: RunOptions }[] = [];
-  const state: { node: string; external: CommandResult; loggedIn: boolean; installFails: boolean; ownedResult?: CommandResult; legacy?: boolean } = { node: 'v26.0.0', external: answer('', 1, 'npm error npx canceled due to missing packages'), loggedIn: false, installFails: false };
+  const state: { node: string; external: CommandResult; loggedIn: boolean; installFails: boolean; ownedResult?: CommandResult; legacy?: boolean; identity?: CommandResult; onInstall?: () => void; operatorEntry?: string } = { node: 'v26.0.0', external: answer('', 1, 'npm error npx canceled due to missing packages'), loggedIn: false, installFails: false };
   const runner: CommandRunner = { async run(command, args, options) {
     calls.push({ command, args, options });
     if (command === 'node' && args[0] === '--version') {
       if (!state.node) throw Object.assign(new Error('absent node'), { code: 'ENOENT' });
       return answer(state.node);
     }
+    if (args.includes('-e')) return answer(JSON.stringify({ entry: state.operatorEntry }));
     if (command.startsWith('npm')) {
+      state.onInstall?.();
       if (state.installFails) return answer('', 1, 'fixture install failed');
       const entry = path.join(args[args.indexOf('--prefix') + 1]!, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
       fs.mkdirSync(path.dirname(entry), { recursive: true });
@@ -34,16 +36,10 @@ function host() {
       state.ownedResult = undefined;
       return answer();
     }
-    if (command.startsWith('npx') && args.includes('--version')) {
-      const env = options?.env;
-      if (env?.npm_config_offline !== 'true' || env.npm_config_update_notifier !== 'false' || env.npm_config_logs_max !== '0' || env.WRANGLER_WRITE_LOGS !== 'false' || env.WRANGLER_SEND_METRICS !== 'false' || !env.npm_config_cache?.startsWith(path.join(home, 'server', 'tools'))) {
-        fs.mkdirSync(path.join(home, 'unexpected-probe-write'), { recursive: true });
-        return answer('', 1, 'probe attempted network or state writes');
-      }
-      return state.external;
-    }
+    if (command.startsWith('npx') && args.includes('--version')) return state.external;
     if (args.includes('--version')) return args[0]?.includes(`wrangler-${BUNDLED_WORKER_WRANGLER}`) ? state.ownedResult ?? answer(BUNDLED_WORKER_WRANGLER) : answer(BUNDLED_WORKER_WRANGLER);
     if (args.includes('login')) state.loggedIn = true;
+    if (args.includes('whoami') && state.identity) return state.identity;
     if (args.includes('whoami') && state.legacy) return args.includes('--json') ? answer('Unknown argument: json', 1) : answer(`│ Fixture │ ${'a'.repeat(32)} │`);
     if (args.includes('secret') && args.includes('list')) return answer('[{"name":"RECOVERY_EXPORT_TOKEN"}]');
     if (args.includes('whoami')) return answer(JSON.stringify({ loggedIn: state.loggedIn, accounts: [{ name: 'Fixture', id: 'a'.repeat(32) }] }));
@@ -78,6 +74,7 @@ it('installs only with setup consent and uses the pinned private tool for accoun
   expect(install.options?.stdio).toBeUndefined();
   expect(install.options?.cwd?.startsWith(path.join(h.home, 'server', 'tools'))).toBe(true);
   const tool = await resolveWrangler(h.readiness);
+  expect(wranglerToolLine(tool)).toContain('node ');
   expect(tool.source.startsWith(path.join(h.home, 'server', 'tools'))).toBe(true);
   await expect(assertWranglerReady(h.readiness)).rejects.toThrow('myco setup --create cloudflare');
   h.state.loggedIn = true;
@@ -151,12 +148,18 @@ it('resolves Windows npm shims through the Node installation and preserves liter
   fs.writeFileSync(path.join(node, 'node.exe'), 'fixture node');
   const entry = path.join(bin, 'npm-cli.js');
   fs.writeFileSync(entry, 'fixture npm');
+  h.state.operatorEntry = entry;
   const runner = cloudflareRunner({ platform: 'win32', runner: h.runner });
   const args = ['--prefix', path.join(h.home, 'folder with spaces & punctuation')];
   await runner.run('npm.cmd', args, { env: { PATH: `${shim};${node}` } });
   const call = h.calls.at(-1)!;
   expect(call.command).toBe(path.join(node, 'node.exe'));
   expect(call.args).toEqual([entry, ...args]);
+  await runner.run('npx', ['--no-install', 'wrangler', 'secret', 'put', 'FIXTURE'], { input: 'private-fixture', stdio: 'inherit', env: { PATH: `${shim};${node}` } });
+  const discovery = h.calls.at(-2)!;
+  expect(discovery.options?.input).toBeUndefined();
+  expect(discovery.options?.stdio).toBeUndefined();
+  expect(h.calls.at(-1)?.options?.input).toBe('private-fixture');
 });
 
 it('repairs older and damaged private installations through one rollback-safe setup writer', async () => {
@@ -169,6 +172,7 @@ it('repairs older and damaged private installations through one rollback-safe se
   fs.mkdirSync(path.join(pinned, 'node_modules'), { recursive: true });
   fs.mkdirSync(path.join(tools, '.wrangler-unused'));
   await expect(resolveWrangler(h.readiness)).rejects.toThrow('has no executable');
+  h.state.onInstall = () => { expect(fs.existsSync(old)).toBe(true); expect(fs.existsSync(pinned)).toBe(true); };
   h.state.installFails = true;
   await expect(installWrangler(h.readiness)).rejects.toThrow('fixture install failed');
   expect(fs.existsSync(old)).toBe(true);
@@ -176,17 +180,31 @@ it('repairs older and damaged private installations through one rollback-safe se
   h.state.installFails = false;
   const rename = fs.renameSync;
   let denied = false;
+  let publicationFailed = false;
   const filesystem = spyOn(fs, 'renameSync').mockImplementation((from, to) => {
     if (!denied && String(from) === pinned) { denied = true; throw Object.assign(new Error('transient filesystem lock'), { code: 'EPERM' }); }
+    if (!publicationFailed && String(to) === pinned && path.basename(String(from)).startsWith('.wrangler-')) { publicationFailed = true; throw new Error('publication refused'); }
     return rename(from, to);
   });
-  try { await installWrangler(h.readiness); } finally { filesystem.mockRestore(); }
+  try {
+    await expect(installWrangler(h.readiness)).rejects.toThrow('publication refused');
+    expect(fs.existsSync(old)).toBe(true);
+    expect(fs.existsSync(pinned)).toBe(true);
+  } finally { filesystem.mockRestore(); }
+  const remove = fs.rmSync;
+  const cleanup = spyOn(fs, 'rmSync').mockImplementation((file, options) => {
+    if (String(file).includes('.wrangler-old-')) throw Object.assign(new Error('retired tool is locked'), { code: 'EPERM' });
+    return remove(file, options);
+  });
+  try { await installWrangler(h.readiness); } finally { cleanup.mockRestore(); }
+  expect((await resolveWrangler(h.readiness)).version).toBe(BUNDLED_WORKER_WRANGLER);
   expect(fs.existsSync(old)).toBe(false);
-  expect(fs.readdirSync(tools).some(name => name.startsWith('.wrangler-'))).toBe(false);
+  h.state.onInstall = () => { expect(fs.existsSync(path.join(pinned, 'node_modules', 'wrangler', 'bin', 'wrangler.js'))).toBe(true); };
   h.state.ownedResult = answer('4.0.0');
   await expect(resolveWrangler(h.readiness)).rejects.toThrow('reports 4.0.0');
   await installWrangler(h.readiness);
   expect((await resolveWrangler(h.readiness)).version).toBe(BUNDLED_WORKER_WRANGLER);
+  expect(fs.readdirSync(tools).some(name => name.startsWith('.wrangler-'))).toBe(false);
 });
 
 it('uses the plain identity command when an older operator tool rejects JSON', async () => {
@@ -195,4 +213,18 @@ it('uses the plain identity command when an older operator tool rejects JSON', a
   h.state.loggedIn = true; h.state.legacy = true;
   await assertWranglerReady(h.readiness);
   expect(await listAccounts(h.runner, h.home)).toEqual([{ name: 'Fixture', id: 'a'.repeat(32) }]);
+});
+
+it('retains identity failures without offering an unrelated login', async () => {
+  const h = host();
+  h.state.external = answer(BUNDLED_WORKER_WRANGLER);
+  h.state.identity = answer('', 1, 'Cloudflare DNS lookup failed');
+  await expect(assertWranglerReady(h.readiness)).rejects.toThrow('Cloudflare DNS lookup failed');
+  await expect(listAccounts(h.runner, h.home)).rejects.toThrow('Cloudflare DNS lookup failed');
+  expect(h.calls.filter(call => call.args.includes('whoami')).every(call => call.args.includes('--json'))).toBe(true);
+  const prompts: string[] = [];
+  const errors: string[] = [];
+  expect(await run(['--create', 'cloudflare'], { mycoHome: h.home, cwd: h.home, cloudflare: { runner: h.runner }, agents: () => [], stdout: () => {}, stderr: line => errors.push(line), ask: async text => { prompts.push(text); return 'yes'; } })).not.toBe(0);
+  expect(errors.at(-1)).toContain('Cloudflare DNS lookup failed');
+  expect(prompts.some(text => /sign in|log in/i.test(text))).toBe(false);
 });

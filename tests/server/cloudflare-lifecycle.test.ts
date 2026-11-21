@@ -1078,7 +1078,7 @@ describe('what the CLI prints when this machine is not ready', () => {
   });
 
   it.skipIf(process.platform === 'win32')('GATE: with no Cloudflare login, it names setup and CLOUDFLARE_API_TOKEN, and exits 1', async () => {
-    const npxDir = npxAnswering(`case "$*" in *whoami*) exit 1;; esac\necho " wrangler ${BUNDLED_WORKER_WRANGLER}"`);
+    const npxDir = npxAnswering(`case "$*" in *whoami*) echo '{"loggedIn":false}'; exit 1;; esac\necho " wrangler ${BUNDLED_WORKER_WRANGLER}"`);
     const refused = await withEnvironment(npxDir, ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
     expect({ exited: refused.exited, lines: refused.said.split('\n').length }).toEqual({ exited: true, lines: 1 });
     expect(refused.said).toContain('myco setup --create cloudflare');

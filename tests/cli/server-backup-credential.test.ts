@@ -180,7 +180,7 @@ it('withholds private diagnostics from validation, storage and confirmation fail
 it('refuses signed-out Wrangler before reading the key or making an export request', async () => {
   record();
   const output = await drive([], probe(), { async run(command, args, options) {
-    if (args.includes('whoami')) return { code: 1, stdout: TOKEN, stderr: TOKEN };
+    if (args.includes('whoami')) return { code: 1, stdout: '{"loggedIn":false}', stderr: TOKEN };
     return runner.run(command, args, options);
   } });
   expect(output).toContain('signed in to no Cloudflare account');

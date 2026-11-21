@@ -36,7 +36,7 @@ export function cloudflareRunner(options: { platform?: NodeJS.Platform; runner?:
     if ((command === 'npx' || command === 'npx.cmd') && args[0] === '--no-install' && args[1] === 'wrangler') {
       if (operator === undefined) {
         const npm = npmEntry('npm', env, platform);
-        const found = await runner.run(npm?.node ?? 'node', ['--input-type=module', '-e', OPERATOR_WRANGLER_PROBE, runOptions?.cwd ?? process.cwd(), npm?.entry ?? ''], runOptions);
+        const found = await runner.run(npm?.node ?? 'node', ['--input-type=module', '-e', OPERATOR_WRANGLER_PROBE, runOptions?.cwd ?? process.cwd(), npm?.entry ?? ''], { cwd: runOptions?.cwd, env, signal: runOptions?.signal, timeoutMs: runOptions?.timeoutMs });
         if (found.code !== 0) return found;
         let parsed: unknown;
         try { parsed = JSON.parse(found.stdout); } catch { throw new Error('Operator Wrangler discovery returned unreadable JSON'); }
