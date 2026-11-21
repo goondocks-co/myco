@@ -20,7 +20,7 @@ import {
   RUN_SPORE_ID_MAX_CHARS,
   RUN_SPORE_CURSOR_MAX_CHARS,
 } from '../core/run-tool-contract.js';
-import { CURATION_ANSWER_BOUNDS, CURATION_ANSWER_EXAMPLE, CURATION_BODY_CHARS, CURATION_CLUSTER_CAP, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES } from '../core/spore-curation-contract.js';
+import { CURATION_ANSWER_BOUNDS, CURATION_ANSWER_EXAMPLE, CURATION_CLUSTER_CAP, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES } from '../core/spore-curation-contract.js';
 import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
 import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
 import { PLAN_DECISIONS, PLAN_DECISION_EVIDENCE, PLAN_DECISION_EXAMPLE, PLAN_RESOLUTION_NOTE_CHARS } from '../core/plan-curation.js';
@@ -161,7 +161,7 @@ const definitions: readonly RunToolDefinition[] = [
             sources: { type: 'array', minItems: 1, maxItems: CURATION_CLUSTER_CAP, items: text() },
             observation_type: { type: 'string', enum: [...CURATION_TYPES] },
             agent_line: text(AGENT_LINE_MAX_CHARS),
-            content: text(CURATION_BODY_CHARS),
+            content: text(),
           }, required: ['sources','observation_type','agent_line','content'],
         } },
         keep: { type: 'array', maxItems: CURATION_CLUSTER_CAP, items: text() },

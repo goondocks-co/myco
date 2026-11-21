@@ -58,6 +58,11 @@ test('a member whose stored agent_line carries code notation is named to the run
   }
 });
 
+test('a marked member whose body is already at the limit can be written again with its old line moved into the body, and no further', async () => {
+  const f = await fixture(), line = 'For machine agent status, reconcile owned registrations (cli/member.ts).', limit = CURATION_BODY_CHARS + line.length, answer = (chars: number) => ({ ...keepAnswer(['gotcha-b']), notes: [note(['decision-a'], 'y'.repeat(chars))] });
+  try { await f.enable(); await f.add('decision-a', [1,0], f.now, 'x'.repeat(CURATION_BODY_CHARS)); await f.add('gotcha-b'); f.sqlite.run('UPDATE spores SET agent_line=? WHERE id=?', [line, 'decision-a']); await f.discover();
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('group not claimed'); expect(claim.run.instruction).toContain(`"body_limit":${limit}`);
+    expect((await f.call(claim.run.runToken, 'myco_run_curation', answer(limit + 1)) as { error: string }).error).toContain(`it has ${limit + 1} characters, 1 more than the ${limit} allowed`); expect(await f.call(claim.run.runToken, 'myco_run_curation', answer(limit))).toMatchObject({ completed: true, applied: true }); } finally { f.sqlite.close(); } });
 test('the curation schema can reapply twice with existing decisions and recompute live coverage', async () => {
   const f=await fixture();
   try {

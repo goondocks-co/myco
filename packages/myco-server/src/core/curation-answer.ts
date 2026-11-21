@@ -18,11 +18,16 @@ export function curationLineCheck(stored: string | null): string | null {
   return notation === null ? null : `The agent_line carries code notation ${JSON.stringify(notation)}.`;
 }
 
-/** A group member as the check reads it: its id and what the server found wrong with its agent_line. */
-export interface CheckedMember { id: string; lineCheck: string | null }
+/** The longest body a note written again from this one member may have: the usual limit, or the member's own body plus its old line when that line is marked, so what moves out of the line fits. */
+export function curationBodyLimit(content: string, stored: string | null): number {
+  return curationLineCheck(stored) === null ? CURATION_BODY_CHARS : Math.max(CURATION_BODY_CHARS, content.length + normalizeAgentLine(stored ?? '').length);
+}
+
+/** A group member as the check reads it: its id, what the server found wrong with its agent_line, and the body limit of a note written again from it alone. */
+export interface CheckedMember { id: string; lineCheck: string | null; bodyLimit: number }
 
 export function checkCurationAnswer(input: Record<string, unknown>, group: readonly CheckedMember[]): CurationAnswer | string {
-  const memberIds = group.map(member => member.id), lineChecks = new Map(group.map(member => [member.id, member.lineCheck]));
+  const memberIds = group.map(member => member.id), lineChecks = new Map(group.map(member => [member.id, member.lineCheck])), bodyLimits = new Map(group.map(member => [member.id, member.bodyLimit]));
   const extra = keys(input, ['op', 'project', 'notes', 'keep', 'retire', 'reason']);
   if (extra !== null) return `argument ${shown(extra)} is not declared; omit it`;
   if (input.op !== 'answer') return `op is ${shown(input.op)}; expected answer`;
@@ -48,11 +53,12 @@ export function checkCurationAnswer(input: Record<string, unknown>, group: reado
     for (const id of raw.sources) { const bad = use(id, 'sources', true); if (bad !== null) return bad; }
     if (typeof raw.observation_type !== 'string' || !(CURATION_TYPES as readonly string[]).includes(raw.observation_type))
       return `notes[${index}].observation_type is ${shown(raw.observation_type)}; expected ${CURATION_TYPES.join('|')}`;
-    if (typeof raw.content === 'string' && raw.content.length > CURATION_BODY_CHARS) {
-      const over = raw.content.length - CURATION_BODY_CHARS;
-      return `notes[${index}].content ${CURATION_BODY_OVER_LIMIT}: it has ${raw.content.length} characters, ${over} more than the ${CURATION_BODY_CHARS} allowed, counting spaces and line breaks; shorten that body by at least ${over} character${over === 1 ? '' : 's'}`;
+    const limit = raw.sources.length === 1 ? bodyLimits.get(raw.sources[0] as string) ?? CURATION_BODY_CHARS : CURATION_BODY_CHARS;
+    if (typeof raw.content === 'string' && raw.content.length > limit) {
+      const over = raw.content.length - limit;
+      return `notes[${index}].content ${CURATION_BODY_OVER_LIMIT}: it has ${raw.content.length} characters, ${over} more than the ${limit} allowed, counting spaces and line breaks; shorten that body by at least ${over} character${over === 1 ? '' : 's'}`;
     }
-    if (!text(raw.content, CURATION_BODY_CHARS)) return `notes[${index}].content has ${size(raw.content)} characters; expected 1–${CURATION_BODY_CHARS}`;
+    if (!text(raw.content, limit)) return `notes[${index}].content has ${size(raw.content)} characters; expected 1–${limit}`;
     const admitted = admitAgentLine(raw.agent_line);
     const length = typeof raw.agent_line === 'string' ? normalizeAgentLine(raw.agent_line).length : 0;
     if (length > AGENT_LINE_MAX_CHARS) return `notes[${index}].agent_line has ${length} characters after whitespace normalization, ${length - AGENT_LINE_MAX_CHARS} more than the ${AGENT_LINE_MAX_CHARS} allowed; shorten that line by at least ${length - AGENT_LINE_MAX_CHARS} characters, to about ${AGENT_LINE_TARGET_WORDS} short words, moving detail into the content`;
