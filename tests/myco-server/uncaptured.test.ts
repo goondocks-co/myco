@@ -13,6 +13,7 @@ import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { pruneUncaptured, UNCAPTURED_RETENTION_MS } from '@myco-server-worker/db/sessions/uncaptured-reports.js';
 import { connectMachineRoot, disconnectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
+import { MACHINE_SETTING_SPECS } from '@goondocks/myco-shared/member-protocol';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, PRINCIPAL, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 
 const KEY_A = 'a'.repeat(16);
@@ -190,11 +191,29 @@ describe('the dashboard', () => {
     await r.machine(r.member, '/members/projects/resolve', { rootKey: KEY_B, label: 'members-repo' });
     expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
     const leaves = (await r.dashboard('GET', '/api/machines/machine_2/settings', MEMBER_SUB)).body.leaves as Array<{ leaf: string; value: unknown }>;
-    expect(leaves.filter((leaf) => leaf.leaf === 'capture.quiet_roots' || leaf.leaf === 'capture.dismissed_roots').map((leaf) => leaf.value)).toEqual([['~/scratch'], [KEY_B]]);
+    expect(leaves.filter((leaf) => leaf.leaf === 'capture.quiet_roots' || leaf.leaf === 'capture.dismissed_roots').map((leaf) => leaf.value)).toEqual([['~/scratch'], { [KEY_B]: 'members-repo' }]);
     // The machine forgets a report under a folder it never asks about.
     await r.machine(r.member, '/members/uncaptured', { rootKey: KEY_A, label: 'other', reason: 'outside_folders' });
     expect(await r.machine(r.member, '/members/uncaptured/state', { rootKey: KEY_A, state: 'quiet' })).toEqual({ persisted: true });
     expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
+  });
+
+  it('saves nothing of a refused dismissal, names how to make room, and asks again about a restored repository', async () => {
+    const r = await seeded();
+    const full = Object.fromEntries(Array.from({ length: MACHINE_SETTING_SPECS['capture.dismissed_roots'].maxItems }, (_, i) => [i.toString(16).padStart(16, '0'), `old-${i}`]));
+    r.fixture.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES ('machine_2', 'capture.dismissed_roots', ?, 1, ?)`, [JSON.stringify(full), MEMBER_PRINCIPAL.id]);
+    const refused = await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/dismiss`, MEMBER_SUB, { folder: '~/scratch' });
+    expect(refused.status).toBe(400);
+    expect(refused.body.reason).toContain(`POST /api/uncaptured/machine_2/{rootKey}/restore`);
+    const leaves = async () => Object.fromEntries(((await r.dashboard('GET', '/api/machines/machine_2/settings', MEMBER_SUB)).body.leaves as Array<{ leaf: string; value: unknown }>).map((leaf) => [leaf.leaf, leaf.value]));
+    expect((await leaves())['capture.quiet_roots']).toEqual([]);
+    expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toHaveLength(1);
+    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${'0'.repeat(16)}/restore`, undefined, {})).status).toBe(404);
+    expect(await r.dashboard('POST', `/api/uncaptured/machine_2/${'0'.repeat(16)}/restore`, MEMBER_SUB, {})).toEqual({ status: 200, body: { restored: true, machineId: 'machine_2', rootKey: '0'.repeat(16) } });
+    expect((await r.dashboard('POST', `/api/uncaptured/machine_2/${KEY_B}/dismiss`, MEMBER_SUB, { folder: '~/scratch' })).status).toBe(200);
+    // Connected by its machine, it is dismissed no more.
+    expect(await r.machine(r.member, '/members/uncaptured/state', { rootKey: KEY_B, state: 'connected' })).toEqual({ persisted: true });
+    expect((await leaves())['capture.dismissed_roots']).not.toHaveProperty(KEY_B);
   });
 
   it('reports a disconnect that changed the stored connections as changed', async () => {

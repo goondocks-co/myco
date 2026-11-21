@@ -403,7 +403,7 @@ export function folderOf(entry: string, home: string): string | null {
 /** Where a repository stands: told to connect, under a folder the machine captures, outside them, or never asked about. */
 export function placeRepository(
   repo: Pick<Repository, 'root' | 'rootKey'>,
-  leaves: { autoJoinRoots: readonly string[]; connectRoots: Readonly<Record<string, string>>; quietRoots?: readonly string[]; dismissedRoots?: readonly string[] },
+  leaves: { autoJoinRoots: readonly string[]; connectRoots: Readonly<Record<string, string>>; quietRoots?: readonly string[]; dismissedRoots?: Readonly<Record<string, string>> },
   opts: { home?: string } = {},
 ): Placement {
   if (Object.prototype.hasOwnProperty.call(leaves.connectRoots, repo.rootKey)) return 'connected';
@@ -413,7 +413,7 @@ export function placeRepository(
     .map((entry) => folderOf(entry, home))
     .some((folder) => folder !== null && within(at, real(folder)));
   if (under(leaves.autoJoinRoots)) return 'eligible';
-  return under(leaves.quietRoots ?? []) || (leaves.dismissedRoots ?? []).includes(repo.rootKey) ? 'quiet' : 'outside_folders';
+  return under(leaves.quietRoots ?? []) || Object.prototype.hasOwnProperty.call(leaves.dismissedRoots ?? {}, repo.rootKey) ? 'quiet' : 'outside_folders';
 }
 
 function readStateFile(file: string): AutoJoinState | null {

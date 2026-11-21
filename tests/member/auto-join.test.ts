@@ -152,7 +152,7 @@ describe('where a repository stands', () => {
     // A folder never asked about, or a repository dismissed from "Needs you", is quiet; a captured folder still wins.
     expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, quietRoots: [base] })).toBe('quiet');
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { ...leaves, quietRoots: [base] })).toBe('eligible');
-    expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, dismissedRoots: [rootKeyFor(outside, mycoHome)] })).toBe('quiet');
+    expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, dismissedRoots: { [rootKeyFor(outside, mycoHome)]: 'gadget' } })).toBe('quiet');
     expect(notCapturedNotice({ outcome: 'outside_folders', serverUrl: 'https://s', placement: 'quiet' }, [], null)).toBeNull();
     // `~/` names a folder under the home folder; a relative entry names none.
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['~/Repos', 'Repos'], connectRoots: {} }, { home: base })).toBe('eligible');

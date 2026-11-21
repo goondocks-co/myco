@@ -5,7 +5,7 @@
  * named by its folder name alone, never by a path, so no home directory reaches the Deployment. A report counts one
  * more miss and keeps the latest reason; a connection, the member's revocation, or a month with no report deletes the row.
  */
-import type { HeldState, UncapturedReason } from '@goondocks/myco-shared/member-protocol';
+import { DISMISSED_ROOTS_LEAF, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import type { RelationalStore } from '../../core/adapters.js';
 import { rows, write, type Bound } from '../index.js';
 
@@ -24,10 +24,14 @@ interface UncapturedReport {
   now: number;
 }
 
+/** Whether the machine's member dismissed the repository from "Needs you", read in the statement that would list it. */
+const DISMISSED = `EXISTS (SELECT 1 FROM machine_settings s WHERE s.machine_id = ?1 AND s.leaf = '${DISMISSED_ROOTS_LEAF}'
+  AND json_valid(s.value) AND json_type(s.value, '$."' || ?2 || '"') IS NOT NULL)`;
+
 const record = write<[machine: string, root: string, member: string, label: string, remote: string | null, reason: string,
   firstMisses: number, held: string, now: number, sessions: number], { machine_id: string }>({ name: 'uncaptured.record', sql:
   `INSERT INTO uncaptured_roots (machine_id, root_key, member_id, label, remote, reason, misses, held, first_seen_at, last_seen_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9 WHERE NOT ${DISMISSED}
      ON CONFLICT (machine_id, root_key) DO UPDATE SET label = excluded.label, remote = excluded.remote, reason = excluded.reason,
        misses = uncaptured_roots.misses + ?10, held = excluded.held, last_seen_at = excluded.last_seen_at
      RETURNING machine_id` });
@@ -41,7 +45,8 @@ const prune = write<[before: number, batch: number], { machine_id: string }>({ n
 
 /**
  * Record a report: a first one writes the row, a later one keeps the latest reason, name, remote and hold, and counts
- * the sessions that met the repository after the last. `misses` counts sessions, never attempts.
+ * the sessions that met the repository after the last. `misses` counts sessions, never attempts. A repository its
+ * member dismissed is not recorded, decided in this one statement, so no report can list it again after a dismissal.
  */
 export function recordUncaptured(r: UncapturedReport): Bound<{ machine_id: string }, 'write'> {
   return record.bind(r.machineId, r.rootKey, r.memberId, r.label, r.remote, r.reason, Math.max(r.sessions, 1), r.held, r.now, r.sessions);

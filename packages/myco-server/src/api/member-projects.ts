@@ -22,7 +22,7 @@ import {
 } from '@goondocks/myco-shared/member-protocol';
 import { admitProject, PROJECT_NAME_MAX } from '../db/storage/projects.js';
 import { resolveRepository } from '../core/remotes.js';
-import { connectedRoot, connectMachineRoot, disconnectMachineRoot, dismissedRoot } from '../core/machine-settings.js';
+import { connectedRoot, connectMachineRoot, disconnectMachineRoot, restoreMachineRoot } from '../core/machine-settings.js';
 import { ROOT_KEY } from '../core/settings.js';
 import { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { commit } from '../db/index.js';
@@ -99,8 +99,7 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
   if (typeof repository === 'string') return ok({ persisted: false, code: 'invalid_field', reason: repository } satisfies RepositoryAnswer);
   const { rootKey, label } = repository;
   const miss = async (reason: UncapturedReason, detail: string): Promise<Response> => {
-    // A repository dismissed from "Needs you" is not asked about again, whatever kept it from joining.
-    if (!(await dismissedRoot(env.db, ctx.machineId, rootKey))) await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey, label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
+    await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey, label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
     return ok({ persisted: false, code: reason, reason: detail } satisfies RepositoryAnswer);
   };
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
@@ -142,7 +141,6 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
   if (!isUncapturedReason(reason) || (reason !== 'outside_folders' && reason !== 'no_remote')) {
     return ok({ persisted: false, code: 'invalid_field', reason: 'reason must be outside_folders or no_remote' });
   }
-  if (await dismissedRoot(env.db, ctx.machineId, repository.rootKey)) return ok({ persisted: false });
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
   const [written] = await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey: repository.rootKey, label: repository.label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
   return ok({ persisted: written.results.length > 0 });
@@ -171,5 +169,7 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     return ok({ persisted: cleared.results.length > 0 || untold.changed });
   }
   const [written] = await commit(env.db, state === 'connected' || state === 'quiet' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
-  return ok({ persisted: written.results.length > 0 });
+  // Connected, it is no longer dismissed: should it ever stop being captured, "Needs you" asks about it again.
+  const restored = state === 'connected' ? await restoreMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now) : null;
+  return ok({ persisted: written.results.length > 0 || (restored?.applied === true && restored.changed) });
 }

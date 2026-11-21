@@ -8,7 +8,7 @@ import { persistSettings, readEveryLeaf, readLeafValues, readSettingStates, read
 import { DEFAULT_OFF_CAPABILITIES, enabledCapabilitiesRead, projectWorkEnabled, readCapabilities, readCapabilityOn, readRetiredCapabilities, type EnabledCapability } from '../db/settings/admission.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
 import type { RelationalStore } from './adapters.js';
-import { folderRule, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
+import { folderRule, repositoryLabelRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { TASK_EXECUTION_PROFILES, admissionForTask, isCurationPreview, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
@@ -87,8 +87,8 @@ export type LeafSpec =
   | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number; readonly folders?: 'capture' | 'prompt-files' }
   /** Repository keys, each naming the project it connects to or `''` for none chosen: what a machine may join. */
   | { readonly type: 'root-map'; readonly maxItems: number }
-  /** Repository keys alone: the repositories dismissed from "Needs you". */
-  | { readonly type: 'root-list'; readonly maxItems: number };
+  /** Repository keys, each with its folder name: the repositories dismissed from "Needs you". */
+  | { readonly type: 'root-labels'; readonly maxItems: number; readonly maxChars: number };
 
 const BOOLEAN_SPEC: LeafSpec = { type: 'boolean' };
 /** A dispatch limit: a whole number of runs, or null for none. */
@@ -392,11 +392,16 @@ function rootMapViolation(spec: { maxItems: number }, value: unknown): string | 
   return null;
 }
 
-function rootListViolation(spec: { maxItems: number }, value: unknown): string | null {
-  if (!Array.isArray(value)) return 'expected a list of repository keys';
-  if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} repositories`;
-  const wrong = value.find((key) => typeof key !== 'string' || !ROOT_KEY.test(key));
-  return wrong === undefined ? null : `${String(wrong)} is not a repository key`;
+function rootLabelsViolation(spec: { maxItems: number; maxChars: number }, value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'expected an object of repository keys';
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > spec.maxItems) return `expected at most ${spec.maxItems} repositories`;
+  for (const [key, label] of entries) {
+    if (!ROOT_KEY.test(key)) return `${key} is not a repository key`;
+    const refusal = repositoryLabelRefusal(label, spec.maxChars);
+    if (refusal !== null) return `${key}: ${refusal}`;
+  }
+  return null;
 }
 
 /** What the value violates, or null when it satisfies the leaf's rule. */
@@ -426,7 +431,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unk
   if (spec.type === 'credential-source') return value === 'deployment' || value === 'worker-login' ? null : 'choose the server login or worker login';
   if (spec.type === 'path-list') return pathListViolation(spec, value);
   if (spec.type === 'root-map') return rootMapViolation(spec, value);
-  if (spec.type === 'root-list') return rootListViolation(spec, value);
+  if (spec.type === 'root-labels') return rootLabelsViolation(spec, value);
   if (spec.type === 'agent') return value === null || (typeof value === 'string' && Object.hasOwn(HARNESS_CREDENTIALS, value)) ? null : 'expected an agent a machine can run, or none';
   if (spec.type === 'agent-list') return agentListViolation(value);
   if (spec.type === 'pattern-list') return patternListViolation(spec, value);

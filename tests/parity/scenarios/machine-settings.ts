@@ -10,7 +10,7 @@ import { machineMember } from '../clients/machine.ts';
 
 const LEAF = 'capture.plan_dirs';
 /** Every other leaf a machine holds, at its default: the folders it captures repositories under, and none told to connect. */
-const AT_DEFAULT = { 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {}, 'capture.quiet_roots': [], 'capture.dismissed_roots': [] };
+const AT_DEFAULT = { 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {}, 'capture.quiet_roots': [], 'capture.dismissed_roots': {} };
 
 /**
  * A machine's settings on both targets (#1393): set on the dashboard by the machine's own member and nobody else, and

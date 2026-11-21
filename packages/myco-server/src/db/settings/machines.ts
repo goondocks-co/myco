@@ -3,7 +3,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { commit, first, read, rows, write } from '../index.js';
 
 /** The machine's claimant is still the actor and still a live member: a claim revoked mid-request never writes. */
-const claimedBy = (machine: string, member: string): string => `EXISTS (SELECT 1 FROM machine_claims claim JOIN members member ON member.id = claim.member_id
+export const claimedBy = (machine: string, member: string): string => `EXISTS (SELECT 1 FROM machine_claims claim JOIN members member ON member.id = claim.member_id
   WHERE claim.machine_id = ${machine} AND claim.member_id = ${member} AND member.revoked_at IS NULL)`;
 
 export interface MachineSettingRow {
