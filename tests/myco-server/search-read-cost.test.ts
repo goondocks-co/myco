@@ -7,9 +7,10 @@ import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
-import { searchAcross, searchDeployment } from '@myco-server-worker/core/search.js';
+import { searchAcross, searchDeployment, sporesSharingWords } from '@myco-server-worker/core/search.js';
 import { pendingSearchBlobs, searchBacklog } from '@myco-server-worker/db/search/blob-index.js';
 import { SEARCH_WINDOW, SEARCH_MAX_TERMS, type SearchAnswer, type SearchOptions } from '@goondocks/myco-shared/search-types';
+import { SEARCH_WINDOWS_PER_READER } from '@myco-server-worker/db/search/result-windows.js';
 import { createProject } from '@myco-server-worker/db/storage/projects.js';
 import { schemaD1Root } from './helpers/schema-template.js';
 import { d1TwoScale, eachUnit, expectTwoScale, type CostCase, type CostRun } from './helpers/two-scale.js';
@@ -36,7 +37,7 @@ const SHAPES: Record<string, SearchOptions> = {
   filtered: { query: 'cobalt', mode: 'fts', status: 'active', observation_type: 'gotcha', since: 1, until: 2_000_000_000 },
   session: { query: 'cobalt', mode: 'fts', session_id: 's1' },
   released: { query: 'cobalt', mode: 'fts', release_state: 'released', release_confidence: 'high' },
-  longQuestion: { query: `${'cobalt '.repeat(SEARCH_MAX_TERMS)}zqxrare`, mode: 'fts', match: 'any', type: 'spore' },
+  longQuestion: { query: Array.from({ length: SEARCH_MAX_TERMS + 1 }, (_, i) => `term${i}`).join(' '), mode: 'fts', match: 'any', type: 'spore' },
   anyWord: { query: 'cobalt zqxrare', mode: 'fts', match: 'any', type: 'spore' },
   /** Every match is a Codex session's, so this filter rejects the whole window. */
   rejecting: { query: 'cobalt', mode: 'fts', agent: 'claude' },
@@ -67,7 +68,7 @@ async function grow(db: RelationalStore, from: number, to: number) {
 }
 
 /**
- * A first page stores its ranking; the pages that follow read it. Each size reads as a
+ * The second page stores its ranking; the pages that follow read it. Each size reads as a
  * reader of its own, so the rankings one reader holds (at most `SEARCH_WINDOWS_PER_READER`) are the same at both.
  */
 function pagedCases(reach: string, ask: Ask, opts: SearchOptions): CostCase[] {
@@ -88,10 +89,24 @@ const cases: CostCase[] = [
   ...Object.entries(REACHES).flatMap(([reach, ask]) => pagedCases(reach, ask, SHAPES.one!)),
   ...pagedCases('rejecting', REACHES.project!, SHAPES.rejecting!),
   ...pagedCases('conversation by time', REACHES.project!, { query: 'cobalt', mode: 'fts', type: 'card', session_id: 's1', order: 'time' }),
+  { name: 'first pages and near-matches at reader capacity', run: async (db, at) => {
+    const reader = `member:capacity-${at.scale}`;
+    for (let i = 0; i < SEARCH_WINDOWS_PER_READER; i += 1) {
+      const first = await REACHES.project!(at.store, { ...SHAPES.spores!, limit: 1 }, reader) as SearchAnswer;
+      await REACHES.project!(at.store, { ...SHAPES.spores!, limit: 1, cursor: first.nextCursor! }, reader);
+    }
+    at.restart();
+    for (let i = 0; i < 10; i += 1) {
+      await REACHES.project!(db, SHAPES.spores!, reader);
+      await sporesSharingWords(envOf(db), { projectId: 'proj_0' }, ['cobalt'], { limit: 5, window: 100, now: NOW });
+    }
+  } },
 ];
 
 it('a search, its later pages and a search by time cost D1 the same as the records that match grow, in every reach and shape', async () => {
-  expectTwoScale(await d1TwoScale({ sizes: SIZES, setup, grow, cases }));
+  const costs = await d1TwoScale({ sizes: SIZES, setup, grow, cases });
+  expectTwoScale(costs);
+  expect(costs.at(-1)!.writes).toEqual([0, 0]);
 }, 600_000);
 
 it('the backlog a search and Health report, and a write the index follows, cost D1 the same as the plan bodies grow', async () => {
@@ -121,15 +136,17 @@ it('D1 answers a search naming the most Projects and words with every filter, an
     compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const db = await mf.getD1Database('DB') as unknown as RelationalStore;
-    const most: ProjectSet = { all: false, projectIds: Array.from({ length: MAX_NAMED_PROJECTS }, (_, i) => `proj_${i}`) };
+    const most: ProjectSet = { all: false, projectIds: Array.from({ length: MAX_NAMED_PROJECTS }, (_, i) => `proj_${i.toString(16).padStart(32, 'a')}`) };
     for (const projectId of most.projectIds) await createProject(db, projectId, projectId, 1);
     const opts: SearchOptions = {
-      query: Array.from({ length: 16 }, (_, i) => `term${i}`).join(' '), mode: 'fts', status: 'active', session_id: 's', observation_type: 'gotcha',
+      query: Array.from({ length: 256 }, (_, i) => String.fromCharCode(0x4e00 + i)).join(' ').padEnd(512, ' '), mode: 'fts', status: 'active', session_id: 's', observation_type: 'gotcha',
       since: 1, until: 2, release_state: 'released', release_confidence: 'high', agent: 'codex', branch: 'main', limit: 100,
     };
     // A card has no status and is no spore, so a conversation's search by time carries every other filter.
     const { status: _status, observation_type: _observationType, ...conversation } = opts;
     for (const answer of [
+      await searchAcross(envOf(db), most, { query: opts.query, mode: 'fts', match: 'any' }, 'member:cost'),
+      await searchAcross(envOf(db), ALL, { query: opts.query, mode: 'fts', match: 'any' }, 'member:cost'),
       await searchAcross(envOf(db), most, opts, 'member:cost'), await searchAcross(envOf(db), ALL, opts, 'member:cost'),
       await searchDeployment(envOf(db), { projectId: 'proj_0' }, opts, 'member:cost'),
       await searchAcross(envOf(db), most, { ...conversation, type: 'card', order: 'time' }, 'member:cost'),

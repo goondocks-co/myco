@@ -50,10 +50,10 @@ const ordering = read<[ids: string], { doc_id: number; record_at: number; kind: 
   sql: 'SELECT d.doc_id, d.record_at, d.kind, d.source_key FROM json_each(?1) j CROSS JOIN search_documents d ON d.doc_id = j.value' });
 
 /** Each document's record instant and identity, which order documents of equal score: newest first, then by identity. */
-export async function documentOrdering(db: RelationalStore, ids: readonly number[]): Promise<Map<number, { at: number; key: string }>> {
+export async function documentOrdering(db: RelationalStore, ids: readonly number[]): Promise<Map<number, { at: number; key: string; kind: string }>> {
   if (ids.length === 0) return new Map();
   const [rows] = await readSet(db, ordering.bind(JSON.stringify(ids)));
-  return new Map(rows.map((row) => [Number(row.doc_id), { at: Number(row.record_at), key: JSON.stringify([row.kind, row.source_key]) }]));
+  return new Map(rows.map((row) => [Number(row.doc_id), { at: Number(row.record_at), kind: row.kind, key: JSON.stringify([row.kind, row.source_key]) }]));
 }
 
 const planDocs = read<[plans: string], { doc_id: number; kind: 'plan' | 'chunk'; plan: string }>({ name: 'searchDocuments.planDocs',

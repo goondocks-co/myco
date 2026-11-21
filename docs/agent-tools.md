@@ -23,34 +23,32 @@ These tools read and edit project intelligence. Administration belongs in the da
 
 ### Word search
 
-`myco_search` searches sessions, spores, plans and conversation cards. `mode: "fts"` uses words;
-semantic search also falls back to words when vectors cannot answer. `match: "all"` requires every
+`myco_search` searches sessions, spores, plans and conversation cards. Use `mode: "fts"` to search
+words. Search by meaning falls back to words when it cannot answer. `match: "all"` requires every
 searched word, including words held across a plan's title and stored body. `match: "any"` accepts
 any searched word.
 
-Relevance starts with global FTS5 BM25 candidates, with a title or agent line weighted twice body text.
-The first window holds up to 500 candidates shared across document kinds, plus bounded candidates
-for words split across a plan's documents. It is selected by relevance before a time window is applied.
-Its order is stored immediately, so writes to other records cannot reorder its later pages.
-`nextCursor` finishes that ranking, then continues through the remaining matches in historical windows,
-each ranked within its own window. Later windows are not one global relevance order.
+Word search returns its best matches first, with title or line matches counted twice as much as body
+matches. Words found in more than 128 records of one kind do not select relevance candidates for
+that kind, but still count when scoring the selected records. `candidateWords` lists those words by kind; `chunk` means a stored plan body.
+If only very common words remain for a kind, search starts with up to 128 newer matches. With
+`match: "all"`, it checks a bounded range covered by every word; this can return an empty partial
+page even when older matches exist. `nextCursor` continues
+through the remaining matches, using newer history first. Ties favor newer records.
 
-`partial: true` means matches remain outside the current ranking window; it does not mean more hits
-than the requested page size. `coverage.horizon` is null for the global window, and gives the historical
-window's oldest reached time when that window is partial. `coverage.state` and `pendingBlobs` still
-report index completeness. Stored rankings expire after 15 minutes; restart without a cursor after
-`cursor_expired`. `order: "time"` lists one type (spore, plan or card) oldest first with its own cursor.
+`partial: true` means more history remains outside the current window. `coverage.horizon` gives
+the window's time edge when newer history was selected, otherwise null. A partial answer can have
+no hits when its filters exclude the current window; follow `nextCursor` to continue checking.
+`coverage.state` and `pendingBlobs` report whether older records or stored plan bodies are still
+being made searchable. Later pages remain available for 15 minutes after the second page; restart
+without a cursor after `cursor_expired`. `order: "time"` lists one type (spore, plan or card) oldest first.
 
-Word search ignores common words and searches at most 16 meaningful words. For longer questions,
-bounded frequency probes prefer words with fewer matches in the requested Project, types and indexed
-filters. Each probe stops after 17 matches per kind; equally common words retain their input order.
-This distinguishes rare words without claiming exact frequency for common words. `wordTruncation`
-reports `actual`, `searched` and `words`, including semantic fallback. Semantic search embeds the whole
-question. Example: `{"query":"repair windows service absolute path","type":"spore","mode":"fts","match":"any"}`.
+Repeated words and case variants count once. Questions with more than 16 distinct meaningful words
+use the rarer words; `wordTruncation` reports `actual`, `searched` and the selected `words`, including
+fallback from search by meaning. A short or long `match: "all"` question holding a word absent from
+the records returns no hits. Search by meaning still uses the whole original question.
 
-D1 billed rows are bounded by the candidate, word and page limits; FTS5's internal ranking CPU still
-grows with matching postings. The operation reads the search projection and bounded record lookups,
-never event history. No schema change or re-index of stored content is needed.
+Example: `{"query":"repair windows service absolute path","type":"spore","mode":"fts","match":"any"}`.
 
 ### Name the project
 

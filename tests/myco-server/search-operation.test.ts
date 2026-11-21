@@ -104,10 +104,12 @@ describe('a word search', () => {
   it('refuses what it cannot search, naming what to send instead', async () => {
     const f = fixture();
     expect(await refusal(f.search('the of and', { mode: 'fts' }))).toMatchObject({ code: 'stopwords_only' });
-    f.spore('long-question', 'cobalt missing');
-    const question = `${'cobalt '.repeat(SEARCH_MAX_TERMS)}missing`;
-    expect(await f.search(question, { mode: 'fts' })).toMatchObject({ hits: [{ id: 'long-question' }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
-    expect(await f.search(question, { mode: 'auto' })).toMatchObject({ hits: [{ id: 'long-question' }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
+    f.spore('long-question', 'cobalt');
+    const question = `${'Cobalt cobalt '.repeat(SEARCH_MAX_TERMS)}missing`;
+    expect(await f.search(question, { mode: 'fts' })).toMatchObject({ hits: [] });
+    expect(await f.search(question, { mode: 'auto' })).toMatchObject({ hits: [] });
+    expect((await f.search('COBALT cobalt', { mode: 'fts' })).wordTruncation).toBeUndefined();
+    expect((await f.search('cobalt missing', { mode: 'fts' })).hits).toEqual([]);
     const tooLong = await refusal(f.search('a'.repeat(SEARCH_QUERY_MAX_CHARS + 1), { mode: 'semantic' }));
     expect(tooLong?.message).toContain(`query has ${SEARCH_QUERY_MAX_CHARS + 1} characters; limit ${SEARCH_QUERY_MAX_CHARS}`);
     expect(tooLong?.message).toContain('Next call: myco_search');

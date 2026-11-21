@@ -9,13 +9,16 @@ export const SEARCH_MAX_LIMIT = 100;
 export const SEARCH_QUERY_MAX_CHARS = 512;
 /** The most words a search matches; words in `SEARCH_STOPWORDS` are not counted. */
 export const SEARCH_MAX_TERMS = 16;
+/** A word may select relevance candidates within this many scoped documents; common-only first windows share the bound. */
+export const SEARCH_WORD_CEILING = 128;
 /**
- * The global relevance candidates a search ranks first, shared among kinds. When more match, the answer is `partial`;
+ * The largest relevance window, shared among kinds; common-only first windows also obey `SEARCH_WORD_CEILING`.
+ * When more may match, the answer is `partial`;
  * later pages finish the stored ranking then continue through the remaining matches in historical windows.
  */
 export const SEARCH_WINDOW = 500;
-/** Relative BM25 column weights; scope facets restrict matches without contributing to relevance. */
-export const SEARCH_RELEVANCE_WEIGHTS = { facets: 0, headline: 2, body: 1 } as const;
+/** Relative weights of word presence in the headline and body. */
+export const SEARCH_RELEVANCE_WEIGHTS = { headline: 2, body: 1 } as const;
 /** How long a search's later pages stay available after its ranking is stored. */
 export const SEARCH_WINDOW_TTL_MS = 15 * 60_000;
 /** Common English words a search ignores: they name nothing a record is about. */
@@ -119,6 +122,8 @@ export interface SearchAnswer {
   provider_unavailable: boolean;
   /** Present when word search shortens the question, with counts and the meaningful words selected by bounded frequency probes. */
   wordTruncation?: { actual: number; searched: number; words?: string[] };
+  /** Words too common to select relevance candidates, by document kind; they still contribute to scoring. */
+  candidateWords?: { kind: SearchType | 'chunk'; omitted: string[] }[];
   /** Why a requested semantic search used the word path. */
   fallback_reason?: 'no_vectors' | 'history' | 'empty_semantic' | 'provider_unavailable' | 'filtered';
   coverage: SearchCoverage;

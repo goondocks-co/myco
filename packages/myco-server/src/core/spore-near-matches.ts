@@ -2,8 +2,8 @@
  * The active spores closest to one just saved, as a learning run needs them to curate: each with what supersede and
  * consolidate ask for, so the run acts in the same pass without a counted full read.
  *
- * Semantic neighbours come first where the Deployment has a provider. A word search over the Project's newest active
- * spores sharing the line's words fills the rest, and it alone sees a spore saved moments ago, which has no vector yet.
+ * Semantic neighbours come first where the Deployment has a provider. A bounded word search over the Project's active
+ * spores sharing the line's words fills the rest and can find a newly saved spore before it has a vector.
  */
 import type { ServerEnv } from './adapters.js';
 import { embedding_semanticSearch as semanticSearch } from '../read/catalog/embedding.js';
@@ -14,7 +14,7 @@ import { listSporesByIds } from '../db/spores/records.js';
 
 /** The neighbours one save answers with. */
 const NEAR_MATCH_LIMIT = 5;
-/** The newest matching spores a word search ranks. */
+/** The matching spores the word search ranks after common-word admission. */
 const NEAR_MATCH_WINDOW = 100;
 /** The longest words of a spore's line a word search reads. */
 const MATCH_WORDS = 8;

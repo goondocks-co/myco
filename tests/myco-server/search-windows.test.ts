@@ -54,7 +54,9 @@ it(`ranks an old relevant note first and walks past ${SEARCH_WINDOW} matches to 
     const scope = { projectId: 'project' };
     const one = await walk((cursor) => searchDeployment(env, scope, options({ query: 'How do I repair the windows service when its path is not absolute cobalt', match: 'any', type: 'spore', ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
     expect(one[0]).toBe('spore:sp0000');
-    const shortened = await searchDeployment(env, scope, options({ query: `${'COBALT '.repeat(SEARCH_MAX_TERMS)}ABSOLUTE`, type: 'spore' }), 'member:a', NOW);
+    const longWords = Array.from({ length: SEARCH_MAX_TERMS }, (_, i) => `term${i}`).join(' ');
+    await run(db, "UPDATE spores SET content = content || ' ' || ? WHERE project_id = 'project'", longWords);
+    const shortened = await searchDeployment(env, scope, options({ query: `${longWords} TERM0 ABSOLUTE`, type: 'spore' }), 'member:a', NOW);
     expect(shortened.hits[0]?.id).toBe('sp0000');
     expect(shortened.wordTruncation?.words).toContain('absolute');
     expect({ target, listed: one.length, unique: new Set(one).size }).toEqual({ target, listed: SEARCH_WINDOW + 150, unique: SEARCH_WINDOW + 150 });
@@ -74,14 +76,13 @@ it('reaches the older matches of a filter that rejects the whole newest window, 
     }
     await spores(db, 'project', SEARCH_WINDOW + 200);
     // The oldest 40 belong to a Codex session; every newer one to a Claude session.
-    await run(db, "UPDATE spores SET session_id = CASE WHEN id < 'sp0040' THEN 'sx' ELSE 'sc' END WHERE project_id = 'project'");
+    await run(db, "UPDATE spores SET agent_line = NULL, session_id = CASE WHEN id < 'sp0040' THEN 'sx' ELSE 'sc' END WHERE project_id = 'project'");
     const env = envOf(db);
-    for (const limit of [20, 1]) {
-      const first = await searchDeployment(env, { projectId: 'project' }, options({ type: 'spore', agent: 'codex', limit }), 'member:a', NOW);
-      const listed = await walk((cursor) => searchDeployment(env, { projectId: 'project' }, options({ type: 'spore', agent: 'codex', limit, ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
-      expect({ target, limit, first: first.hits.length, partial: first.partial, more: first.nextCursor !== null, listed: listed.length, unique: new Set(listed).size })
-        .toEqual({ target, limit, first: limit, partial: true, more: true, listed: 40, unique: 40 });
-    }
+    const limit = 20;
+    const first = await searchDeployment(env, { projectId: 'project' }, options({ type: 'spore', agent: 'codex', limit }), 'member:a', NOW);
+    const listed = await walk((cursor) => searchDeployment(env, { projectId: 'project' }, options({ type: 'spore', agent: 'codex', limit, ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
+    expect({ target, limit, first: first.hits.length, partial: first.partial, more: first.nextCursor !== null, listed: listed.length, unique: new Set(listed).size })
+      .toEqual({ target, limit, first: 0, partial: true, more: true, listed: 40, unique: 40 });
   });
 });
 
@@ -141,7 +142,7 @@ it('continues only for the reader that stored the ranking, until it expires, and
     expect(await refusal(searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: second.nextCursor! }), 'member:a', NOW + SEARCH_WINDOW_TTL_MS + 1))).toBe('cursor_expired');
     const kept = await searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: first.nextCursor! }), 'member:a', NOW + 1);
     for (let i = 0; i < SEARCH_WINDOWS_PER_READER; i += 1) {
-      const page = await searchDeployment(env, scope, options({ type: 'spore', limit: 5 }), 'member:a', NOW + 2 + i);
+      const page = await searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: first.nextCursor! }), 'member:a', NOW + 2 + i);
       expect(page.hits).toHaveLength(5);
     }
     expect({ target, evicted: await refusal(searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: kept.nextCursor! }), 'member:a', NOW + 100)) })

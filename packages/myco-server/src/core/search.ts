@@ -18,8 +18,8 @@ import { selectSearchWords } from './search-words.js';
 import { sessionQuietBefore } from './session-quiet.js';
 
 /**
- * Shared search for HTTP, MCP, curation and near-match. The first window uses global FTS5 relevance and is stored
- * before answering. Its pages read that frozen order; remaining matches continue in ranked historical windows,
+ * Shared search for HTTP, MCP, curation and near-match. The first window admits relevance by capped word frequency and writes nothing. Its first continuation stores
+ * the re-read order without the listed entries; remaining matches continue in ranked historical windows,
  * excluding the global candidates. Time order walks one type oldest first. Answers never count their matches.
  */
 
@@ -97,7 +97,7 @@ async function wordSearchPage(search: WordSearch): Promise<WordAnswer> {
   const binding = searchBinding(search.reach, request);
   const cursor = request.cursor === null ? null : decodeCursor(request.cursor, binding);
   if (kinds.length === 0 || projects.length === 0) return empty;
-  await selectSearchWords(env.db, projects, request, cursor?.o === 'w' || cursor?.o === 't' ? cursor.q : undefined);
+  await selectSearchWords(env.db, projects, request, { held: cursor?.q, probe: request.order === 'relevance' && (cursor === null || cursor.o === 'r'), highs: cursor?.o === 'r' ? cursor.f : undefined });
   const quietBefore = await sessionQuietBefore(env, now);
   const walk: Walk = { ...search, binding, input: (scores) => ({ db: env.db, projects, request, scores, quietBefore }) };
   const input = walk.input;
@@ -107,11 +107,12 @@ async function wordSearchPage(search: WordSearch): Promise<WordAnswer> {
     const { high } = docIdRange(request.filters);
     const window = await rankWindow(env.db, projects, request, { highs: Object.fromEntries(kinds.map((kind) => [kind, high])) });
     const page = await pageOfHits(input(window.scores), window.entries, 0);
-    const state: WindowState = { search_id: crypto.randomUUID(), round: 0, asof: now, entries: window.entries, kinds: window.kinds, scores: window.scores };
-    return continueWindow(walk, state, 0, { page });
+    const more = page.next < window.entries.length || anyPartial(window.kinds);
+    const listed = window.entries.slice(0, page.next).map(entryKey).filter(([id, plan]) => page.listed.has(`${id}:${plan}`));
+    return answerOf(page.hits, window.kinds, now, coverage, more ? encodeCursor({ o: 'r', b: binding, at: now, f: window.fences, l: listed, q: request.terms }) : null);
   }
   if (cursor.o === 'r') {
-    const window = await rankWindow(env.db, projects, request, { highs: cursor.f, previous: {} });
+    const window = await rankWindow(env.db, projects, request, { highs: cursor.f, listed: cursor.l.map(([id]) => id) });
     const listed = new Set(cursor.l.map(([id, plan]) => `${id}:${plan}`));
     const entries = window.entries.filter((entry) => !listed.has(entryKey(entry).join(':')));
     const state: WindowState = { search_id: crypto.randomUUID(), round: 0, asof: now, entries, kinds: window.kinds, scores: window.scores };
@@ -149,9 +150,9 @@ const anyPartial = (kinds: Partial<Record<DocumentKind, KindWindow>>) => Object.
 
 function answerOf(hits: SearchAcrossResult[], kinds: Partial<Record<DocumentKind, KindWindow>>, asOf: number, coverage: SearchCoverage, nextCursor: string | null): WordAnswer {
   const partial = anyPartial(kinds);
-  const global = Object.values(kinds).some((kind) => kind?.resume !== undefined);
-  const lows = Object.values(kinds).filter((kind) => kind!.partial).map((kind) => recordMs(kind!.low));
-  return { hits, coverage: { ...coverage, horizon: partial && !global ? Math.min(...lows) : null }, partial, asOf, nextCursor };
+  const candidateWords = Object.entries(kinds).flatMap(([kind, held]) => held?.omitted?.length ? [{ kind: kind as DocumentKind, omitted: held.omitted }] : []);
+  const lows = Object.values(kinds).filter((kind) => kind!.partial && kind!.resume === undefined).map((kind) => recordMs(kind!.low));
+  return { hits, coverage: { ...coverage, horizon: lows.length > 0 ? Math.min(...lows) : null }, partial, asOf, nextCursor, ...(candidateWords.length === 0 ? {} : { candidateWords }) };
 }
 
 interface WindowState {
@@ -160,9 +161,9 @@ interface WindowState {
 }
 
 /** A page of a ranking from `from`; a ranking not yet stored is stored once when a page follows it. */
-async function continueWindow(walk: Walk, state: WindowState, from: number, options: { olderWhenEmpty?: boolean; page?: Awaited<ReturnType<typeof pageOfHits>> } = {}): Promise<WordAnswer> {
+async function continueWindow(walk: Walk, state: WindowState, from: number, options: { olderWhenEmpty?: boolean } = {}): Promise<WordAnswer> {
   const { env, reader, binding, now, coverage } = walk;
-  const page = options.page ?? await pageOfHits(walk.input(state.scores), state.entries, from);
+  const page = await pageOfHits(walk.input(state.scores), state.entries, from);
   if (options.olderWhenEmpty === true && page.hits.length === 0 && page.next >= state.entries.length) return olderWindow(walk, state);
   const more = page.next < state.entries.length || anyPartial(state.kinds);
   if (more && state.stored !== true) {
@@ -230,7 +231,7 @@ async function oldestOwners(walk: Walk, kinds: readonly DocumentKind[], ids: rea
 }
 
 /**
- * The active spores of one Project most relevant to `words`, from a bounded set of global FTS5 candidates.
+ * The active spores of one Project sharing `words`, with common-word candidate admission and no stored first page.
  */
 export async function sporesSharingWords(env: ServerEnv, scope: ReadScope, words: readonly string[], options: { limit: number; window: number; now?: number }): Promise<string[]> {
   const kept = words.filter((word) => !SEARCH_STOPWORDS.includes(word));

@@ -51,7 +51,7 @@ export const search: ParityScenario = {
     // A wake runs the index in the background on a Deployment that defers its work: wake, then read until the body is indexed.
     const indexed = await waitFor(async () => { await wake(target); return searchFor(word); }, (answer) => answer.coverage.pendingBlobs === 0);
     expect(indexed.coverage.pendingBlobs).toBe(0);
-    const longQuestion = `${`${word} `.repeat(SEARCH_MAX_TERMS)}unmatched`;
+    const longQuestion = `${Array.from({ length: SEARCH_MAX_TERMS }, (_, i) => `${word}${i}`).join(' ')} unmatched`;
     expect(await searchFor(longQuestion, { mode: 'fts', type: 'spore' })).toMatchObject({ hits: [], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
     expect(indexed.hits.map((r) => r.type).sort()).toEqual(['card', 'plan', 'session', 'spore']);
     expect({ ...await mcp(target, 'myco_search', { query: word, limit: 20 }) as unknown as SearchAnswer, asOf: 0 }).toEqual({ ...indexed, asOf: 0 });
