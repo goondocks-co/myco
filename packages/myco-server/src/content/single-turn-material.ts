@@ -5,7 +5,7 @@ import { SessionDocument } from './session-pages.js';
 import type { DocRecord } from './document.js';
 
 import { answerBytes, headThatFits } from '../core/material-pages.js';
-import { SINGLE_TURN_MATERIAL_CHARS, SINGLE_TURN_MATERIAL_JSON_BYTES, TITLE_HEAD_TURNS, TITLE_TAIL_TURNS, TITLE_MIDDLE_TURNS } from '../core/titling-params.js';
+import { SINGLE_TURN_MATERIAL_CHARS, SINGLE_TURN_MATERIAL_JSON_BYTES, TITLE_HEAD_TURNS, TITLE_TAIL_TURNS, TITLE_TAIL_ANY_TURNS, TITLE_MIDDLE_TURNS } from '../core/titling-params.js';
 const PROMPT_CHARS = 600;
 const REPLY_CHARS = 600;
 const FILE_CHARS = 1_000;
@@ -49,14 +49,14 @@ function fileRead(record: DocRecord, prompt: string): boolean {
   });
 }
 
-/** Instruction turns with closing replies; file context comes only from that turn's stored read. */
+/** Opening instruction turns and closing turns with closing replies; file context comes only from that turn's stored read. */
 export async function singleTurnMaterial(env: ContentStore, project: string, session: string) {
   const held = await titleMaterialSnapshot(env.db, project, session);
   const doc = await SessionDocument.open(env, project, session);
   if (held === null || doc === null || doc.generation !== held.generation || held.instructionPrompts === 0 || held.throughTurnKey == null || held.throughTurnRevision == null) throw new Error('title_material_unavailable');
   const turns = await titleMaterialTurns(env.db, project, session, held);
   const lines = [`Agent: ${held.agent ?? 'unknown'}. Recorded person turns: ${held.personTurns}. The session has ${held.turnCount} turns.`,
-    `Material spans the session: first ${TITLE_HEAD_TURNS} and last ${TITLE_TAIL_TURNS} instruction turns with closing replies; up to ${TITLE_MIDDLE_TURNS} evenly spaced middle turn previews. Text is bounded at ${SINGLE_TURN_MATERIAL_CHARS} characters and ${SINGLE_TURN_MATERIAL_JSON_BYTES} JSON bytes.`];
+    `Material spans the session: first ${TITLE_HEAD_TURNS} instruction turns and last ${TITLE_TAIL_TURNS} turns (the last ${TITLE_TAIL_ANY_TURNS} whoever opened them) with closing replies; up to ${TITLE_MIDDLE_TURNS} evenly spaced middle turn previews. Text is bounded at ${SINGLE_TURN_MATERIAL_CHARS} characters and ${SINGLE_TURN_MATERIAL_JSON_BYTES} JSON bytes.`];
   for (const turn of turns) {
     if (!turn.full) { lines.push(`[Middle turn; ${speaker(turn.origin)}] ${clip(turn.preview ?? '', MIDDLE_CHARS)}`); continue; }
     const section: string[] = [];

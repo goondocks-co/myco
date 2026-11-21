@@ -6,6 +6,8 @@
 
 export const TITLE_HEAD_TURNS = 3;
 export const TITLE_TAIL_TURNS = 4;
+/** How many of the closing turns are the session's last whoever opened them; the rest are its last instruction turns. */
+export const TITLE_TAIL_ANY_TURNS = 2;
 export const TITLE_MIDDLE_TURNS = 12;
 
 export const SINGLE_TURN_MATERIAL_CHARS = 10_000;

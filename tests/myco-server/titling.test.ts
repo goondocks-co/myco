@@ -629,14 +629,15 @@ describe('direct session titles', () => {
       h.response('direct', 'turn-' + i, 'closing-' + i, 'Completed requirement ' + i, NOW - 6998 + i * 10);
       if (i === 7) h.prompt('direct', 'middle-notice', 'Recorded harness notice', NOW - 6997 + i * 10, 'system');
     }
-    h.prompt('direct', 'notice', 'DO NOT TREAT AS HUMAN', NOW - 1, 'system');
+    h.prompt('direct', 'notice', 'Later harness message', NOW - 2, 'system');
+    h.response('direct', 'notice', 'closing-notice', 'Finished after the message', NOW - 1);
     await h.convert();
     const material = await singleTurnMaterial(h.env, 'proj_1', 'direct');
     expect(material.text).toContain('Human requirement 13');
     expect(material.text).toContain('\n[Agent closing reply] Completed requirement 13');
     expect(material.text).toContain('\n[Middle turn; Harness] Recorded harness notice');
     expect(material.text).toContain('Build direct session titles');
-    expect(material.text).not.toContain('DO NOT TREAT AS HUMAN');
+    expect(material.text).toContain('\n[Harness] Later harness message\n[Agent closing reply] Finished after the message');
     expect(material.text).not.toContain('DO NOT SEND UNRELATED OUTPUT');
     expect(material.text.length).toBeLessThanOrEqual(10000);
     h.sqlite.close();
