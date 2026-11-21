@@ -144,7 +144,11 @@ export async function fixture(
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'wrangler'), FAKE_WRANGLER, { mode: 0o755 });
-  fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\n[ "$1" = "--no-install" ] || exit 7\nshift\nexec "$@"\n', { mode: 0o755 });
+  const prefix = path.join(root, 'operator');
+  const installed = path.join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules', 'wrangler');
+  fs.mkdirSync(installed, { recursive: true });
+  fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ name: 'wrangler', bin: 'wrangler.cjs' }));
+  fs.writeFileSync(path.join(installed, 'wrangler.cjs'), `const result = require('node:child_process').spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(path.join(bin, 'wrangler'))}, ...process.argv.slice(2)], { stdio: 'inherit' }); process.exit(result.status ?? 1);`);
   const version=Number(overrides.schema ?? SERVER_SCHEMA_VERSION-1);
   const empty=overrides.empty===true || (overrides.fresh===true && overrides.freshPopulated!==true);
   const schemaDatabase=path.join(root,'schema.sqlite');
@@ -158,7 +162,7 @@ export async function fixture(
     schemaDatabase,migrationsRoot,metadata: VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' })), ...overrides }));
   writeDeploymentRecord({ accountId: ACCOUNT, databaseName: 'myco-server', databaseId: OLD_WORKER,
     workerName: 'myco-server', bucketName: 'myco-server-blobs', versionId: OLD_WORKER, deployedAt: 'fixture' }, home);
-  const values = { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_STATE: state, FAKE_LOG: log,
+  const values = { npm_config_prefix: prefix, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_STATE: state, FAKE_LOG: log,
     FAKE_RECORD: deploymentRecordPath(home), CLOUDFLARE_API_TOKEN: undefined };
   const held = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
   for (const [key, value] of Object.entries(values)) {

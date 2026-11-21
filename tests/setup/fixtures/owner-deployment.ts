@@ -65,7 +65,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     commands.push(flat);
     if (flat === '--version') return answer('4.99.0');
     if (flat === 'login') { expect(options?.stdio).toBe('inherit'); signedIn = true; return answer(); }
-    if (flat === 'whoami --json') return signedIn ? answer(`│ Setup │ ${ACCOUNT} │`) : answer('', 1);
+    if (flat === 'whoami --json') return answer(JSON.stringify({ loggedIn: signedIn, accounts: signedIn ? [{ name: 'Setup', id: ACCOUNT }] : [] }));
     if (flat === 'auth token --json') return answer(JSON.stringify({ type: 'api_token', token: 'fixture-operator' }));
     if (flat === 'vectorize list --json') return answer(JSON.stringify(vectorCreated ? [{ name: 'myco-server-memory' }] : []));
     if (flat.startsWith('vectorize create ')) { vectorCreated = true; return answer(); }
