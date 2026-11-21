@@ -3,9 +3,10 @@ import { publishFixture } from './helpers/fixtures.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 /**
  * `POST /mcp` through the deployed entry: the member tool surface as a client
- * meets it. JSON-RPC in, JSON-RPC out; every refusal an error envelope whose
- * `data.code` the member-side CLI classifies; every result the shape the
- * member-side tool answers.
+ * meets it. JSON-RPC in, JSON-RPC out; a tool the caller may not call an error
+ * envelope whose `data.code` the member-side CLI classifies; every other
+ * refusal a result flagged `isError`; every result the shape the member-side
+ * tool answers.
  */
 import { jsonBody } from '../helpers/json-body.js';
 import type { Database } from 'bun:sqlite';
@@ -642,7 +643,7 @@ describe('POST /mcp over an External Agent grant', () => {
     ];
     for (const [name, args] of reads) {
       const res = await callAs(grant.key, name, args);
-      expect({ name, args, answered: res.error === undefined || res.error.data?.code === 'not_served' }).toEqual({ name, args, answered: true });
+      expect({ name, args, answered: res.error === undefined && (res.body.result?.isError !== true || res.result?.code === 'not_served') }).toEqual({ name, args, answered: true });
     }
     expect(lastUsed()).toBe(first);
     expect(executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)).every((sql) => /UPDATE external_grants/.test(sql))).toBe(true);

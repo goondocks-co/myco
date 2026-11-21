@@ -23,7 +23,7 @@ async function setup(options?: Parameters<typeof sqliteEnv>[0]) {
     if (name === 'myco_spores' && ['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
     const res = await server.handleRequest(new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(holder.token),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }), f.serverEnv);
-    return await res.json() as { error?: unknown; result?: unknown };
+    return await res.json() as { error?: unknown; result?: { isError?: boolean } };
   };
   return { ...f, now, holder, server, call };
 }
@@ -87,7 +87,7 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
       expect(changed).toBe(loss === 'none' ? 1 : 0);
       expect(attributed).toBe(changed);
       if (landing !== undefined) expect(landing.landed()).toBe(true);
-      if (loss !== 'none') expect(answer.error).toBeDefined();
+      if (loss !== 'none') expect(answer.result?.isError).toBe(true);
     } finally { f.sqlite.close(); }
   });
 }
@@ -114,7 +114,7 @@ for (const op of ['save', 'obsolete', 'consolidate'] as const) for (const revoke
         .toBe(revoke || op === 'save' ? 0 : op === 'obsolete' ? 1 : 2);
       expect(count("SELECT COUNT(*) AS n FROM spores WHERE status != 'active'"))
         .toBe(revoke || op === 'save' ? 0 : op === 'obsolete' ? 1 : 2);
-      if (revoke) expect(answer.error).toBeDefined();
+      if (revoke) expect(answer.result?.isError).toBe(true);
     } finally { f.sqlite.close(); }
   });
 }
