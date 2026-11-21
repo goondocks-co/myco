@@ -1,15 +1,15 @@
 /**
  * Whether Myco takes a failed outcome again by itself, decided by the same admission the work it failed in passes:
- * a pulled stage's switch, its task's admission in the Project and its own subject eligibility; a scheduled task's
- * lasting gates (scheduling and the task switched on, the Project active and not cold, its capability on). Anything
- * neither admission names, or that a lasting gate stops, is not retrying, so a person sees it.
+ * a pulled stage's switch, its task's admission in the Project and its own subject eligibility, now or later; a
+ * scheduled task's own wake decision (`laterWakeTakes`). Default-deny: anything those owners do not positively take
+ * again is not retrying, so a person sees it.
  */
 import type { ServerEnv } from './adapters.js';
 import { taskAcceptedSql } from '../db/runs/task-acceptance.js';
 import { subjectsRetrying, type RetryTerm } from '../db/runs/outcome-retry.js';
 import { PULLED_STAGES } from './pulled-stages.js';
 import { scheduleLeaves, scheduledTasks } from './schedule-rules.js';
-import { lastingSkip, readScheduleFacts } from './scheduled-tasks.js';
+import { laterWakeTakes, readScheduleFacts } from './scheduled-tasks.js';
 import { sessions_listProjects as listProjects } from '../read/catalog/sessions.js';
 
 /** Each pulled stage that can say whether it takes a failed subject again, as one term of the batched read. */
@@ -28,7 +28,7 @@ export async function failuresRetrying(env: ServerEnv, failures: readonly { proj
   const facts = await readScheduleFacts(env, [...new Set(scheduled.map((failure) => failure.task))], now, [...new Set(scheduled.map((failure) => failure.projectId))]);
   const activity = new Map((await listProjects(env.db)).map((project) => [project.projectId, project.lastActivityAt]));
   for (const failure of scheduled) {
-    if (lastingSkip(failure.projectId, activity.get(failure.projectId) ?? null, failure.task, schedules.get(failure.task)!, leaves, now, facts) === null) retrying.add(`${failure.projectId}/${failure.runId}`);
+    if (await laterWakeTakes(env, failure.projectId, activity.get(failure.projectId) ?? null, failure.task, schedules.get(failure.task)!, leaves, now, facts)) retrying.add(`${failure.projectId}/${failure.runId}`);
   }
   return retrying;
 }

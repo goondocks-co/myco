@@ -100,6 +100,23 @@ export const CLOCK_ACTOR = 'clock';
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
 type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable' | 'repository_backoff';
 
+/**
+ * The skips that only wait for a later wake to take the task: its interval not yet passed, a run of it still in
+ * flight, the day's runs used under a positive ceiling. Every other skip, and any added later, waits for a person.
+ */
+const LATER_WAKE_SKIPS: ReadonlySet<ScheduleSkip> = new Set<ScheduleSkip>(['not_yet', 'already_running', 'max_runs_per_day']);
+
+/**
+ * Whether a later wake takes `task` in the Project by itself: scheduling is on, the schedule can dispatch at all (some
+ * power state, a positive daily ceiling), and `decideTask` answers a dispatch or one of `LATER_WAKE_SKIPS`.
+ */
+export async function laterWakeTakes(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, leaves: Pick<ScheduleLeaves, 'enabled' | 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts: ScheduleFacts): Promise<boolean> {
+  // A schedule no wake can ever dispatch is closed whatever this wake's skip says first: no power state, no daily run.
+  if (!leaves.enabled || schedule.runIn.length === 0 || schedule.maxRunsPerDay === 0) return false;
+  const skip = await decideTask(env, projectId, lastReceivedAt, task, schedule, schedule.runIn[0]!, leaves, now, facts);
+  return skip === null || LATER_WAKE_SKIPS.has(skip);
+}
+
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
   dispatched: number;
@@ -149,41 +166,19 @@ export async function readScheduleFacts(
   };
 }
 
-/** The skips a wake decides before reading any fact: the task switched off, or the Project gone quiet or cold. */
-function scheduleRuledOut(lastReceivedAt: number | null, schedule: TaskSchedule, leaves: Pick<ScheduleLeaves, 'activeWindowDays' | 'coldThresholdDays'>, now: number): ScheduleSkip | null {
-  if (schedule.enabled === false) return 'disabled';
-  if (lastReceivedAt === null || now - lastReceivedAt > leaves.activeWindowDays * DAY_MS) return 'quiet';
-  if (schedule.runWhenCold !== true && now - lastReceivedAt > leaves.coldThresholdDays * DAY_MS) return 'cold';
-  return null;
-}
-
-function lastingScheduleSkip(projectId: string, task: string, facts: ScheduleFacts): ScheduleSkip | null {
-  const gate = admissionForTask(task);
-  return gate?.kind === 'capability' && !facts.capabilities.has(taskFactsKey(projectId, gate.capability)) ? 'capability_off' : null;
-}
-
-/**
- * The skip that keeps a wake from ever taking a task in a Project again until a person changes something (the task or
- * scheduling switched off, the Project quiet or cold, its capability off), or null when a later wake can take it. The
- * same gates `decideTask` applies first, from facts `readScheduleFacts` read for many Projects at once.
- */
-export function lastingSkip(projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, leaves: Pick<ScheduleLeaves, 'enabled' | 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts: ScheduleFacts): ScheduleSkip | null {
-  if (!leaves.enabled) return 'disabled';
-  return scheduleRuledOut(lastReceivedAt, schedule, leaves, now) ?? lastingScheduleSkip(projectId, task, facts);
-}
-
 /**
  * Decide one task for one Project at this wake. Answers the skip by name,
  * or null when the task should be dispatched. Reads schedule facts for this Project
  * where none are supplied, using the current declared schedule.
  */
 export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: Pick<ScheduleLeaves, 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts?: ScheduleFacts, workerAvailable = (name: string) => repositoryWorkerAvailable(env, name, now)): Promise<ScheduleSkip | null> {
-  const ruled = scheduleRuledOut(lastReceivedAt, schedule, leaves, now);
-  if (ruled !== null) return ruled;
+  if (schedule.enabled === false) return 'disabled';
+  if (lastReceivedAt === null || now - lastReceivedAt > leaves.activeWindowDays * DAY_MS) return 'quiet';
+  if (schedule.runWhenCold !== true && now - lastReceivedAt > leaves.coldThresholdDays * DAY_MS) return 'cold';
   const held = facts ?? await readScheduleFacts(env, [task], now, projectId);
-  const lasting = lastingScheduleSkip(projectId, task, held);
-  if (lasting !== null) return lasting;
   const runs = held.runs.get(taskFactsKey(projectId, task)) ?? NO_RUNS;
+  const gate = admissionForTask(task);
+  if (gate?.kind === 'capability' && !held.capabilities.has(taskFactsKey(projectId, gate.capability))) return 'capability_off';
   if (schedule.overlap === 'skip' && runs.live) return 'already_running';
   if (REQUIRED_REPOSITORY_TASKS.includes(task) && held.repositoryFailures?.some(failure => failure.projectId === projectId && failure.backoff && now < failure.retryAt)) return 'repository_backoff';
 
