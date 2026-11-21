@@ -275,7 +275,10 @@ export const claudeCodeParser: TranscriptParser = {
         await flushReply();
         const text = textOf(value.attachment.prompt);
         const key = str(value.uuid);
-        const label = recordedPromptLabel({ agent: this.agent, input, record: value, text, label: { origin: 'user', kind: 'queued_command' } });
+        // A queued record names who opened it in its own fields, as a turn-opening record does; a person's stays a queued command.
+        const named = hasOpener(value.attachment) ? openerLabel(value.attachment) : undefined;
+        const label = named !== undefined && named.kind !== 'user_prompt' ? named
+          : recordedPromptLabel({ agent: this.agent, input, record: value, text, label: { origin: 'user', kind: 'queued_command' } });
         if (text.trim() !== '' && key !== undefined && v2) {
           await v2Prompt({ id: await claudeRecordIdFor(sessionId, { queued: key }, input), text, ...label,
             claim: 'owner', key, thread: str(value.agentId) ?? MAIN_THREAD, record: key }, createdAt, offset, value);

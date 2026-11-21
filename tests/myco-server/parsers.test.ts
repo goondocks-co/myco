@@ -176,6 +176,8 @@ describe('claude-code parser', () => {
     expect(prompts[1].payload.promptId).toBe(await uuidv5('queued-prompt', SESSION, 'queued_command|22222222-2222-4222-8222-222222222222'));
   });
 
+  it('labels a queued record by the opener its own fields name', async () => expect(only(await PARSERS['claude-code'].parse({ transcriptId: 'tx_queued', recordScheme: 'legacy-session-v1' as const, scheme: READ_BEFORE_PIN['claude-code']!, sessionId: SESSION, now: NOW, lines: ['task-notification', 'human'].map((kind, at) => ({ offset: at * 400, value: { type: 'attachment', attachment: { type: 'queued_command', prompt: '<task-notification><summary>done</summary></task-notification>', origin: { kind } }, uuid: `${at}3333333-3333-4333-8333-333333333333`, timestamp: '2026-09-01T10:00:06Z', sessionId: 's1' } })) }), 'prompt').map((p) => [p.payload.origin, p.payload.promptKind])).toEqual([['system', 'task_notification'], ['user', 'queued_command']]));
+
   it('pairs a tool call with the result that names it, keeping input and output on one row', async () => {
     const [call] = only(await parseFixture('claude-code'), 'tool.use');
     expect(call.payload.toolName).toBe('Read');
