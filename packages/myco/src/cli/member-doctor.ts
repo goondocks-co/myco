@@ -35,9 +35,13 @@ import { listRunnerRecords, isLiveRunner } from '../runner/runner-registry.js';
 import { legacyMigrationState } from '../member/legacy-migration.js';
 import { observeLegacyStrayHistory } from '../member/legacy-strays.js';
 import { legacyVaultFiles } from '../member/home-role.js';
+import { peekDeploymentRecord, resolveWrangler, wranglerToolLine } from '@myco/server/cloudflare.js';
+import type { CommandRunner } from '@myco/server/runner.js';
+import { readSetupFile } from '@myco/setup/answers.js';
 import { defaultMycoHome } from '../paths/home.js';
 
 export interface MemberDoctorDeps extends MemberVerbDeps {
+  cloudflareRunner?: CommandRunner;
   /** The worker service probe's own dependencies (service runner, platform). */
   worker?: WorkerServiceDeps;
   /** The directory the symbiont templates are read from. */
@@ -298,6 +302,19 @@ function leftRepositoryChecks(home: string): DoctorCheck[] {
 /** Local machine facts, independent of the current repository's binding. */
 export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = autoJoinIdentityIssues(home).map(issue => row('Repository connection', 'warn', issue.message));
+  let cloudflare = false;
+  try { cloudflare = peekDeploymentRecord(home) !== null; }
+  catch (error) { checks.push(row('Cloudflare record', 'warn', error instanceof Error ? error.message : String(error))); }
+  if (!cloudflare) {
+    try { cloudflare = readSetupFile(home).answers.target === 'cloudflare'; }
+    catch (error) { checks.push(row('Setup', 'warn', error instanceof Error ? error.message : String(error))); }
+  }
+  if (cloudflare) {
+    try {
+      const tool = await resolveWrangler({ mycoHome: home, runner: deps.cloudflareRunner });
+      checks.push(row('Wrangler', 'ok', wranglerToolLine(tool)));
+    } catch (error) { checks.push(row('Wrangler', 'warn', error instanceof Error ? error.message : String(error))); }
+  }
   checks.push(...pendingImportHolds(home).map(held => row('History import', 'warn', held.message)));
   const now = (deps.now ?? Date.now)();
   let runners: ReturnType<typeof listRunnerRecords> = [];

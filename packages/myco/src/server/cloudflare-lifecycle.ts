@@ -18,7 +18,7 @@ const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  assertWranglerReady,
+  assertWranglerReady, decorateWranglerRunner, operationWranglerRunner,
   CloudflareAuthenticationError,
   isCloudflareAuthenticationRefusal,
   ensureCommandDir,
@@ -54,7 +54,7 @@ import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
 import { schemaStopLines, SchemaUpdateStopped, workerSchemaEvidence, type OverloadRetry, type SchemaStop, type WorkerLeft } from './cloudflare-migration-pacing.js';
 import { getPluginVersion } from '../version.js';
-import { systemRunner } from './runner.js';
+import type { CommandRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
 
@@ -78,7 +78,7 @@ function lifecycleOperation<Options extends LifecycleOptions, Result>(
   operation: (options: Options, record: DeploymentRecord | null) => Promise<Result>,
 ): (options: Options) => Promise<Result> {
   const admitted = async (supplied: Options) => {
-    const options = { ...supplied };
+    const options = { ...supplied, runner: operationWranglerRunner(supplied.runner) };
     const record = verb === 'status' ? peekDeploymentRecord(options.mycoHome) : readDeploymentRecord(options.mycoHome);
     if (record !== null && options.accountId !== record.accountId) {
       const label = verb === 'create' || verb === 'update' ? 'schema update' : verb;
@@ -122,9 +122,9 @@ function bareCommand(options: LifecycleOptions): CloudflareOptions {
  * what they get.
  */
 async function preflight(options: LifecycleOptions): Promise<void> {
-  await assertWranglerReady({
+  options.runner = await assertWranglerReady({
     ...(options.runner === undefined ? {} : { runner: options.runner }),
-    cwd: ensureCommandDir(options.mycoHome),
+    cwd: ensureCommandDir(options.mycoHome), mycoHome: options.mycoHome,
     ...(options.report === undefined ? {} : { report: options.report }),
   });
 }
@@ -153,11 +153,12 @@ export interface CreatePlan {
  * the configuration is rendered on this machine alone.
  */
 export async function planCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreatePlan> {
+  options = { ...options };
   // Wrangler runs in a directory of its own outside the home, removed afterwards, so a plan leaves the home as it found it.
   const configDir = mkdtempSync(path.join(tmpdir(), 'myco-cloudflare-plan-'));
   try {
-    await assertWranglerReady({
-      ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir,
+    options.runner = await assertWranglerReady({
+      ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir, mycoHome: options.mycoHome,
       ...(options.report === undefined ? {} : { report: options.report }),
     });
     return await planIn(options, configDir);
@@ -386,8 +387,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
     schema: 'not attempted', worker: 'not attempted', upload: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
   };
-  const runner = options.runner ?? systemRunner();
-  options = { ...options, runner: {
+  const observeRunner = (runner: CommandRunner): CommandRunner => ({
     async run(command, args, runOptions) {
       const [product, action] = args.slice(2);
       const operation = product === 'r2' && args[4] === 'create' ? `r2 bucket ${args[5]}`
@@ -405,13 +405,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
       }
       return result;
     },
-  } };
+  });
   try {
     let record = held;
     if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} \`myco server create --target cloudflare --account-id <id>\` provisions one.`);
     summary.releaseBefore = record.release;
     summary.workerSchemaBefore = workerSchemaEvidence(record)?.schema;
     await preflight(options);
+    options.runner = decorateWranglerRunner(options.runner!, observeRunner);
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
@@ -486,10 +487,10 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
 
 /** Return to the provider-observed version from before the latest admitted update attempt. */
 export const rollbackCloudflareDeployment = lifecycleOperation('rollback', async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
-  await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
+  await preflight(options);
   const target = options.versionId ?? record.previousVersionId ?? '';
-  if (target === '') throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (wrangler deployments list names the versions).');
+  if (target === '') throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (myco doctor shows the selected tool; its deployments list command names the versions).');
   if (options.versionId === undefined) {
     let live;
     try { live = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }); }
@@ -516,8 +517,8 @@ export interface CloudflareDeploymentStatus {
 }
 
 export const cloudflareDeploymentStatus = lifecycleOperation('status', async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
-  await preflight(options);
   if (record === null) return null;
+  await preflight(options);
   const [worker, schema] = await Promise.allSettled([
     cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, activeVersion: record.versionId, deployedAt: record.deployedAt, readRetry: options.readRetry }),
     cloudflareSchemaVersion({ ...bareCommand(options), databaseName: record.databaseName }),
@@ -540,8 +541,8 @@ export const cloudflareDeploymentStatus = lifecycleOperation('status', async (op
  * data removal stays a by-hand act this command refuses to own.
  */
 export const destroyCloudflareDeployment = lifecycleOperation('destroy', async (options: LifecycleOptions, record): Promise<{ kept: string[] }> => {
-  await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to destroy.`);
+  await preflight(options);
   const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
   return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `r2 ${resources.recoveryBucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };

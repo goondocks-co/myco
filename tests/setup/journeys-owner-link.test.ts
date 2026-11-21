@@ -189,10 +189,10 @@ describe('new owner journeys (a) and (b)', () => {
     expect(server.platform.commands).toEqual([]);
   });
 
-  it('pins missing Wrangler guidance and keeps the selected target', async () => {
-    const runner = { run: async () => ({ code: 1, stdout: '', stderr: 'fixture absent' }) };
+  it('keeps the selected target when Node is missing', async () => {
+    const runner = { run: async () => { throw Object.assign(new Error('fixture absent'), { code: 'ENOENT' }); } };
     expect(await run(['--create', 'cloudflare', '--yes'], { ...base(), cloudflare: { runner } })).toBe(2);
-    expect(errors.at(-1)).toBe('myco setup: wrangler is not installed; `npm install -g wrangler`, then `wrangler login`, and retry');
+    expect(errors.at(-1)).toContain('Node.js is not installed');
     expect(readSetupFile(home).answers.target).toBe('cloudflare');
     expect(peekDeploymentRecord(home)).toBeNull();
   });
@@ -297,9 +297,9 @@ describe('new owner journeys (a) and (b)', () => {
     expect(lines.at(-1)).toContain('from a git repository');
   });
 
-  for (const target of ['local', 'cloudflare'] as const) it(`create ${target} status on an absent home is file-only, read-only and never runs tools`, async () => {
+  for (const target of ['local', 'cloudflare'] as const) it(`create ${target} status on an absent home is read-only and makes no provider requests`, async () => {
     const before = snapshot(root);
-    expect(await run(['--status', '--json', '--create', target], { ...base(), fetch: fakeFetch(async () => { throw new Error('network forbidden'); }), cloudflare: { runner: { run: async () => { throw new Error('wrangler forbidden'); } } }, local: { native: { library: null, vec0: null }, service: { runner: () => { throw new Error('service forbidden'); } } } })).toBe(3);
+    expect(await run(['--status', '--json', '--create', target], { ...base(), fetch: fakeFetch(async () => { throw new Error('network forbidden'); }), cloudflare: { runner: { run: async command => ({ code: 0, stdout: command === 'node' ? 'v26.0.0' : '4.124.0', stderr: '' }) } }, local: { native: { library: null, vec0: null }, service: { runner: () => { throw new Error('service forbidden'); } } } })).toBe(3);
     expect(snapshot(root)).toEqual(before);
     const observations = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
     expect(observations.find(fact => fact.id === 'deployment.create')?.state).toBe('absent');

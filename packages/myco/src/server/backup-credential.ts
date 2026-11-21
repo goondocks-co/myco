@@ -5,7 +5,7 @@ import { password } from '@inquirer/prompts';
 import type { Readable } from 'node:stream';
 import { readD1ExportAnswer } from '@goondocks/myco-shared/d1-export';
 import { cloudflareOperation } from '@myco/server/cloudflare-operation.js';
-import { assertWranglerReady, CloudflareAuthenticationError, ensureCommandDir, putWorkerSecretValue, missingDeploymentRecordMessage, readDeploymentRecord, workerSecretNames } from '@myco/server/cloudflare.js';
+import { operationWranglerRunner, assertWranglerReady, CloudflareAuthenticationError, ensureCommandDir, putWorkerSecretValue, missingDeploymentRecordMessage, readDeploymentRecord, workerSecretNames } from '@myco/server/cloudflare.js';
 import { D1_EXPORT_PROBE_TABLES, probeD1Export, type D1ExportProbeOptions } from '@myco/server/cloudflare-d1-export.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
@@ -97,8 +97,9 @@ export const installBackupCredential = cloudflareOperation(async (options: {
   const record = readDeploymentRecord(options.mycoHome);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} No backup access key was read or stored.`);
   if (!record.accountId || !record.databaseId) throw new Error('This Cloudflare deployment record is missing its account or database id. No backup access key was read or stored.');
+  options = { ...options, runner: operationWranglerRunner(options.runner) };
   const target = { accountId: record.accountId, workerName: record.workerName, runner: options.runner, configDir: ensureCommandDir(options.mycoHome) };
-  await assertWranglerReady({ runner: options.runner, cwd: target.configDir });
+  target.runner = await assertWranglerReady({ runner: options.runner, cwd: target.configDir, mycoHome: options.mycoHome });
   let token: string;
   try { token = await (options.readSecret ?? readBackupCredential)(); }
   catch (error) {

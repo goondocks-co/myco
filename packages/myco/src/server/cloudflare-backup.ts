@@ -1,10 +1,11 @@
+import type { CommandRunner } from './runner.js';
 import fs from 'node:fs';
 import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { D1ExportStartBudget, exportD1, exportResultPath, queryD1, releaseD1Export, releaseKeptD1Export, settleD1Export, type D1ExportOptions } from './cloudflare-d1-export.js';
 import path from 'node:path';
 import { z } from 'zod';
 import {
-  deploymentRecordPath, cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
+  assertWranglerReady, deploymentRecordPath, cloudflareBlobReader, D1_STATEMENT_TIMEOUT_MS, ensureCommandDir, operatorLogin, queryCloudflareDatabase, runCloudflareStatement,
   missingDeploymentRecordMessage, readDeploymentRecord, type CloudflareOptions, type CloudflareFetch, type DeploymentRecord, type OperatorObjectTimeouts, type OperatorNetworkRetry,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
@@ -93,7 +94,13 @@ export function cloudflareRecoveryHoldOf(options: LifecycleOptions & { fetch?: C
   const databaseName = z.object({ d1_databases: z.array(z.object({ binding: z.string(), database_id: z.string() })) })
     .parse(Bun.TOML.parse(config)).d1_databases.filter((binding) => binding.database_id === record.databaseId)[0]?.binding;
   if (databaseName === undefined) throw new Error('recovery configuration must bind exactly the recorded D1 database');
-  return cloudflareRecoveryHold({ ...options, configDir, configFile, databaseName }, record);
+  const ready = () => assertWranglerReady({ runner: options.runner, cwd: configDir, mycoHome: options.mycoHome, report: options.report });
+  let selected: ReturnType<typeof ready> | undefined;
+  const runner: CommandRunner = { async run(command, args, runOptions) {
+    selected ??= ready();
+    return (await selected).run(command, args, runOptions);
+  } };
+  return cloudflareRecoveryHold({ ...options, runner, configDir, configFile, databaseName }, record);
 }
 
 /** Capture provider SQL and all registered R2 bytes without changing the serving Deployment. */
@@ -118,6 +125,7 @@ export async function backupCloudflareDeployment(
   const databaseId = bindings[0]!.database_id;
   const databaseName = bindings[0]!.binding;
   const configDir = ensureCommandDir(options.mycoHome);
+  options = { ...options, runner: await assertWranglerReady({ runner: options.runner, cwd: configDir, mycoHome: options.mycoHome, report: options.report }) };
   // One operator login serves the export and every object read.
   const operator = operatorLogin({ ...options, configDir });
   const readBlob = cloudflareBlobReader({ ...options, configDir, bucketName: record.bucketName, login: operator });

@@ -558,7 +558,7 @@ it('reports current capture and stale-blocked tools with the delete-then-refresh
 it('reports an uncreated Cloudflare home without a MYCO_HOME hint', async () => {
   const freshHome = path.join(scratch, 'fresh-home');
   expect(await run(['--status', '--create', 'cloudflare'], {
-    ...deps(), mycoHome: freshHome, agents: () => [], legacyHomeDir: path.join(scratch, 'person'), legacyHomes: [],
+    ...deps(), cloudflare: { runner: { run: async (command) => ({ code: 0, stdout: command === 'node' ? 'v26.0.0' : '4.124.0', stderr: '' }) } }, mycoHome: freshHome, agents: () => [], legacyHomeDir: path.join(scratch, 'person'), legacyHomes: [],
   })).toBe(3);
   const text = lines.join('\n');
   expect(text).toContain('Not created yet.');

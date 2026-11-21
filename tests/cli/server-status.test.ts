@@ -1,3 +1,4 @@
+import { fakeWranglerRunner } from '../server/helpers/wrangler.js';
 import { allocateOwnedFixture } from '../support/owned-fixtures.js';
 import { setFixturePermissions } from '../helpers/permission-fixture.js';
 import { holdCloudflareWrappingKey, cloudflareWrappingKeyPath } from '@myco/server/cloudflare-wrapping-key.js';
@@ -44,7 +45,7 @@ const log = console.log;
 const error = console.error;
 const exit = process.exit;
 
-const runner: CommandRunner = {
+const runner: CommandRunner = fakeWranglerRunner({
   async run(command, args, options) {
     expect(command).toBe('npx');
     expect(args.slice(0, 2)).toEqual(['--no-install', 'wrangler']);
@@ -57,7 +58,7 @@ const runner: CommandRunner = {
     }
     let stdout = '';
     if (text === '--version') stdout = '4.126.0';
-    else if (text === 'whoami') stdout = 'OAuth fixture';
+    else if (text === 'whoami --json') stdout = 'OAuth fixture';
     else if(text==='auth token --json')stdout=JSON.stringify({type:'api_token',token:PRIVATE_TOKEN});
     else if (text.startsWith('secret list')) stdout = '[]';
     else if (text.startsWith('deployments list')) stdout = `Version ID: ${worker}`;
@@ -88,7 +89,7 @@ const runner: CommandRunner = {
     else throw new Error(`Unexpected fake command: ${text}`);
     return { code: 0, stdout, stderr: '' };
   },
-};
+});
 
 const fetchD1:typeof fetch=async(_input,init)=>{
   type Query = {sql:string;params?:unknown[]};

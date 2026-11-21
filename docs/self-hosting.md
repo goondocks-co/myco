@@ -6,7 +6,7 @@ Install the Myco binary using the [installation steps](quickstart.md#1.-install)
 
 | Run it on | Choose this when | What you need |
 |---|---|---|
-| Cloudflare | Teammates, remote runners or cloud agents need to reach it | A Cloudflare account; Node.js and Wrangler on the machine you deploy from |
+| Cloudflare | Teammates, remote runners or cloud agents need to reach it | A Cloudflare account and supported Node.js on the machine you deploy from; setup offers a private Wrangler install |
 | This machine | You want a personal Myco reached only from this machine | The Myco binary on macOS, Linux or Windows x64; no Node.js or container runtime. Windows ARM64 cannot host one |
 
 **At beta, self-hosting on your own machine supports loopback access only.** Use Cloudflare for a shared address. VM hosting and exposing a local server are covered only in the [unsupported appendix](#unsupported-self-hosting).
@@ -67,15 +67,21 @@ The address is `http://127.0.0.1:8787`. If that port is taken, pass `--port <num
 
 ### On Cloudflare
 
-Install Node.js and Wrangler on the machine you deploy from, and sign Wrangler in to your Cloudflare account:
+Install Node.js from [nodejs.org](https://nodejs.org/en/download) on the machine you deploy from, then run:
 
 ```bash
-npm install -g wrangler
-wrangler login
-wrangler whoami
+myco setup --create cloudflare
 ```
 
-Use the account id shown by `whoami`. Myco requires it explicitly so resources go into the account you choose.
+Setup checks Node against the engine requirement declared by the Wrangler used to build this binary. If Node is missing or too old, it names the version needed and asks you to install it before retrying. Setup offers, with consent, to install the binary’s pinned Wrangler under `<MYCO_HOME>/server/tools/` (normally `~/.myco/server/tools/`). This needs no root access or global npm prefix. It then offers Cloudflare sign-in and account selection.
+
+An existing Wrangler found in local/global npm packages is preferred when its major matches the bundled Wrangler; otherwise Myco uses its private pinned copy. A failed operator check also falls back to that copy and reports why; if neither works, the refusal retains the first meaningful diagnostic.
+
+Discovery reads npm configuration and installed package manifests through Node; it starts no npm CLI and contacts no registry. Version probes disable Node compile caches, npm updates/logs and Wrangler logs/metrics. Commands execute the selected JavaScript entry directly through Node, so command-time package fetching is unavailable. `myco doctor` and `myco setup --status` report the selected version and runnable command. Identity-check failures retain Wrangler's diagnostic; only signed-out results offer browser login.
+
+Older or damaged private tools are replaced by the same consented setup step. Under the operator lock, setup stages and verifies the replacement while existing tools stay available, then swaps it into place and restores the old folders if publication fails. Cleanup of unused installation folders is best-effort and does not fail a successful installation. Cloudflare credentials are removed from the install environment; npm global mode and location are explicitly overridden. Other server verbs never install tools; a missing compatible tool directs you back to setup.
+
+The manual commands below use the account id chosen during setup. Myco requires it explicitly for a new Deployment so resources go into the account you choose.
 
 ```bash
 myco server create --target cloudflare --account-id <account-id>

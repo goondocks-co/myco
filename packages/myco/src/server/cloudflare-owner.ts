@@ -23,7 +23,9 @@ import { ownerLinked } from './local-owner.js';
 export async function cloudflareOwnerLinked(options: CloudflareOwnerOptions): Promise<boolean> {
   const record = peekDeploymentRecord(options.mycoHome);
   if (!record?.databaseId || record.accountId !== options.accountId) throw new Error('Cloudflare owner state unavailable; check myco server status --target cloudflare for the selected account.');
-  const login = options.login ?? operatorLogin({ ...options, configDir: peekCommandDir(options.mycoHome) });
+  const configDir = peekCommandDir(options.mycoHome);
+  const runner = options.login ? options.runner : await assertWranglerReady({ runner: options.runner, cwd: configDir, mycoHome: options.mycoHome });
+  const login = options.login ?? operatorLogin({ ...options, runner, configDir });
   return ownerLinked(d1OperatorStore({ accountId: record.accountId, databaseId: record.databaseId, login, fetch: options.fetch, report: options.report }));
 }
 
@@ -47,7 +49,7 @@ export const setupCloudflareOwner = cloudflareOperation(async (options: Cloudfla
   if (record.databaseId === undefined) throw new Error('the Cloudflare Deployment record names no database; run `myco server create --target cloudflare` again to finish provisioning');
   const origin = new URL(record.url).origin;
   const configDir = ensureCommandDir(options.mycoHome);
-  await assertWranglerReady({ ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir, ...(options.report === undefined ? {} : { report: options.report }) });
+  options = { ...options, runner: await assertWranglerReady({ ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir, mycoHome: options.mycoHome, ...(options.report === undefined ? {} : { report: options.report }) }) };
   const signIn = await signInConfigured(origin, options.signInFetch);
   if (!signIn.ok) throw new Error(`${origin} does not sign in with GitHub yet (${signIn.reason}); run \`myco server github-app --target cloudflare --url ${origin}\` first`);
   const login = options.login ?? operatorLogin({ ...options, configDir });

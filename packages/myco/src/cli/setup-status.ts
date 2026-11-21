@@ -8,6 +8,7 @@ const labels: Record<string, string> = {
   'machine.signin': 'Signed in', 'machine.credential': 'Sign-in credential',
   'machine.agents': 'Agent hooks', project: 'Repository',
   'deployment.health': 'Deployment', 'deployment.signin': 'GitHub sign-in',
+  'cloudflare.tools': 'Wrangler',
   'deployment.create': 'Deployment creation', 'deployment.owner': 'Owner account', 'deployment.serving': 'Serving',
   'runner.choice': 'Runner', 'runner.enrollment': 'Runner',
   'runner.service.choice': 'Runner start at login', 'runner.service': 'Runner service',

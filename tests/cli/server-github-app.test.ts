@@ -1,3 +1,4 @@
+import { fakeWranglerRunner } from '../server/helpers/wrangler.js';
 import { afterEach, beforeEach, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -42,13 +43,13 @@ afterEach(() => {
   if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
   fs.rmSync(root, { recursive: true, force: true });
 });
-const runner: CommandRunner = { async run(_command, args, options) {
+const runner: CommandRunner = fakeWranglerRunner({ async run(_command, args, options) {
   if (args.includes('bulk')) {
     installs.push(JSON.parse(options!.input!));
     installed = true;
   } else expect(args).toEqual(['--no-install', 'wrangler', '--version']);
   return { code: 0, stdout: '', stderr: '' };
-} };
+} });
 async function drive(args: string[], secret = SECRET) {
   const fetchImpl: typeof fetch = Object.assign(async (input: RequestInfo | URL) => {
     if (String(input) === 'https://api.github.com/app') return Response.json({ ...APP_RESPONSE, client_id: 'existing-client' });

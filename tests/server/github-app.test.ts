@@ -22,10 +22,11 @@ let calls: Call[] = [];
 const runner = (answer: (call: Call) => Partial<CommandResult> = () => ({})): CommandRunner => ({
   async run(command, args, options) {
     const call = { command, args: [...args], options };
+    if (command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
     calls.push(call);
     // Compose answers the union of the bundle and the operator's override.
     if (args.includes('--services')) return { code: 0, stdout: 'server\nharness\n', stderr: '' };
-    return { code: 0, stdout: '', stderr: '', ...answer(call) };
+    return { code: 0, stdout: args.includes('--version') ? '4.124.0' : '', stderr: '', ...answer(call) };
   },
 });
 beforeEach(() => { calls = []; });
@@ -124,7 +125,7 @@ describe('installing the credentials', () => {
   });
 
   it('Cloudflare: refuses before sending anything when wrangler is not installed, so npx cannot read the secrets as an answer to its own prompt', async () => {
-    const r = runner((call) => (call.args.includes('--no-install') ? { code: 1 } : {}));
+    const r = runner((call) => (call.args.includes('--no-install') ? { code: 1, stderr: 'npm error canceled' } : {}));
     await expect(putWorkerSecrets({ accountId: ACCOUNT, workerName: 'w', runner: r }, { GITHUB_CLIENT_ID: 'a', GITHUB_CLIENT_SECRET: 'b' })).rejects.toThrow(WranglerAbsent);
     expect(calls).toHaveLength(1);
   });
@@ -282,6 +283,8 @@ it('extends the configured App with a proven key only, refusing wrong identity o
     return Response.json(response);
   }, { preconnect: () => {} });
   const commandRunner: CommandRunner = { async run(_command, args, options) {
+    if (_command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
+    if (args.includes('--version')) return { code: 0, stdout: '4.124.0', stderr: '' };
     if (args.includes('bulk')) {
       expect(statSync(journal).mode & 0o777).toBe(0o600);
       installed.push(JSON.parse(options!.input!));

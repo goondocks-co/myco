@@ -25,7 +25,8 @@ const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 const WORKER_DIR = path.join(REPO_ROOT, 'packages', 'myco-server');
 const workerRequire = createRequire(path.join(WORKER_DIR, 'package.json'));
 const wranglerPackage = workerRequire.resolve('wrangler/package.json');
-const wranglerBin = (JSON.parse(readFileSync(wranglerPackage, 'utf8')) as { bin: { wrangler: string } }).bin.wrangler;
+const wranglerManifest = JSON.parse(readFileSync(wranglerPackage, 'utf8')) as { bin: { wrangler: string }; engines: { node: string } };
+const wranglerBin = wranglerManifest.bin.wrangler;
 const WRANGLER_ENTRY = path.resolve(path.dirname(wranglerPackage), wranglerBin);
 const OUTPUT_PATH = path.join(REPO_ROOT, 'packages', 'myco', 'src', 'worker-bundle.generated.ts');
 const EXPORT_NAME = 'BUNDLED_WORKER';
@@ -151,6 +152,7 @@ export function emitWorkerBundle(outputPath: string = OUTPUT_PATH, wranglerVersi
       '// source, so provisioning can deploy without a repository checkout.',
       '',
       `export const ${VERSION_EXPORT_NAME}: string = ${JSON.stringify(version)};`,
+      `export const BUNDLED_WORKER_NODE: string = ${JSON.stringify(wranglerManifest.engines.node)};`,
       '',
       `export const ${EXPORT_NAME}: string = ${JSON.stringify(Buffer.from(bundle, 'utf-8').toString('base64'))};`,
       '',

@@ -60,7 +60,7 @@ export class DeployConfigIncomplete extends Error {
     super(
       `the deployment record is missing ${missing.join(', ')}. `
       + `Add the field(s) to ${recordPath} (databaseId: the D1 UUID from `
-      + '`wrangler d1 list`; storeId: from `wrangler secrets-store store list --remote`).',
+      + 'the selected tool’s d1 list; storeId: from its secrets-store store list --remote). Run `myco doctor` to find that tool.',
     );
     this.name = 'DeployConfigIncomplete';
   }

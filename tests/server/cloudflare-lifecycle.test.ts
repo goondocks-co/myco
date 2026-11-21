@@ -53,6 +53,7 @@ const storeSecretPage = (args: readonly string[]): CommandResult => {
 };
 const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunner => ({
   async run(_command, args, options) {
+    if (_command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
     const opts = options as { input?: string; cwd?: string } | undefined;
     // Answered at spawn time, not afterwards: a directory a later step creates
     // is not a directory this command could run in.
@@ -78,6 +79,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       return { code: 0, stdout: JSON.stringify([...workerSecrets].map((name) => ({ name, type: 'secret_text' }))), stderr: '' };
     } else if (/(^|\s)secret put /.test(flat)) workerSecrets.add(args[args.indexOf('put') + 1]!);
     const canned: Record<string, Partial<CommandResult>> = {
+      'wrangler --version': { stdout: BUNDLED_WORKER_WRANGLER },
       'vectorize list --json': { stdout: '[{"name":"myco-server-memory"}]' },
       'vectorize get myco-server-memory --json': { stdout: '{"config":{"dimensions":1536,"metric":"cosine"}}' },
       'vectorize list-metadata-index': { stdout: '[{"propertyName":"type","indexType":"String"},{"propertyName":"status","indexType":"String"},{"propertyName":"session_id","indexType":"String"},{"propertyName":"created_at","indexType":"Number"},{"propertyName":"observation_type","indexType":"String"},{"propertyName":"release_state","indexType":"String"},{"propertyName":"release_confidence","indexType":"String"}]' },
@@ -849,14 +851,14 @@ describe('the prerequisites every verb checks first', () => {
     const held = process.env.CLOUDFLARE_API_TOKEN;
     delete process.env.CLOUDFLARE_API_TOKEN;
     try {
-      const anonymous = () => runner({ 'wrangler whoami': { code: 1, stderr: 'not authenticated' } });
+      const anonymous = () => runner({ 'wrangler whoami': { code: 1, stdout: '{"loggedIn":false}', stderr: 'not authenticated' } });
       for (const { verb, run } of EVERY_VERB) {
         calls = [];
         const home = freshHome();
         if (verb !== 'create') recordFor(home);
         await expect(run({ accountId: ACCOUNT, mycoHome: home }, anonymous())).rejects.toThrow(WranglerNotSignedIn);
         expect({ verb, calls: calls.map((c) => c.args.join(' ')) })
-          .toEqual({ verb, calls: ['--no-install wrangler --version', '--no-install wrangler whoami'] });
+          .toEqual({ verb, calls: ['--no-install wrangler --version', '--no-install wrangler whoami --json'] });
       }
     } finally {
       if (held === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
@@ -878,19 +880,17 @@ describe('the prerequisites every verb checks first', () => {
     }
   });
 
-  it('says so when the installed wrangler is a major version from the one the carried Worker was built with', async () => {
+  it('refuses an incompatible operator Wrangler and names the consented installer', async () => {
     const home = freshHome();
     recordFor(home);
     const said: string[] = [];
-    await cloudflareDeploymentStatus({
+    await expect(cloudflareDeploymentStatus({
       readRetry,
       accountId: ACCOUNT,
       mycoHome: home,
       report: (line) => { said.push(line); },
       runner: runner({ 'wrangler --version': { stdout: ' ⛅️ wrangler 3.0.0\n' } }),
-    });
-    expect(said.join('\n')).toContain('3.0.0');
-    expect(said.join('\n')).toContain(BUNDLED_WORKER_WRANGLER);
+    })).rejects.toThrow('myco setup --create cloudflare');
   });
 });
 
@@ -948,7 +948,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     delete process.env.CLOUDFLARE_API_TOKEN;
     const controller = new AbortController();
     const subprocess = systemRunner();
-    const pinned: CommandRunner = { run: (_command, args, options) => subprocess.run(join(npxDir, 'npx'), args, { ...options, signal: controller.signal }) };
+    const pinned: CommandRunner = { run: (command, args, options) => command === 'node' ? Promise.resolve({ code: 0, stdout: 'v26.0.0', stderr: '' }) : subprocess.run(join(npxDir, 'npx'), args, { ...options, signal: controller.signal }) };
     process.chdir(home);
     const running = (async () => {
       try { return await drive(argv, pinned); }
@@ -966,9 +966,9 @@ describe('what the CLI prints when this machine is not ready', () => {
   };
 
   it.skipIf(process.platform === 'win32')('GATE: with no wrangler, `server create --target cloudflare` prints the install refusal and exits 1', async () => {
-    const refused = await withEnvironment(npxAnswering('exit 1'), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
+    const refused = await withEnvironment(npxAnswering('echo "npm error canceled" >&2; exit 1'), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
     expect({ exited: refused.exited, lines: refused.said.split('\n').length }).toEqual({ exited: true, lines: 1 });
-    expect(refused.said).toContain('wrangler is not installed');
+    expect(refused.said).toContain('pinned Wrangler');
     expect(refused.said).not.toContain('posix_spawn');
   });
 
@@ -1038,7 +1038,7 @@ describe('what the CLI prints when this machine is not ready', () => {
         ['create', '--target', 'cloudflare', '--account-id', ACCOUNT, '--dry-run'], home);
       expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
       const ran = readFileSync(log, 'utf8').trim().split('\n').map((line) => line.replace('--no-install wrangler ', ''));
-      const reads = /^(--version|whoami|d1 list --json|vectorize list --json|r2 bucket list|secrets-store store list --remote|secrets-store secret list \S+ --remote --page \d+ --per-page 100|secret list --name \S+)$/;
+      const reads = /^(--version|whoami --json|d1 list --json|vectorize list --json|r2 bucket list|secrets-store store list --remote|secrets-store secret list \S+ --remote --page \d+ --per-page 100|secret list --name \S+)$/;
       expect(ran.filter((command) => !reads.test(command))).toEqual([]);
       expect({ files: tree(home), dirs: dirs(home) }).toEqual(before);
       expect(done.printed).toContain(`Cloudflare Deployment plan for account ${ACCOUNT}. Nothing was created or changed.`);
@@ -1056,14 +1056,10 @@ describe('what the CLI prints when this machine is not ready', () => {
     });
   }
 
-  it.skipIf(process.platform === 'win32')('GATE: a wrangler a major version from the bundled one says so to the operator, and the verb still finishes', async () => {
-    // The note is reported through the lifecycle's `report`, and the CLI is the
-    // only thing that wires one: unwired, the comparison talks to nobody.
+  it.skipIf(process.platform === 'win32')('refuses an incompatible operator Wrangler with the setup command', async () => {
     const done = await withEnvironment(npxAnswering(wranglerAnswers('3.0.0')), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
-
-    expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
-    expect(done.printed).toContain('wrangler 3.0.0');
-    expect(done.printed).toContain(BUNDLED_WORKER_WRANGLER);
+    expect(done.exited).toBe(true);
+    expect(done.said).toContain('myco setup --create cloudflare');
   }, CLI_DRIVE_TIMEOUT_MS);
 
   it('GATE: `server config` without a record names the file this home would hold it in', async () => {
@@ -1081,11 +1077,11 @@ describe('what the CLI prints when this machine is not ready', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('GATE: with no Cloudflare login, it names `wrangler login` and CLOUDFLARE_API_TOKEN, and exits 1', async () => {
-    const npxDir = npxAnswering(`case "$*" in *whoami*) exit 1;; esac\necho " wrangler ${BUNDLED_WORKER_WRANGLER}"`);
+  it.skipIf(process.platform === 'win32')('GATE: with no Cloudflare login, it names setup and CLOUDFLARE_API_TOKEN, and exits 1', async () => {
+    const npxDir = npxAnswering(`case "$*" in *whoami*) echo '{"loggedIn":false}'; exit 1;; esac\necho " wrangler ${BUNDLED_WORKER_WRANGLER}"`);
     const refused = await withEnvironment(npxDir, ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
     expect({ exited: refused.exited, lines: refused.said.split('\n').length }).toEqual({ exited: true, lines: 1 });
-    expect(refused.said).toContain('wrangler login');
+    expect(refused.said).toContain('myco setup --create cloudflare');
     expect(refused.said).toContain('CLOUDFLARE_API_TOKEN');
   });
 });

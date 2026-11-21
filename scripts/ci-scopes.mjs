@@ -66,6 +66,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/myco-shared/run-text-cost.test.ts',
   'tests/scripts/run-bun-tests-guards.test.ts',
   'tests/server/cloudflare-backup-streaming.test.ts',
+  'tests/server/cloudflare-tools-readonly.test.ts',
   'tests/server/cloudflare-recovery-database.test.ts',
   'tests/server/cloudflare-recovery.test.ts',
   'tests/server/local-lifecycle-inspection.test.ts',

@@ -49,19 +49,22 @@ for (const args of [['server', 'create', '--target', 'local'], ['server', 'insta
 }
 
 it('prepares a hosted restore with the runtime SQLite, stopping at the first Cloudflare call', async () => {
-  const [artifact, secrets, bin, log] = ['artifact', 'recovery.env', 'bin', 'wrangler.log'].map((name) => path.join(root, name));
+  const [artifact, secrets, log] = ['artifact', 'recovery.env', 'wrangler.log'].map((name) => path.join(root, name));
   const data = seededSqlite();
   await createRecoveryBundle(artifact, { source: { target: 'cloudflare', locator: 'original' }, blob: async () => { throw new Error('no blobs'); }, snapshot: async (file) => {
     data.query('VACUUM INTO ?').run(file);
     return { configuration: recoveryConfigurationOf({ ...cloudflareResources(), accountId: 'a', databaseId: 'source', storeId: 'f'.repeat(32) }), credentialsRequired: [] };
   } });
   fs.writeFileSync(secrets, `SECRET_WRAP_KEY=${Buffer.alloc(32, 7).toString('base64')}\nSESSION_SECRET=s\nGITHUB_CLIENT_ID=c\nGITHUB_CLIENT_SECRET=c\n`, { mode: 0o600 });
-  // Wrangler is installed and signed in to no account, so nothing reaches Cloudflare.
-  fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'npx'), `#!/bin/sh\necho "$*" >> '${log}'\n[ "$3" = --version ] && echo 4.126.0 && exit 0\nexit 1\n`, { mode: 0o755 });
+  // The operator package answers version and signed-out identity without contacting a provider.
+  const prefix = path.join(root, 'operator');
+  const installed = path.join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules', 'wrangler');
+  fs.mkdirSync(path.join(installed, 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ name: 'wrangler', bin: { wrangler: 'bin/wrangler.js' } }));
+  fs.writeFileSync(path.join(installed, 'bin', 'wrangler.js'), `const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(log)},process.argv.slice(2).join(' ')+'\\n');if(process.argv.includes('--version'))console.log('4.126.0');else console.log('{"loggedIn":false}');`);
   const restore = run([ENTRY, 'server', 'restore', '--target', 'cloudflare', '--from', artifact, '--secrets-from', secrets, '--fork', '--yes', '--account-id', 'a'.repeat(32)],
-    { PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: '', CLOUDFLARE_API_KEY: '', CF_API_TOKEN: '', CF_API_KEY: '' });
-  expect([restore.out.includes('signed in to no Cloudflare account'), fs.readFileSync(log, 'utf8')]).toEqual([true, '--no-install wrangler --version\n--no-install wrangler whoami\n']);
+    { npm_config_prefix: prefix, CLOUDFLARE_API_TOKEN: '', CLOUDFLARE_API_KEY: '', CF_API_TOKEN: '', CF_API_KEY: '' });
+  expect([restore.out.includes('signed in to no Cloudflare account'), fs.readFileSync(log, 'utf8')]).toEqual([true, '--version\nwhoami --json\n']);
   const prepared = new Database(path.join(restore.home, '.myco', 'server', 'cloudflare', 'recovery.sqlite'), { readonly: true });
   expect(prepared.query("SELECT value FROM schema_meta WHERE key = 'version'").get()).toEqual({ value: String(SERVER_SCHEMA_VERSION) });
 }, 120_000);

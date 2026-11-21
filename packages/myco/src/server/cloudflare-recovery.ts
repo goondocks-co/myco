@@ -183,9 +183,10 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     });
   }
   if (await databaseFingerprint(databasePath) !== held().preparedFingerprint) throw new Error('prepared recovery database changed; no remote data was written');
-  const bare = { ...options, configDir: root };
-  await assertWranglerReady({ ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: root,
+  const runner = await assertWranglerReady({ ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: root, mycoHome: options.mycoHome,
     ...(options.report === undefined ? {} : { report: options.report }) });
+  options = { ...options, runner };
+  const bare = { ...options, configDir: root };
   if (held().databaseId === undefined) await provision(`D1 ${name}`, () => ensureDatabase({ ...bare, databaseName: name }), (result) => ({ databaseId: result.databaseId }));
   if (!held().bucketCreated) await provision(`R2 ${name}`, () => ensureBucket({ ...bare, bucketName: name }), () => ({ bucketCreated: true }));
   const stagingName = cloudflareResources({ workerName: name }).recoveryBucketName;

@@ -137,7 +137,9 @@ describe('new owner journeys (a) and (b)', () => {
     closers.push(server.close);
     const runner = { run: async (...args: Parameters<typeof server.runner.run>) => {
       const result = await server.runner.run(...args);
-      return args[1].includes('whoami') ? { ...result, stdout: `${result.stdout}\n│ Other │ ${'b'.repeat(32)} │` } : result;
+      if (!args[1].includes('whoami')) return result;
+      const identity = JSON.parse(result.stdout);
+      return { ...result, stdout: JSON.stringify({ ...identity, accounts: [...identity.accounts, { name: 'Other', id: 'b'.repeat(32) }] }) };
     } };
     expect(await run(['--create', 'cloudflare'], { ...base(), ...server.deps, cloudflare: { ...server.deps.cloudflare, runner }, ask: async () => 'c'.repeat(32) })).toBe(2);
     expect(errors.at(-1)).toBe('myco setup: Choose a listed Cloudflare account with --account-id <id>.');

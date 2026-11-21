@@ -75,7 +75,7 @@ describe('new owner journeys (a) and (b)', () => {
       const commandCount = server.commands.length;
       expect(await run(['--status', '--json'], { ...deps, fetch: fakeFetch(async () => { throw new Error('status network'); }) })).toBe(0);
       expect(snapshot(root)).toEqual(before);
-      expect(server.commands).toHaveLength(commandCount);
+      expect(server.commands.slice(commandCount).every(command => command === '--version')).toBe(true);
       fs.unlinkSync(setupFilePath(home));
       const withoutAnswers = snapshot(root);
       const beforeRemoteStatus = server.commands.length;
@@ -83,7 +83,7 @@ describe('new owner journeys (a) and (b)', () => {
       const observed = JSON.parse(lines.at(-1)!).observations as Awaited<ReturnType<typeof observeSetup>>;
       for (const id of ['journey', 'deployment.health', 'deployment.signin', 'machine.signin', 'project']) expect(observed.find(fact => fact.id === id)?.state).toBe('complete');
       expect(observed.find(fact => fact.id === 'deployment.owner')).toMatchObject(target === 'cloudflare' ? { state: 'incomplete', informational: true } : { state: 'complete' });
-      expect(server.commands).toHaveLength(beforeRemoteStatus);
+      expect(server.commands.slice(beforeRemoteStatus).every(command => command === '--version')).toBe(true);
       expect(snapshot(root)).toEqual(withoutAnswers);
       expect(await run(['--status', '--create', target], deps)).toBe(0);
       expect(lines.join('\n')).toContain('This machine manages this Deployment.');

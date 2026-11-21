@@ -6,7 +6,7 @@ import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
+import { operationWranglerRunner, WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type LifecycleOptions, type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
@@ -70,7 +70,7 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           already exists; without it, create refuses.
                                           Provision D1/R2/Vectorize/secrets store, install generated
                                           secrets, migrate, deploy, and write the deployment record.
-                                          Needs Node and a wrangler login on this machine and nothing
+                                          Needs supported Node and a Wrangler login on this machine and nothing
                                           else: the Worker, its dashboard and its migrations all
                                           travel in this binary. --url puts it on a domain you own.
                                           --dry-run lists what it would create, keep and bind, and
@@ -156,7 +156,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Delete or reuse that app on GitHub before registering another.
 
 A Deployment run from this binary needs no container runtime and no Node.
-The Cloudflare target needs Node and wrangler on THIS machine, and neither on
+Cloudflare setup checks Node and offers a private, pinned Wrangler install.
+Run myco setup --create cloudflare. Neither tool is needed on
 the Deployment.`;
 
 /** The verbs a Deployment this machine runs answers to; every other verb belongs to the hosted targets. */
@@ -271,6 +272,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
   };
 
   /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
+  let operatorRunner: CommandRunner | undefined;
   const cloudflareOptions = () => {
     // A flag this target refuses by name is answered first: a refusal about a
     // missing value tells an operator to supply one, which is the wrong move
@@ -280,9 +282,9 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
     // A plan reads the record where it lies; every other verb reads it through the layout move.
     const record = flags.has('dry-run') ? peekDeploymentRecord() : readDeploymentRecord();
     const accountId = flags.get('account-id') ?? record?.accountId;
-    if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
+    if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (`myco setup --create cloudflare` lists accounts and guides selection).');
     for (const line of credentialLines) report(line);
-    return { accountId, readRetry: deps.readRetry, ...(deps.runner === undefined ? {} : { runner: deps.runner }), report };
+    return { accountId, readRetry: deps.readRetry, runner: operatorRunner ??= operationWranglerRunner(deps.runner), report };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
@@ -459,7 +461,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
     if (command === 'rollback' && target() === 'cloudflare') {
       const versionFlag = flags.get('version');
       const messageFlag = flags.get('message');
-      if (versionFlag === '' || versionFlag === 'true') fail('pass --version <id> (`wrangler deployments list` names them), or omit the flag to use the record\'s last recorded version.');
+      if (versionFlag === '' || versionFlag === 'true') fail('pass --version <id> (`myco doctor` shows the selected tool; its deployments list command names versions), or omit the flag to use the record\'s last recorded version.');
       const rolled = await rollbackCloudflareDeployment({
         ...cloudflareOptions(),
         versionId: versionFlag,

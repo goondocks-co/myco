@@ -85,10 +85,11 @@ async function fixture(failVectorRead = false, { legacy = false, authority = fal
   const secretCommands: string[] = [];
   let freshKeyInstalled = false;
   const runner: CommandRunner = { async run(_command, args, options) {
+    if (_command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
     const flat = args.slice(2).join(' ');
     const answer = (stdout = '', code = 0) => ({ code, stdout, stderr: '' });
     if (flat === '--version') return answer('4.126.0');
-    if (flat === 'whoami') return answer('fixture');
+    if (flat === 'whoami --json') return answer('fixture');
     expect(options?.env?.CLOUDFLARE_ACCOUNT_ID).toBe('fixture-account');
     if (flat === 'd1 list --json' || flat === 'vectorize list --json') return answer('[]');
     if (flat.startsWith('d1 create')) { provisioned.databaseName.push(args[4]!); creates++; return answer('11111111-2222-4333-8444-555555555555'); }

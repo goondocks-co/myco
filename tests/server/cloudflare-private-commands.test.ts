@@ -10,6 +10,7 @@ it('withholds private command output on both process rejection and provider fail
   try {
     for (const throws of [false, true]) {
       const runner: CommandRunner = { async run(_command, args, options) {
+        if (_command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
         if (args.includes('--version')) return { code: 0, stdout: '4.126.0', stderr: '' };
         expect(args.join(' ')).not.toContain('synthetic-private');
         expect(options?.env).toMatchObject({ CLOUDFLARE_ACCOUNT_ID: 'fixture', WRANGLER_WRITE_LOGS: 'false', WRANGLER_LOG: 'log', WRANGLER_LOG_SANITIZE: 'true' });
