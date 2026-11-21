@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { assertSandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 import { fleetReports, readWorkerFleet } from '@myco-server-worker/core/worker-contacts.js';
 import { producedSql } from '@myco-server-worker/db/runs/run-output.js';
 import { FIRST_MEMBER_KEY } from '@myco-server-worker/core/ownership.js';
@@ -64,9 +64,8 @@ describe('persisted setup interruption fixtures', () => {
   });
 
   it('leaves the first-owner receipt pending when its link expires', async () => {
-    const sqlite = new Database(':memory:');
+    const sqlite = schemaSqlite({ foreignKeys: false });
     try {
-      for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
       const db = sqliteRelationalStore(sqlite);
       const link = await expiredOwnerLink(db, NOW);
       expect(link.expiresAt).toBeLessThan(NOW);

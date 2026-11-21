@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { settingsWriter, DEPLOYMENT_LEAF_SPECS } from '@myco-server-worker/core/settings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 
 const rig = () => {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   return settingsWriter(sqliteRelationalStore(sqlite));
 };
 

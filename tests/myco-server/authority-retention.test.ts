@@ -4,7 +4,7 @@
  * committed redemption answers what that commit decided.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import type { IssuedIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { issueIdentityLinkAuthority, previewIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
@@ -13,13 +13,13 @@ import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { ENROLLMENT_RETENTION_MS, IDENTITY_LINK_RETENTION_MS, reclaimFinishedAuthorities } from '@myco-server-worker/db/identity/authority-retention.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 
 const NOW = 1_800_000_000_000;
 const ADMIN = 'mem_machine_1';
 
 function rig() {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   const db = sqliteRelationalStore(sqlite);
   return { sqlite, db, env: { db } as ServerEnv };
 }

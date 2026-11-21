@@ -9,12 +9,11 @@ import { publishFixtureDocuments } from './helpers/fixtures.js';
  * Deployment does not hold yet has no turn to open.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { mkdtempSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 import { handlePromptContext } from '@myco-server-worker/api/recall.js';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
@@ -280,9 +279,7 @@ describe('a session working now', () => {
   it('opens the turn though the answer is never composed: the stamp is registered first and waits on nothing the answer reads', async () => {
     // A client that stops waiting mid-compose, or a compose that never ends, must not cost the session its turn. Every
     // statement but the stamp hangs, so nothing the answer reads (settings, the capability, spores) ever lands.
-    const sqlite = new Database(':memory:');
-    sqlite.exec('PRAGMA foreign_keys = ON');
-    for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+    const sqlite = schemaSqlite();
     const now = Date.now();
     sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 0)`);
     sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', 'sess_1', 'machine_1', 'tok', ?, ?)`, [now, now]);
@@ -310,9 +307,7 @@ describe('a session working now', () => {
   });
 
   it('on the self-hosted target, writes the stamp before the answer\'s reads, and composes the answer as before', async () => {
-    const sqlite = new Database(':memory:');
-    sqlite.exec('PRAGMA foreign_keys = ON');
-    for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+    const sqlite = schemaSqlite();
     const now = Date.now();
     sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 0)`);
     sqlite.run(`INSERT INTO members (id, label, created_at) VALUES ('mem_1', 'm', 0)`);

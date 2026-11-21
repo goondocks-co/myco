@@ -13,31 +13,13 @@
  * therefore tests the connection pool rather than the listener; the assertions
  * below force a fresh connection where the listener is what is under test.
  */
-import { afterAll, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { deploymentVolume } from '../helpers/deployment-volume.js';
+import { describe, expect, it } from 'bun:test';
 import { serve } from '@myco-server-worker/entry/bun.js';
-
-const roots: string[] = [];
-afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
-
-function migratedVolume(): { databasePath: string; blobDir: string } {
-  const root = mkdtempSync(join(tmpdir(), 'myco-drain-'));
-  roots.push(root);
-  const databasePath = join(root, 'myco.sqlite');
-  const sqlite = new Database(databasePath);
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
-  sqlite.close();
-  return { databasePath, blobDir: join(root, 'blobs') };
-}
 
 describe('drain', () => {
   it('accepts no NEW connection once the drain resolves', async () => {
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0 });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0 });
     const authority = `127.0.0.1:${started.port}`;
 
     // `connection: close` matters. A drain deliberately keeps serving the
@@ -61,7 +43,7 @@ describe('drain', () => {
   });
 
   it('lets requests already in flight finish', async () => {
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0 });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0 });
     const authority = `127.0.0.1:${started.port}`;
 
     // Issued, then given a tick to reach the socket. Calling stop() on the same
@@ -84,7 +66,7 @@ describe('drain', () => {
   });
 
   it('is safe to call twice', async () => {
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0 });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0 });
     await started.stop();
     // A second signal must not throw on an already-closed database handle.
     await expect(started.stop()).resolves.toBeUndefined();

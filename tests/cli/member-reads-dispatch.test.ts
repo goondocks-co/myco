@@ -14,14 +14,14 @@
  * checkout with no membership refuses without creating a vault. Unmoved 1.4 capture receives cutover guidance.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { writeRetainedLegacyVault } from '../helpers/legacy-migration-fixture.js';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaFile } from '../myco-server/helpers/deployment-volume.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { callTool } from '@myco/mcp/client-call.js';
@@ -52,9 +52,7 @@ let token: string;
 beforeAll(async () => {
   const root = tempDir('myco-reads-deployment-');
   const databasePath = path.join(root, 'myco.sqlite');
-  const sqlite = new Database(databasePath);
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+  const sqlite = schemaFile(databasePath);
   sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES (?,?,0)`).run(PROJECT, 'reads');
   // A second, newer Project leads the Deployment's project list; stats must still report the joined one.
   sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_2','other',1)`).run();

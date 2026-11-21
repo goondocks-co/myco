@@ -14,7 +14,7 @@ import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js'
 import { createBunHandler } from '@myco-server-worker/entry/bun.js';
 import { titleReadySessions } from '@myco-server-worker/core/titling.js';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaFile } from './helpers/deployment-volume.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { envelope, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -58,9 +58,7 @@ describe('afterResponse', () => {
   it('on the self-hosted target, close() lands the work an answered request left behind before the store closes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'myco-close-'));
     const databasePath = join(root, 'myco.sqlite');
-    const sqlite = new Database(databasePath);
-    sqlite.exec('PRAGMA foreign_keys = ON');
-    for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+    const sqlite = schemaFile(databasePath);
     sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();
     const { token } = await issueMemberToken(sqliteRelationalStore(sqlite), { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     sqlite.close();

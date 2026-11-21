@@ -21,8 +21,7 @@ import { RECALL_BASELINE_FILE, readRecallBaseline, renderRecallBaseline } from '
 import { readFileSync } from 'node:fs';
 import { distributionStats, selectRelevantPlans } from '../../packages/myco-shared/src/relevance.ts';
 import { cosineSimilarity, vectorId, vectorMatches, type StoredVector } from '@myco-server-worker/core/embedding/vectors.js';
-import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type {
   embedding_EmbeddingSource as EmbeddingSource,
@@ -46,10 +45,8 @@ describe('model-relative prompt selection on frozen gold geometry', () => {
       transformed[index.dims + 1 + r.row] = Math.sqrt(1 - a - b);
       return [r.id, transformed] as const;
     }));
-    const sqlite = new Database(':memory:');
+    const sqlite = schemaSqlite();
     try {
-      sqlite.exec('PRAGMA foreign_keys = ON');
-      for (const migration of renderMigrationFiles()) sqlite.exec(migration.sql);
       sqlite.query('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 0)').run(scope.projectId, 'Affine gold');
       sqlite.exec("INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('affine', 'affine', 'built-in', 1, 0)");
       for (const statement of seedStatements(scope.projectId, corpus, 'affine', 0)) sqlite.exec(statement);

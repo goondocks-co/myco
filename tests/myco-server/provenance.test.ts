@@ -2,8 +2,8 @@
  * Release state reads: the bulk lookup, and the namespace guard.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import type { Database } from 'bun:sqlite';
+import { schemaSqlite } from './helpers/schema-template.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   canonicalNamespace, getReleaseState, getReleaseStatesForRecords, isReleaseNamespace, listReleaseStates,
@@ -16,8 +16,7 @@ const OTHER: ReadScope = { projectId: 'proj_two' };
 const NOW = 1_700_000_000_000;
 
 function store(): { db: RelationalStore; sqlite: Database } {
-  const sqlite = new Database(':memory:');
-  for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+  const sqlite = schemaSqlite({ foreignKeys: false });
   for (const p of [SCOPE.projectId, OTHER.projectId]) {
     sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
   }
