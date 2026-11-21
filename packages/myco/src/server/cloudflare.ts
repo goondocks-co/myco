@@ -933,6 +933,23 @@ export class WranglerAbsent extends WranglerNotReady {
   }
 }
 
+/** Raised when `npx` itself is absent: Node.js is not installed, so wrangler cannot be either. */
+export class NodeAbsent extends WranglerNotReady {
+  constructor() {
+    super('Node.js is not installed, and wrangler needs it; install Node.js (https://nodejs.org), then `npm install -g wrangler`, and retry');
+    this.name = 'NodeAbsent';
+  }
+}
+
+/** `wrangler --version` as `npx` answers it; a machine with no `npx` is refused by name rather than by the spawn's own error. */
+async function wranglerVersion(runner: CommandRunner, where: { cwd?: string; env?: NodeJS.ProcessEnv }): Promise<CommandResult> {
+  try { return await runner.run('npx', wrangler('--version'), where); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') throw new NodeAbsent();
+    throw error;
+  }
+}
+
 /** Raised when wrangler answers but reaches no Cloudflare account, which every command here needs before it touches anything. */
 export class WranglerNotSignedIn extends WranglerNotReady {
   constructor() {
@@ -946,8 +963,7 @@ export class WranglerNotSignedIn extends WranglerNotReady {
 
 /** True when `npx` resolves wrangler without fetching it. */
 export async function wranglerPresent(runner: CommandRunner = systemRunner(), cwd?: string): Promise<boolean> {
-  const result = await runner.run('npx', wrangler('--version'), { ...(cwd === undefined ? {} : { cwd }) });
-  return result.code === 0;
+  return (await wranglerVersion(runner, { ...(cwd === undefined ? {} : { cwd }) })).code === 0;
 }
 
 /** Refuse unless wrangler answers where the commands run. */
@@ -989,7 +1005,7 @@ export async function assertWranglerReady(readiness: WranglerReadiness = {}): Pr
   const env = readiness.env ?? process.env;
   const runner = credentialRunner(readiness.runner ?? systemRunner(), env);
   const where = { ...(readiness.cwd === undefined ? {} : { cwd: readiness.cwd }), env };
-  const version = await runner.run('npx', wrangler('--version'), where);
+  const version = await wranglerVersion(runner, where);
   if (version.code !== 0) throw new WranglerAbsent();
 
   const installed = versionOf(version.stdout + version.stderr);
