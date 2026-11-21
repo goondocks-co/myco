@@ -215,6 +215,18 @@ const CaptureManifestSchema = z.object({
    * such envelope is not injected. Absent means this harness declares none.
    */
   notificationEnvelopes: z.array(z.string().regex(/^[\w-]+$/)).optional(),
+  /**
+   * What a notification envelope says, recorded on its prompt at capture as structured fields. `line` names the child
+   * element whose text `pattern` reads; the pattern's named groups `description` (required) and `exitCode` (optional)
+   * become the notice's fields, and `kind` names what finished. A prompt no declaration matches records no notice.
+   */
+  notificationNotices: z.array(z.object({
+    envelope: z.string().regex(/^[\w-]+$/),
+    line: z.string().regex(/^[\w-]+$/),
+    kind: z.enum(['background_command']),
+    pattern: z.string().refine((source) => { try { return new RegExp(source).source.includes('(?<description>'); } catch { return false; } },
+      'pattern must compile and name a description group'),
+  })).optional(),
   /** Whether transcript ordering instants are recorded by the harness or synthesized by the parser. */
   transcriptTimestamps: z.enum(['recorded', 'synthetic']).default('recorded'),
   prompts: CapturePromptsSchema.optional(),

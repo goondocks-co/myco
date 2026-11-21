@@ -145,6 +145,8 @@ export const KINDS: readonly KindSpec[] = [
       sourceKey: str(128, 'source_key'),
       sourceThread: str(128, 'source_thread'),
       sourceRecord: str(128, 'source_record'),
+      /** What a notification prompt says finished (`PromptNotice`), recorded by the transcript parse from its harness's declarations. */
+      notice: { bound: { type: 'json', maxBytes: 512 } },
     },
     exactlyOne: ['text', 'blob'],
     projection: 'prompt_batches',

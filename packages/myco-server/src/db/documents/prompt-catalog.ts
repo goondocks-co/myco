@@ -48,7 +48,7 @@ const count = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${fi
 const kept = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field})`;
 const settleTurns = write<[turns: string, ...DocumentKey]>({ name: 'documentPrompts.settleTurns', sql: `WITH j(id,value) AS MATERIALIZED (SELECT json_extract(value,'$.id'),value FROM json_each(?1))
   UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
-    ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')},${kept('source_bytes')}
+    ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('lead_facts')},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')},${kept('source_bytes')}
   FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id AND prompt_id IN (SELECT id FROM j)` });
 
 export const insertPromptsWrite = (key: DocumentKey, prompts: string): Bound => insertPrompts.bind(...key, prompts);

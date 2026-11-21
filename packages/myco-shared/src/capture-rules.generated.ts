@@ -276,6 +276,14 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "notificationEnvelopes": [
       "task-notification"
     ],
+    "notificationNotices": [
+      {
+        "envelope": "task-notification",
+        "line": "summary",
+        "kind": "background_command",
+        "pattern": "^Background command \"(?<description>.+)\" (?:completed|failed|was stopped|was killed)(?:.*?exit code (?<exitCode>-?\\d+))?"
+      }
+    ],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
       "kind": "harness-key",

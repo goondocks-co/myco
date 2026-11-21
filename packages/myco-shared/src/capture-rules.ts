@@ -14,6 +14,8 @@ export interface CaptureRuleBundle {
   planTags?: readonly string[];
   /** Tags of system-notification envelopes this harness declares. Absent means it declares none. */
   notificationEnvelopes?: readonly string[];
+  /** What this harness's notification envelopes say, from its manifest's `capture.notificationNotices`. */
+  notificationNotices?: readonly NotificationNoticeDeclaration[];
   transcriptTimestamps?: 'recorded' | 'synthetic';
   /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;
@@ -40,6 +42,30 @@ export function sourceTimestampsRecorded(bundles: readonly CaptureRuleBundle[], 
 export function notificationEnvelopes(bundles: readonly CaptureRuleBundle[], agent: string | null): readonly string[] {
   if (agent === null || agent === '') return [];
   return bundles.find((bundle) => bundle.name === agent)?.notificationEnvelopes ?? [];
+}
+
+export interface NotificationNoticeDeclaration { envelope: string; line: string; kind: 'background_command'; pattern: string }
+/** What finished, as a prompt records it at capture: what ran and, when its harness said, the exit code. */
+export interface PromptNotice { kind: 'background_command'; description: string; exitCode: number | null }
+/** Characters a notice's description keeps. */
+export const NOTICE_DESCRIPTION_CHARS = 160;
+
+/**
+ * The notice a prompt carries: the first declaration of `agent` whose envelope the prompt opens with and whose line
+ * element's text its pattern matches. Null for any other prompt.
+ */
+export function promptNotice(bundles: readonly CaptureRuleBundle[], agent: string | null, text: string): PromptNotice | null {
+  const declared = bundles.find((bundle) => bundle.name === agent)?.notificationNotices ?? [];
+  for (const notice of declared) {
+    if (!envelopeTagAtStart(text, [notice.envelope])) continue;
+    const line = new RegExp(`<${notice.line}>([\\s\\S]*?)</${notice.line}>`).exec(text)?.[1]?.replace(/\s+/g, ' ').trim();
+    const groups = line === undefined ? undefined : new RegExp(notice.pattern).exec(line)?.groups;
+    const description = groups?.description?.trim();
+    if (description === undefined || description === '') continue;
+    const exitCode = groups?.exitCode === undefined ? null : Number(groups.exitCode);
+    return { kind: notice.kind, description: description.slice(0, NOTICE_DESCRIPTION_CHARS), exitCode: Number.isSafeInteger(exitCode) ? exitCode : null };
+  }
+  return null;
 }
 
 /** A prompt that is one complete system-notification envelope its harness declares, with nothing after the closing tag. */

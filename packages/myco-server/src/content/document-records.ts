@@ -12,6 +12,7 @@ import { filesNamedByToolInput, mycoToolFields } from '@goondocks/myco-shared/me
 import { utf8Preview } from '../hash.js';
 import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../ingest/tool-outcome.js';
 import { TOOL_EVIDENCE_VERSION, DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
+import { isPromptNotice } from './turn-lead.js';
 
 /** Characters a tool's one-line input summary keeps. */
 const TOOL_SUMMARY_CHARS = 200;
@@ -58,7 +59,7 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
       thread_label: str(p.threadLabel), origin: str(p.origin) ?? 'user', prompt_kind: str(p.promptKind), text: str(p.text),
       origin_session_id: str(p.originSessionId),
       claim: str(p.claim), source_key: str(p.sourceKey), source_thread: str(p.sourceThread), source_record: str(p.sourceRecord),
-      prompt_key_hash: str(p.promptKeyHash),
+      prompt_key_hash: str(p.promptKeyHash), ...(isPromptNotice(p.notice) ? { notice: p.notice } : {}),
     };
   }
   if (k === 'reply') return { k, id: String(p.responseId), prompt_id: str(p.promptId), ...origin, text: str(p.text), ...(at.replySnapshot === true ? { reply_snapshot: true } : {}) };

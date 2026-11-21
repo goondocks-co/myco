@@ -87,7 +87,7 @@ const detail = (over: Record<string, unknown> = {}, extra: Record<string, unknow
 const turn = (over: Record<string, unknown> = {}) => ({
   promptId: P1, origin: 'user', promptKind: null, threadLabel: null, preview: 'Please rename the project card', textChars: 30, blobKey: null,
   createdAt: NOW - 3000, toolCallCount: 1, responseCount: 1, childCount: 0, planCount: 0, attachmentCount: 0,
-  headline: null, signal: null, marks: null, failedTools: 0, mycoCalls: 0, toolRollup: null, ...over,
+  headline: null, signal: null, marks: null, failedTools: 0, mycoCalls: 0, toolRollup: null, lead: null, ...over,
 });
 
 const originalFetch = globalThis.fetch;
@@ -1677,6 +1677,7 @@ describe('the session reading page', () => {
       promptId: idOf(i), origin: ORIGINS[i % 4], preview: `Prompt ${i}`, textChars: 9, createdAt: NOW - (TURNS - i) * MINUTE, toolCallCount: 25,
       headline: `Headline ${i}`, signal: i % 20 === 0 ? 'high' : 'low', marks: { decisions: i % 20 === 0, rejected: false, errors: false, corrections: false, openQuestions: false },
       failedTools: i % 10 === 0 ? 1 : 0, mycoCalls: i % 8 === 0 ? 2 : 0, toolRollup: rollup({ firstError: i % 10 === 0 ? `error of turn ${i}` : null }),
+      lead: i % 4 === 1 ? `Task from the launching agent: Task ${i}` : i % 4 === 3 ? `Background command finished: run ${i} (exit 0)` : null,
     });
     const LONG = Array.from({ length: TURNS }, (_, i) => longRow(i));
     /** The turn list as the server answers it: newest first, 200 a page, under a filter or centred on a turn. */
@@ -1753,6 +1754,9 @@ describe('the session reading page', () => {
       fireEvent.click(within(screen.getByRole('group', { name: 'Show' })).getByRole('button', { name: 'Everything' }));
       expect((await screen.findByTestId(`row-${idOf(399)}`)).getAttribute('data-background')).toBe('');
       expect(screen.getByTestId(`row-${idOf(398)}`).textContent).toContain('Another agent');
+      // A turn no person typed leads with what it was, its headline after.
+      expect(screen.getByTestId(`row-${idOf(399)}`).textContent).toContain('Background command finished: run 399 (exit 0) — Headline 399');
+      expect(screen.getByTestId(`row-${idOf(397)}`).textContent).toMatch(/^[^]*Task from the launching agent: Task 397Headline 397(?![^]*Another agent)/);
       // A header count opens its filter, and the files count its tab.
       fireEvent.click(screen.getByRole('button', { name: /40 failed/ }));
       await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?filter=failed'));
