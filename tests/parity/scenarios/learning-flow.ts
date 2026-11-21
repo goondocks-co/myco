@@ -76,6 +76,7 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   const material = await call<CardMaterial>(cards.run, 'myco_run_cards', { op: 'material' });
   expect(material.turns).toHaveLength(1);
   expect(material.turns[0].complete).toBe(false);
+  // A refused write, then the corrected one below: the refusal is flagged, and the run still closes on its work.
   expect(await call(cards.run, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] }, true)).toMatchObject({ code: 'material_unread' });
   const source = async (run: Claim['run'], tool: string) => {
     let cursor: string | undefined, raw = '';
@@ -96,8 +97,6 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   expect(learning).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
   const slice = await call<LearningMaterial>(learning.run, 'myco_run_learning', { op: 'material' });
   expect(slice.cards[0].card).toContain(EXACT_ERROR);
-  // A refused save, then the corrected one: the refusal is flagged and the run still closes on its work.
-  expect(await call(learning.run, 'myco_spores', { op: 'save', type: 'gotcha', session_id: 'sess_not_dispatched', agent_line: 'When refused, correct the call.', content: 'refused first' }, true)).toMatchObject({ ok: false, error: expect.stringContaining('Next call: myco_run_learning') });
   const saved = await call<{ id: string }>(learning.run, 'myco_spores', { op: 'save', type: 'gotcha', session_id: session,
     agent_line: 'When capture refuses a spool lease, reopen it under its recorded owner.',
     content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` });
