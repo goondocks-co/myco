@@ -40,8 +40,7 @@ beforeEach(() => {
         ? { isError: true, content: [{ type: 'text', text: 'session_id not found' }], structuredContent: { result: { ok: false, code: 'not_found', error: 'session_id not found' } } }
         : params.name === 'retryable'
         ? { isError: true, content: [{ type: 'text', text: 'Body is pending; try again shortly.' }], structuredContent: { result: { ok: false, code: 'run_body_unavailable', error: 'Body is pending; try again shortly.', retryable: true } } }
-        : params.name === 'unflagged'
-        ? { content: [{ type: 'text', text: 'session_id not found' }], structuredContent: { result: { ok: false, error: 'session_id not found' } } }
+        : params.name === 'unflagged' ? { content: [{ type: 'text', text: 'session_id not found' }], structuredContent: { result: { ok: false, error: 'session_id not found' } } }
         : params.name === 'unknown'
         ? { isError: true, content: [{ type: 'text', text: 'Unknown tool' }] }
         : { content: [{ type: 'text', text: 'Display text' }], structuredContent: { result: params.arguments } };
@@ -103,12 +102,9 @@ for (const kind of ['empty', 'member', 'legacy']) it('refuses credential-less to
   expect(process.exitCode).toBe(1);
 });
 
-it('reports a refused operation with its code, message and failing exit status', async () => {
-  expect(await invoke(['call', 'refused'])).toEqual({ ok: false, tool: 'refused', error: { code: 'not_found', message: 'session_id not found', result: { ok: false, code: 'not_found', error: 'session_id not found' } } });
-  expect(process.exitCode).toBe(1);
-});
-it('reports a refusal a Deployment answers without the error flag as a failing exit status', async () => {
-  expect(await invoke(['call', 'unflagged'])).toEqual({ ok: false, tool: 'unflagged', error: { code: 'tool_failure', message: 'session_id not found', result: { ok: false, error: 'session_id not found' } } });
+// A Deployment one release older answers a refusal without the error flag (`unflagged`).
+for (const [tool, code, result] of [['refused', 'not_found', { ok: false, code: 'not_found', error: 'session_id not found' }], ['unflagged', 'tool_failure', { ok: false, error: 'session_id not found' }]] as const) it(`reports a refused operation (${tool}) with its code, message and failing exit status`, async () => {
+  expect(await invoke(['call', tool])).toEqual({ ok: false, tool, error: { code, message: 'session_id not found', result } });
   expect(process.exitCode).toBe(1);
 });
 it('reports an MCP error result that names no code as a failing exit status', async () => {
