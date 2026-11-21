@@ -1,13 +1,14 @@
 import { cleanSessionText, UNTITLED_SESSION_LABEL } from '@goondocks/myco-shared/prompt-text';
 export { cleanSessionText, UNTITLED_SESSION_LABEL } from '@goondocks/myco-shared/prompt-text';
 
-/** How a session is headed: its title, or, untitled, the first line the person typed when there is one. */
+/** How a session is headed: its title, or, untitled, the line the server's label leads with when there is one. */
 export type SessionHeading = { titled: true; title: string } | { titled: false; firstPrompt: string | null };
 
 /**
- * A session's heading. The server's `label` falls back from the title to the
- * first prompt, then to the agent and the untitled label. Only prompt text
- * heads an untitled session; placeholder labels and the agent do not.
+ * A session's heading. The server's `label` falls back from the title to what
+ * its opening turn was when no person typed it, then to the first prompt, the
+ * agent and the untitled label. Only those words head an untitled session;
+ * placeholder labels and the agent do not.
  */
 export function sessionHeading(session: { sessionId: string; title: string | null; label: string; agent: string | null }): SessionHeading {
   const title = cleanSessionText(session.title, session.agent);

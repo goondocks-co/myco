@@ -34,7 +34,7 @@ describe('read/sessions', () => {
     expect(rows.map((r) => r.sessionId)).toEqual(['s3', 's2', 's1']);
     expect(rows[0]).toEqual({
       sessionId: 's3', machineId: 'm2', createdByTokenId: 'tok_1', firstReceivedAt: 3, lastReceivedAt: 20,
-      agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null,
+      agent: 'claude-code', branch: 'main', startedAt: 3, endedAt: null, originPath: '/repo', parentSessionId: null, parentReason: null, launchParentSessionId: null, lead: null,
       memberId: null, memberLabel: null, runtimeLabel: null, runtimeKind: null, workingSince: null, working: false, live: false, liveUntil: null,
       titleCoverage: { throughTurnKey: null, throughTurnCount: null, throughTurnRevision: null, lastTurnKey: null, lastTurnRevision: null, current: false },
       title: null, summary: null, titledAt: null, endedBy: null, endedByLabel: null, label: 'claude-code',

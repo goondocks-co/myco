@@ -6,7 +6,7 @@
 import { cleanSessionText } from '@goondocks/myco-shared/prompt-text';
 import { NOTICE_DESCRIPTION_CHARS, promptEnvelope, type PromptNotice } from '@goondocks/myco-shared/capture-rules';
 
-const SPEAKERS: Readonly<Record<string, string>> = { user: 'Person', agent_dispatch: 'Another agent', system: 'Harness', hook_injected: 'Myco' };
+const SPEAKERS: Readonly<Record<string, string>> = { user: 'Person', agent_dispatch: 'Another agent', system: 'System', hook_injected: 'Myco' };
 /** Who spoke a prompt, by its origin, in the words titling and the turn list share. */
 export const speaker = (origin: string): string => SPEAKERS[origin] ?? 'Unknown origin';
 

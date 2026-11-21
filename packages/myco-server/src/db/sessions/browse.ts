@@ -5,10 +5,17 @@ import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
 import { activityAt, occurredAt, presentedEndedAt, presentedCompletionAt, presentedLive, presentedOpen, presentedStartedAt } from '../session-dates.js';
 import { notTombstonedSql } from '../session-read-model.js';
+import { liveGenerationSql } from '../documents/live-generation.js';
+import { openingTurnSql, turnOriginSql } from '../documents/turn-origin.js';
 
 /** The opening of a session's first user prompt as its document catalog keeps it, for the label of a session with no title. */
 export const firstPromptSql = (alias: string): string =>
   `(SELECT first_prompt FROM session_documents first_doc WHERE first_doc.project_id = ${alias}.project_id AND first_doc.session_id = ${alias}.session_id)`;
+
+/** An untitled session's opening turn as one JSON object, what its lead is composed from; null for a titled session. */
+const openingTurnColumn = (alias: string): string => `CASE WHEN ${alias}.title IS NULL OR TRIM(${alias}.title)='' THEN
+  (SELECT json_object('id',o.prompt_id,'origin',${turnOriginSql('o')},'claim',o.claim,'preview',o.preview,'facts',o.lead_facts)
+    ${openingTurnSql('o', `${alias}.project_id`, `${alias}.session_id`, liveGenerationSql(`${alias}.project_id`, `${alias}.session_id`))}) END`;
 
 /** Presented conversation dates fall back to raw lifecycle dates. */
 export const PRESENTED_STARTED_AT = presentedStartedAt('s.');
@@ -23,7 +30,7 @@ export const sessionColumns = (quiet: string): string => `s.session_id, s.machin
      s.title, s.summary, s.titled_at,s.title_through_turn_key,(SELECT title_through_turn_count FROM session_documents title_doc WHERE title_doc.project_id=s.project_id AND title_doc.session_id=s.session_id AND title_doc.state='live') AS title_through_turn_count,s.title_through_turn_revision,
      (SELECT ${titleTurnRevisionSql('title_doc')} FROM session_documents title_doc WHERE title_doc.project_id=s.project_id AND title_doc.session_id=s.session_id AND title_doc.state='live') AS last_turn_revision,
      (SELECT open_turn_key FROM session_documents title_doc WHERE title_doc.project_id=s.project_id AND title_doc.session_id=s.session_id AND title_doc.state='live') AS last_turn_key, s.ended_by, ${firstPromptSql('s')} AS first_prompt,
-     c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
+     ${openingTurnColumn('s')} AS opening_turn, c.member_id, c.runtime_kind, m.label AS member_label, e.label AS ended_by_label, s.working_since`;
 
 /** The session read's joins, with the sessions table read through `indexedBy` where one is named. */
 export function sessionFrom(indexedBy: string): string {

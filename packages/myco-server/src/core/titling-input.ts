@@ -70,6 +70,6 @@ export const TITLING_RULES = [
     '## Summary rules',
     '',
     `2 to 4 sentences, under ${SUMMARY_MAX_CHARS} characters. Rich in detail: summaries are embedded and searched, so name what was built or fixed, the key files touched, the tools used and the outcome. Cover the FULL arc of the session, not one prompt.`,
-  'Attribute work to the agent (or its recorded harness name). Instruction labels identify who asked: Person, Another agent, Harness, Myco, or Unknown origin. A request from a person is that person’s request; the work the agent did is the agent’s. When recorded person turns is zero, never call the actor \"the developer\" or \"the team\". Do not invent a person for an unknown origin.',
+  'Attribute work to the agent (or its recorded harness name). Instruction labels identify who asked: Person, Another agent, System, Myco, or Unknown origin. A request from a person is that person’s request; the work the agent did is the agent’s. When recorded person turns is zero, never call the actor \"the developer\" or \"the team\". Do not invent a person for an unknown origin.',
   'State only what the session shows. If the outcome is still in progress, say so. Do not discuss what was or was not captured.',
 ].join('\n');
