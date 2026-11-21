@@ -9,6 +9,10 @@
  * reads its instructions over MCP learns, in the same call, the value it must
  * pass as `project` on a write.
  *
+ * A prompt preview answers what the prompt hook would attach for one prompt's
+ * text, by the same selection, without a session and without recording
+ * anything.
+ *
  * The notification and maintenance ops are named in the registry as not yet
  * served; nothing here answers them.
  */
@@ -18,6 +22,12 @@ import { sessions_listProjects as listProjects } from '../../read/catalog/sessio
 import { instructionsTemplate } from '../../core/settings.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
+import { PROMPT_PREVIEW_MAX_CHARS, previewPromptItems } from '../../core/injection.js';
+import { readRecallLeaves } from '../../core/recall.js';
+import { resolveSemanticSearch } from '../../core/search.js';
+import { settingsWriter } from '../../core/settings.js';
+import { ContextTimings } from '../../core/context-timing.js';
+import { snake } from '../shape.js';
 
 const ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -80,5 +90,43 @@ export async function handleCortexProjectsActivity(_input: ToolInput, ctx: ToolC
       last_activity_at: p.lastActivityAt,
       active: p.lastActivityAt !== null && ctx.now - p.lastActivityAt <= ACTIVE_WINDOW_MS,
     })),
+  };
+}
+
+/** A valid preview call, named by every preview refusal. */
+export const PROMPT_PREVIEW_EXAMPLE = { op: 'prompt_preview', prompt: 'How do we retry a stalled delivery?' };
+
+const round = (n: number): number => Math.round(n * 1000) / 1000;
+
+/**
+ * What the prompt hook would attach in this Project for `prompt`: the items in order with the score each was chosen by,
+ * the scored spores left out nearest the cut and why, the block's text and how long the selection took. Nothing is
+ * reserved or recorded as delivered.
+ */
+export async function handleCortexPromptPreview(input: ToolInput, ctx: ToolContext): Promise<unknown> {
+  const scope = await scopeOf(ctx, input);
+  if (scope === null) return failure('Project not found');
+  const prompt = input.prompt;
+  if (typeof prompt !== 'string' || prompt.length === 0)
+    return failure(`Not previewed: op "prompt_preview" needs prompt, the text of one prompt of at most ${PROMPT_PREVIEW_MAX_CHARS} characters. Next call: myco_cortex ${JSON.stringify(PROMPT_PREVIEW_EXAMPLE)}`);
+  if (prompt.length > PROMPT_PREVIEW_MAX_CHARS)
+    return failure(`Not previewed: prompt is ${prompt.length} characters; the limit is ${PROMPT_PREVIEW_MAX_CHARS}. Next call: myco_cortex ${JSON.stringify({ op: 'prompt_preview', prompt: `<its first ${PROMPT_PREVIEW_MAX_CHARS} characters>` })}`);
+  const [leaves, capabilityOn] = await Promise.all([readRecallLeaves(ctx.env.db), settingsWriter(ctx.env.db).capabilityEnabled(scope.projectId, 'cortex')]);
+  const timings = new ContextTimings();
+  const started = performance.now();
+  const preview = await previewPromptItems(ctx.env.db, scope, leaves.injection, capabilityOn, { prompt, now: ctx.now }, () => resolveSemanticSearch(ctx.env), timings);
+  const tookMs = round(performance.now() - started);
+  return {
+    project_id: scope.projectId,
+    recorded: false,
+    skipped: preview.skipped,
+    attached: preview.attached.map((item, index) => ({ rank: index + 1, kind: item.kind, id: item.id, label: item.label, line: item.text,
+      ...(item.score === null ? {} : { mutual_proximity: round(item.score.mp), similarity: round(item.score.similarity) }) })),
+    left_out: preview.leftOut.map((item) => ({ id: item.id, reason: item.reason, mutual_proximity: round(item.mp), similarity: round(item.similarity) })),
+    cut: preview.cut === null ? null : { probability: round(preview.cut.probability), separation: preview.cut.separation === null ? null : round(preview.cut.separation) },
+    context: preview.context,
+    counts: snake(preview.counts),
+    took_ms: tookMs,
+    stage_ms: Object.fromEntries(Object.entries(timings.stages()).map(([stage, ms]) => [stage, round(ms)])),
   };
 }

@@ -13,9 +13,9 @@ import type { AskProtocol, PromptScopeReason } from '@goondocks/myco-shared/prom
 import { settingTexts } from './settings.js';
 import { type SporeRow } from './spores.js';
 import { listSporesByIds } from '../db/spores/records.js';
-import { plans_getPlan as getPlan } from '../read/catalog/plans.js';
+import { plans_getPlan as getPlan, type plans_ProjectPlanSummary as PlanRow } from '../read/catalog/plans.js';
 import type { ReadScope } from '../read/scope.js';
-import { distributionStats, PLAN_MIN_CALIBRATION, selectRelevantPlans, selectRelevantSpores, type PlanCalibration } from '@goondocks/myco-shared/relevance';
+import { distributionStats, PLAN_MIN_CALIBRATION, selectRelevantPlans, selectRelevantSpores, type PlanCalibration, type SporeScoring } from '@goondocks/myco-shared/relevance';
 import {
   embedding_semanticHits as semanticHits,
   type embedding_SemanticSearch as SemanticSearch,
@@ -29,6 +29,8 @@ import { type DeliveredNaming } from '../ingest/prompt-scheme.js';
 
 /** A prompt shorter than this carries too little to serve against. */
 export const MIN_PROMPT_CHARS = 10;
+/** The longest prompt text a preview takes. */
+export const PROMPT_PREVIEW_MAX_CHARS = 16_384;
 /** Unitless item count bounds the plans' share of the prompt budget. */
 const MAX_PLANS_PER_PROMPT = 2;
 /** The fewest items a prompt carrying any must serve, and what the per-line cap is derived from. */
@@ -264,7 +266,7 @@ export function renderInjectionContext(items: readonly InjectionItem[], more: bo
  * the agent saw would count an observation as served that never reached it, and
  * the session-wide exclusion set would then withhold it from every later prompt.
  */
-export function selectSporesForPrompt(
+export async function selectSporesForPrompt(
   db: RelationalStore,
   scope: ReadScope,
   leaves: InjectionLeaves,
@@ -273,19 +275,74 @@ export function selectSporesForPrompt(
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
 ): Promise<InjectionSelection> {
-  return readSporesForPrompt(db, scope, leaves, capabilityOn, input, resolveSemantic, timings);
-}
-async function readSporesForPrompt(
-  db: RelationalStore,
-  scope: ReadScope,
-  leaves: InjectionLeaves,
-  capabilityOn: boolean,
-  input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
-  resolveSemantic?: () => Promise<SemanticSearch | null>,
-  timings?: ContextTimings,
-): Promise<InjectionSelection> {
-  const counts = emptyInjectionCounts();
+  const choice = await choosePromptItems(db, scope, leaves, capabilityOn, input, resolveSemantic, timings);
+  const { counts } = choice;
   const nothing = (skipped: InjectionSkip): InjectionSelection => ({ items: [], context: '', skipped, counts });
+  if (choice.skipped !== null) return nothing(choice.skipped);
+  const { served, planRows } = choice;
+
+  const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
+  const receiptId = crypto.randomUUID();
+  const promptId = input.promptId ?? null;
+  const plansById = new Map(planRows.map(row => [row.planKey, row]));
+  // Receipt admission reserves the selected items and retains each plan's snapshot in one commit.
+  const written = await duringInjection('record', counts, () => commitServedReceipt(db, { project: scope.projectId, session: input.sessionId, id: receiptId, promptId,
+    scopeReason: input.scopeReason ?? null, protocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null, promptHash: input.promptHash,
+    spores: idsOf('spore'), now: input.now,
+    plans: idsOf('plan').map(id => { const plan = plansById.get(id)!; return { planKey: id, title: plan.title, sessionId: plan.sessionId, contentHash: plan.contentHash }; }),
+  }, input.admission.admission));
+  if (!written) {
+    if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
+    // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
+    const named = promptId === null ? [] : (await duringInjection('record', counts, () => readSet(db, injectionPromptHeld(scope.projectId, input.sessionId, promptId, input.promptHash))))[0];
+    return nothing(named.length === 0 ? 'repeat' : 'duplicate_prompt');
+  }
+
+  return { items: served, context: renderInjectionContext(served, choice.more), skipped: null, counts, receiptId };
+}
+
+/** Why a selected item was chosen: the Mutual Proximity and cosine similarity it ranked by. */
+export interface ItemScore { mp: number; similarity: number }
+
+/** How the spore selection judged its candidates: the scores and cuts, the spores it chose, and which of those were still current. */
+interface Judgement {
+  /** The spores the selection chose, before hydration and the budget. */
+  relevant: string[];
+  /** The chosen spores still current when read, which the budget then took from. */
+  current: Set<string>;
+  scoring: SporeScoring | null;
+}
+
+/**
+ * What a prompt's text selects before anything is recorded: the gate that closed, or the items that fit and what they
+ * were chosen from. A selection that scored candidates and kept none keeps how it judged them.
+ */
+type PromptChoice = { skipped: InjectionSkip; counts: InjectionCounts; judged?: Judgement } | ({
+  skipped: null; counts: InjectionCounts;
+  /** The items that fit the budget, in the order they render. */
+  served: InjectionItem[];
+  /** The pool held more than the budget served. */
+  more: boolean;
+  planRows: PlanRow[];
+  /** Each selected spore's and plan's score, by id. */
+  scores: Map<string, ItemScore>;
+} & Judgement);
+
+/**
+ * The selection one prompt's text makes: the gates, the semantic candidates, the spore and plan selection, hydration and
+ * the budget. A session excludes what it was already served; with none, nothing is excluded. Nothing is written.
+ */
+async function choosePromptItems(
+  db: RelationalStore,
+  scope: ReadScope,
+  leaves: InjectionLeaves,
+  capabilityOn: boolean,
+  input: { sessionId: string | null; prompt: string; now: number },
+  resolveSemantic?: () => Promise<SemanticSearch | null>,
+  timings?: ContextTimings,
+): Promise<PromptChoice> {
+  const counts = emptyInjectionCounts();
+  const nothing = (skipped: InjectionSkip): PromptChoice => ({ skipped, counts });
   if (!capabilityOn) return nothing('capability');
   if (!leaves.enabled) return nothing('disabled');
   if (input.prompt.length < MIN_PROMPT_CHARS) return nothing('short_prompt');
@@ -305,16 +362,20 @@ async function readSporesForPrompt(
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' }, observe: (n) => { counts.planRawMatches = n.rawMatches; counts.planJoined = n.joinedHits; counts.planHits = n.filteredHits; }, during: duringCandidate }),
   ]));
   // Only the candidates are asked about: what else the session was served cannot change this prompt's selection.
-  const { spores: servedSpores, plans: servedPlans } = await duringInjection('candidates', counts, () => servedAmong(db, {
-    project: scope.projectId, session: input.sessionId, now: input.now,
-    candidates: [...sporeHits.map((h) => ['spore', h.record_id] as const), ...planHits.map((h) => ['plan', h.record_id] as const)],
-  }), timings, 'candidate');
+  const session = input.sessionId;
+  const { spores: servedSpores, plans: servedPlans } = session === null ? { spores: new Set<string>(), plans: new Set<string>() }
+    : await duringInjection('candidates', counts, () => servedAmong(db, {
+      project: scope.projectId, session, now: input.now,
+      candidates: [...sporeHits.map((h) => ['spore', h.record_id] as const), ...planHits.map((h) => ['plan', h.record_id] as const)],
+    }), timings, 'candidate');
 
   const sporeCandidates = sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
   }));
+  let scoring: SporeScoring | null = null;
   const relevant = selectRelevantSpores(sporeCandidates, { maxResults: leaves.maxPerPrompt,
     observe: (n) => { counts.sporeCalibrated = n.calibrated; counts.sporeScored = n.scored; counts.sporeProbable = n.probable; counts.sporeSeparated = n.separated; },
+    explain: (explained) => { scoring = explained; },
   });
   counts.sporeRelevant = relevant.length;
   const unservedPlans = planHits.filter((h) => !servedPlans.has(h.record_id));
@@ -356,32 +417,73 @@ async function readSporesForPrompt(
   });
   counts.planRelevant = planCandidates.length;
   const planRows = await duringInjection('hydrate_plans', counts, () => settledAll(planCandidates.map((h) => getPlan(db, scope, h.id, { summary: true }))), timings, 'hydrate');
-  const planItems: InjectionItem[] = planRows.flatMap((row) =>
-    row === null || !isLivePlan(row) ? [] : [{ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }]);
+  const livePlans = planRows.filter((row): row is PlanRow => row !== null && isLivePlan(row));
+  const planItems: InjectionItem[] = livePlans.map((row) => ({ kind: 'plan' as const, id: row.planKey, label: `plan: ${row.status}`, text: row.title ?? row.planKey }));
   counts.planHydrated = planItems.length;
 
   const leadingSpores = Math.max(0, INJECTION_MIN_ITEMS - planItems.length);
   const ordered = [...sporeItems.slice(0, leadingSpores), ...planItems, ...sporeItems.slice(leadingSpores)];
   const served = itemsWithinBudget(ordered);
   counts.budgetKept = served.length;
-  if (served.length === 0) return nothing('empty');
+  const judged: Judgement = { relevant: relevant.map((s) => s.id), current: new Set(bySpore.keys()), scoring };
+  if (served.length === 0) return { skipped: 'empty', counts, judged };
+  const similarity = new Map([...sporeHits, ...planHits].map((h) => [h.record_id, h.score]));
+  const scores = new Map([...relevant, ...planCandidates].map((s) => [s.id, { mp: s.mp, similarity: similarity.get(s.id) ?? 0 }]));
+  return { skipped: null, counts, served, more: ordered.length > served.length, planRows: livePlans, scores, ...judged };
+}
 
-  const idsOf = (kind: InjectionItem['kind']): string[] => served.filter((i) => i.kind === kind).map((i) => i.id);
-  const receiptId = crypto.randomUUID();
-  const promptId = input.promptId ?? null;
-  const plansById = new Map(planRows.filter(row => row !== null).map(row => [row.planKey, row]));
-  // Receipt admission reserves the selected items and retains each plan's snapshot in one commit.
-  const written = await duringInjection('record', counts, () => commitServedReceipt(db, { project: scope.projectId, session: input.sessionId, id: receiptId, promptId,
-    scopeReason: input.scopeReason ?? null, protocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null, promptHash: input.promptHash,
-    spores: idsOf('spore'), now: input.now,
-    plans: idsOf('plan').map(id => { const plan = plansById.get(id)!; return { planKey: id, title: plan.title, sessionId: plan.sessionId, contentHash: plan.contentHash }; }),
-  }, input.admission.admission));
-  if (!written) {
-    if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
-    // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
-    const named = promptId === null ? [] : (await duringInjection('record', counts, () => readSet(db, injectionPromptHeld(scope.projectId, input.sessionId, promptId, input.promptHash))))[0];
-    return nothing(named.length === 0 ? 'repeat' : 'duplicate_prompt');
-  }
+/** The most candidates a preview names as left out near the cut. */
+export const PREVIEW_NEAR_CUT = 5;
 
-  return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null, counts, receiptId };
+/** Why a scored spore near the cut was not attached. */
+export type LeftOutReason = 'over_budget' | 'not_current' | 'over_max_per_prompt' | 'weak_separation' | 'below_probability' | 'close_to_everything';
+
+/** What a preview answers: the gate that closed or the items in order with their scores, the spores left out nearest the cut and the block's text. */
+export interface PromptPreview {
+  skipped: InjectionSkip | null;
+  attached: Array<InjectionItem & { score: ItemScore | null }>;
+  leftOut: Array<{ id: string; reason: LeftOutReason; mp: number; similarity: number }>;
+  /** The probability and separation an attached spore reached; null where nothing was scored or no spore was probable. */
+  cut: { probability: number; separation: number | null } | null;
+  context: string;
+  counts: InjectionCounts;
+}
+
+/**
+ * What one prompt's text would attach in this Project, by the selection the prompt hook runs, with no session: nothing
+ * the session was served is excluded, and nothing is reserved or recorded as delivered.
+ */
+export async function previewPromptItems(
+  db: RelationalStore,
+  scope: ReadScope,
+  leaves: InjectionLeaves,
+  capabilityOn: boolean,
+  input: { prompt: string; now: number },
+  resolveSemantic?: () => Promise<SemanticSearch | null>,
+  timings?: ContextTimings,
+): Promise<PromptPreview> {
+  const choice = await choosePromptItems(db, scope, leaves, capabilityOn, { ...input, sessionId: null }, resolveSemantic, timings);
+  const served = choice.skipped === null ? choice.served : [];
+  const judged = choice.skipped === null ? choice : choice.judged;
+  const scoring = judged?.scoring ?? null;
+  const attachedIds = new Set(served.map((item) => item.id));
+  const leftOut = judged === undefined || scoring === null ? [] : scoring.scored.filter((s) => !attachedIds.has(s.id)).slice(0, PREVIEW_NEAR_CUT)
+    .map((s) => ({ id: s.id, mp: s.mp, similarity: s.similarity, reason: leftOutReason(s, judged, scoring) }));
+  return {
+    skipped: choice.skipped,
+    attached: choice.skipped === null ? served.map((item) => ({ ...item, score: choice.scores.get(item.id) ?? null })) : [],
+    leftOut,
+    cut: scoring === null ? null : { probability: scoring.probability, separation: Number.isFinite(scoring.separation) ? scoring.separation : null },
+    context: choice.skipped === null ? renderInjectionContext(served, choice.more) : '',
+    counts: choice.counts,
+  };
+}
+
+/** The rule a scored spore stopped at, in the order the selection applies them. */
+function leftOutReason(spore: SporeScoring['scored'][number], choice: Pick<Judgement, 'relevant' | 'current'>, scoring: SporeScoring): LeftOutReason {
+  if (choice.relevant.includes(spore.id)) return choice.current.has(spore.id) ? 'over_budget' : 'not_current';
+  if (!spore.corpusProbable) return 'close_to_everything';
+  if (spore.mp < scoring.probability) return 'below_probability';
+  if (spore.separation < scoring.separation) return 'weak_separation';
+  return 'over_max_per_prompt';
 }

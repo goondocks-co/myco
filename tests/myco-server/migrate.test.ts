@@ -694,7 +694,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'telemetry_lineage_reports', 'telemetry_session_changes', 'telemetry_resolutions', 'context_delivery_anchors', 'tool_prompt_links',
+      'telemetry_lineage_reports', 'telemetry_session_changes', 'telemetry_resolutions', 'context_delivery_anchors', 'tool_prompt_links', 'spore_origin_facts', 'spore_origin_counts',
       'publication_dependencies','session_lifecycle_facts','session_title_work','session_statistics','session_attachment_counts','context_placement_days','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',

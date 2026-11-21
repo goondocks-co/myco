@@ -33,6 +33,8 @@ export interface SporeFields {
   createdAt: number;
   observedAt?: number | null;
   updatedAt: number | null;
+  /** How many spores Myco wrote it from; 0 for a spore saved as it is. */
+  sources?: number;
 }
 
 /** A spore listed across Projects. */

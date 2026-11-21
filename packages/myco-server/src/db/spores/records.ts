@@ -22,8 +22,8 @@ const importAdmitted = assertion<[leaf: string, off: string, sporesLeaf: string,
 export const importAdmittedAssertion = (): Bound => importAdmitted.bind(importSwitch.params[0] as string, importSwitch.params[1] as string, SPORE_IMPORT_ENABLED_LEAF, SPORE_IMPORT_ON);
 export const importRefused = (error: unknown): boolean => refused(error, IMPORT_DISABLED);
 
-const insertSql = (conflict: string) => `INSERT INTO spores (project_id,id,agent_id,session_id,observation_type,status,content,context,importance,file_path,tags,content_hash,properties,author,provenance_kind,provenance_ref,agent_line,created_at,observed_at,updated_at,embedded)
-  SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,0 WHERE 1 ${conflict} RETURNING ${SPORE_COLUMNS}`;
+const insertSql = (conflict: string) => `INSERT INTO spores (project_id,id,agent_id,session_id,observation_type,status,content,context,importance,file_path,tags,content_hash,properties,author,provenance_kind,provenance_ref,agent_line,created_at,observed_at,updated_at)
+  SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20 WHERE 1 ${conflict} RETURNING ${SPORE_COLUMNS}`;
 
 /** Aborts the batch on an id the Project already holds. */
 const insertRow = write<InsertSlots, SporeRow>({ name: 'spores.insert', sql: insertSql('') });

@@ -16,13 +16,16 @@ let measured: ReturnType<typeof measuredStore>;
 beforeAll(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   const d1 = await mf.getD1Database('DB');
-  await d1.prepare("INSERT INTO projects (project_id, name, created_at) VALUES ('small', 's', 1), ('large', 'l', 1)").run();
+  await d1.prepare("INSERT INTO projects (project_id, name, created_at) VALUES ('small', 's', 1), ('large', 'l', 1), ('tail', 't', 1)").run();
   await d1.prepare("INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a', 'a', 'built-in', 1, 0)").run();
   const seed = (project: string, size: number) => d1.prepare(`WITH RECURSIVE k(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM k WHERE i < ${size - 1})
     INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) SELECT '${project}', printf('s%06d', i), 'a', 'decision', 'active', 'body', i FROM k`).run();
   await seed('small', SMALL);
   await seed('large', LARGE);
+  await seed('tail', SMALL);
   measured = measuredStore(d1);
+  // A Project keyed after both holds a consolidation of its own, so each measured Project's reads end at a following row alike.
+  await cost('tail');
 }, 120_000);
 afterAll(async () => { await mf.dispose(); });
 

@@ -11,7 +11,7 @@ import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { KNOWLEDGE_SUFFIX, keptFilters, projectPath } from '../../routes/nav';
 import type { SporeFacets, SporeStreamRow } from './wire';
-import { count, DEFAULT_SPORE_STATUS, firstLine, SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER, sporeDate, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTypePlural, sporeTypeWord, typeFacetRows, typeFilter, windowSince,  } from './words';
+import { count, DEFAULT_SPORE_STATUS, firstLine, SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER, sporeDate, sporeHeadline, sporeOriginWords, sporeStatusTone, sporeStatusWord, sporeTypePlural, sporeTypeWord, typeFacetRows, typeFilter, windowSince,  } from './words';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** How long the search box waits after the last keystroke before the stream is read again. */
@@ -28,8 +28,8 @@ export interface SporeStreamProps {
 }
 
 /**
- * The spore stream: spores headlined by their one line, newest first, under
- * their observation or saved day. One filter bar holds the search, the status and the
+ * The spore stream: spores headlined by their one line, newest written first,
+ * under the day they were written. One filter bar holds the search, the status and the
  * period; beside the stream the type and project facets say how many each
  * value holds, and on a narrow screen the type moves into the bar. Every value
  * lives in the query string and the server does the filtering; "Show more"
@@ -120,11 +120,11 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
   );
 }
 
-/** The rows under their observation or saved day, in the order the server gave them. */
+/** The rows under the day they were written, in the order the server gave them; a row's own label names an observation older than its day. */
 function byDay(rows: readonly SporeStreamRow[], now: number): Array<{ key: string; label: string; rows: SporeStreamRow[] }> {
   const groups: Array<{ key: string; label: string; rows: SporeStreamRow[] }> = [];
   for (const row of rows) {
-    const label = dayLabel(sporeDate(row).at, now);
+    const label = dayLabel(row.createdAt, now);
     const last = groups[groups.length - 1];
     if (last !== undefined && last.label === label) last.rows.push(row);
     else groups.push({ key: String(groups.length), label, rows: [row] });
@@ -134,8 +134,8 @@ function byDay(rows: readonly SporeStreamRow[], now: number): Array<{ key: strin
 
 /**
  * One spore in the stream: its one line as a whole-card link, then its type,
- * a status other than current, its project across projects, and when it was
- * saved. A spore without its line reads as its type and day, with the start of
+ * a status other than current, what it was written from when Myco wrote it from
+ * other spores, its project across projects, and when it was saved. A spore without its line reads as its type and day, with the start of
  * what it says beneath.
  */
 function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: string | null; now: number }) {
@@ -143,6 +143,7 @@ function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: st
   const date = sporeDate(spore);
   const current = spore.status === DEFAULT_SPORE_STATUS;
   const excerpt = headline.lined ? '' : firstLine(spore.content);
+  const origin = sporeOriginWords(spore);
   return (
     <li
       className="relative flex min-h-row flex-col justify-center gap-s1 rounded-card border border-line bg-surface-1 px-s4 py-s3 transition-colors duration-120 hover:bg-surface-2 sm:flex-row sm:items-center sm:gap-s4"
@@ -165,6 +166,7 @@ function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: st
       <p className="flex shrink-0 flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted sm:flex-nowrap sm:justify-end">
         <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
         {!current && <StatusChip tone={sporeStatusTone(spore.status)}>{sporeStatusWord(spore.status)}</StatusChip>}
+        {origin !== null && <span data-spore-origin="">{origin}</span>}
         {project !== null && <span className="font-medium text-ink-2">{project}</span>}
         <span aria-hidden>·</span>
         <time className="whitespace-nowrap" dateTime={new Date(date.at).toISOString()}>{date.label} {agoWords(date.at, now)}</time>

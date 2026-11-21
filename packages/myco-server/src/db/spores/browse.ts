@@ -2,6 +2,7 @@ import { USER_AGENT_ID } from '../../constants.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { binaryOrder, type ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
+import { ACTIVE_MODELS_INDEX, sporeCuratedSql, sporeSourcesSql } from './origin-sql.js';
 
 /**
  * Who the author of a spore or of its lifecycle event (`row`) is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
@@ -21,9 +22,23 @@ export const SPORE_COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
   observation_type AS observationType, status, revision, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
   provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
-  created_at AS createdAt, observed_at AS observedAt, updated_at AS updatedAt, embedded`;
-/** A read's columns: the row, and who its author is. */
-export const SPORE_READ_COLUMNS = `${SPORE_COLUMNS}, ${AUTHOR_KIND} AS authorKind`;
+  created_at AS createdAt, observed_at AS observedAt, updated_at AS updatedAt`;
+
+/**
+ * 1 when the spore's current revision holds a ready vector receipt under an active embedding model of its Project, else
+ * 0: the embedding store's own record, read per row as one version seek, the Project's active models through their
+ * own index (never the models it retains inactive) and one receipt seek per active model.
+ */
+const EMBEDDED = `EXISTS (SELECT 1 FROM embedding_versions v CROSS JOIN embedding_models m INDEXED BY ${ACTIVE_MODELS_INDEX} ON m.project_id=v.project_id AND m.active=1
+    CROSS JOIN embedding_receipts r INDEXED BY idx_embedding_receipts_source ON r.project_id=v.project_id AND r.model_key=m.model_key
+      AND r.type=v.type AND r.record_id=v.record_id AND r.revision=v.revision AND r.ready=1
+  WHERE v.project_id=spores.project_id AND v.type='spore' AND v.record_id=spores.id)`;
+
+/** How a spore came to be: `origin` is `curated` for a spore a curation or consolidation wrote, else `saved`, and `sources` how many spores that operation wrote it from. */
+const ORIGIN = `${sporeSourcesSql('spores')} AS sources, CASE WHEN ${sporeCuratedSql('spores')} THEN 'curated' ELSE 'saved' END AS origin`;
+
+/** A read's columns: the row, who its author is, whether its current revision holds a vector, and how it came to be. */
+export const SPORE_READ_COLUMNS = `${SPORE_COLUMNS}, ${AUTHOR_KIND} AS authorKind, ${EMBEDDED} AS embedded, ${ORIGIN}`;
 
 /** The structured filters a spore list takes. Free text is not one: a text match is a search (`/api/search`, `myco_search`). */
 export interface SporeBrowseFilters {

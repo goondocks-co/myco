@@ -15,14 +15,17 @@ The preview is for choosing. Fetch the hit in full with the tool that owns it.
 | `instructions` (default) | this project's standing guidance, and its project id |
 | `canopy_map` | the repository map |
 | `projects_activity` | which projects are still active |
+| `prompt_preview` | what memory one prompt would attach, and why |
 
 `instructions` is the one to reach for. It is also how you learn the project id to pass as `project` on a write.
+
+`prompt_preview` takes `prompt` (up to 16,384 characters) and runs the selection the prompt hook runs, with no session and nothing recorded as delivered. It answers the attached items in order, each with the score it was chosen by, the spores left out nearest the cut and the rule that stopped each, the block's text, and `skipped` naming the gate that closed when nothing was attached. Use it to check why a prompt did or did not bring back a spore.
 
 ## myco_spores
 
 | Operation | Does |
 |---|---|
-| `list` (default) | recent spores |
+| `list` (default) | recent spores, each saying whether it holds a vector, whether it was saved or curated and from how many spores, and for a retired one what replaced it; `origin` (`curated` or `saved`) and `min_sources` list and count only those |
 | `get` | one spore in full, by id |
 | `save` | record a new observation |
 | `supersede` | replace an existing spore, keeping the lineage |

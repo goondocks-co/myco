@@ -1,10 +1,12 @@
 /**
  * A filtered spore page reads about what it lists: one author's long history, or thousands of spores written in the
- * same instant, cost a page what an unfiltered page costs, measured in rows the store reads.
+ * same instant, cost a page what an unfiltered page costs, and a page narrowed by origin costs the same however many
+ * curated spores the Project holds, measured in rows the store reads.
  */
 import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { listSporePage, listSporePageAcross } from '@myco-server-worker/core/spores.js';
+import { listSporeOriginPage, listSporePage, listSporePageAcross } from '@myco-server-worker/core/spores.js';
+import type { OriginFilter } from '@myco-server-worker/db/spores/origins.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { schemaD1Root } from './helpers/schema-template.js';
 
@@ -92,4 +94,58 @@ it('reads a selected Project\'s page across Projects by its own history, whateve
     cursor = listed.cursor;
   }
   expect({ n: walked.length, unique: new Set(walked).size }).toEqual({ n: HISTORY * 2, unique: HISTORY * 2 });
+}, 120_000);
+
+it('reads an origin-filtered page and its total at the same cost whether a Project holds sixty or six hundred of each origin, dense or sparse', async () => {
+  const d1 = await mf.getD1Database('DB');
+  /**
+   * `n` spores merged from two, `n` rewritten from one and `n` saved in Project `project`, through the tables curation writes,
+   * each with the status and type given, prefixed by `tag`, and written `at` onwards.
+   */
+  const seed = async (project: string, n: number, tag: string, status: string, type: string, at: number) => {
+    const rows = (sql: string) => d1.prepare(`WITH RECURSIVE k(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM k WHERE i < ${n - 1}) ${sql}`).run();
+    for (const [kind, sources] of [[`${tag}mrg`, ['a', 'b']], [`${tag}rew`, ['a']]] as const) {
+      await rows(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) SELECT '${project}', printf('${kind}%05d', i), 'a', '${type}', '${status}', 'body', ${at} + i * 1000 FROM k`);
+      await rows(`INSERT INTO spore_curation_units (project_id, id, kind, created_at, member_count) SELECT '${project}', printf('u${kind}%05d', i), 'answer', ${at} + i * 1000, ${sources.length + 1} FROM k`);
+      await rows(`INSERT INTO spore_curation_unit_members (project_id, unit_id, spore_id, role, after_json) SELECT '${project}', printf('u${kind}%05d', i), printf('${kind}%05d', i), 'output', '{}' FROM k`);
+      for (const source of sources) {
+        await rows(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) SELECT '${project}', printf('${kind}%05d${source}', i), 'a', 'gotcha', 'consolidated', 'body', ${at} + i * 1000 - 1 FROM k`);
+        await rows(`INSERT INTO resolution_events (project_id, id, agent_id, spore_id, new_spore_id, action, created_at) SELECT '${project}', printf('e${kind}%05d${source}', i), 'a', printf('${kind}%05d${source}', i), printf('${kind}%05d', i), 'consolidate', ${at} FROM k`);
+        await rows(`INSERT INTO spore_curation_unit_members (project_id, unit_id, spore_id, role, event_ids, after_json) SELECT '${project}', printf('u${kind}%05d', i), printf('${kind}%05d${source}', i), 'source', json_array(printf('e${kind}%05d${source}', i)), '{}' FROM k`);
+      }
+    }
+    await rows(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) SELECT '${project}', printf('${tag}sav%05d', i), 'a', '${type}', '${status}', 'body', ${at} + i * 1000 + 1 FROM k`);
+  };
+  const [small, large] = [60, 600] as const;
+  for (const [project, n] of [['few', small], ['many', large]] as const) {
+    await d1.prepare(`INSERT INTO projects (project_id, name, created_at) VALUES ('${project}', '${project}', 1)`).run();
+    // One of each origin with its own status and type, written before every other, so a walk that filtered after reading would read them all.
+    await seed(project, 1, 'rare', 'obsolete', 'decision', AT - 10_000);
+    await seed(project, n, '', 'active', 'wisdom', AT);
+  }
+  const page = (project: string, filter: OriginFilter) => cost(async (cursor) => {
+    const listed = await listSporeOriginPage(measured.db, { projectId: project }, { ...filter, limit: 25, ...(cursor === undefined ? {} : { cursor }) });
+    return listed === null || 'building' in listed ? null : listed;
+  });
+  const shapes: Record<string, OriginFilter> = { curated: { origin: 'curated' }, merged: { minSources: 2 }, rewrittenOrMore: { minSources: 1, status: 'active' }, saved: { origin: 'saved', observationType: 'wisdom' } };
+  for (const [shape, filter] of Object.entries(shapes)) {
+    const [few, many] = [await page('few', filter), await page('many', filter)];
+    expect({ shape, listed: [few.listed, many.listed], bounded: many.reads <= few.reads + 10 }).toEqual({ shape, listed: [[25, 25], [25, 25]], bounded: true });
+  }
+  // Every admitted combination of origin and source count with a status, a type or both, matching one spore of many.
+  const single = async (project: string, filter: OriginFilter) => {
+    measured.reset();
+    const listed = await listSporeOriginPage(measured.db, { projectId: project }, { ...filter, limit: 25 }) as { rows: unknown[] };
+    return { listed: listed.rows.length, reads: measured.reads() };
+  };
+  const walks: Array<[OriginFilter, number]> = [[{ origin: 'curated' }, 2], [{ minSources: 1 }, 2], [{ minSources: 2 }, 1], [{ origin: 'saved' }, 1]];
+  for (const [walk, matches] of walks) for (const narrow of [{ status: 'obsolete' }, { observationType: 'decision' }, { status: 'obsolete', observationType: 'decision' }]) {
+    const filter = { ...walk, ...narrow };
+    const [few, many] = [await single('few', filter), await single('many', filter)];
+    expect({ filter, listed: [few.listed, many.listed], bounded: many.reads <= few.reads + 10 }).toEqual({ filter, listed: [matches, matches], bounded: true });
+  }
+  const totals = await Promise.all([{ origin: 'curated' as const }, { minSources: 2 }, { origin: 'saved' as const, observationType: 'wisdom' }]
+    .map(async (filter) => (await listSporeOriginPage(measured.db, { projectId: 'many' }, filter)) as { total: number; rows: { origin?: string; sources?: number }[] }));
+  expect(totals.map((answer) => answer.total)).toEqual([large * 2 + 2, large + 1, large]);
+  expect([totals[1]!.rows[0]?.origin, totals[1]!.rows[0]?.sources]).toEqual(['curated', 2]);
 }, 120_000);

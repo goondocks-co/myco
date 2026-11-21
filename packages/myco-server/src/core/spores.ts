@@ -25,6 +25,8 @@ import { decodeCursor, encodeCursor, MAX_PAGE, type ProjectSet, type ReadScope }
 import { decodeProjectCursor, encodeProjectCursor } from '../read/project-cursor.js';
 import { readSporePage, type SporeBrowseFilters, type SporePageKey } from '../db/spores/browse.js';
 import { SPORE_DAY_MS, sporeTotal, sporeTotalAndFacets, utcDays, type SporeCountFilters, type SporeFacetCounts } from '../db/spores/counts.js';
+import { readOriginPage, type OriginFilter } from '../db/spores/origins.js';
+import { listSupersedingSporeIdsOf } from '../db/spores/edges.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -110,8 +112,18 @@ export interface SporeRow {
   createdAt: number;
   observedAt?: number | null;
   updatedAt: number | null;
-  embedded: number;
+  /** 1 when its current revision holds a ready vector under an active embedding model, else 0. Served on reads. */
+  embedded?: number;
+  /** How many spores the curation or consolidation that wrote it wrote it from; 0 for a saved spore. Served on reads. */
+  sources?: number;
+  /** `curated` when a curation or consolidation wrote it, `saved` otherwise. Served on reads. */
+  origin?: SporeOrigin;
+  /** The spores recorded as replacing it, newest first; empty for a current spore. Served on list pages. */
+  supersededBy?: string[];
 }
+
+export const SPORE_ORIGINS = ['saved', 'curated'] as const;
+export type SporeOrigin = (typeof SPORE_ORIGINS)[number];
 
 /**
  * A spore list's structured filters, its page size and the cursor the previous page answered. A time bound is widened to
@@ -174,6 +186,19 @@ const totalOf = (answer: { state: 'ready'; value: number } | { state: 'building'
   answer === null ? {} : answer.state === 'ready' ? { total: answer.value } : { counting: 'building' };
 const windowField = (o: ListSporesOptions) => { const { window } = windowOf(o); return window === undefined ? {} : { window }; };
 
+/** A listed row with its successors read off the JSON array the page carries them as. */
+/**
+ * Listed rows, each naming what replaced it: one successor read per Project on the page, from the maintained edges, for
+ * the rows no longer current; a current row names none.
+ */
+async function listed<T extends Record<string, unknown>>(db: RelationalStore, rows: readonly T[], projectOf: (row: T) => string): Promise<(T & { supersededBy: string[] })[]> {
+  const retired = new Map<string, string[]>();
+  for (const row of rows) if (row.status !== 'active') retired.set(projectOf(row), [...(retired.get(projectOf(row)) ?? []), String(row.id)]);
+  const successors = new Map(await Promise.all([...retired].map(async ([projectId, ids]) =>
+    [projectId, await listSupersedingSporeIdsOf(db, { projectId }, ids)] as const)));
+  return rows.map(row => ({ ...row, supersededBy: successors.get(projectOf(row))?.get(String(row.id)) ?? [] }));
+}
+
 /** The window a list's time bounds widen to, in ms (from inclusive, to exclusive), as its page and total read it. */
 export const sporeListWindow = (o: Pick<ListSporesOptions, 'since' | 'createdFrom' | 'createdTo'>): { from?: number; to?: number } => windowOf(o).window ?? {};
 
@@ -191,10 +216,28 @@ export async function listSporePage(db: RelationalStore, scope: ReadScope, o: Li
     readSporePage(db, { scope, filters: filtersOf(o), after, limit }),
     count === null ? null : sporeTotal(db, scope, count),
   ]);
-  const shown = rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => row as unknown as SporeRow);
+  const shown = (await listed(db, rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => row), () => scope.projectId)) as unknown as SporeRow[];
   const hasMore = rows.length > limit;
   const last = shown.at(-1);
   return { rows: shown, cursor: hasMore && last !== undefined ? encodeCursor(last.createdAt, last.id) : null, hasMore, ...totalOf(total), ...windowField(o) };
+}
+
+/**
+ * One page of a Project's spores narrowed by how they came to be, newest first with the id breaking a tie, with the total
+ * the filter admits from the maintained origin counts; `building` while existing spores' origins are still being
+ * derived. Null for a cursor this list did not issue.
+ */
+export async function listSporeOriginPage(db: RelationalStore, scope: ReadScope, o: OriginFilter & { limit?: number; cursor?: string }):
+  Promise<SporeListPage<SporeRow> | { building: true } | null> {
+  const after: SporePageKey | null = o.cursor === undefined ? null : decodeCursor(o.cursor);
+  if (o.cursor !== undefined && after === null) return null;
+  const limit = limitOf(o.limit);
+  const page = await readOriginPage(db, { projectId: scope.projectId, filter: o, after, limit });
+  if (page.state === 'building') return { building: true };
+  const shown = (await listed(db, page.rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => row), () => scope.projectId)) as unknown as SporeRow[];
+  const hasMore = page.rows.length > limit;
+  const last = shown.at(-1);
+  return { rows: shown, cursor: hasMore && last !== undefined ? encodeCursor(last.createdAt, last.id) : null, hasMore, total: page.total };
 }
 
 /**
@@ -214,7 +257,7 @@ export async function listSporePageAcross(db: RelationalStore, set: ProjectSet, 
     count === null || after !== null ? null : sporeTotalAndFacets(db, set, count),
     count === null || after === null ? null : sporeTotal(db, set, count),
   ]);
-  const shown = rows.slice(0, limit) as unknown as SporeAcrossRow[];
+  const shown = (await listed(db, rows.slice(0, limit), row => String(row.projectId))) as unknown as SporeAcrossRow[];
   const hasMore = rows.length > limit;
   const last = shown.at(-1);
   const totals = first === null ? totalOf(later) : first.state === 'building' ? { counting: 'building' as const }

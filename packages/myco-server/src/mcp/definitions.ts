@@ -1,7 +1,8 @@
 import { TURN_PAGES } from '../content/session-pages.js';
 import { TURN_COLLECTIONS } from '../content/session-turns.js';
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '../core/spore-input-contract.js';
-import { DEFAULT_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT } from '../core/spores.js';
+import { DEFAULT_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT, SPORE_ORIGINS } from '../core/spores.js';
+import { MAX_MIN_SOURCES } from '../db/spores/origins.js';
 import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core/search-repair.js';
 /**
  * The MCP tool definitions this Deployment serves.
@@ -14,7 +15,7 @@ import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { DEFAULT_PAGE, MAX_PAGE } from '../read/scope.js';
-import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
+import { AGENT_LINE_MAX_CHARS, MIN_PROMPT_CHARS, PREVIEW_NEAR_CUT, PROMPT_PREVIEW_MAX_CHARS } from '../core/injection.js';
 import { AGENT_LINE_NOTATION_RULES, AGENT_LINE_RULE } from '../core/agent-line.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
@@ -93,7 +94,7 @@ export const searchInstead = (defaultStatus?: string) => (input: Readonly<Record
   return { actual: searchRepairCause('search', narrowing), next: searchRepairCall(narrowing) };
 };
 
-const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEntries(['status', 'observation_type', 'agent_id', 'limit', 'project']
+const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEntries(['status', 'observation_type', 'agent_id', 'origin', 'min_sources', 'limit', 'project']
   .filter(key => input[key] !== undefined).map(key => [key, input[key]]));
 
 const definitions: readonly ServedToolDefinition[] = [
@@ -206,7 +207,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_cortex",
-    "description": "Retrieve project intelligence. op: \"instructions\" (default) returns the Deployment's session-start instructions and this project's id. op: \"projects_activity\" returns each project's last activity and active flag. op: \"canopy_map\" returns the project's repository map as markdown and the repository commit it describes.",
+    "description": `Retrieve project intelligence. op: "instructions" (default) returns the Deployment's session-start instructions and this project's id. op: "projects_activity" returns each project's last activity and active flag. op: "canopy_map" returns the project's repository map as markdown and the repository commit it describes. op: "prompt_preview" answers what prompt-time memory would attach in this project for one prompt's text, by the selection the prompt hook runs, with no session and nothing recorded as delivered: attached (each item in order, with the mutual_proximity and similarity it was chosen by), left_out (at most ${PREVIEW_NEAR_CUT} scored spores nearest the cut, each with the rule that stopped it), cut, context (the block's text), skipped (the gate that closed, or null), counts at each selection stage, and took_ms. It requires prompt, 1 to ${PROMPT_PREVIEW_MAX_CHARS} characters; a prompt under ${MIN_PROMPT_CHARS} characters answers skipped "short_prompt". Example: {"op":"prompt_preview","prompt":"How do we retry a stalled delivery?"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -214,7 +215,7 @@ const definitions: readonly ServedToolDefinition[] = [
       "openWorldHint": false
     },
     "cortex": {
-      "guidance": "Read standing guidance and the project id with instructions, orient in the repository with canopy_map, and see project activity with projects_activity. Use myco_search for targeted recall.",
+      "guidance": "Read standing guidance and the project id with instructions, orient in the repository with canopy_map, and see project activity with projects_activity. Use prompt_preview to see what memory a prompt would attach and why. Use myco_search for targeted recall.",
       "priority": 10
     },
     "inputSchema": {
@@ -229,9 +230,16 @@ const definitions: readonly ServedToolDefinition[] = [
             "canopy_entry",
             "notifications",
             "maintenance_summary",
-            "projects_activity"
+            "projects_activity",
+            "prompt_preview"
           ],
           "description": "Operation (default: \"instructions\")"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": PROMPT_PREVIEW_MAX_CHARS,
+          "description": `For op: "prompt_preview": the text of one prompt, 1 to ${PROMPT_PREVIEW_MAX_CHARS} characters.`
         },
         [PROJECT_PIVOT]: {
           "type": "string",
@@ -441,7 +449,7 @@ const definitions: readonly ServedToolDefinition[] = [
     },
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters and carrying no code notation; its field says how to write one. ${AGENT_LINE_NOTATION_RULES} Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. origin (\"curated\" or \"saved\") and min_sources (1 or ${MAX_MIN_SOURCES}) narrow it by how spores came to be, with status and type, and carry total: {\"op\":\"list\",\"origin\":\"curated\",\"min_sources\":2}. Each listed spore carries embedded (1 when its current text holds a vector search by meaning can find, else 0), origin (\"curated\" when a consolidation wrote it from other spores, else \"saved\"), sources (how many spores it was written from) and superseded_by (what replaced it; empty while it is current). To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters and carrying no code notation; its field says how to write one. ${AGENT_LINE_NOTATION_RULES} Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -499,6 +507,17 @@ const definitions: readonly ServedToolDefinition[] = [
         "agent_id": {
           "type": "string",
           "description": "Filter op: \"list\" by agent id"
+        },
+        "origin": {
+          "type": "string",
+          "enum": SPORE_ORIGINS,
+          "description": "Filter op: \"list\" by how spores came to be: \"curated\" (written by curation or a consolidation) or \"saved\" (saved as they are). Combines with status and observation_type, not agent_id; the page carries total. Example: {\"op\":\"list\",\"origin\":\"curated\",\"status\":\"active\"}"
+        },
+        "min_sources": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": MAX_MIN_SOURCES,
+          "description": `Filter op: \"list\" to spores written from at least this many spores: 1 or ${MAX_MIN_SOURCES} (${MAX_MIN_SOURCES} lists spores merged from more than one); implies origin \"curated\". Example: {\"op\":\"list\",\"min_sources\":2}`
         },
         "limit": {
           "type": "number",
