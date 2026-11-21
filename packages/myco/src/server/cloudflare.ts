@@ -17,7 +17,8 @@ import { z } from 'zod';
 import { satisfies, valid } from 'semver';
 import { resolveMycoHome, resolveMycoHomeWithSource } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
-import { CommandFailed, CommandTimedOut, jsonDocument, runOrThrow, systemRunner, type CommandRunner, type CommandResult } from './runner.js';
+import { CommandFailed, CommandTimedOut, jsonDocument, runOrThrow, type CommandRunner, type CommandResult } from './runner.js';
+import { cloudflareRunner } from './cloudflare-runner.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER, BUNDLED_WORKER_NODE } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
@@ -59,7 +60,7 @@ export interface CloudflareOptions {
 function resolved(options: CloudflareOptions): { runner: CommandRunner; env: NodeJS.ProcessEnv } {
   if (!options.accountId) throw new AccountNotSelected([]);
   return {
-    runner: credentialRunner(options.runner ?? systemRunner(), process.env, options.accountId, () => {
+    runner: credentialRunner(options.runner ?? cloudflareRunner(), process.env, options.accountId, () => {
       const file = path.resolve(options.configDir, options.configFile ?? 'wrangler.toml');
       if (!existsSync(file)) return false;
       const config = readFileSync(file, 'utf8');
@@ -221,7 +222,7 @@ function cloudflareIdentity(stdout: string): z.infer<typeof CLOUDFLARE_IDENTITY>
 }
 
 /** Accounts this login can reach, for a caller that has to choose one. */
-export async function listAccounts(runner: CommandRunner = systemRunner(), mycoHome?: string): Promise<AccountRef[]> {
+export async function listAccounts(runner: CommandRunner = cloudflareRunner(), mycoHome?: string): Promise<AccountRef[]> {
   const cwd = ensureCommandDir(mycoHome);
   const selected = await assertWranglerPresent(runner, cwd, mycoHome);
   const result = await runOrThrow(credentialRunner(selected, process.env), 'npx', wrangler('whoami', '--json'), { cwd });
@@ -721,8 +722,9 @@ export interface OperatorLogin {
 export function operatorLogin(options: CloudflareOptions): OperatorLogin {
   const { env } = resolved(options);
   let credentials: Promise<Headers> | undefined;
+  let admitted: Promise<CommandRunner> | undefined;
   const authenticate = async (): Promise<Headers> => {
-    const selected = await assertWranglerReady({ runner: options.runner, cwd: options.configDir, mycoHome: options.mycoHome });
+    const selected = await (admitted ??= assertWranglerReady({ runner: options.runner, cwd: options.configDir, mycoHome: options.mycoHome }).catch((error: unknown) => { admitted = undefined; throw error; }));
     const result = await credentialRunner(selected, env, options.accountId).run('npx', wrangler('auth', 'token', '--json'), {
       cwd: options.configDir,
       timeoutMs: OPERATOR_AUTH_TIMEOUT_MS,
@@ -952,7 +954,7 @@ export class WranglerNotReady extends Error {}
 /** Missing or incompatible Wrangler requires an explicit setup installation. */
 export class WranglerAbsent extends WranglerNotReady {
   constructor() {
-    super(`A compatible Wrangler is not installed (required major ${BUNDLED_WORKER_WRANGLER.split('.')[0]}); run \`myco setup --create cloudflare\` to install Myco's pinned Wrangler without root.`);
+    super(`A compatible Wrangler is not installed (required major ${BUNDLED_WORKER_WRANGLER.split('.')[0]}); run \`${CLOUDFLARE_SETUP_COMMAND}\` to install Myco's pinned Wrangler without root.`);
     this.name = 'WranglerAbsent';
   }
 }
@@ -960,18 +962,19 @@ export class WranglerAbsent extends WranglerNotReady {
 /** Node is an operator prerequisite, independent of the member binary. */
 export class NodeAbsent extends WranglerNotReady {
   constructor() {
-    super(`Node.js is not installed; install Node.js ${BUNDLED_WORKER_NODE} from https://nodejs.org/en/download, then run \`myco setup --create cloudflare\`.`);
+    super(`Node.js is not installed; install Node.js ${BUNDLED_WORKER_NODE} from https://nodejs.org/en/download, then run \`${CLOUDFLARE_SETUP_COMMAND}\`.`);
     this.name = 'NodeAbsent';
   }
 }
 
 export class NodeTooOld extends WranglerNotReady {
   constructor(found: string) {
-    super(`Node.js ${found} does not meet Wrangler ${BUNDLED_WORKER_WRANGLER}'s requirement ${BUNDLED_WORKER_NODE}; install a supported Node.js from https://nodejs.org/en/download, then run \`myco setup --create cloudflare\`.`);
+    super(`Node.js ${found} does not meet Wrangler ${BUNDLED_WORKER_WRANGLER}'s requirement ${BUNDLED_WORKER_NODE}; install a supported Node.js from https://nodejs.org/en/download, then run \`${CLOUDFLARE_SETUP_COMMAND}\`.`);
     this.name = 'NodeTooOld';
   }
 }
 
+const CLOUDFLARE_SETUP_COMMAND = 'myco setup --create cloudflare';
 const TOOL_CHECK_TIMEOUT_MS = 30_000;
 const TOOL_INSTALL_TIMEOUT_MS = 5 * 60_000;
 const npmCommand = (name: 'npm' | 'npx') => process.platform === 'win32' ? `${name}.cmd` : name;
@@ -985,11 +988,29 @@ function ownedWrangler(directory: string): string {
 }
 
 const selectedTools = new WeakMap<CommandRunner, WranglerTool>();
+const operationTools = new WeakMap<CommandRunner, { tool?: Promise<WranglerTool> }>();
+
+/** An operator operation retains its tool through all provider sub-operations. */
+export function operationWranglerRunner(runner: CommandRunner = cloudflareRunner()): CommandRunner {
+  if (selectedTools.has(runner) || operationTools.has(runner)) return runner;
+  const scoped: CommandRunner = { run: (command, args, options) => runner.run(command, args, options) };
+  operationTools.set(scoped, {});
+  return scoped;
+}
 
 export interface WranglerTool {
+  ready?: Promise<void>;
   version: string;
   source: string;
   runner: CommandRunner;
+}
+
+/** Preserve the selected tool when an operation adds a command observer. */
+export function decorateWranglerRunner(runner: CommandRunner, decorate: (runner: CommandRunner) => CommandRunner): CommandRunner {
+  const decorated = decorate(runner);
+  const tool = selectedTools.get(runner);
+  if (tool) selectedTools.set(decorated, { ...tool, runner: decorated });
+  return decorated;
 }
 
 /** Map the canonical non-fetching invocation to the selected executable. */
@@ -1013,7 +1034,17 @@ function toolVersion(result: CommandResult): string {
 
 /** One prerequisite decision for setup, diagnostics and every Cloudflare verb. */
 export async function resolveWrangler(readiness: WranglerReadiness = {}): Promise<WranglerTool> {
-  const runner = readiness.runner ?? systemRunner();
+  const runner = readiness.runner ?? cloudflareRunner();
+  const scope = operationTools.get(runner);
+  if (scope) {
+    scope.tool ??= selectWrangler({ ...readiness, runner }).catch((error: unknown) => { scope.tool = undefined; throw error; });
+    return scope.tool;
+  }
+  return selectWrangler({ ...readiness, runner });
+}
+
+async function selectWrangler(readiness: WranglerReadiness & { runner: CommandRunner }): Promise<WranglerTool> {
+  const runner = readiness.runner;
   const selected = selectedTools.get(runner);
   if (selected) return selected;
   const choose = (version: string, source: string, entry?: string): WranglerTool => {
@@ -1045,7 +1076,7 @@ export async function resolveWrangler(readiness: WranglerReadiness = {}): Promis
   const entry = ownedWrangler(toolsPath(readiness.mycoHome));
   if (!existsSync(entry)) throw new WranglerAbsent();
   const version = toolVersion(await runner.run('node', [entry, '--version'], where));
-  if (version !== BUNDLED_WORKER_WRANGLER) throw new WranglerNotReady(`Myco's Wrangler is ${version}, expected ${BUNDLED_WORKER_WRANGLER}; run \`myco setup --create cloudflare\` to repair it.`);
+  if (version !== BUNDLED_WORKER_WRANGLER) throw new WranglerNotReady(`Myco's Wrangler is ${version}, expected ${BUNDLED_WORKER_WRANGLER}; run \`${CLOUDFLARE_SETUP_COMMAND}\` to repair it.`);
   return choose(version, entry, entry);
 }
 
@@ -1059,7 +1090,7 @@ export async function installWrangler(readiness: WranglerReadiness = {}): Promis
     const parent = path.dirname(destination);
     mkdirSync(parent, { recursive: true, mode: 0o700 });
     const stage = mkdtempSync(path.join(parent, '.wrangler-'));
-    const runner = readiness.runner ?? systemRunner();
+    const runner = readiness.runner ?? cloudflareRunner();
     try {
       await runOrThrow(runner, npmCommand('npm'), ['install', '--prefix', stage, '--global=false', '--no-audit', '--no-fund', '--package-lock=false', `wrangler@${BUNDLED_WORKER_WRANGLER}`], {
         cwd: stage, env: readiness.env, signal: readiness.signal, timeoutMs: TOOL_INSTALL_TIMEOUT_MS,
@@ -1067,7 +1098,7 @@ export async function installWrangler(readiness: WranglerReadiness = {}): Promis
       const entry = ownedWrangler(stage);
       if (!existsSync(entry)) throw new WranglerNotReady('Wrangler installation did not create its executable; rerun `myco setup --create cloudflare`.');
       const version = toolVersion(await runner.run('node', [entry, '--version'], { cwd: stage, env: readiness.env, signal: readiness.signal, timeoutMs: TOOL_CHECK_TIMEOUT_MS }));
-      if (version !== BUNDLED_WORKER_WRANGLER) throw new WranglerNotReady(`Wrangler installation returned ${version}, expected ${BUNDLED_WORKER_WRANGLER}; rerun \`myco setup --create cloudflare\`.`);
+      if (version !== BUNDLED_WORKER_WRANGLER) throw new WranglerNotReady(`Wrangler installation returned ${version}, expected ${BUNDLED_WORKER_WRANGLER}; rerun \`${CLOUDFLARE_SETUP_COMMAND}\`.`);
       renameSync(stage, destination);
     } finally { rmSync(stage, { recursive: true, force: true }); }
   });
@@ -1087,7 +1118,7 @@ export class WranglerNotSignedIn extends WranglerNotReady {
 }
 
 /** Refuse unless the selected Wrangler is ready to run. */
-export async function assertWranglerPresent(runner: CommandRunner = systemRunner(), cwd?: string, mycoHome?: string): Promise<CommandRunner> {
+export async function assertWranglerPresent(runner: CommandRunner = cloudflareRunner(), cwd?: string, mycoHome?: string): Promise<CommandRunner> {
   return (await resolveWrangler({ runner, cwd, mycoHome })).runner;
 }
 
@@ -1104,7 +1135,7 @@ export interface WranglerReadiness {
   runner?: CommandRunner;
   /** Where the check runs, which is where the commands it clears run: `npx` resolves wrangler from there. */
   cwd?: string;
-  /** Where a version note goes; nothing is reported when the versions agree. */
+  /** Where prerequisite and credential observations are reported. */
   report?: (line: string) => void;
   env?: NodeJS.ProcessEnv;
 }
@@ -1118,13 +1149,16 @@ function versionOf(printed: string): string | null {
 export async function assertWranglerReady(readiness: WranglerReadiness = {}): Promise<CommandRunner> {
   const env = readiness.env ?? process.env;
   const tool = await resolveWrangler(readiness);
-  readiness.report?.(wranglerToolLine(tool));
-  const runner = credentialRunner(tool.runner, env);
-  if (cloudflareCredentialSource(env) === 'OAuth login') {
-    const who = await runner.run('npx', wrangler('whoami', '--json'), { cwd: wranglerCheckDirectory(readiness), env, signal: readiness.signal, timeoutMs: TOOL_CHECK_TIMEOUT_MS });
-    if (who.code !== 0 || cloudflareIdentity(who.stdout)?.loggedIn === false) throw new WranglerNotSignedIn();
-  }
-  for (const line of cloudflareCredentialLines(env)) readiness.report?.(line);
+  tool.ready ??= (async () => {
+    readiness.report?.(wranglerToolLine(tool));
+    const runner = credentialRunner(tool.runner, env);
+    if (cloudflareCredentialSource(env) === 'OAuth login') {
+      const who = await runner.run('npx', wrangler('whoami', '--json'), { cwd: wranglerCheckDirectory(readiness), env, signal: readiness.signal, timeoutMs: TOOL_CHECK_TIMEOUT_MS });
+      if (who.code !== 0 || cloudflareIdentity(who.stdout)?.loggedIn === false) throw new WranglerNotSignedIn();
+    }
+    for (const line of cloudflareCredentialLines(env)) readiness.report?.(line);
+  })().catch((error: unknown) => { tool.ready = undefined; throw error; });
+  await tool.ready;
   return tool.runner;
 }
 
@@ -1140,7 +1174,7 @@ export async function assertWranglerReady(readiness: WranglerReadiness = {}): Pr
 export async function putWorkerSecrets(target: WorkerSecretTarget, secrets: WorkerSecrets): Promise<void> {
   if (!target.accountId) throw new AccountNotSelected([]);
   const cwd = ensureCommandDir(target.mycoHome);
-  const runner = await assertWranglerPresent(target.runner ?? systemRunner(), cwd, target.mycoHome);
+  const runner = await assertWranglerPresent(target.runner ?? cloudflareRunner(), cwd, target.mycoHome);
   await privateCommand({ accountId: target.accountId, runner, configDir: cwd },
     ['secret', 'bulk', '--name', target.workerName], JSON.stringify(secrets), 'Cloudflare Worker secrets installation');
 }

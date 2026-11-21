@@ -61,7 +61,7 @@ it('prepares a hosted restore with the runtime SQLite, stopping at the first Clo
   fs.writeFileSync(path.join(bin, 'npx'), `#!/bin/sh\necho "$*" >> '${log}'\n[ "$3" = --version ] && echo 4.126.0 && exit 0\nexit 1\n`, { mode: 0o755 });
   const restore = run([ENTRY, 'server', 'restore', '--target', 'cloudflare', '--from', artifact, '--secrets-from', secrets, '--fork', '--yes', '--account-id', 'a'.repeat(32)],
     { PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: '', CLOUDFLARE_API_KEY: '', CF_API_TOKEN: '', CF_API_KEY: '' });
-  expect([restore.out.includes('signed in to no Cloudflare account'), fs.readFileSync(log, 'utf8')]).toEqual([true, '--no-install wrangler --version\n--no-install wrangler whoami\n']);
+  expect([restore.out.includes('signed in to no Cloudflare account'), fs.readFileSync(log, 'utf8')]).toEqual([true, '--no-install wrangler --version\n--no-install wrangler whoami --json\n']);
   const prepared = new Database(path.join(restore.home, '.myco', 'server', 'cloudflare', 'recovery.sqlite'), { readonly: true });
   expect(prepared.query("SELECT value FROM schema_meta WHERE key = 'version'").get()).toEqual({ value: String(SERVER_SCHEMA_VERSION) });
 }, 120_000);

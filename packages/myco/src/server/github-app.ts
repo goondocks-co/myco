@@ -36,7 +36,7 @@ import { PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { withCloudflareOperation } from '@myco/server/cloudflare-operation.js';
-import { missingDeploymentRecordMessage, deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, updateDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
+import { operationWranglerRunner, missingDeploymentRecordMessage, deploymentRecordPath, putWorkerSecrets, readDeploymentRecord, updateDeploymentRecord, type DeploymentRecord } from './cloudflare.js';
 import type { CommandRunner } from './runner.js';
 import { configureLocalSignIn, localDeploymentPresent, readLocalSecrets, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { composeRetiredMessage, retiredComposeBundle } from './targets.js';
@@ -448,6 +448,7 @@ export async function registerGitHubApp(options: RegisterOptions): Promise<Regis
   const proposedName = options.name ?? await defaultAppName(options.url);
   if (proposedName.trim() === '' || proposedName.length > APP_NAME_MAX) throw new RegistrationRefused(`GitHub requires an app name of 1 to ${APP_NAME_MAX} characters; pass --name <shorter>`);
   return withRegistrationLock(options.target, async () => {
+    if (options.target.kind === 'cloudflare') options = { ...options, runner: operationWranglerRunner(options.runner) };
     let pending = readSignInPending(options.target);
     if (pending?.installed && options.target.kind === 'local') {
       const target = options.target;

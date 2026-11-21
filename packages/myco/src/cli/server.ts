@@ -6,7 +6,7 @@ import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
-import { WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
+import { operationWranglerRunner, WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type LifecycleOptions, type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
@@ -157,7 +157,7 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
 
 A Deployment run from this binary needs no container runtime and no Node.
 Cloudflare setup checks Node and offers a private, pinned Wrangler install.
-Run myco setup --create cloudflare first. Neither tool is needed on
+Run myco setup --create cloudflare. Neither tool is needed on
 the Deployment.`;
 
 /** The verbs a Deployment this machine runs answers to; every other verb belongs to the hosted targets. */
@@ -272,6 +272,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
   };
 
   /** The Cloudflare lifecycle inputs a verb needs; only a deploying verb needs a checkout. */
+  let operatorRunner: CommandRunner | undefined;
   const cloudflareOptions = () => {
     // A flag this target refuses by name is answered first: a refusal about a
     // missing value tells an operator to supply one, which is the wrong move
@@ -281,9 +282,9 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
     // A plan reads the record where it lies; every other verb reads it through the layout move.
     const record = flags.has('dry-run') ? peekDeploymentRecord() : readDeploymentRecord();
     const accountId = flags.get('account-id') ?? record?.accountId;
-    if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (myco setup --create cloudflare lists accounts and guides selection).');
+    if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (`myco setup --create cloudflare` lists accounts and guides selection).');
     for (const line of credentialLines) report(line);
-    return { accountId, readRetry: deps.readRetry, ...(deps.runner === undefined ? {} : { runner: deps.runner }), report };
+    return { accountId, readRetry: deps.readRetry, runner: operatorRunner ??= operationWranglerRunner(deps.runner), report };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */

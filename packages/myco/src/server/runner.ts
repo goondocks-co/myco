@@ -1,6 +1,5 @@
 /** Process execution port for Deployment lifecycle commands. */
 import { existsSync } from 'node:fs';
-import path from 'node:path';
 
 export interface CommandResult {
   code: number;
@@ -147,15 +146,6 @@ export function systemRunner(): CommandRunner {
       // being prepared: there is no tree, so nothing of one is running.
       const gone = (): boolean => options?.signal?.aborted === true;
       if (gone()) throw new CommandCancelled(command, args, 'absent');
-      if (process.platform === 'win32' && (command === 'npm.cmd' || command === 'npx.cmd')) {
-        const env = options?.env ?? process.env;
-        const searchPath = env.PATH ?? Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
-        const directory = searchPath.split(path.delimiter).find(folder => existsSync(path.join(folder, command)));
-        const script = directory === undefined ? undefined : path.join(directory, 'node_modules', 'npm', 'bin', `${command.slice(0, -4)}-cli.js`);
-        if (script === undefined || !existsSync(script)) throw Object.assign(new Error(`${command} cannot find its npm CLI; reinstall Node.js from https://nodejs.org/en/download`), { code: 'ENOENT' });
-        command = 'node';
-        args = [script, ...args];
-      }
       const { spawn } = await import('node:child_process');
       if (gone()) throw new CommandCancelled(command, args, 'absent');
       return new Promise<CommandResult>((resolve, reject) => {

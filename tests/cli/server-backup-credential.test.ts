@@ -1,3 +1,4 @@
+import { fakeWranglerRunner } from '../server/helpers/wrangler.js';
 import { afterEach, beforeEach, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -60,7 +61,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-const runner: CommandRunner = { async run(command, args, options) {
+const runner: CommandRunner = fakeWranglerRunner({ async run(command, args, options) {
   calls.push({ command, args: [...args], options });
   if (args.includes('put')) {
     events.push('store');
@@ -76,7 +77,7 @@ const runner: CommandRunner = { async run(command, args, options) {
   if (args.includes('whoami')) return { code: 0, stdout: 'OAuth fixture', stderr: '' };
   expect(args).toEqual(['--no-install', 'wrangler', '--version']);
   return { code: 0, stdout: '4.149.0', stderr: '' };
-} };
+} });
 
 function probe(answers: Array<Response | Error> = []) : typeof fetch {
   return Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {

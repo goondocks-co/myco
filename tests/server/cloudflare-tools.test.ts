@@ -1,8 +1,9 @@
+import { cloudflareRunner } from '@myco/server/cloudflare-runner.js';
 import { afterEach, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertWranglerReady, installWrangler, listAccounts, putWorkerSecrets, resolveWrangler } from '@myco/server/cloudflare.js';
+import { assertWranglerReady, operationWranglerRunner, installWrangler, listAccounts, putWorkerSecrets, resolveWrangler } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_NODE, BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import type { CommandResult, CommandRunner, RunOptions } from '@myco/server/runner.js';
 import { run } from '@myco/cli/setup.js';
@@ -66,7 +67,11 @@ it('installs only with setup consent and uses the pinned private tool for accoun
   expect(tool.source.startsWith(path.join(h.home, 'server', 'tools'))).toBe(true);
   await expect(assertWranglerReady(h.readiness)).rejects.toThrow('myco setup --create cloudflare');
   h.state.loggedIn = true;
-  await assertWranglerReady(h.readiness);
+  const readiness = { ...h.readiness, runner: operationWranglerRunner(h.runner) };
+  await Promise.all([assertWranglerReady(readiness), assertWranglerReady(readiness)]);
+  const admittedCalls = h.calls.length;
+  await assertWranglerReady(readiness);
+  expect(h.calls.length).toBe(admittedCalls);
   expect(await listAccounts(h.runner, h.home)).toEqual([{ name: 'Fixture', id: 'a'.repeat(32) }]);
   await putWorkerSecrets({ runner: h.runner, mycoHome: h.home, accountId: 'a'.repeat(32), workerName: 'fixture' }, { GITHUB_CLIENT_ID: 'fixture', GITHUB_CLIENT_SECRET: 'private-fixture' });
   const bulk = h.calls.find(call => call.args.includes('bulk'))!;
@@ -98,4 +103,19 @@ it('reports the selected tool and version through read-only doctor and setup sta
   const status = await observeSetupStatus(h.home, { role: 'create', target: 'cloudflare' }, { agents: () => [], cloudflare: { runner: h.runner } }, true);
   expect(status.find(fact => fact.id === 'cloudflare.tools')?.detail).toContain('operator installation');
   expect(h.calls.every(call => call.command === 'node' || call.command.startsWith('npx'))).toBe(true);
+});
+
+
+it.skipIf(process.platform !== 'win32')('runs npm.cmd through its Node entry with literal arguments and closed stdin', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-npm-runner-'));
+  try {
+    const bin = path.join(root, 'node_modules', 'npm', 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(root, 'npm.cmd'), 'fixture launcher');
+    fs.writeFileSync(path.join(bin, 'npm-cli.js'), "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));");
+    const args = ['--prefix', path.join(root, 'folder with spaces & punctuation')];
+    const result = await cloudflareRunner().run('npm.cmd', args, { env: { ...process.env, PATH: `${root};${process.env.PATH}` }, timeoutMs: 5000 });
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,3 +1,4 @@
+import { withWranglerPrerequisites } from './helpers/wrangler.js';
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -27,7 +28,7 @@ it('holds ownership across asynchronous provisioning and refuses every competing
       await expect(command({ mycoHome, accountId: 'fixture', runner })).rejects.toThrow('in use');
     }
     expect(readDeploymentRecord(mycoHome)).toEqual(record);
-    const status = await cloudflareDeploymentStatus({ readRetry: { sleep: async () => {} }, mycoHome, accountId: 'fixture', runner: { run: async () => ({ code: 0, stdout: '', stderr: '' }) } });
+    const status = await cloudflareDeploymentStatus({ readRetry: { sleep: async () => {} }, mycoHome, accountId: 'fixture', runner: withWranglerPrerequisites({ run: async () => ({ code: 0, stdout: '', stderr: '' }) }) });
     expect(status?.record).toEqual(record);
     release();
     await held;

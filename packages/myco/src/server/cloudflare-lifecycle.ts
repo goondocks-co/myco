@@ -18,7 +18,7 @@ const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  assertWranglerReady,
+  assertWranglerReady, decorateWranglerRunner,
   CloudflareAuthenticationError,
   isCloudflareAuthenticationRefusal,
   ensureCommandDir,
@@ -54,7 +54,7 @@ import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
 import { schemaStopLines, SchemaUpdateStopped, workerSchemaEvidence, type OverloadRetry, type SchemaStop, type WorkerLeft } from './cloudflare-migration-pacing.js';
 import { getPluginVersion } from '../version.js';
-import { systemRunner, type CommandRunner } from './runner.js';
+import type { CommandRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
 
@@ -412,7 +412,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     summary.releaseBefore = record.release;
     summary.workerSchemaBefore = workerSchemaEvidence(record)?.schema;
     await preflight(options);
-    options.runner = observeRunner(options.runner!);
+    options.runner = decorateWranglerRunner(options.runner!, observeRunner);
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
@@ -487,8 +487,8 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
 
 /** Return to the provider-observed version from before the latest admitted update attempt. */
 export const rollbackCloudflareDeployment = lifecycleOperation('rollback', async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
-  await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
+  await preflight(options);
   const target = options.versionId ?? record.previousVersionId ?? '';
   if (target === '') throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (wrangler deployments list names the versions).');
   if (options.versionId === undefined) {
@@ -517,8 +517,8 @@ export interface CloudflareDeploymentStatus {
 }
 
 export const cloudflareDeploymentStatus = lifecycleOperation('status', async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
-  await preflight(options);
   if (record === null) return null;
+  await preflight(options);
   const [worker, schema] = await Promise.allSettled([
     cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, activeVersion: record.versionId, deployedAt: record.deployedAt, readRetry: options.readRetry }),
     cloudflareSchemaVersion({ ...bareCommand(options), databaseName: record.databaseName }),
@@ -541,8 +541,8 @@ export const cloudflareDeploymentStatus = lifecycleOperation('status', async (op
  * data removal stays a by-hand act this command refuses to own.
  */
 export const destroyCloudflareDeployment = lifecycleOperation('destroy', async (options: LifecycleOptions, record): Promise<{ kept: string[] }> => {
-  await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to destroy.`);
+  await preflight(options);
   const resources = cloudflareResources(record);
   await deleteWorker({ ...bareCommand(options), workerName: record.workerName });
   return { kept: [`d1 ${record.databaseName}`, `r2 ${record.bucketName}`, `r2 ${resources.recoveryBucketName}`, `vectorize ${resources.vectorIndexName}`, 'secrets store', 'the deployment record'] };

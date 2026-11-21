@@ -1,3 +1,4 @@
+import { fakeWranglerRunner } from '../server/helpers/wrangler.js';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
@@ -22,11 +23,11 @@ let failRead: boolean;
 let loginStartedAfterStatus: boolean;
 const ACCOUNT = 'a'.repeat(32);
 const DB = '11111111-2222-4333-8444-555555555555';
-const runner: CommandRunner = { async run(_command, args) {
+const runner: CommandRunner = fakeWranglerRunner({ async run(_command, args) {
   const command = args.slice(2).join(' ');
   let stdout: string;
   if (command === '--version') stdout = '4.126.0';
-  else if (command === 'whoami') stdout = 'OAuth fixture';
+  else if (command === 'whoami --json') stdout = 'OAuth fixture';
   else if (command.startsWith('deployments list')) stdout = `Version ID: ${DB}`;
   else if (command === 'auth token --json') {
     loginStartedAfterStatus = log.mock.calls.flat().includes('\nCloudflare Deployment');
@@ -35,7 +36,7 @@ const runner: CommandRunner = { async run(_command, args) {
   else if (command.startsWith('d1 execute')) stdout = JSON.stringify([{ success: true, results: [{ value: String(SERVER_SCHEMA_VERSION) }] }]);
   else throw new Error(`Unexpected fake command: ${command}`);
   return { code: 0, stdout, stderr: '' };
-} };
+} });
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-prompt-reference-status-'));

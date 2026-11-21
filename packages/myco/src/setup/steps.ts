@@ -13,6 +13,7 @@ import { harnessDirectories, workerServiceStatus, workerServiceUnit, workerServi
 import { servicePaths } from '@myco/server/service.js';
 import { openBrowser } from '@goondocks/myco-shared';
 import { assertWranglerReady, assertWranglerPresent, installWrangler, WranglerAbsent, missingDeploymentRecordMessage, ensureCommandDir, peekCommandDir, operatorLogin, listAccounts, peekDeploymentRecord, WranglerNotSignedIn, type OperatorLogin } from '@myco/server/cloudflare.js';
+import { cloudflareRunner } from '@myco/server/cloudflare-runner.js';
 import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { cloudflareOwnerLinked, setupCloudflareOwner } from '@myco/server/cloudflare-owner.js';
 import { registerGitHubApp, defaultAppName, hasPendingSignIn, type RegisterOptions, type SignInTarget } from '@myco/server/github-app.js';
@@ -21,7 +22,7 @@ import { prepareLocal, recoverLocalOwnerLink, localServiceSpec, LOCAL_SCHEMA_BEH
 import { localOwnerLinked, waitForOwnerLink, type LocalOwnerLink } from '@myco/server/local-owner.js';
 import { carriedNative } from '@myco/server/local-run.js';
 import { requireNativeDeps } from '@myco/runtime/native-deps.js';
-import { runOrThrow, systemRunner } from '@myco/server/runner.js';
+import { runOrThrow } from '@myco/server/runner.js';
 import { readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult } from '@myco/member/registry.js';
@@ -277,26 +278,29 @@ const CREATE_STEPS: readonly SetupStep[] = [
     id: 'cloudflare.account', requires: ['deployment.create'], applies: isCloudflare,
     act: async ctx => {
       const cwd = ensureCommandDir(ctx.home);
-      const runner = ctx.deps.cloudflare?.runner ?? systemRunner();
+      const runner = ctx.deps.cloudflare?.runner ?? cloudflareRunner();
       const readiness = { runner, cwd, mycoHome: ctx.home, report: ctx.out, signal: ctx.deps.signal };
-      try { await assertWranglerPresent(runner, cwd, ctx.home); }
+      let selected;
+      try { selected = await assertWranglerPresent(runner, cwd, ctx.home); }
       catch (error) {
         if (!(error instanceof WranglerAbsent)) throw error;
         await consentToOccurrence(ctx, 'Install Myco’s pinned Wrangler in its own tools folder (no root or global npm install)?');
         await installWrangler(readiness);
+        selected = await assertWranglerPresent(runner, cwd, ctx.home);
       }
+      readiness.runner = selected;
       try { await assertWranglerReady(readiness); }
       catch (error) {
         if (!(error instanceof WranglerNotSignedIn)) throw error;
         await consentToOccurrence(ctx, 'Sign in to Cloudflare (opens your browser, runs wrangler login)?');
-        const selected = await assertWranglerPresent(runner, cwd, ctx.home);
         await runOrThrow(selected, 'npx', ['--no-install', 'wrangler', 'login'], { cwd, stdio: 'inherit', signal: ctx.deps.signal });
         await assertWranglerReady(readiness);
       }
+      ctx.deps.cloudflare = { ...ctx.deps.cloudflare, runner: selected };
       const answers = ctx.file.answers;
       answers.accountId ??= peekDeploymentRecord(ctx.home)?.accountId;
       if (!answers.accountId) {
-        const accounts = await listAccounts(runner, ctx.home);
+        const accounts = await listAccounts(selected, ctx.home);
         if (accounts.length === 1) answers.accountId = accounts[0].id;
         else {
           accounts.forEach(account => ctx.out(`${account.name}: ${account.id}`));

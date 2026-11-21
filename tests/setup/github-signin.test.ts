@@ -1,3 +1,4 @@
+import { fakeWranglerRunner } from '../server/helpers/wrangler.js';
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -120,7 +121,7 @@ function hosted() {
   let installed = false;
   let liveClient = SETUP_APP.clientId;
   let interrupt: 'before-install' | 'after-install' | null = null;
-  const runner: CommandRunner = { async run(_command, args, options) {
+  const runner: CommandRunner = fakeWranglerRunner({ async run(_command, args, options) {
     if (args.includes('bulk')) {
       const values = JSON.parse(options!.input!);
       expect(fs.statSync(`${signInPendingPath(target)}${values.GITHUB_CLIENT_ID === undefined ? '.key' : ''}`).mode & 0o777).toBe(0o600);
@@ -131,7 +132,7 @@ function hosted() {
       if (interrupt === 'after-install') { interrupt = null; throw new Error('interrupted after install'); }
     } else expect(args).toEqual(['--no-install', 'wrangler', '--version']);
     return { code: 0, stdout: '', stderr: '' };
-  } };
+  } });
   const fetchImpl: typeof fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     if (request.url === `${URL_}/auth/login`) return installed ? redirect(liveClient) : Response.json({ error: 'sign_in_unconfigured' }, { status: 401 });
