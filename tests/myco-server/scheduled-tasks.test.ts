@@ -574,7 +574,7 @@ it('counts a failed map as retrying only while every gate behind its wait would 
   try {
     f.sqlite.run("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES ('agent_1','a','built-in',1,1)");
     f.sqlite.run("INSERT INTO agent_runs(project_id,id,agent_id,task,status,dispatch_spec,started_at,completed_at,error) VALUES ('proj_1','failed_map','agent_1','canopy-map','failed',?,?,?,'checkout failed')", [JSON.stringify({ actor: 'clock' }), NOW - 1000, NOW - 500]);
-    const retrying = async () => (await readAttention(f.env, NOW)).items.find(i => i.kind === 'outcome_failed' && i.runId === 'failed_map')?.retrying;
+    const retrying = async () => (await readAttention(f.env, NOW)).items.flatMap(i => i.kind === 'outcome_failed' && i.runId === 'failed_map' ? [i.retrying] : [])[0];
     f.setting('agent.tasks', { 'canopy-map': { schedule: SMOKE } });
     expect(await retrying()).toBe(true);
     f.setting('agent.tasks', { 'canopy-map': { schedule: { ...SMOKE, maxRunsPerDay: 0 } } });
