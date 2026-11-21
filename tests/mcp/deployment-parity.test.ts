@@ -104,7 +104,7 @@ describe('the member tool surface over a real Deployment', () => {
     expect({ status: unnamed.status, ok: unnamed.envelope.ok, code: unnamed.envelope.error?.code }).toEqual({ status: 1, ok: false, code: 'invalid_input' });
     // A rule the call did not meet is the tool's refusal: the same failing envelope and exit status, with what the tool said.
     const ruled = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'not mine', project: 'proj_1', session_id: 'sess_not_held' }));
-    expect({ status: ruled.status, envelope: ruled.envelope }).toEqual({ status: 1, envelope: { ok: false, tool: 'myco_spores', error: { code: 'tool_failure', message: 'session_id not found' } } });
+    expect({ status: ruled.status, envelope: ruled.envelope }).toEqual({ status: 1, envelope: { ok: false, tool: 'myco_spores', error: { code: 'tool_failure', message: 'session_id not found', result: { ok: false, error: 'session_id not found' } } } });
 
     const saved = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'over the wire', project: 'proj_1' }));
     expect({ ok: saved.envelope.ok, type: saved.envelope.result?.observation_type }).toEqual({ ok: true, type: 'gotcha' });

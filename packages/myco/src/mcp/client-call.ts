@@ -20,6 +20,8 @@ export interface ToolCallError {
   code: string;
   message: string;
   retryable?: boolean;
+  /** A tool's refusal as it answered it, its repair call and reason included; set only for a refused call. */
+  result?: unknown;
 }
 
 export type ToolCallOutcome<T> = { ok: true; value: T } | { ok: false; error: ToolCallError };
@@ -65,8 +67,8 @@ const TOOL_REFUSED = 'tool_failure';
 
 /**
  * A command result. A refused call is a result flagged `isError` that says its
- * `error` and names its `code` where the tool names one; it throws those for
- * the CLI failure envelope, whatever the tool.
+ * `error` and names its `code` where the tool names one; it throws those, and
+ * the refusal whole, for the CLI failure envelope, whatever the tool.
  */
 export function requireToolResult(response: ToolCallResult): unknown {
   const result = extractStructuredResult(response);
@@ -76,6 +78,7 @@ export function requireToolResult(response: ToolCallResult): unknown {
     code: typeof detail.code === 'string' ? detail.code : TOOL_REFUSED,
     message: typeof detail.error === 'string' ? detail.error : typeof result === 'string' ? result : JSON.stringify(result) ?? 'Tool call failed',
     ...(typeof detail.retryable === 'boolean' ? { retryable: detail.retryable } : {}),
+    result,
   });
 }
 

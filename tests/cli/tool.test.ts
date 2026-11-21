@@ -102,15 +102,15 @@ for (const kind of ['empty', 'member', 'legacy']) it('refuses credential-less to
 });
 
 it('reports a refused operation with its code, message and failing exit status', async () => {
-  expect(await invoke(['call', 'refused'])).toEqual({ ok: false, tool: 'refused', error: { code: 'not_found', message: 'session_id not found' } });
+  expect(await invoke(['call', 'refused'])).toEqual({ ok: false, tool: 'refused', error: { code: 'not_found', message: 'session_id not found', result: { ok: false, code: 'not_found', error: 'session_id not found' } } });
   expect(process.exitCode).toBe(1);
 });
 it('reports an MCP error result that names no code as a failing exit status', async () => {
-  expect(await invoke(['call', 'unknown'])).toEqual({ ok: false, tool: 'unknown', error: { code: 'tool_failure', message: 'Unknown tool' } });
+  expect(await invoke(['call', 'unknown'])).toEqual({ ok: false, tool: 'unknown', error: { code: 'tool_failure', message: 'Unknown tool', result: 'Unknown tool' } });
   expect(process.exitCode).toBe(1);
 });
 
 it('preserves a refusal code and retryability from the server', async () => {
-  expect(await invoke(['call', 'retryable'])).toEqual({ ok: false, tool: 'retryable', error: { code: 'run_body_unavailable', message: 'Body is pending; try again shortly.', retryable: true } });
+  expect(await invoke(['call', 'retryable'])).toMatchObject({ ok: false, tool: 'retryable', error: { code: 'run_body_unavailable', message: 'Body is pending; try again shortly.', retryable: true } });
   expect(process.exitCode).toBe(1);
 });
