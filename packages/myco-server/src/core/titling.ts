@@ -5,7 +5,6 @@ import { DIRECT_CALLS_PER_MINUTE } from './completion/provider.js';
 /** Session titling admission shared by direct model work and runner work. */
 import {
   TITLING_FRESH_RESERVE_DIVISOR, TITLING_FRESH_WINDOW_MS,
-  TITLING_REFRESH_MIN_INTERVAL_MS,
 } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
@@ -127,7 +126,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     const claim = mode === 'owner'
       ? await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS)
       : mode === 'refresh'
-        ? await claimRefreshTitling(env.db, projectId, sessionId, now, now - TITLING_REFRESH_MIN_INTERVAL_MS)
+        ? await claimRefreshTitling(env.db, { projectId, sessionId, nowMs: now, retryBefore: now - OWNER_TITLING_WINDOW_MS, idleBefore: opts.idleBefore ?? await sessionQuietBefore(env, now) })
         : await claimTitling(env.db, projectId, sessionId, now, opts.retry === true ? now - OWNER_TITLING_WINDOW_MS : null, opts.idleBefore ?? null);
     if (!claim.claimed) {
       await assertSessionMaterialReady(env.db, projectId, sessionId);
@@ -308,22 +307,8 @@ function reportWait(db: RelationalStore, wait: BackfillWait | null, detail: Reco
 }
 
 /**
- * Converges every ended or quiet session on a title, and keeps the title of a recently active session current, a bounded
- * page per wake, in the block's states, inside its interval and daily ceiling, and under its overlap rule. A session
- * counts as ended for titling once it has sent nothing for `agent.titling_idle_close_minutes`; its own `ended_at` is
- * untouched. A titled session, open or ended, active within the day, takes a refresh after enough prompts received
- * after the material of its standing title and enough time after its last titling stamp. Order: first titles of fresh
- * sessions, refreshes, then first titles of older backlog, each newest first. A third of the ceiling is held back from
- * refreshes and backlog, so a saturated day still gives a first title to what just ended or went quiet.
- * A session its own capture owes a title — an end request whose attempt ended untitled, a live session that ended or
- * went quiet without one — is always a candidate; a wholly imported session is one only while scheduled intelligence
- * and the block are both on. Each attempt is the same `claim` a session's own end makes, bounded by the attempts
- * workers took, and never over a title that stands except by a refresh. The ceiling, the interval and the overlap
- * count this actor's runs across every Project. The ceiling is held by the run write itself: the count read here
- * sizes the page, and the statement that records each run refuses past the ceiling, so wakes deciding at once write at
- * most the ceiling between them and a refused session keeps its claim. Idempotent: a session claimed by one wake is no
- * longer a candidate for the next, and a wake out of state, inside the interval, at the ceiling or held by overlap
- * dispatches nothing. A wake that dispatches nothing names its wait in `titling_backfill_waiting` when the wait changes.
+ * Titles ended or quiet sessions and refreshes titles behind their last published turn. The existing queue, capture
+ * cohorts, runner ceilings, fresh reserve and provider rate limit admit bounded pages; a successful write records its coverage.
  */
 export async function backfillTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
   const policy = await titlingBackfillPolicy(env);

@@ -548,15 +548,18 @@ describe('a titling run reads and writes its own session', () => {
       sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
       await publishFixture({ sqlite, serverEnv });
       const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' })).result;
-      expect(material.batches).toHaveLength(2);
+      expect(material.batches[0].user_prompt).toContain('body of second');
       expect(material).toMatchObject({ prompt_count: 2, turnCount: 2 });
       expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Both turns', summary: 'Complete material' })).result.written).toBe(true);
     }
   });
 
   it('answers material for the dispatch-named session with no argument, and writes the title through the dispatch\'s mode', async () => {
-    const { harness, dispatch, call, sqlite } = await setup();
+    const fixture = await setup();
+    const { harness, dispatch, call, sqlite } = fixture;
+    fixture.prompt('opening'); await publishFixture(fixture);
     await dispatch('run_t', TITLING, { mode: 'claim' });
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Unread title', summary: 'Unread material' })).result.error).toContain('Next call: myco_run_sessions');
     const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' }) as any).result;
     expect(material.session_id).toBe('sess_1');
     expect(material.status).toBe('completed');
@@ -568,7 +571,9 @@ describe('a titling run reads and writes its own session', () => {
     // At a session's end a title is written only where none exists; the mode is
     // the dispatch's, never the caller's.
     const second = await setup();
+    second.prompt('opening'); await publishFixture(second);
     await second.dispatch('run_t2', TITLING, { mode: 'claim' });
+    await second.call(second.harness.token, 'myco_run_sessions', { op: 'material' });
     second.sqlite.run(`UPDATE sessions SET title = 'Already', summary = 'Set' WHERE session_id = 'sess_1'`);
     expect((await second.call(second.harness.token, 'myco_run_sessions', { op: 'title', title: 'B', summary: 'C' }) as any).result.written).toBe(false);
   });
@@ -585,7 +590,7 @@ describe('a titling run reads and writes its own session', () => {
 
     const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' })).result;
     expect(material).toMatchObject({ status: 'active', current_title: 'Old title', current_summary: 'Old summary' });
-    expect(material.note).toContain('earliest and latest prompts');
+    expect(material.batches[0].user_prompt).toContain('body of first');
 
     expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'New title', summary: 'New summary covering the whole session' })).result)
       .toEqual({ session_id: 'sess_1', written: true });
@@ -630,14 +635,13 @@ describe('a titling run reads and writes its own session', () => {
     ]);
   });
 
-  it('fits a titling run\'s material in one answer however its text escapes, dropping whole batches from the end', async () => {
+  it('fits the opening and closing material in one answer even when text needs JSON escaping', async () => {
     const { harness, dispatch, call, prompt, sqlite, serverEnv } = await setup();
     for (let at = 0; at < 12; at += 1) prompt(`control-${at}`, { text: '\u0001'.repeat(MATERIAL_EXCERPT_CHARS), createdAt: NOW + at });
     await publishFixture({ sqlite, serverEnv });
     await dispatch('run_t', TITLING, { mode: 'claim' });
     const { result } = await call(harness.token, 'myco_run_sessions', { op: 'material' });
-    expect(result.batches.length).toBeGreaterThan(1);
-    expect(result.batches.length).toBeLessThan(12);
+    expect(result.batches[0].user_prompt).toContain('The session has 12 turns.');
     expect(new TextEncoder().encode(JSON.stringify({ result })).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
   });
 
@@ -714,6 +718,7 @@ it('repairs a missing report reasoning and an oversized title through the named 
       const refused = (await f.call(f.harness.token,'myco_run_sessions',{op:'title',title:raw,summary:'A useful session summary.'})).result as {error:string};
       expectRunRefusal(refused, `title is 0 characters (1–${TITLE_MAX_CHARS})`, { tool: 'myco_run_sessions', op: 'title' });
     }
+    await f.call(f.harness.token,'myco_run_sessions',{op:'material'});
     expect((await f.call(f.harness.token,'myco_run_sessions',{op:'title',title:'Repairing delivery',summary:'A useful session summary.'})).result).toMatchObject({written:true});
     const badAudit = {...RUN_AUDIT,reasoning:''};
     const report = (await f.call(f.harness.token,'myco_run',{op:'report',action:'summary',summary:'Titled the session.',audit:badAudit})).result as {ok:boolean;error:string};

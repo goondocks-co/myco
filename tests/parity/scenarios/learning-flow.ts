@@ -7,13 +7,13 @@ import { revisionHeaders } from '../settings-revision.ts';
 
 type LearningTarget = Pick<ParityTarget, 'url' | 'projectId' | 'memberHeaders' | 'ownerHeaders' | 'sql'>;
 type Claim = { claimed: boolean; reason?: string; run: { id: string; task: string; attemptId: string; runToken: string } };
-interface CardMaterial { revision: string; turns: { input: string; complete: boolean }[] }
+interface CardMaterial { revision: string; turns: { turn_key: string; input: string; complete: boolean }[] }
 interface LearningMaterial { cards: { card: string }[] }
 const EXACT_ERROR = "Error: capture lease refused for spool generation 17 (owner mismatch)";
 const repairReply = (repetitions: number) => 'Checked the capture path. '.repeat(repetitions) + EXACT_ERROR + '. Reopen the spool under its recorded owner before capture.';
 
 /** One learning outcome through capture, publication, claims, run tools and settlement. */
-export async function runLearningFlow(target: LearningTarget, request: (request: Request) => Promise<Response> = fetch, replyText = repairReply(400)) {
+export async function runLearningFlow(target: LearningTarget, request: (request: Request) => Promise<Response> = fetch, replyText = repairReply(400), options: { followups?: boolean } = {}) {
   const now = Date.now(), at = now - 3_600_000, session = 'learning-flow', prompt = crypto.randomUUID();
   const owner = { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' };
   const post = async <T = unknown>(path: string, body: unknown, headers = target.memberHeaders()): Promise<T> => {
@@ -43,9 +43,9 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   await capture('response', { responseId: crypto.randomUUID(), promptId: prompt, blob: replyKey });
   await capture('session.end', { endedAt: at });
   for (let wake = 0; ; wake += 1) {
-    const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns`, { headers: target.ownerHeaders() }));
+    const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns?origins=user,agent_dispatch`, { headers: target.ownerHeaders() }));
     const page = await response.json() as { rows: { responseCount: number; toolCallCount: number }[] };
-    if (page.rows?.[0]?.toolCallCount === 1 && page.rows[0].responseCount === 1) break;
+    if (page.rows?.length === 1 && page.rows[0]?.toolCallCount === 1 && page.rows[0].responseCount === 1) break;
     if (wake === 8) throw new Error('learning turn did not publish');
     await post('/api/wake', {}, owner);
   }
@@ -69,13 +69,13 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   const settle = async (run: Claim['run'], action: string) => {
     await call(run, 'myco_run', { op: 'report', action, summary: 'Learned the capture fix', audit: RUN_AUDIT });
     expect(await post('/worker/end', { projectId: target.projectId, runId: run.id, attemptId: run.attemptId, status: 'completed',
-      usage: { inputTokens: null, outputTokens: null, costUsd: run.task === 'turn-cards' ? 0.25 : 0.75 } })).toMatchObject({ ended: true, status: 'completed' });
+      usage: { inputTokens: null, outputTokens: null, costUsd: run.task === 'turn-cards' ? 0.25 : options.followups ? 0.50 : 0.75 } })).toMatchObject({ ended: true, status: 'completed' });
   };
   const cards = await claim();
   expect(cards).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
   const material = await call<CardMaterial>(cards.run, 'myco_run_cards', { op: 'material' });
   expect(material.turns).toHaveLength(1);
-  expect(material.turns[0].complete).toBe(false);
+  expect(material.turns.find(turn => turn.turn_key === prompt)!.complete).toBe(false);
   // A refused write, then the corrected one below: the refusal is flagged, and the run still closes on its work.
   expect(await call(cards.run, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] }, true)).toMatchObject({ code: 'material_unread' });
   const source = async (run: Claim['run'], tool: string) => {
@@ -93,6 +93,31 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
     errors: [{ error: EXACT_ERROR, fix: 'Reopen the spool under its recorded owner.' }], corrections: [], files: ['capture.ts'], commands: [], open_questions: [],
   } }] })).toMatchObject({ written: 1 });
   await settle(cards.run, 'carded');
+  const cardRead = await post<any>('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_sessions', arguments: { project: target.projectId, op: 'get', id: session, prompt_id: prompt } } });
+  expect(cardRead.result.structuredContent.result.cardCoverage).toMatchObject({ current: true, sourceRevision: expect.any(String), writtenAt: expect.any(Number) });
+  if (options.followups) {
+    for (let i = 1; i < 7; i += 1) {
+      const followup = crypto.randomUUID();
+      await capture('prompt', { promptId: followup, text: `Implement follow-up ${i}`, origin: 'agent_dispatch' }, at + i);
+      await capture('response', { responseId: crypto.randomUUID(), promptId: followup, text: `Implemented and checked follow-up ${i}` }, at + i);
+    }
+    await capture('session.end', { endedAt: at + 7 });
+    for (let wake = 0; ; wake += 1) {
+      const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns?origins=user,agent_dispatch`, { headers: target.ownerHeaders() }));
+      if (((await response.json()) as { rows: unknown[] }).rows.length === 7) break;
+      if (wake === 8) throw new Error('follow-up turns did not publish');
+      await post('/api/wake', {}, owner);
+    }
+    const followups = await claim();
+    expect(followups).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
+    const more = await call<CardMaterial>(followups.run, 'myco_run_cards', { op: 'material' });
+    expect(more.turns).toHaveLength(6);
+    expect(more.turns.some(turn => turn.turn_key === prompt)).toBe(false);
+    expect(await call(followups.run, 'myco_run_cards', { op: 'write', revision: more.revision, cards: more.turns.map(turn => ({ turns: [turn.turn_key], signal: 'low', card: {
+      asked: 'Another agent requested a follow-up', done: 'Implemented and checked the follow-up', outcome: 'done', decisions: [], rejected: [], errors: [], corrections: [], files: [], commands: [], open_questions: [],
+    } })) })).toMatchObject({ written: 6 });
+    await settle(followups.run, 'carded');
+  }
   const learning = await claim();
   expect(learning).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
   const slice = await call<LearningMaterial>(learning.run, 'myco_run_learning', { op: 'material' });
@@ -101,15 +126,15 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
     agent_line: 'When capture refuses a spool lease, reopen it under its recorded owner.',
     content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` });
   expect(typeof saved.id).toBe('string');
-  expect(await call(learning.run, 'myco_run_learning', { op: 'complete', handoff: '' })).toEqual({ completed: true, covered: 1 });
+  expect(await call(learning.run, 'myco_run_learning', { op: 'complete', handoff: '' })).toEqual({ completed: true, covered: options.followups ? 7 : 1 });
   await settle(learning.run, 'extract');
   const spore = await post<any>('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: { project: target.projectId, op: 'get', id: saved.id } } });
   expect(spore.result.structuredContent.result).toMatchObject({ session_id: session, content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` });
   await capture('prompt', { promptId: crypto.randomUUID(), text: 'Document the capture fix for the next operator.', origin: 'user' }, at + 1000);
   await capture('session.end', { endedAt: at + 1000 }, at + 1000);
   for (let wake = 0; ; wake += 1) {
-    const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns`, { headers: target.ownerHeaders() }));
-    if (((await response.json()) as { rows: unknown[] }).rows.length === 2) break;
+    const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns?origins=user,agent_dispatch`, { headers: target.ownerHeaders() }));
+    if (((await response.json()) as { rows: unknown[] }).rows.length === (options.followups ? 8 : 2)) break;
     if (wake === 8) throw new Error('late learning turn did not publish');
     await post('/api/wake', {}, owner);
   }
@@ -123,5 +148,5 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
 export const learningFlow: ParityScenario = {
   name: 'learning: verbatim failure becomes a session-citing spore and daily spend stops the next claim',
   dedicated: { timeoutMs: 180_000 },
-  run: target => runLearningFlow(target),
+  run: target => runLearningFlow(target, fetch, repairReply(400), { followups: true }),
 };

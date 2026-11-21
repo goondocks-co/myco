@@ -1,4 +1,5 @@
-import { TITLING_MAX_ATTEMPTS, TITLING_REFRESH_MIN_INTERVAL_MS, TITLING_REFRESH_MIN_PROMPTS, SESSION_END_SETTLE_MS } from '../../constants.js';
+import { titleBehindSql, titleAttemptedSql } from './title-coverage.js';
+import { TITLING_MAX_ATTEMPTS, SESSION_END_SETTLE_MS } from '../../constants.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { RUN_OVERRUN_MARGIN_MS } from '../../core/run-deadline.js';
 import { jsonKeys } from '../ddl.js';
@@ -40,7 +41,7 @@ const MATERIAL_HELD = 'COALESCE(d.user_prompts,0)>0';
 /** Why a row has no work to hold: its session is gone, deleted, already titled or spent; or, for a refresh, no longer owed. */
 const WORK_GONE = `(s.session_id IS NULL OR NOT ${notTombstonedSql('s')} OR CASE k.mode WHEN 'claim'
     THEN s.title IS NOT NULL OR s.titling_attempts>=${TITLING_MAX_ATTEMPTS}
-    ELSE s.title IS NULL OR s.titled_at IS NULL OR d.user_prompts IS NULL OR d.user_prompts-COALESCE(d.titled_user_prompts,0)<${TITLING_REFRESH_MIN_PROMPTS} END)`;
+    ELSE NOT (${titleBehindSql('s', 'd')}) END)`;
 
 /** What a row is waiting for, in the order that decides it: gone, then each condition a session must meet before it is ready. */
 const reason = (now: string, idleBefore: string) => `CASE WHEN ${WORK_GONE} THEN 'gone' WHEN k.mode='claim' THEN CASE
@@ -52,8 +53,9 @@ const reason = (now: string, idleBefore: string) => `CASE WHEN ${WORK_GONE} THEN
     WHEN s.titled_at IS NOT NULL AND ${titleRunInFlightSql('s')} THEN 'inflight'
     ELSE 'ready' END
   ELSE CASE
-    WHEN s.titled_at>${now}-${TITLING_REFRESH_MIN_INTERVAL_MS} THEN 'interval'
-    WHEN s.last_received_at<=COALESCE(s.title_material_at,s.titled_at) THEN 'caught_up'
+    WHEN s.ended_at IS NULL AND s.last_received_at>${idleBefore} THEN 'quiet'
+    WHEN s.last_received_at>${now}-${SESSION_END_SETTLE_MS} THEN 'settling'
+    WHEN ${titleAttemptedSql('s', 'd')} AND s.titled_at>=${now}-${OWNER_TITLING_WINDOW_MS} THEN 'retry'
     WHEN NOT ${sessionMaterialReadySql('s')} THEN 'pending'
     WHEN ${titleRunInFlightSql('s')} THEN 'inflight'
     ELSE 'ready' END END`;
@@ -76,7 +78,7 @@ const upsertSql = (keys: string, now: string, idleBefore: string) => `INSERT INT
   SELECT project_id,session_id,mode,why='ready',
     CASE why WHEN 'quiet' THEN 'quiet' WHEN 'material' THEN 'material' ELSE 'timer' END,
     CASE why WHEN 'quiet' THEN last_received_at WHEN 'material' THEN 0 WHEN 'settling' THEN last_received_at+${SESSION_END_SETTLE_MS}
-      WHEN 'retry' THEN titled_at+${OWNER_TITLING_WINDOW_MS}+1 WHEN 'interval' THEN titled_at+${TITLING_REFRESH_MIN_INTERVAL_MS}
+      WHEN 'retry' THEN titled_at+${OWNER_TITLING_WINDOW_MS}+1
       WHEN 'ready' THEN 0 ELSE ${recheckAfter(now, 'checks')} END,
     rank_at,cohort,CASE WHEN why IN ('pending','inflight','caught_up') THEN checks+1 ELSE 0 END
   FROM (SELECT k.project_id,k.session_id,k.mode,${reason(now, idleBefore)} AS why,s.last_received_at,s.titled_at,COALESCE(w.checks,0) AS checks,
@@ -156,7 +158,7 @@ export async function takeTitleCandidates(db: RelationalStore, window: TitleWind
     freshImported: readyFresh.bind('claim', importedCohort, window.freshAfter, limit),
     backlogLive: readyBacklog.bind('claim', 'live', window.freshAfter, limit),
     backlogImported: readyBacklog.bind('claim', importedCohort, window.freshAfter, limit),
-    refreshes: readyFresh.bind('refresh', 'live', window.freshAfter, limit),
+    refreshes: readyFresh.bind('refresh', 'live', 0, limit),
   });
   const claims = (arm: { results: Omit<TitleCandidate, 'mode'>[] }): TitleCandidate[] => arm.results.map((row) => ({ ...row, mode: 'claim' as const }));
   return {

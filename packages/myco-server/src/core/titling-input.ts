@@ -19,9 +19,9 @@ import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsFrom, type TitlingMode
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 
 const MODE_NOTE: Readonly<Record<TitlingMode, string>> = {
-  claim: 'The session has just ended. Its material is the opening prompts, in order. A title already standing is kept: your write is refused, and you close with the skip action instead.',
-  owner: 'A person asked for a fresh title from the dashboard. Its material is the earliest and the latest prompts, in order, with the middle omitted. Write over whatever title stands.',
-  refresh: 'The session is still open and has gone on since it was last titled. Its material is the earliest and the latest prompts, in order, with the middle omitted, beside the title and summary standing now. Write a title and summary for the whole session so far, over the ones standing.',
+  claim: 'The session has ended or gone quiet. Its bounded material spans the session, including the last turn and its closing reply. A title already standing is kept: your write is refused, and you close with the skip action instead.',
+  owner: 'A person asked for a fresh title from the dashboard. Its bounded material spans the opening and closing turns with sampled middle previews. Write over whatever title stands.',
+  refresh: 'The session has gone quiet or ended after continuing beyond its recorded title coverage. Its bounded material spans the opening and closing turns with sampled middle previews. Write a title and summary for the whole session so far, over the ones standing.',
 };
 
 /** The instruction for the run these parameters describe, or null when they name no session. */
@@ -70,5 +70,6 @@ export const TITLING_RULES = [
     '## Summary rules',
     '',
     `2 to 4 sentences, under ${SUMMARY_MAX_CHARS} characters. Rich in detail: summaries are embedded and searched, so name what was built or fixed, the key files touched, the tools used and the outcome. Cover the FULL arc of the session, not one prompt.`,
+  'Attribute work to the agent (or its recorded harness name). Instruction labels identify who asked: Person, Another agent, Harness, Myco, or Unknown origin. A request from a person is that person’s request; the work the agent did is the agent’s. When recorded person turns is zero, never call the actor \"the developer\" or \"the team\". Do not invent a person for an unknown origin.',
   'State only what the session shows. If the outcome is still in progress, say so. Do not discuss what was or was not captured.',
 ].join('\n');

@@ -4,7 +4,8 @@ import { titleMaterialSnapshot, titleMaterialTurns } from '../db/documents/titli
 import { SessionDocument } from './session-pages.js';
 import type { DocRecord } from './document.js';
 
-export const SINGLE_TURN_MATERIAL_CHARS = 10_000;
+import { answerBytes, headThatFits } from '../core/material-pages.js';
+import { SINGLE_TURN_MATERIAL_CHARS, SINGLE_TURN_MATERIAL_JSON_BYTES, TITLE_HEAD_TURNS, TITLE_TAIL_TURNS, TITLE_MIDDLE_TURNS } from '../core/titling-params.js';
 const PROMPT_CHARS = 600;
 const REPLY_CHARS = 600;
 const FILE_CHARS = 1_000;
@@ -45,11 +46,12 @@ function fileRead(record: DocRecord, prompt: string): boolean {
 export async function singleTurnMaterial(env: ContentStore, project: string, session: string) {
   const held = await titleMaterialSnapshot(env.db, project, session);
   const doc = await SessionDocument.open(env, project, session);
-  if (held === null || doc === null || doc.generation !== held.generation || held.instructionPrompts === 0) throw new Error('title_material_unavailable');
+  if (held === null || doc === null || doc.generation !== held.generation || held.instructionPrompts === 0 || held.throughTurnKey == null || held.throughTurnRevision == null) throw new Error('title_material_unavailable');
   const turns = await titleMaterialTurns(env.db, project, session, held);
-  const lines = [`The session has ${held.instructionPrompts} instructions.`];
+  const lines = [`Agent: ${held.agent ?? 'unknown'}. Recorded person turns: ${held.personTurns}. The session has ${held.turnCount} turns.`,
+    `Material spans the session: first ${TITLE_HEAD_TURNS} and last ${TITLE_TAIL_TURNS} turns with closing replies; up to ${TITLE_MIDDLE_TURNS} evenly spaced middle turn previews. Text is bounded at ${SINGLE_TURN_MATERIAL_CHARS} characters and ${SINGLE_TURN_MATERIAL_JSON_BYTES} JSON bytes.`];
   for (const turn of turns) {
-    if (!turn.full) { lines.push(`[Middle prompt] ${clip(turn.preview ?? '', MIDDLE_CHARS)}`); continue; }
+    if (!turn.full) { lines.push(`[Middle prompt; ${turn.origin}] ${clip(turn.preview ?? '', MIDDLE_CHARS)}`); continue; }
     const section: string[] = [];
     const opening = await doc.ownerPages(turn.promptId, 0, 1);
     const records = opening.pages.flatMap(p => p.records);
@@ -57,7 +59,7 @@ export async function singleTurnMaterial(env: ContentStore, project: string, ses
     if (prompt === undefined) throw new Error('title_prompt_unavailable');
     const text = await doc.body(prompt, 'text');
     if (text === null) throw new Error('title_prompt_unavailable');
-    const speaker = prompt.origin === 'agent_dispatch' ? 'Another agent' : prompt.origin === 'user' ? 'Person' : 'Instruction';
+    const speaker = turn.origin === 'agent_dispatch' ? 'Another agent' : turn.origin === 'user' ? 'Person' : turn.origin === 'hook_injected' ? 'Myco' : turn.origin === 'system' ? 'Harness' : 'Unknown origin';
     section.push(`[${speaker}] ${clip(text, PROMPT_CHARS)}`);
     if (text.length <= SHORT_PROMPT_CHARS) {
       const read = records.find(record => fileRead(record, text));
@@ -71,5 +73,7 @@ export async function singleTurnMaterial(env: ContentStore, project: string, ses
     if (replyText !== null) section.push(`[Agent closing reply] ${clip(replyText, REPLY_CHARS)}`);
     lines.push(clip(section.join('\n'), FULL_TURN_CHARS));
   }
-  return { text: lines.join('\n').slice(0, SINGLE_TURN_MATERIAL_CHARS), snapshot: held };
+  const text = clip(lines.join('\n'), SINGLE_TURN_MATERIAL_CHARS);
+  const fitted = headThatFits(text, SINGLE_TURN_MATERIAL_JSON_BYTES, head => answerBytes(clip(text, head.length)));
+  return { text: clip(text, fitted.length), snapshot: held };
 }

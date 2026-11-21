@@ -464,7 +464,7 @@ describe('the session reading page', () => {
     mount('/p/x/sessions/s1');
     expect(await screen.findByText('Not summarized because this session was not learned.')).toBeTruthy();
     expect(screen.getAllByText('Not summarized: this session was not learned').length).toBeGreaterThan(0);
-    expect(screen.queryByText('Myco writes this once the turn settles.')).toBeNull();
+    expect(screen.queryByText('Waiting for Myco to summarize this turn.')).toBeNull();
     expect(screen.queryByText('Not summarized yet')).toBeNull();
   });
 
@@ -1814,7 +1814,7 @@ describe('the session reading page', () => {
       expect(row.textContent).toContain('12 calls');
       const reader = await screen.findByTestId(`turn-${P1}`);
       expect((await within(reader).findByTestId('tool-counts')).textContent).toBe('12 calls');
-      expect(within(reader).getByTestId('what-happened').textContent).toContain('Myco writes this once the turn settles.');
+      expect(within(reader).getByTestId('what-happened').textContent).toContain('Waiting for Myco to summarize this turn.');
       // A turn triage carded is not waiting for a summary and says nothing of mechanism.
       expect(screen.getByTestId(`row-${P2}`).textContent).not.toContain('Not summarized yet');
       expect(document.body.textContent).not.toContain('mechanical');

@@ -145,17 +145,6 @@ describe('a session\'s title work', () => {
     expect(await takeTitleRequests(r.serverEnv.db, window(NOW + 40_000), 10)).toHaveLength(3);
   });
 
-  it('keeps a refresh row only past the prompt threshold, and clears it when a written title takes the prompts', async () => {
-    const r = rig();
-    r.session('fresh', { endedAt: null, lastReceivedAt: NOW - 1000, title: 'Named', titledAt: NOW - 5 * HOUR, prompts: 9, imported: false });
-    expect(r.row('fresh', 'refresh')).toBeNull();
-    r.sqlite.run(`UPDATE session_documents SET user_prompts = 12 WHERE session_id = 'fresh'`);
-    expect(r.row('fresh', 'refresh')).toMatchObject({ ready: 0, waits: 'timer' });
-    expect(ready((await takeTitleCandidates(r.serverEnv.db, window(), 10)).freshRefreshes)).toEqual(['fresh']);
-    r.sqlite.run(`UPDATE session_documents SET titled_user_prompts = user_prompts WHERE session_id = 'fresh'`);
-    expect(r.row('fresh', 'refresh')).toBeNull();
-  });
-
   it('withholds the totals while the seed walks existing sessions, then answers them, and a replay changes nothing', async () => {
     const r = rig();
     r.session('s1', { imported: false, endedAt: NOW - 10 * HOUR });

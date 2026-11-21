@@ -217,7 +217,7 @@ function WhatHappened({ card, learningAgedOut, partial }: { partial?: boolean; c
   } else if (card != null && card !== '') {
     body = <p className="whitespace-pre-wrap break-words t-small text-ink-2">{card}</p>;
   } else {
-    body = <p className="t-small text-muted">{learningAgedOut ? 'Not summarized because this session was not learned.' : 'Myco writes this once the turn settles.'}</p>;
+    body = <p className="t-small text-muted">{learningAgedOut ? 'Not summarized because this session was not learned.' : 'Waiting for Myco to summarize this turn.'}</p>;
   }
   return (
     <section aria-label="What happened" className="flex flex-col gap-s2" data-testid="what-happened">

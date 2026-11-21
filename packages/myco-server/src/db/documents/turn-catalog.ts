@@ -3,13 +3,14 @@ import { read, readSet } from '../index.js';
 import { liveGenerationSql } from './live-generation.js';
 
 export interface PromptCatalogRow {
+  card_input_hash: string | null; live_input_hash: string | null; card_state: string | null; carded_at: number | null;
   partial_reason: string | null; tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null; fields: string | null;
 }
 
 const agent = read<[project: string, session: string], { agent: string | null }>({ name: 'turnCatalog.sessionAgent', sql:
   'SELECT agent FROM sessions WHERE project_id = ?1 AND session_id = ?2' });
 const prompt = read<[project: string, session: string, prompt: string], PromptCatalogRow>({ name: 'turnCatalog.prompt', sql:
-  `SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card,c.fields,c.partial_reason FROM session_prompts p
+  `SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.input_hash AS card_input_hash,p.input_hash AS live_input_hash,c.state AS card_state,c.carded_at,c.card,c.fields,c.partial_reason FROM session_prompts p
       JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id
       LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.prompt_id
       WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=${liveGenerationSql('?1', '?2')} AND p.prompt_id=?3` });

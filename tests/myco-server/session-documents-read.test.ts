@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, test } from 'bun:test';
 import type { ContentStore, PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
@@ -10,6 +11,7 @@ import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { documentSessionActivity } from '@myco-server-worker/content/session-activity.js';
 import {
   sessions_listSessionSummaries as listSessionSummaries,
+  sessions_getSession as getSession,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import {
   hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
@@ -179,5 +181,20 @@ test('the session page and its list row read the same statements and rows whatev
     const small = await statements(await published(db, 'small', 'tx_' + 'b'.repeat(32), 6, blobs), 'small', 51);
     const large = await statements(await published(db, 'large', 'tx_' + 'c'.repeat(32), 40, blobs), 'large', 120);
     expect(large, name).toEqual({ ...small, turns: 5 });
+  });
+});
+
+
+test('quiet completed capture fixtures have an end from their last recorded activity', async () => {
+  await withDocumentStores(async (db, name) => {
+    const at = Date.now() - 4 * 60 * MIN;
+    for (const [agent, fixture] of [['claude-code', 'claude'], ['codex', 'codex'], ['cursor', 'cursor'], ['opencode', 'opencode'], ['copilot', 'copilot'], ['antigravity', 'antigravity'], ['pi', 'pi'], ['cline', 'cline']]) {
+      const text = readFileSync(new URL(`../fixtures/${fixture}-parse-basic.jsonl`, import.meta.url), 'utf8');
+      const env = await captureDocumentTranscript(db, memoryBlobStore(), agent!, `tx_${crypto.randomUUID().replaceAll('-', '')}`, text, at, 0, agent);
+      await publishDocuments(env, at + 11 * MIN, limits());
+      const session = await getSession(db, scope, agent!, Date.now(), Date.now() - 2 * 60 * MIN);
+      expect(session?.endedAt, `${name}: ${agent}`).toBeLessThanOrEqual(at);
+      expect(session, `${name}: ${agent}`).toMatchObject({ live: false, endedAt: expect.any(Number) });
+    }
   });
 });

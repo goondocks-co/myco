@@ -35,3 +35,7 @@ export const presentedLive = (quiet: string, prefix = ''): string =>
 
 /** A session's state as browsing, its page, `myco_sessions` and search all show it: `active` while live, else `completed`. */
 export const presentedLiveStatus = (quiet: string, prefix = ''): string => `CASE WHEN ${presentedLive(quiet, prefix)} THEN 'active' ELSE 'completed' END`;
+
+/** A completed presentation carries its recorded end, or its captured last activity when quiet alone completed it. */
+export const presentedCompletionAt = (quiet: string, prefix = ''): string =>
+  `COALESCE(${presentedEndedAt(prefix)},CASE WHEN ${quiet} IS NOT NULL AND NOT ${presentedLive(quiet, prefix)} THEN ${activityAt(prefix)} END)`;

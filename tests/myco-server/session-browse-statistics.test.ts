@@ -103,7 +103,7 @@ describe('the session list across Projects', () => {
     expect({ all: await read(), open: await read('open'), ended: await read('ended') }).toEqual({ all: [open[0], ended[0], ended[1], open[1]], open, ended });
     const across = async (filters: { state?: 'open'; since?: number }) => (await listAcross(r.db, { all: true }, { ...filters, window: 'activity', quietBefore }, NOW)).rows.map(row => row.sessionId);
     expect({ liveNow: await across({ state: 'open' }), today: await across({ since: NOW - 60 * MINUTE }) }).toEqual({ liveNow: ['talking', 'resumed'], today: ['talking', 'ended', 'resumed'] });
-    expect(await getSession(r.db, { projectId: 'proj_1' }, 'quiet', NOW, quietBefore)).toMatchObject({ endedAt: null, live: false, liveUntil: null });
+    expect(await getSession(r.db, { projectId: 'proj_1' }, 'quiet', NOW, quietBefore)).toMatchObject({ endedAt: quietBefore, live: false, liveUntil: null });
   });
 });
 

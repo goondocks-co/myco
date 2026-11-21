@@ -78,6 +78,7 @@ interface sessions_SessionRow {
   summary: string | null;
   /** The time of the titling attempt, whatever its outcome; null while nothing has tried. */
   titledAt: number | null;
+  titleCoverage: { throughTurnKey: string | null; throughTurnCount: number | null; lastTurnKey: string | null; throughTurnRevision: number | null; lastTurnRevision: number | null; current: boolean };
   /** What a list or a header shows: the title, else the opening line of the first user prompt, else the agent, else "Untitled session". */
   label: string;
 }
@@ -150,6 +151,9 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number, quietB
     title: sessions_text(row.title),
     summary: sessions_text(row.summary),
     titledAt: sessions_num(row.titled_at),
+    titleCoverage: { throughTurnKey: sessions_text(row.title_through_turn_key), throughTurnCount: sessions_num(row.title_through_turn_count),
+      lastTurnKey: sessions_text(row.last_turn_key), throughTurnRevision: sessions_num(row.title_through_turn_revision), lastTurnRevision: sessions_num(row.last_turn_revision),
+      current: row.title != null && row.title_through_turn_key != null && row.title_through_turn_key === row.last_turn_key && row.title_through_turn_revision === row.last_turn_revision },
     label: sessions_sessionLabel(sessions_text(row.title), sessions_text(row.first_prompt), sessions_text(row.agent)),
   };
 }

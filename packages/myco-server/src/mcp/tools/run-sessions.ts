@@ -1,3 +1,4 @@
+import { sessionQuietBefore } from '../../core/session-quiet.js';
 import { documentCounters } from '../../read/document-catalog.js';
 import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
 /**
@@ -21,12 +22,11 @@ import {
   sessions_getSession as getSession,
   sessions_sessionCounts as sessionCounts,
 } from '../../read/catalog/sessions.js';
-import { overwriteTitle, writeTitle } from '../../db/session-titles.js';
+import { heldTitleMaterial, rememberTitleMaterial } from '../../db/runs/title-material.js';
+import { storeSessionTitle } from '../../db/session-titles.js';
 import { cleanSummary, cleanTitle, normalizeTitle } from '../../core/titling.js';
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling-params.js';
-import { documentTitlingMaterial } from '../../content/titling-material.js';
-import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
-import { answerBytes } from '../../core/material-pages.js';
+import { singleTurnMaterial } from '../../content/single-turn-material.js';
 import { preview } from '../../core/run-material.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
@@ -63,7 +63,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   const params = titlingParamsOf(run.runContext);
   if (params === null)
     return runRefusal({ what: 'session title', read: input.op === 'material', actual: 'this run names no session', next: REPORT_NEXT });
-  const session = await getSession(db, scope, sessionId);
+  const session = await getSession(db, scope, sessionId, ctx.now, await sessionQuietBefore(ctx.env, ctx.now));
   if (session === null)
     return runRefusal({
       what: 'session title',
@@ -75,7 +75,8 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
   if (input.op === 'material') {
     const counts = await sessionCounts(db, scope, sessionId);
     await assertSessionMaterialReady(db, ctx.projectId, sessionId);
-    const material = await documentTitlingMaterial(ctx.env, ctx.projectId, sessionId, params.mode);
+    const material = await singleTurnMaterial(ctx.env, ctx.projectId, sessionId);
+    await rememberTitleMaterial(db, ctx.projectId, run.runId, run.tokenId, material.snapshot);
     noteRunReads(ctx, [sessionId]);
     const answer = {
       session_id: sessionId,
@@ -84,14 +85,13 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       branch: session.branch,
       prompt_count: counts.prompts,
       turnCount: (await documentCounters(db, scope, sessionId))?.turns ?? 0,
-      ...(session.title === null ? {} : { current_title: session.title }),
-      ...(session.summary === null ? {} : { current_summary: session.summary }),
-      ...(params.mode !== 'claim'
-        ? { note: "The batches are the session's earliest and latest prompts in order; the middle is omitted." }
-        : {}),
-      batches: material.map((line, i) => ({ prompt_number: i + 1, user_prompt: line.prompt, response_excerpt: line.response })),
+      ...(session.title === null ? {} : { current_title: preview(session.title, window.sessionTitleChars) }),
+      ...(session.summary === null ? {} : { current_summary: preview(session.summary, window.sessionSummaryChars) }),
+      through_turn_revision: material.snapshot.throughTurnRevision,
+      through_turn_key: material.snapshot.throughTurnKey,
+      through_turn_count: material.snapshot.turnCount,
+      batches: [{ prompt_number: 1, user_prompt: material.text, response_excerpt: null }],
     };
-    while (answer.batches.length > 1 && answerBytes({ result: answer }) > RUN_ANSWER_BYTES) answer.batches.pop();
     return answer;
   }
 
@@ -105,11 +105,12 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       repair: 'Supply both title and summary within these limits.',
     });
   }
+  await assertSessionMaterialReady(db, ctx.projectId, sessionId);
+  const snapshot = await heldTitleMaterial(db, ctx.projectId, run.runId, run.tokenId);
+  if (snapshot === null) return runRefusal({ what: 'session title and summary', actual: 'the run has not read session material', next: { tool: TITLE_WRITE_TOOL, op: 'material' } });
   const attribution = { runId: run.runId, toolName: TITLE_WRITE_TOOL, op: 'title', recordedAt: ctx.now, detail: { session_id: sessionId } };
-  const written =
-    params.mode !== 'claim'
-      ? await overwriteTitle(db, ctx.projectId, sessionId, title, summary, params.by ?? null, attribution)
-      : await writeTitle(db, ctx.projectId, sessionId, title, summary, attribution);
+  const written = await storeSessionTitle(db, { projectId: ctx.projectId, sessionId, title, summary,
+    mode: params.mode === 'claim' ? 'first' : 'overwrite', by: params.by ?? null, snapshot, attribution });
   if (!written) await assertSessionMaterialReady(db, ctx.projectId, sessionId);
   if (written) {
     emit({ kind: 'session_titled', projectId: ctx.projectId, sessionId, mode: params.mode, runId: run.runId });

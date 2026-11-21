@@ -4,17 +4,17 @@
  * A leaf: the instruction builder reads these without pulling the dispatcher in.
  */
 
+export const TITLE_HEAD_TURNS = 3;
+export const TITLE_TAIL_TURNS = 4;
+export const TITLE_MIDDLE_TURNS = 12;
+
+export const SINGLE_TURN_MATERIAL_CHARS = 10_000;
+export const SINGLE_TURN_MATERIAL_JSON_BYTES = 20_000;
+
 export const TITLE_MAX_CHARS = 80;
 export const SUMMARY_MAX_CHARS = 1200;
 
-/**
- * How a title is asked for. `claim` is the end of a session: one attempt ever,
- * writing only where no title exists, over the session's opening prompts. `owner`
- * is a person asking from the dashboard: any session, ended or not, over the
- * opening and closing prompts, writing over whatever title is there. `refresh` is the Deployment
- * renewing the title of a session still open after it has gone on: the same material and the
- * same overwrite as an owner's ask, attributed to no member.
- */
+/** First titles preserve a standing title; owner asks and quiet-period refreshes replace it from the same bounded arc. */
 export type TitlingMode = 'claim' | 'owner' | 'refresh';
 const TITLING_MODES: readonly TitlingMode[] = ['claim', 'owner', 'refresh'];
 
