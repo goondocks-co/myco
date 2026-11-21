@@ -239,6 +239,8 @@
   "session:member POST /api/projects/{projectId}/runs/{runId}/cancel",
   "session:member POST /api/projects/{projectId}/sessions/{sessionId}/plans/{planKey}/status",
   "session:member POST /api/uncaptured/{machineId}/{rootKey}/connect",
+  "session:member POST /api/uncaptured/{machineId}/{rootKey}/dismiss",
+  "session:member POST /api/uncaptured/{machineId}/{rootKey}/restore",
   "session:member PUT /api/machines/{machineId}/settings/{leaf}",
   "telemetry POST /v1/logs",
   "telemetry POST /v1/metrics",

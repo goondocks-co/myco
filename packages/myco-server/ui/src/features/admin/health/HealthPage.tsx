@@ -1,5 +1,5 @@
 import { Link as RouterLink } from 'react-router-dom';
-import { focusRing } from '../../../design';
+import { ActionLink, focusRing } from '../../../design';
 import { useAttention } from '../../../hooks/use-attention';
 import { useBackups } from '../../../hooks/use-backups';
 import { useNeedsYou } from '../../../hooks/use-needs-you';
@@ -7,32 +7,27 @@ import { useProjects } from '../../../hooks/use-projects';
 import { useStatus } from '../../../hooks/use-status';
 import { useNow } from '../../../hooks/use-today';
 import { cn } from '../../../lib/cn';
-import { HEALTH_ANCHORS } from '../../../routes/nav';
+import { HEALTH_ANCHORS, WORK_SUFFIX } from '../../../routes/nav';
 import { NeedsYouPanel } from '../../today/NeedsYou';
-import { LiveMark, WorkNow } from '../../now/WorkNow';
-import { useWorkNow } from '../../../hooks/use-live';
 import { AdminPage, useAnchorScroll } from '../AdminFrame';
 import { BackupsSection } from './BackupsSection';
 import { MeasuresSection } from './MeasuresSection';
 import { StatusSection } from './StatusSection';
 import { UpkeepSection } from './UpkeepSection';
-import { WorkersSection } from './WorkersSection';
 
 /** The parts of Health, in the order the page lists them. */
 const JUMPS: ReadonlyArray<{ anchor: string; label: string }> = [
-  { anchor: HEALTH_ANCHORS.now, label: 'Now' },
   { anchor: HEALTH_ANCHORS.needsYou, label: 'Needs you' },
   { anchor: HEALTH_ANCHORS.status, label: 'Status' },
-  { anchor: HEALTH_ANCHORS.workers, label: 'Workers' },
   { anchor: HEALTH_ANCHORS.backups, label: 'Backups' },
   { anchor: HEALTH_ANCHORS.upkeep, label: 'Upkeep' },
   { anchor: HEALTH_ANCHORS.measures, label: 'Measures' },
 ];
 
 /**
- * `/status/health`: whether this server is well, what it is doing on its own,
- * and what needs an admin, on one page. Its status is read again every 30 s
- * while the tab is visible.
+ * `/status/health`: whether this server is well and what needs an admin, on one
+ * page. What Myco is doing, and the machines that do it, are on Myco's work. Its
+ * status is read again every 30 s while the tab is visible.
  */
 export function HealthPage() {
   const now = useNow();
@@ -43,7 +38,6 @@ export function HealthPage() {
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (projectId: string): string | null => names.get(projectId) ?? null;
   const needsYou = useNeedsYou({ now, projectName });
-  const workNow = useWorkNow(null);
   useAnchorScroll(!status.isPending && !attention.isPending && !backups.list.isPending);
 
   return (
@@ -51,7 +45,8 @@ export function HealthPage() {
       name="health"
       scope="server"
       title="Health"
-      lede="Whether this server is well, what it does on its own, and anything that needs you."
+      lede="Whether this server is well, and anything that needs you."
+      actions={<ActionLink to={WORK_SUFFIX}>What Myco is doing, and its runners →</ActionLink>}
     >
       <nav aria-label="Parts of Health" className="-mt-s4 flex gap-s2 overflow-x-auto pb-s1" data-health-jumps="">
         {JUMPS.map((jump) => (
@@ -68,15 +63,10 @@ export function HealthPage() {
           </RouterLink>
         ))}
       </nav>
-      <section id={HEALTH_ANCHORS.now} aria-label="Now" className="flex scroll-mt-s6 flex-col gap-s3">
-        <h2 className="flex items-center gap-s3 t-h2 text-ink">Myco’s work now <LiveMark answer={workNow.data} /></h2>
-        <WorkNow answer={workNow.data} pending={workNow.isPending} error={workNow.error} onRetry={() => { void workNow.refetch(); }} now={now} projectName={projectName} />
-      </section>
       <section id={HEALTH_ANCHORS.needsYou} aria-label="Needs you" className="scroll-mt-s6">
         <NeedsYouPanel {...needsYou} />
       </section>
       <StatusSection status={status} now={now} projectName={projectName} />
-      <WorkersSection status={status} now={now} projectName={projectName} />
       <BackupsSection target={status.error === null ? status.data?.target : undefined} />
       <UpkeepSection />
       <MeasuresSection />

@@ -119,19 +119,16 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
   return screen.findByRole('menu');
 }
 
-const PARTS = [['now', 'Now'], ['needs-you', 'Needs you'], ['status', 'Status'], ['workers', 'Workers'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
+const PARTS = [['needs-you', 'Needs you'], ['status', 'Status'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
 
 describe('Health', () => {
-  it('opens on what Myco is doing now across every project, from the same heartbeat the page refreshes by', async () => {
-    const { asked } = server(routes());
+  it('keeps to the server’s own wellness, and leads to Myco’s work for what Myco is doing and the machines that do it', async () => {
+    server(routes());
     mount();
-    const now = await screen.findByRole('region', { name: 'Now' });
-    expect(await within(now).findByText('Learn from sessions')).toBeTruthy();
-    expect(within(now).getByText('Myco')).toBeTruthy();
-    expect(within(now).getByText('Now: Read session cards')).toBeTruthy();
-    expect(within(now).getByText('Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.')).toBeTruthy();
-    expect(within(now).getByText('homelab-mini can’t sign in to a coding agent')).toBeTruthy();
-    await waitFor(() => expect(asked.filter((line) => line === 'GET /api/work/now')).toHaveLength(1));
+    expect((await screen.findByRole('link', { name: 'What Myco is doing, and its runners →' })).getAttribute('href')).toBe('/work');
+    await screen.findByRole('region', { name: 'Status' });
+    expect(screen.queryByRole('region', { name: 'Now' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Workers' })).toBeNull();
   });
 
   it('shows the budget and runner sign-in waits beneath one learning heading', async () => {
@@ -318,53 +315,9 @@ describe('Health', () => {
     expect(within(upkeep).getByRole('link', { name: 'See the latest failed run' }).getAttribute('href')).toContain('/runs/failed-search');
   });
 
-  it('names each worker by its machine, never by an id, and says what it runs where', async () => {
-    server(routes());
-    mount();
-    const workers = await screen.findByRole('region', { name: 'Workers' });
-    const rows = await waitFor(() => {
-      const found = [...workers.querySelectorAll('[data-legacy-worker]')].map((row) => row.textContent ?? '');
-      expect(found[0]).toContain('Ada’s studio Mac');
-      expect(found[1]).toContain('learning in Myco');
-      return found;
-    });
-    expect(rows[0]).toContain('Online');
-    expect(rows[0]).toContain('Legacy worker — uses member credential');
-    expect(rows[0]).toContain('Seen');
-    expect(rows[0]).toContain('Reports Claude Code signed in');
-    expect(rows[0]).toContain('Last check for work: nothing it could take.');
-    expect(rows[1]).toContain('Lin’s build box');
-    expect(rows[1]).toContain('Busy');
-    expect(rows[1]).toContain('Assignment valid until');
-    expect(rows[2]).toContain('A machine');
-    expect(rows[2]).toContain('Offline');
-    expect(rows[2]).toContain('Not seen recently; last seen');
-    expect(within(workers).getByText(/^2 machines are running Myco’s work, 1 busy now\. 2 tasks are waiting\.$/)).toBeTruthy();
-    for (const id of [STUDIO_CREDENTIAL, BUSY_CREDENTIAL, STRAY_CREDENTIAL, 'ada_5a2d54af', MYCO]) expect(workers.textContent).not.toContain(id);
-  });
-
-  it('says worker status is unknown when the server could not read it, never that there are none', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, observedAt: NOW, workersBusy: null, runsQueued: null, recentWithinMs: 90_000, fleet: null } }) }));
-    mount();
-    const workers = await screen.findByRole('region', { name: 'Workers' });
-    expect(await within(workers).findByText(/Whether machines are running Myco’s work could not be read/)).toBeTruthy();
-    expect(workers.textContent).not.toContain('No machine is running');
-    expect(workers.textContent).not.toContain('could not read its own database');
-  });
-
-  it('shows the command that attaches a machine when none is running Myco’s work', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 90_000, fleet: [] } }) }));
-    mount();
-    const workers = await screen.findByRole('region', { name: 'Workers' });
-    expect(await within(workers).findByText('myco runner install')).toBeTruthy();
-    expect(workers.textContent).toContain('No machine is running Myco’s work.');
-    expect(workers.textContent).not.toContain('Work is waiting, but no machine has checked in');
-  });
-
   it('makes queued work with no executor contact an explicit owner opt-in', async () => {
     server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 2, recentWithinMs: 90_000, fleet: [], queue: { observedAt: NOW, count: 2, oldestAt: NOW - 18 * 60000, reasons: [{ reason: 'no_runner', count: 2 }], nativeNeedsRunner: true } } }) }));
     mount();
-    const workers = await screen.findByRole('region', { name: 'Workers' });
     expect(await screen.findByText(/No recently seen runner can currently take this work/)).toBeTruthy();
     expect(screen.getByText(/2 runs waiting; oldest/).textContent).toContain('18 min ago');
     expect(screen.getByText(/This native server no longer runs agent work by itself/).textContent).toContain('on this machine or another');
@@ -531,8 +484,6 @@ describe('Health', () => {
   it('shows no raw id anywhere a reader sees', async () => {
     server(routes());
     mount();
-    const workers = await screen.findByRole('region', { name: 'Workers' });
-    await waitFor(() => expect(workers.textContent).toContain('Ada’s studio Mac'));
     await screen.findByText(/Search kept up to date/);
     await screen.findByText(/^Last backup was /);
     await screen.findAllByTestId('measure-tile');
@@ -647,7 +598,7 @@ it('names the machine for private held destinations and for repair states', asyn
   expect(await within(status).findByText('Codex on Work laptop: Allow Myco to write Codex configuration')).toBeTruthy();
 });
 
-it('keeps a readable database distinct from failed worker, learning and backup setting reads with no live export', async () => {
+it('keeps a readable database distinct from failed learning and backup setting reads with no live export', async () => {
   for (const stage of ['idle', 'failed']) {
     server(routes({
       '/api/status': () => Response.json({ ...STATUS, database: { readable: true },
@@ -658,7 +609,6 @@ it('keeps a readable database distinct from failed worker, learning and backup s
     }));
     mount();
     await screen.findByText('The database is answering reads.');
-    await screen.findByText('Whether machines are running Myco’s work could not be read.');
     await screen.findByText('Automatic backup settings could not be read.');
     await screen.findByText('Couldn’t read learning progress.');
     expect(document.body.textContent).not.toContain('export pauses');

@@ -384,3 +384,15 @@ it('fails a manual subject interruption without promising or spending automatic 
     }
   });
 });
+
+it('counts a failed learning run as retrying while its session waits out its backoff, and a later claim takes it', async () => {
+  await withDocumentStores(async db => {
+    const run = await learningRun(db, plainTurns(1, 24000), 'high');
+    const at = NOW + DAY + 3;
+    await endLeasedRun(run.env, { principal: run.principal, now: at }, { projectId: 'project', runId: run.claimed.id, attemptId: run.claimed.attemptId, status: 'failed', error: 'failed once' });
+    expect((await readAttention(run.env, at)).items.find(i => i.kind === 'outcome_failed' && i.runId === run.claimed.id)).toMatchObject({ retrying: true });
+    const due = (await db.prepare("SELECT eligible_at AS due FROM learning_sessions WHERE session_id='long'").first<{ due: number }>())!.due;
+    expect(due).toBeGreaterThan(at);
+    expect(await claimNextRun(run.env, { principal: run.principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: due })).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
+  });
+});

@@ -22,7 +22,7 @@ import {
 } from '@goondocks/myco-shared/member-protocol';
 import { admitProject, PROJECT_NAME_MAX } from '../db/storage/projects.js';
 import { resolveRepository } from '../core/remotes.js';
-import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
+import { connectedRoot, connectMachineRoot, disconnectMachineRoot, restoreMachineRoot } from '../core/machine-settings.js';
 import { ROOT_KEY } from '../core/settings.js';
 import { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { commit } from '../db/index.js';
@@ -150,15 +150,17 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
  * `POST /members/uncaptured/state` with `{ rootKey, state }`: what became of a repository the machine reported.
  * `connected` forgets it, as a `myco member join` there connected it; `left` forgets it and stops telling the machine
  * to connect it, as `myco member leave` opted it out; `full` and `expired` record that the machine no longer holds its
- * capture. A repository the machine never reported changes nothing.
+ * capture; `quiet` forgets it, as it lies under a folder the member's machine never asks about, and is accepted
+ * (`persisted: true`, with `changed` saying whether a report was waiting) even when none was. Otherwise a repository the
+ * machine never reported changes nothing.
  */
 export async function handleUncapturedState(env: ServerEnv, ctx: CredentialContext): Promise<Response> {
   const body = parseJsonObject(ctx.body);
   const rootKey = typeof body?.rootKey === 'string' ? body.rootKey : '';
   if (!ROOT_KEY.test(rootKey)) return ok({ persisted: false, code: 'invalid_field', reason: 'rootKey must be a repository key' });
   const state = body?.state;
-  if (state !== 'connected' && state !== 'left' && state !== 'full' && state !== 'expired') {
-    return ok({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, full or expired' });
+  if (state !== 'connected' && state !== 'left' && state !== 'quiet' && state !== 'full' && state !== 'expired') {
+    return ok({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, quiet, full or expired' });
   }
   if (state === 'left') {
     // Left on the machine: nothing is asked of "Needs you", and the machine is no longer told to connect it.
@@ -167,6 +169,13 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: cleared.results.length > 0 || untold.changed });
   }
+  if (state === 'quiet') {
+    // Accepted whether or not a report was waiting: a report cleared already (dismissed, pruned) is forgotten all the same.
+    const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
+    return ok({ persisted: true, changed: cleared.results.length > 0 });
+  }
   const [written] = await commit(env.db, state === 'connected' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
-  return ok({ persisted: written.results.length > 0 });
+  // Connected, it is no longer dismissed: should it ever stop being captured, "Needs you" asks about it again.
+  const restored = state === 'connected' ? await restoreMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now) : null;
+  return ok({ persisted: written.results.length > 0 || (restored?.applied === true && restored.changed) });
 }

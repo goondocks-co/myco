@@ -7,15 +7,15 @@ import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, machineUpdateReport, machineUp
  * other member reaches. A machine receives its own set on its session start (`machineBlockFor`), and on nothing it
  * does not claim. A capture leaf at its default holds no row. An update request holds a value and its canonical id.
  */
-import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, isMachineSettingsRevision, parseMachineSettingsRevision, resolveMachineSetting, type MachineSettingLeaf } from '@goondocks/myco-shared/member-protocol';
+import { DISMISSED_ROOTS_LEAF, MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, isMachineSettingsRevision, parseMachineSettingsRevision, resolveMachineSetting, type MachineSettingLeaf } from '@goondocks/myco-shared/member-protocol';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type SettingSource } from '@goondocks/myco-shared/settings-contract';
 import { sha256Hex } from '../hash.js';
 import type { RelationalStore } from './adapters.js';
 import { leafRuleViolation, type LeafSpec } from './settings.js';
 import {
   acknowledgeMachineRevision, clearMachineLeaf, invalidateMachineCache, noteMachineContract, publishMachineSnapshot, putMachineLeaf,
-  reportMachineUpdates, readClaimant, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
-  type MachineSettingRow,
+  reportMachineUpdates, readClaimant, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots, commitDismissal,
+  type LeafEdit, type MachineSettingRow,
 } from '../db/settings/machines.js';
 
 /**
@@ -23,6 +23,8 @@ import {
  * the project it resolves by its remote or creates. Written by the connect, read by the machine's next hook there.
  */
 const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
+/** The folders whose repositories the machine never asks about: the member's own setting, which the machine applies. */
+const QUIET_ROOTS_LEAF = 'capture.quiet_roots';
 
 /** Every leaf a machine holds, with its rule and its default; `serverWritten` leaves are written by the Deployment alone, never set on the dashboard. */
 export const MACHINE_LEAF_SPECS: Readonly<Record<string, { spec: LeafSpec; default: unknown; serverWritten?: true }>> = Object.fromEntries(
@@ -242,34 +244,69 @@ export async function connectMachineRoot(db: RelationalStore, machineId: string,
   return result.applied ? { applied: true } : result;
 }
 
+/**
+ * Dismiss one repository of a machine from "Needs you", and with `folder`, never ask about any repository under that
+ * folder: both leaves and the waiting row change in one commit, rechecked against what this read, or nothing does.
+ */
+export async function dismissMachineRoot(db: RelationalStore, input: { machineId: string; rootKey: string; label: string; folder: string | null; actor: string; now: number }): Promise<RootsWrite> {
+  const { machineId, rootKey, label, folder, actor, now } = input;
+  for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt++) {
+    if (await machineAccess(db, actor, machineId) !== 'allowed') return { applied: false, reason: 'absent' };
+    const dismissed = await leafEdit<Record<string, string>>(db, machineId, DISMISSED_ROOTS_LEAF, (current) => ({ ...current, [rootKey]: label }));
+    if ('refused' in dismissed) {
+      const full = Object.keys(dismissed.current ?? {}).length >= MACHINE_SETTING_SPECS[DISMISSED_ROOTS_LEAF].maxItems;
+      return { applied: false, reason: 'invalid_value', detail: full
+        ? `this machine already holds ${MACHINE_SETTING_SPECS[DISMISSED_ROOTS_LEAF].maxItems} dismissed repositories; ask again about some under My machines, in this machine's settings, or with POST /api/uncaptured/${machineId}/{rootKey}/restore for one`
+        : dismissed.refused };
+    }
+    const quiet = folder === null ? null : await leafEdit<string[]>(db, machineId, QUIET_ROOTS_LEAF, (current) => current.includes(folder) ? current : [...current, folder]);
+    if (quiet !== null && 'refused' in quiet) return { applied: false, reason: 'invalid_value', detail: quiet.refused };
+    if (await commitDismissal(db, { machine: machineId, rootKey, actor, now, edits: [dismissed, ...(quiet === null ? [] : [quiet])] })) return { applied: true, changed: true };
+  }
+  return { applied: false, reason: 'conflict' };
+}
+
+/** Ask again about a dismissed repository: a later report of it is listed. Connecting it does the same. */
+export async function restoreMachineRoot(db: RelationalStore, machineId: string, rootKey: string, actor: string, now: number): Promise<RootsWrite> {
+  return editMachineLeaf<Record<string, string>>(db, machineId, DISMISSED_ROOTS_LEAF, actor, now, current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== rootKey)));
+}
+
+/** One capture leaf's edit from its stored text, or why the stored value or the edited one breaks the leaf's rule. */
+async function leafEdit<T extends object>(db: RelationalStore, machineId: string, leaf: string, edit: (current: T) => T): Promise<LeafEdit | { refused: string; current: T | null }> {
+  const row = await readMachineLeaf(db, machineId, leaf);
+  const spec = MACHINE_LEAF_SPECS[leaf]!.spec;
+  let current: unknown = MACHINE_LEAF_SPECS[leaf]!.default;
+  if (row !== null) {
+    try { current = JSON.parse(row.value); }
+    catch (error) { if (error instanceof SyntaxError) return { refused: 'the stored value cannot be read', current: null }; throw error; }
+  }
+  const invalid = leafRuleViolation(spec, current);
+  if (invalid !== null) return { refused: invalid, current: null };
+  const next = edit(current as T);
+  const violation = leafRuleViolation(spec, next);
+  return violation === null ? { leaf, previous: row?.value ?? null, value: JSON.stringify(next) } : { refused: violation, current: current as T };
+}
+
 type RootsWrite = { applied: true; changed: boolean } | Extract<MachineWrite, { applied: false }>;
 
 /** Recompute a connection edit from the exact stored text that its conditional write replaces. */
-async function editMachineRoots(
+function editMachineRoots(
   db: RelationalStore, machineId: string, actor: string, now: number,
   edit: (current: Record<string, string>) => Record<string, string>,
 ): Promise<RootsWrite> {
+  return editMachineLeaf(db, machineId, CONNECT_ROOTS_LEAF, actor, now, edit);
+}
+
+/** Recompute an edit of one capture leaf from the exact stored text that its conditional write replaces; the rest stand. */
+async function editMachineLeaf<T extends object>(
+  db: RelationalStore, machineId: string, leaf: string, actor: string, now: number, edit: (current: T) => T,
+): Promise<RootsWrite> {
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt++) {
     if (await machineAccess(db, actor, machineId) !== 'allowed') return { applied: false, reason: 'absent' };
-    const row = await readMachineLeaf(db, machineId, CONNECT_ROOTS_LEAF);
-    let current: unknown = {};
-    if (row !== null) {
-      try { current = JSON.parse(row.value); }
-      catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-        return { applied: false, reason: 'invalid_value', detail: 'the stored connections cannot be read' };
-      }
-    }
-    const spec = MACHINE_LEAF_SPECS[CONNECT_ROOTS_LEAF]!.spec;
-    const invalid = leafRuleViolation(spec, current);
-    if (invalid !== null) return { applied: false, reason: 'invalid_value', detail: invalid };
-    const next = edit(current as Record<string, string>);
-    const violation = leafRuleViolation(spec, next);
-    if (violation !== null) return { applied: false, reason: 'invalid_value', detail: violation };
-    const value = JSON.stringify(next);
-    if (row === null && Object.keys(next).length === 0) return { applied: true, changed: false };
-    if (row !== null && value === row.value) return { applied: true, changed: false };
-    if (await writeMachineRoots(db, { machine: machineId, leaf: CONNECT_ROOTS_LEAF, value, actor, now, previous: row?.value ?? null })) {
+    const edited = await leafEdit<T>(db, machineId, leaf, edit);
+    if ('refused' in edited) return { applied: false, reason: 'invalid_value', detail: edited.refused };
+    if (edited.value === (edited.previous ?? JSON.stringify(MACHINE_LEAF_SPECS[leaf]!.default))) return { applied: true, changed: false };
+    if (await writeMachineRoots(db, { machine: machineId, leaf, value: edited.value, actor, now, previous: edited.previous })) {
       return { applied: true, changed: true };
     }
   }

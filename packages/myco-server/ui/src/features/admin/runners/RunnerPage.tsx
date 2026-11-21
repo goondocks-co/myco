@@ -1,7 +1,7 @@
 import { useParams } from 'react-router-dom';
 import { Breadcrumbs, Card, ErrorState, HealthDot, ListRow, ShowMore, StatusChip, type HealthTone } from '../../../design';
 import { usePaged, type Page } from '../../../hooks/use-paged';
-import { RUNNERS_PATH, runPath } from '../../../routes/nav';
+import { RUNNERS_PATH, runPath, WORK_SUFFIX } from '../../../routes/nav';
 import { atWords } from '../../work/words';
 import { SourceMark } from '../../work/RunStory';
 import { AdminPage, AdminSection } from '../AdminFrame';
@@ -45,7 +45,7 @@ export function RunnerPage() {
   const worked = workedWords(runs.rows);
   return (
     <AdminPage name="runner" scope="server" title={runner?.name ?? 'Runner'} lede="What this runner ran, newest first, across every project.">
-      <Breadcrumbs items={[{ label: 'Runners', to: `${RUNNERS_PATH}#runner-${encodeURIComponent(runnerId)}` }]} />
+      <Breadcrumbs items={[{ label: 'Myco’s work', to: WORK_SUFFIX }, { label: 'Runners', to: `${RUNNERS_PATH}#runner-${encodeURIComponent(runnerId)}` }]} />
       {runs.error !== null && <ErrorState error={runs.error} onRetry={runs.retry}><p>This runner’s runs are unavailable.</p></ErrorState>}
       {runs.isPending && runs.error === null && <p className="t-body text-muted">Loading this runner’s runs…</p>}
       {runner !== undefined && (

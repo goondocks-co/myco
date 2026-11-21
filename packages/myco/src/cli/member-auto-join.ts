@@ -26,7 +26,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import {
   clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, pendingImportWork, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, requestJoin, sweepDone, takeRepositoryLock,
-  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
+  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, quietCandidates, rootKeyFor, stillQuietUntold, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import type { HelperPass } from '../member/helper.js';
@@ -195,6 +195,14 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     }, mycoHome);
   };
 
+  if (placement === 'quiet') {
+    // Never asked about: the Deployment forgets any report of it once it takes that, and nothing more is said.
+    const acknowledged = previous?.placement === 'quiet' ? previous.quietAt : undefined;
+    const refusal = acknowledged !== undefined ? null : await tellQuiet(client, repo.rootKey);
+    recordMiss({ outcome: 'outside_folders', reason: 'outside_folders',
+      ...(acknowledged !== undefined ? { quietAt: acknowledged } : refusal === null ? { quietAt: now() } : { detail: refusal }) });
+    return { root, result: 'outside_folders', ...(refusal === null ? {} : { reason: refusal }) };
+  }
   if (placement === 'outside_folders') {
     // Reported once a day, and whenever there is something new to say: sessions that met it, or a change in its hold.
     const due = previous?.reportedAt === undefined || now() - previous.reportedAt >= UNCAPTURED_REPORT_INTERVAL_MS
@@ -319,6 +327,45 @@ async function isolateRepository<T>(root: string, err: (line: string) => void, w
   catch (error) { err(`auto-join ${root}: ${error instanceof Error ? error.message : String(error)}; work retained`); }
 }
 
+/**
+ * Tell the Deployment to forget its report of a repository never to be asked about: null once it takes it, else why
+ * not, in its own words; a Deployment that predates `quiet` says so, and the machine asks again at a later attempt.
+ */
+async function tellQuiet(client: { post: (path: string, body: Record<string, unknown>) => Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; error: { message: string } }> }, rootKey: string): Promise<string | null> {
+  const told = await client.post(UNCAPTURED_STATE_PATH, { rootKey, state: 'quiet' });
+  if (!told.ok) return `the Deployment did not forget its report: ${told.error.message}`;
+  return typeof told.value.code === 'string' ? `the Deployment did not forget its report: ${String(told.value.reason ?? told.value.code)}` : null;
+}
+
+/** How many reported repositories one pass tells the Deployment to forget, after its settings put them under a quiet folder. */
+const QUIET_RECHECK_LIMIT = 32;
+
+/**
+ * Repositories this machine reported that its settings now place under a folder never asked about: each is forgotten
+ * on the Deployment and its state recorded quiet, without waiting for an agent to work there again. Bounded per pass.
+ */
+async function forgetQuieted(run: AttemptRun, err: (line: string) => void, deadline: number): Promise<boolean> {
+  for (const candidate of quietCandidates(run.mycoHome).slice(0, QUIET_RECHECK_LIMIT)) {
+    if (run.now() >= deadline) return true;
+    const membership = readDeploymentMembership(candidate.serverUrl, run.mycoHome);
+    if (membership === null) continue;
+    await isolateRepository(candidate.root, err, async () => {
+      const lock = takeRepositoryLock(candidate.rootKey, run.mycoHome);
+      if (lock === null) return;
+      try {
+        const opened = await openDeploymentRequests('registry', { fetch: run.fetch, mycoHome: run.mycoHome, requestTimeoutMs: REQUEST_TIMEOUT_MS }, membership.serverUrl);
+        // Read again under the lock, after the credential is ready: a connection or settings that moved since send nothing.
+        const state = stillQuietUntold(candidate, run.mycoHome);
+        if (state === null) return;
+        const refusal = opened.ok ? await tellQuiet(opened.value, state.rootKey) : opened.error.message;
+        writeAutoJoinState({ ...state, placement: 'quiet', detail: refusal ?? undefined, ...(refusal === null ? { quietAt: run.now() } : {}) }, run.mycoHome);
+        if (refusal !== null) err(`auto-join ${state.root}: ${refusal}`);
+      } finally { lock.release(); }
+    });
+  }
+  return false;
+}
+
 /** One attempt at `root`, holding its lock: busy where another attempt holds it. */
 async function attempt(root: string, membership: DeploymentMembership, run: AttemptRun): Promise<AutoJoinResult> {
   const lock = takeRepositoryLock(rootKeyFor(root, run.mycoHome), run.mycoHome);
@@ -351,7 +398,8 @@ async function sweep(membership: DeploymentMembership, run: AttemptRun, err: (li
  * 1. each repository a hook asked about, oldest first, using the request's Deployment membership; busy or unavailable
  *    bindings keep their request, and left or no-longer-due repositories are dropped;
  * 2. the past sessions of each repository joined, a step at a time;
- * 3. the sweep, once per machine.
+ * 3. the repositories it reported that its settings now place under a folder never asked about, a bounded few;
+ * 4. the sweep, once per machine.
  */
 export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () => number } = {}): HelperPass {
   const now = deps.now ?? Date.now;
@@ -391,6 +439,7 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
       if (remaining) return { more: true };
     }
 
+    if (await forgetQuieted(run, err, deadline)) return { more: true };
     if (membership !== null && !sweepDone(mycoHome) && !(await sweep(membership, run, err, deadline)).done) return { more: true };
   };
 }

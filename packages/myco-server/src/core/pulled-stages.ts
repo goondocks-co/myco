@@ -38,6 +38,11 @@ export interface PulledStage {
   readonly switchedOn: string;
   /** Whether an item of this stage is due in the Project the SQL expression `project` names. */
   due(project: string, now: number): SqlTerm;
+  /**
+   * A SQL boolean: whether the stage takes the failed `subject` in `project` again by itself at `now`. A stage without
+   * it is never counted as retrying, so its failures stay in front of a person.
+   */
+  retries?(project: string, subject: string, now: string): string;
   /** The FROM clause, binding the Project as `p`, that candidate Projects come from; every Project when omitted. */
   readonly candidates?: string;
   /** The Project's head at this stage. */

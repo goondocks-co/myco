@@ -157,8 +157,11 @@ export interface Repository {
   remote: string | null;
 }
 
-/** Where a repository stands for auto-join on this machine. */
-export type Placement = 'eligible' | 'connected' | 'outside_folders';
+/**
+ * Where a repository stands for auto-join on this machine: `quiet` lies outside the captured folders and either under
+ * a folder the member never wants asked about, or dismissed from "Needs you".
+ */
+export type Placement = 'eligible' | 'connected' | 'outside_folders' | 'quiet';
 
 /** What the last attempt for a repository came to. */
 export type AutoJoinOutcome = 'joined' | 'missed' | 'outside_folders' | 'unreachable';
@@ -186,6 +189,8 @@ export interface AutoJoinState {
   /** When this machine last reported the repository for "Needs you", and the hold it reported then. */
   reportedAt?: number;
   reportedHeld?: HeldState;
+  /** When the Deployment took this machine's word that the repository is never to be asked about (`state: quiet`). */
+  quietAt?: number;
   mcpReady?: string[];
 }
 
@@ -397,17 +402,20 @@ export function folderOf(entry: string, home: string): string | null {
   return path.isAbsolute(entry) ? entry : null;
 }
 
-/** Where a repository stands: told to connect, under a folder the machine captures, or outside them. */
+/** Where a repository stands: told to connect, under a folder the machine captures, outside them, or never asked about. */
 export function placeRepository(
-  repo: Pick<Repository, 'root' | 'rootKey'>, leaves: { autoJoinRoots: readonly string[]; connectRoots: Readonly<Record<string, string>> }, opts: { home?: string } = {},
+  repo: Pick<Repository, 'root' | 'rootKey'>,
+  leaves: { autoJoinRoots: readonly string[]; connectRoots: Readonly<Record<string, string>>; quietRoots?: readonly string[]; dismissedRoots?: Readonly<Record<string, string>> },
+  opts: { home?: string } = {},
 ): Placement {
   if (Object.prototype.hasOwnProperty.call(leaves.connectRoots, repo.rootKey)) return 'connected';
   const home = opts.home ?? os.homedir();
   const at = real(repo.root);
-  const under = leaves.autoJoinRoots
+  const under = (entries: readonly string[]) => entries
     .map((entry) => folderOf(entry, home))
     .some((folder) => folder !== null && within(at, real(folder)));
-  return under ? 'eligible' : 'outside_folders';
+  if (under(leaves.autoJoinRoots)) return 'eligible';
+  return under(leaves.quietRoots ?? []) || Object.prototype.hasOwnProperty.call(leaves.dismissedRoots ?? {}, repo.rootKey) ? 'quiet' : 'outside_folders';
 }
 
 function readStateFile(file: string): AutoJoinState | null {
@@ -461,6 +469,28 @@ export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
   return [...byRoute.values()].sort((a, b) => b.attemptAt - a.attemptAt);
 }
 
+/**
+ * Whether the Deployment is still to forget `state`'s repository: reported for "Needs you", or found quiet without the
+ * Deployment taking it, with no connection of its own, and placed quiet by the settings this machine holds now.
+ */
+function quietUntold(state: AutoJoinState, mycoHome: string): boolean {
+  return state.outcome !== 'joined'
+    && ((state.placement === 'outside_folders' && state.reportedAt !== undefined) || (state.placement === 'quiet' && state.quietAt === undefined))
+    && readRegistryEntryResult(state.root, mycoHome).status === 'missing'
+    && placeRepository(state, machineAutoJoinLeaves(state.serverUrl, mycoHome)) === 'quiet';
+}
+
+/** The repositories the Deployment is still to forget, by `quietUntold`. */
+export function quietCandidates(mycoHome: string): AutoJoinState[] {
+  return listAutoJoinStates(mycoHome).filter((state) => quietUntold(state, mycoHome));
+}
+
+/** `candidate`'s repository as it stands now, read again (state, binding, settings), or null when it is no longer to forget. */
+export function stillQuietUntold(candidate: Pick<AutoJoinState, 'rootKey' | 'serverUrl'>, mycoHome: string): AutoJoinState | null {
+  const state = readAutoJoinState(candidate.rootKey, mycoHome, candidate.serverUrl);
+  return state !== null && quietUntold(state, mycoHome) ? state : null;
+}
+
 /** Whether a repository is due an attempt: never tried, or tried and not joined at least `AUTO_JOIN_RETRY_MS` ago. */
 export function autoJoinDue(state: AutoJoinState | null, now: number): boolean {
   return state === null || (state.outcome !== 'joined' && now >= (state.nextAttemptAt ?? state.attemptAt + AUTO_JOIN_RETRY_MS));
@@ -507,7 +537,7 @@ export function markSweepDone(mycoHome: string, now: number): void {
  * otherwise. A repository left and then connected from "Needs you" is no longer left.
  */
 export function joinStanding(root: string, rootKey: string, serverUrl: string, mycoHome: string, now: number): {
-  standing: 'left' | 'due' | 'waiting' | 'busy'; leaves: { autoJoinRoots: string[]; connectRoots: Record<string, string> }; state: AutoJoinState | null;
+  standing: 'left' | 'due' | 'waiting' | 'busy'; leaves: ReturnType<typeof machineAutoJoinLeaves>; state: AutoJoinState | null;
 } {
   const leaves = autoJoinLeavesFor(rootKey, serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, rootKey) ? leaves.connectRoots[rootKey]! : null;
@@ -669,8 +699,10 @@ const CONNECT_HINT = 'or run `myco member join` in it';
  * What is held of it is said too: held for the TTL, or held no more, past the cap or with age.
  */
 export function notCapturedNotice(
-  state: Pick<AutoJoinState, 'outcome' | 'reason' | 'serverUrl'>, autoJoinRoots: readonly string[], end: Pick<HeldEnd, 'held'> | null,
+  state: Pick<AutoJoinState, 'outcome' | 'reason' | 'serverUrl' | 'placement'>, autoJoinRoots: readonly string[], end: Pick<HeldEnd, 'held'> | null,
 ): string | null {
+  // The member asked never to be asked about it: nothing is said.
+  if (state.placement === 'quiet') return null;
   const where = `"Needs you" on ${state.serverUrl}`;
   const held = end?.held === 'full'
     ? `What your agents do here is no longer held: this machine held the ${PENDING_MAX_RECORDS} events it keeps for a repository waiting to be connected.`

@@ -187,6 +187,15 @@ describe('what Myco’s work came to', () => {
 });
 
 describe('Myco’s work', () => {
+  it('counts no failed work Myco tries again by itself as needing anyone, and opens on its tabs', async () => {
+    const failed = { kind: 'outcome_failed', tone: 'bad', projectId: P, outcome: 'learn', task: 'extract-curate', failures: 2, since: NOW - 2 * HOUR, latestAt: NOW - HOUR, runId: 'run_l2' };
+    server({ ...week(), '/api/attention': () => Response.json({ items: [{ ...failed, retrying: true }, { ...failed, projectId: P2, retrying: false }], unavailable: [] }) });
+    mount(`/p/${P}/work`);
+    expect(await within(await screen.findByRole('navigation', { name: 'Admin' })).findByRole('link', { name: 'Health, 1 thing needs you' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Overview', current: 'page' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Runs' }).getAttribute('href')).toBe(`/work/history?project=${P}`);
+  });
+
   it('keeps a queued code-learning card in waiting language', async () => {
     server(week({ work: {
       ...WEEK_WORK,

@@ -1,5 +1,6 @@
 import { BudgetLine } from './BudgetLine';
 import { RepositoryNotice } from '../today/RepositoryNotice';
+import { WorkTabs } from './WorkTabs';
 import { Fragment, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -109,10 +110,10 @@ export function WorkPage({ projectId, projectName, runId }: WorkPageProps) {
           <p className="max-w-measure t-body text-muted">What Myco is doing now, what waits and why, and what it did, grouped by what came of it.</p>
         </div>
         <div className="flex flex-wrap items-center gap-s3">
-          <OnwardLink to={projectId === null ? TASKS_SUFFIX : projectPath(projectId, TASKS_SUFFIX)}>Tasks</OnwardLink>
           <RunTaskMenu projectId={projectId} week={week.data?.summary ?? undefined} now={now} onPick={(task) => { setStarted(null); setAsking(task); }} />
         </div>
       </header>
+      <WorkTabs projectId={projectId} section="overview" />
       <WorkNow answer={workNow.data} pending={workNow.isPending} error={workNow.error} onRetry={() => { void workNow.refetch(); }} now={now} projectName={projectName} />
       <BudgetLine />
       {started !== null && <StartedLine started={started} />}

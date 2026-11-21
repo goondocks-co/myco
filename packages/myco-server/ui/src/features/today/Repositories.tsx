@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { ActionLink, Button, Dialog, DialogContent, DialogFooter, Disclosure, HealthDot, Select } from '../../design';
-import { useConnectUncaptured } from '../../hooks/use-uncaptured';
+import { ActionLink, Button, Dialog, DialogContent, DialogFooter, HealthDot, Input, Select } from '../../design';
+import { useConnectUncaptured, useDismissUncaptured } from '../../hooks/use-uncaptured';
 import { ApiError } from '../../lib/api';
 import { memberLabel } from '../../lib/member-name';
 import { scopeOf, useMe } from '../../hooks/use-me';
 import { PROJECTS_PATH } from '../../routes/nav';
 import type { ConnectRefusalCode, UncapturedRootItem } from './wire';
-import { count, listed, repositoryMachine, repositoryWords } from './words';
+import { count, repositoryMachine, repositoryWords } from './words';
 
 const TONE_LABEL = { warn: 'Not captured yet', bad: 'Work there isn’t being kept' } as const;
 
@@ -71,31 +71,68 @@ export function RepositoryItem({ item, now, viewerId, admin, onConnect }: {
           ? admin && <ActionLink to={PROJECTS_PATH}>Open Projects →</ActionLink>
           : ownMachine ? <div><Button size="sm" onClick={() => onConnect(item)}>Connect {item.label}</Button></div>
             : <p className="t-small text-muted">{connectPermission.reason ?? 'Only the member this machine belongs to can connect it.'}</p>}
+        {ownMachine && <DismissControls item={item} machine={repositoryMachine(item, viewerId)} />}
       </div>
     </li>
+  );
+}
+
+/** A refused dismissal in words, by what the server answered, never by its own words. */
+function dismissRefusalWords(error: unknown): string {
+  if (error instanceof ApiError && error.status === 404) return 'It’s no longer waiting: it was connected or dismissed already, or its machine left.';
+  if (error instanceof ApiError && error.status === 400) return 'Myco couldn’t use that folder. Start it with ~/ or / and name a folder below it.';
+  return 'Myco couldn’t dismiss it just now. Try again.';
+}
+
+/**
+ * Stop being asked about a repository: this one alone, or every repository under a folder on its machine. Nothing it
+ * holds is discarded, and connecting it later still delivers what was kept.
+ */
+function DismissControls({ item, machine }: { item: UncapturedRootItem; machine: string }) {
+  const dismiss = useDismissUncaptured();
+  const [asking, setAsking] = useState(false);
+  const [folder, setFolder] = useState('');
+  const field = `never-ask-${item.machineId}-${item.rootKey}`;
+  return (
+    <div className="flex flex-col gap-s2" data-dismiss="">
+      <div className="flex flex-wrap gap-s2">
+        <Button size="sm" variant="ghost" pending={dismiss.isPending && !asking} onClick={() => dismiss.mutate({ item })}>Dismiss</Button>
+        <Button size="sm" variant="ghost" aria-expanded={asking} onClick={() => setAsking(!asking)}>Never ask about a folder…</Button>
+      </div>
+      {asking && (
+        <form className="flex flex-col gap-s2" onSubmit={(event) => { event.preventDefault(); if (folder.trim() !== '') dismiss.mutate({ item, folder: folder.trim() }); }}>
+          <label htmlFor={field} className="t-small font-medium text-ink">Never ask about anything under this folder</label>
+          <Input id={field} value={folder} onChange={(event) => setFolder(event.target.value)} placeholder="~/scratch" autoComplete="off" spellCheck={false} />
+          <p className="t-small text-muted">The folder as it is on {machine}, starting with ~/ or /. {item.label} and every other repository under it stop being asked about.</p>
+          <div><Button type="submit" size="sm" pending={dismiss.isPending && asking} disabled={folder.trim() === ''}>Never ask</Button></div>
+        </form>
+      )}
+      {dismiss.error !== null && <p role="alert" className="t-small text-bad">{dismissRefusalWords(dismiss.error)}</p>}
+    </div>
   );
 }
 
 /** Whether any of `items` has a machine that stopped keeping what its agents do there. */
 export const losingWork = (items: readonly UncapturedRootItem[]): boolean => items.some((item) => item.held !== 'held');
 
-/** How many of a group's repositories are losing work, as a sentence to follow their names, or nothing when none is. */
+/** How many of a group's repositories are losing work, as a sentence, or nothing when none is. */
 function losingWords(losing: number, of: number): string {
   if (losing === 0) return '';
   const which = losing < of ? `${losing} of them` : of === 2 ? 'both' : 'all of them';
-  return ` Work in ${which} isn’t being kept.`;
+  return `Work in ${which} isn’t being kept. `;
 }
 
 /** The title "Needs you" gives two or more repositories Myco isn't capturing yet, as one line. */
 export const repositoriesTitle = (items: readonly UncapturedRootItem[]): string => `${count(items.length, 'repository', 'repositories')} aren’t being captured yet`;
 
 /**
- * Two or more repositories Myco isn't capturing yet, as one thing that needs the viewer: their names, whether any
- * machine has stopped keeping work, and each one, with its way to connect, a step away.
+ * Two or more repositories Myco isn't capturing yet, as one thing that needs the viewer: how many, whether any machine
+ * has stopped keeping work, and a Review that lists each with its way to connect or dismiss it.
  */
 export function RepositoryGroup({ items, now, viewerId, admin, onConnect }: {
   items: readonly UncapturedRootItem[]; now: number; viewerId: string | null; admin: boolean; onConnect: (item: UncapturedRootItem) => void;
 }) {
+  const [open, setOpen] = useState(false);
   const tone = losingWork(items) ? 'bad' : 'warn';
   const losing = items.filter((item) => item.held !== 'held').length;
   return (
@@ -103,15 +140,16 @@ export function RepositoryGroup({ items, now, viewerId, admin, onConnect }: {
       <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone={tone} label={TONE_LABEL[tone]} /></span>
       <div className="flex min-w-0 flex-1 flex-col gap-s1">
         <p className="t-body font-medium text-ink">{repositoriesTitle(items)}</p>
-        <p className="t-small text-muted break-words">
-          {listed(items.map((item) => item.label))}.{losingWords(losing, items.length)} Connect each to a project, or let Myco choose.
-        </p>
-        <Disclosure summary="See each">
-          <ul className="flex flex-col gap-s3 pt-s1" aria-label="Repositories not captured yet">
-            {items.map((item) => <RepositoryItem key={`${item.machineId}:${item.rootKey}`} item={item} now={now} viewerId={viewerId} admin={admin} onConnect={onConnect} />)}
-          </ul>
-        </Disclosure>
+        <p className="t-small text-muted">{losingWords(losing, items.length)}Connect each to a project, or dismiss the ones Myco shouldn’t ask about.</p>
+        <div><Button size="sm" onClick={() => setOpen(true)}>Review</Button></div>
       </div>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent title={repositoriesTitle(items)} description="Connect each to a project, or dismiss it. A folder you never want asked about covers every repository under it.">
+          <ul className="flex flex-col gap-s3" aria-label="Repositories not captured yet">
+            {items.map((item) => <RepositoryItem key={`${item.machineId}:${item.rootKey}`} item={item} now={now} viewerId={viewerId} admin={admin} onConnect={(picked) => { setOpen(false); onConnect(picked); }} />)}
+          </ul>
+        </DialogContent>
+      </Dialog>
     </li>
   );
 }

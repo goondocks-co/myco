@@ -65,13 +65,41 @@ export const learningNotInFlight = (kind: 'cards' | 'learning') => `NOT EXISTS(S
 const readyIndex = (kind: 'cards' | 'learning') => kind === 'cards' ? 'idx_learning_card_ready' : 'idx_learning_stage_ready';
 const stageColumn = (kind: 'cards' | 'learning') => kind === 'cards' ? 'card_stage' : 'learning_stage';
 
+/**
+ * When a session's stage is ready: `now`, promoted and due as a claim takes it; `later`, with a deadline its readiness
+ * or retry backoff set and not aged out, which a deadline pass promotes once it comes. Each pairs with the same admission;
+ * `later` reads the source window at that deadline, so a retry due after the window closes is not one.
+ */
+type Readiness = 'now' | 'later';
+const READINESS: Readonly<Record<LearningStage, Record<Readiness, (now: string) => { automatic: string; manual: string; turn: string }>>> = {
+  cards: {
+    now: (now) => ({ automatic: "l.card_stage='cards'", manual: `l.card_deadline<=${now}`, turn: `c.due_at<=${now}` }),
+    later: () => ({ automatic: 'l.card_deadline IS NOT NULL AND l.aged_out_at IS NULL', manual: 'l.card_deadline IS NOT NULL', turn: 'c.due_at IS NOT NULL' }),
+  },
+  learning: {
+    now: () => ({ automatic: "l.learning_stage='learning'", manual: 'FALSE', turn: 'TRUE' }),
+    later: () => ({ automatic: 'l.learning_deadline IS NOT NULL AND l.aged_out_at IS NULL', manual: 'FALSE', turn: 'TRUE' }),
+  },
+};
+
 /** Automatic sessions and named manual requests admit model-due turns for card runs. */
-export function learningEligible(kind: LearningStage, now: string): string {
-  const ready = kind === 'cards' ? cardLearningAdmittedSql(now, { automatic: "l.card_stage='cards'", manual: `l.card_deadline<=${now}` })
-    : `l.learning_stage='learning' AND ${learningEnabledSql()} AND ${learningWindowSql(now)}`;
+export function learningEligible(kind: LearningStage, now: string, readiness: Readiness = 'now'): string {
+  const at = READINESS[kind][readiness](now);
+  const when = readiness === 'now' ? now : `MAX(${now},COALESCE(l.${kind === 'cards' ? 'card' : 'learning'}_deadline,${now}))`;
+  const ready = kind === 'cards' ? cardLearningAdmittedSql(when, { automatic: at.automatic, manual: at.manual })
+    : `${at.automatic} AND ${learningEnabledSql()} AND ${learningWindowSql(when)}`;
   return `${ready}${kind === 'learning' ? ` AND ${subjectCanRetry('l.project_id', `'${EXTRACTION_TASK}'`, "'session:'||l.session_id")}` : ''}${kind === 'cards' ? ` AND (l.counted=1 OR EXISTS(SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
-    WHERE c.project_id=l.project_id AND c.session_id=l.session_id AND c.state='pending' AND c.due_at IS NOT NULL AND c.due_at<=${now}))` : ''}`;
+    WHERE c.project_id=l.project_id AND c.session_id=l.session_id AND c.state='pending' AND c.due_at IS NOT NULL AND ${at.turn}))` : ''}`;
 }
+
+/**
+ * Whether the stage takes the session `subject` names again by itself, now or once its deadline comes: the session is
+ * admitted under the same predicate its automatic claim reads, with `later` readiness. Past its window, or with
+ * learning off, or out of interruptions, it is not.
+ */
+export const learningSubjectRetries = (kind: LearningStage, project: string, subject: string, now: string): string =>
+  `EXISTS(SELECT 1 FROM learning_sessions l WHERE l.project_id=${project} AND l.session_id=substr(${subject},${subjectPrefix(kind).length + 1})
+    AND ${subject}='${subjectPrefix(kind)}'||l.session_id AND ${learningEligible(kind, now, 'later')})`;
 
 /** The Project has a ready session with no run in flight. */
 export const learningDue = (kind: LearningStage, project: string, now: string): string =>

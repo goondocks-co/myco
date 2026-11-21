@@ -158,12 +158,12 @@ async function expectProjectSettings(page: Page, name: string): Promise<void> {
 
 async function expectHealth(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: 'Health' })).toBeInViewport();
-  for (const id of ['needs-you', 'status', 'workers', 'backups', 'upkeep', 'measures']) await expect(page.locator(`section#${id}`)).toBeVisible();
+  for (const id of ['needs-you', 'status', 'backups', 'upkeep', 'measures']) await expect(page.locator(`section#${id}`)).toBeVisible();
   await expect(page.locator('section#needs-you')).toBeInViewport();
   if (!onFixture()) return;
   await expect(page.locator('section#needs-you')).toContainText('CI deploys');
-  // The worker is named by its machine, never by its credential or machine id.
-  await expect(page.locator('section#workers')).toContainText('Ada’s studio Mac');
+  // What Myco is doing, and the machines that do it, are on Myco's work.
+  await expect(page.locator('section#workers')).toHaveCount(0);
   await expect(page.locator('section#status')).toContainText('Myco');
   await expect(page.locator('[data-health-search-rebuild]')).toContainText('Rebuilding search with nomic-embed-text');
 }

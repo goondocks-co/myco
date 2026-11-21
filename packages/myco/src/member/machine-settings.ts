@@ -10,7 +10,7 @@ import { MACHINE_UPDATE_HEADER, MACHINE_UPDATE_LEAVES, machineUpdateRequests, ty
 import { readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
 import { applyMachineUpdateRequests, readAppliedUpdateRequests } from './automatic-update-state.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
-import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision, resolveMachineSetting } from '@goondocks/myco-shared/member-protocol';
+import { DISMISSED_ROOTS_LEAF, MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision, resolveMachineSetting } from '@goondocks/myco-shared/member-protocol';
 import { deploymentKeyFor, deploymentsDir, machineSettingsPath } from './registry.js';
 import { ensureMemberDir, ensurePrivateFile, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
@@ -181,14 +181,19 @@ export const DEFAULT_AUTO_JOIN_ROOTS: readonly string[] = MACHINE_SETTING_SPECS[
 /** The repositories this machine is told to connect from "Needs you", by key: a project id, or `''` for the one its remote names or one created for it. */
 export const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
 
+/** The folders whose repositories this machine never asks about, and the repositories dismissed from "Needs you". */
+const QUIET_ROOTS_LEAF = 'capture.quiet_roots';
+
 /** The leaves auto-join reads, as `serverUrl` last answered them for this machine, each at its default where nothing is cached. */
-export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { autoJoinRoots: string[]; connectRoots: Record<string, string> } {
+export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { autoJoinRoots: string[]; connectRoots: Record<string, string>; quietRoots: string[]; dismissedRoots: Record<string, string> } {
   const leaves = readCachedMachineSettings(machineSettingsPath(serverUrl, mycoHome))?.leaves ?? {};
   const roots = leaves[AUTO_JOIN_ROOTS_LEAF];
   const connect = leaves[CONNECT_ROOTS_LEAF];
   return {
     autoJoinRoots: resolveMachineSetting(AUTO_JOIN_ROOTS_LEAF, roots ?? DEFAULT_AUTO_JOIN_ROOTS).effective as string[],
     connectRoots: resolveMachineSetting(CONNECT_ROOTS_LEAF, connect ?? {}).effective as Record<string, string>,
+    quietRoots: resolveMachineSetting(QUIET_ROOTS_LEAF, leaves[QUIET_ROOTS_LEAF] ?? []).effective as string[],
+    dismissedRoots: resolveMachineSetting(DISMISSED_ROOTS_LEAF, leaves[DISMISSED_ROOTS_LEAF] ?? {}).effective as Record<string, string>,
   };
 }
 

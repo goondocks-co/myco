@@ -2,7 +2,7 @@ import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUF
 export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, FolderKanban, History, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -15,6 +15,10 @@ export interface ProjectPage {
   admin?: true;
   /** The other paths under a project that belong to this page: its sections and the records it lists. */
   also?: readonly string[];
+  /** Paths that span the server and belong to this page, with every path beneath them: its server-wide tabs. */
+  server?: readonly string[];
+  /** Reached from somewhere other than the nav: a project's settings open from Projects and from the project's pages. */
+  unlisted?: true;
 }
 
 /** Where each part of a project's settings sits on its page. */
@@ -30,9 +34,16 @@ export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
   { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX] },
-  { label: 'Myco’s work', icon: Bot, suffix: WORK_SUFFIX, also: [RUN_SUFFIX, TASKS_SUFFIX] },
-  { label: 'Project settings', icon: SlidersHorizontal, suffix: PROJECT_SETTINGS_SUFFIX, admin: true },
+  { label: 'Myco’s work', icon: Bot, suffix: WORK_SUFFIX, also: [RUN_SUFFIX, TASKS_SUFFIX], server: [RUNS_PATH, RUNNERS_PATH] },
+  { label: 'Project settings', icon: SlidersHorizontal, suffix: PROJECT_SETTINGS_SUFFIX, admin: true, unlisted: true },
 ];
+
+/** The pages under a project the nav lists, in its order. */
+export const NAV_PAGES: readonly ProjectPage[] = PROJECT_PAGES.filter((page) => page.unlisted !== true);
+
+/** Whether a path that spans the server is one of a page's own server-wide paths, or beneath one. */
+const onServerPath = (page: ProjectPage, pathname: string): boolean =>
+  (page.server ?? []).some((path) => pathname === path || pathname.startsWith(`${path}/`));
 
 /** Whether a page's suffix, or one of the paths that belong to it, is this one. */
 function owns(page: ProjectPage, suffix: string): boolean {
@@ -62,12 +73,13 @@ function listSuffix(pathname: string): string {
  */
 export function pageIsOpen(page: ProjectPage, pathname: string, forms: Readonly<Record<string, string>> = ALL_PROJECTS_FORMS): boolean {
   if (projectOf(pathname) !== null) return owns(page, pageSuffix(pathname));
+  if (onServerPath(page, pathname.replace(/(.)\/+$/, '$1'))) return true;
   const suffix = allProjectsSuffix(pathname, forms);
   return suffix !== null && owns(page, suffix);
 }
 
 /** The pages on a phone's bottom bar; the rest are under More. */
-export const PHONE_PAGES: readonly ProjectPage[] = PROJECT_PAGES.slice(0, 3);
+export const PHONE_PAGES: readonly ProjectPage[] = NAV_PAGES.slice(0, 3);
 
 /** A page for the whole server. */
 export interface ServerPage {
@@ -76,16 +88,10 @@ export interface ServerPage {
   to: string;
 }
 
-export const RUNNERS_PAGE: ServerPage = { label: 'Runners', icon: Bot, to: RUNNERS_PATH };
-/** Every run Myco's work finished, across projects. */
-export const RUNS_PAGE: ServerPage = { label: 'Runs', icon: History, to: RUNS_PATH };
-
 /** Where each part of Health sits on its page. */
 export const HEALTH_ANCHORS = {
-  now: 'now',
   needsYou: 'needs-you',
   status: 'status',
-  workers: 'workers',
   backups: 'backups',
   upkeep: 'upkeep',
   measures: 'measures',
@@ -105,8 +111,6 @@ export const PROJECTS_PATH = '/projects';
 export const ADMIN_PAGES: readonly ServerPage[] = [
   { label: 'Projects', icon: FolderKanban, to: PROJECTS_PATH },
   PEOPLE_PAGE,
-  RUNS_PAGE,
-  RUNNERS_PAGE,
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },
 ];
@@ -229,7 +233,8 @@ const SERVER_TITLES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), pageOf(suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
   [MY_MACHINES_PATH]: 'My machines',
-  [RUNNERS_PATH]: 'Runners',
+  [RUNS_PATH]: 'Myco’s work',
+  [RUNNERS_PATH]: 'Myco’s work',
   ...Object.fromEntries(ADMIN_PAGES.map((page) => [page.to, page.label])),
   ...Object.fromEntries(SETTINGS_SECTIONS.map((section) => [section.to, 'Settings'])),
 };
@@ -240,7 +245,7 @@ export function titleOf(pathname: string): string {
     return pageOf(pageSuffix(pathname))?.label ?? 'Not found';
   }
   const path = pathname.replace(/\/+$/, '');
-  if (path.startsWith(`${RUNNERS_PATH}/`)) return 'Runners';
+  if (path.startsWith(`${RUNNERS_PATH}/`)) return 'Myco’s work';
   return SERVER_TITLES[path] ?? 'Not found';
 }
 

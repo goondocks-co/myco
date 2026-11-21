@@ -40,7 +40,7 @@ describe('Get started checklist', () => {
     expect(item('project').textContent).toContain('myco member join');
     expect(item('work').textContent).toContain('last 31 days');
     expect(asked.filter(path => path === '/api/setup')).toHaveLength(1);
-    expect(within(item('runner') as HTMLElement).getByRole('link').getAttribute('href')).toBe('/runners');
+    expect(within(item('runner') as HTMLElement).getByRole('link').getAttribute('href')).toBe('/work/runners');
   });
 
   it('combines the member’s project and capture into one actionable item with no fleet details', async () => {

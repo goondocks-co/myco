@@ -14,7 +14,7 @@ import { homeOf, membershipProblem, openDeployment, type DeploymentHandle, type 
 
 /** The §7.8 leaves whose tier is Member; `tests/cli/member-config.test.ts` holds this equal to the ledger. */
 export const MEMBER_TIER_LEAVES = [
-  'capture.plan_dirs', 'capture.prompt_file_roots', 'capture.auto_join_roots', 'capture.connect_roots',
+  'capture.plan_dirs', 'capture.prompt_file_roots', 'capture.auto_join_roots', 'capture.connect_roots', 'capture.quiet_roots', 'capture.dismissed_roots',
   'symbionts', 'update.channel', 'update.automatic',
   'appearance.theme', 'appearance.mode', 'appearance.font', 'appearance.density',
 ] as const;

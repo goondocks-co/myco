@@ -3,7 +3,7 @@ import { Navigate, useLocation, useParams, type RouteObject } from 'react-router
 import { useIsAdmin } from '../hooks/use-me';
 import {
   HEALTH_ANCHORS, HEALTH_PATH, keptFilters, KNOWLEDGE_SUFFIX, MY_MACHINES_PATH, PEOPLE_PATH, PLANS_SUFFIX, PROJECT_SETTINGS_ANCHORS,
-  PROJECT_SETTINGS_SUFFIX, projectPath, RUN_SUFFIX, WORK_SUFFIX,
+  PROJECT_SETTINGS_SUFFIX, projectPath, RUN_SUFFIX, RUNNERS_PATH, runnerPath, RUNS_PATH, WORK_SUFFIX,
 } from './nav';
 
 /** What an old address carries that its new one keeps: its path's parts, its query string, and who is asking. */
@@ -46,6 +46,10 @@ export const MOVED: readonly MovedAddress[] = [
   { from: movedPaths.status, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.status}` },
   { from: movedPaths.measures, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.measures}` },
   { from: movedPaths.operations, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.upkeep}` },
+  // Runs and Runners became tabs of Myco's work; Runs keeps its filters, a runner its id.
+  { from: movedPaths.serverRuns, to: ({ search }) => `${RUNS_PATH}${search}` },
+  { from: movedPaths.serverRunners, to: ({ search }) => `${RUNNERS_PATH}${search}` },
+  { from: movedPaths.serverRunner, to: ({ params, search }) => `${runnerPath(params.runnerId ?? '')}${search}` },
 ];
 
 function Moved({ address }: { address: MovedAddress }) {

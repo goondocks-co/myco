@@ -117,7 +117,7 @@ describe('Needs you', () => {
   });
 
   it('names a learning or map outcome that failed until a later run of its task completes, and never a failure that saved its spores', async () => {
-    const { run, spore, read, kinds } = harness();
+    const { run, spore, read, kinds, sqlite } = harness();
     run('proj_1', 'run_l1', 'extract-curate', 'failed', NOW - 2 * HOUR);
     spore('proj_1', 'sp1', 'run_l1');
     expect(await kinds()).toEqual([]);
@@ -125,14 +125,30 @@ describe('Needs you', () => {
     run('proj_2', 'run_m1', 'canopy-map', 'failed', NOW - 3 * HOUR);
     run('proj_2', 'run_m2', 'canopy-map', 'failed', NOW - 2 * HOUR);
     const { items } = await read();
+    // Nothing takes either again by itself: scheduling is off, and no learning session is eligible, so a person sees both.
     expect(items).toEqual([
-      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_1', outcome: 'learn', task: 'extract-curate', failures: 1, since: NOW - HOUR, latestAt: NOW - HOUR, runId: 'run_l2' },
-      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_2', outcome: 'map', task: 'canopy-map', failures: 2, since: NOW - 3 * HOUR, latestAt: NOW - 2 * HOUR, runId: 'run_m2' },
+      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_1', outcome: 'learn', task: 'extract-curate', failures: 1, since: NOW - HOUR, latestAt: NOW - HOUR, runId: 'run_l2', retrying: false },
+      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_2', outcome: 'map', task: 'canopy-map', failures: 2, since: NOW - 3 * HOUR, latestAt: NOW - 2 * HOUR, runId: 'run_m2', retrying: false },
     ]);
+    sqlite.run(`UPDATE agent_runs SET subject = 'session:s1' WHERE id = 'run_l2'`);
+    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_l2')).toMatchObject({ retrying: false });
+    sqlite.run(`UPDATE agent_runs SET subject = NULL WHERE id = 'run_l2'`);
     run('proj_1', 'run_l3', 'extract-curate', 'completed', NOW - 30 * MINUTE);
-    expect((await read()).items.map((i) => ('projectId' in i ? i.projectId : null))).toEqual(['proj_2']);
+    expect((await read()).items.flatMap((i) => (i.kind === 'outcome_failed' ? [i.projectId] : []))).toEqual(['proj_2']);
     // A failure older than the lookback is no longer news.
-    expect(await kinds(NOW + 8 * DAY)).toEqual([]);
+    expect((await kinds(NOW + 8 * DAY)).filter((kind) => kind === 'outcome_failed')).toEqual([]);
+  });
+
+  it('counts a failed curation group as retrying while its claim has an attempt left, and not once it has none', async () => {
+    const { run, read, sqlite } = harness();
+    run('proj_1', 'run_c1', 'curate-spores', 'failed', NOW - HOUR);
+    sqlite.run(`UPDATE agent_runs SET subject = 'curation:proj_1:k1' WHERE id = 'run_c1'`);
+    sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'spore_curation', 1, ?, 'mem_1')`, [NOW]);
+    sqlite.run(`INSERT INTO spore_curation_work (project_id, cluster_key, members, due_at, failures) VALUES ('proj_1', 'k1', '[]', ?, 1)`, [NOW + 5 * HOUR]);
+    const curation = async () => (await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_c1');
+    expect(await curation()).toMatchObject({ task: 'curate-spores', outcome: 'learn', retrying: true });
+    sqlite.run(`UPDATE spore_curation_work SET failures = 3 WHERE cluster_key = 'k1'`);
+    expect(await curation()).toMatchObject({ retrying: false });
   });
 
   it('names stopped publications across parser versions and excludes ones waiting for bytes', async () => {

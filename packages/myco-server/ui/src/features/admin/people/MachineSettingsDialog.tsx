@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { captureFolderRefusal, planFolderRefusal, promptFileRootRefusal } from '@goondocks/myco-shared/member-protocol';
+import { captureFolderRefusal, DISMISSED_ROOTS_LEAF, planFolderRefusal, promptFileRootRefusal } from '@goondocks/myco-shared/member-protocol';
 import { Button, Dialog, DialogContent, DialogFooter, IconButton, Input } from '../../../design';
-import { ApiError, fetchJson, putJson } from '../../../lib/api';
+import { ApiError, fetchJson, postJson, putJson } from '../../../lib/api';
 import type { EffectiveSetting } from '@goondocks/myco-shared/settings-contract';
 import { X } from 'lucide-react';
 import { useMemberNames } from '../members';
@@ -59,6 +59,15 @@ const FIELDS: readonly FolderField[] = [
     none: 'None: every repository waits in Needs you until it’s connected.',
     addLabel: 'Folder to capture',
     placeholder: '~/Repos',
+    refusal: captureFolderRefusal,
+  },
+  {
+    leaf: 'capture.quiet_roots',
+    title: 'Folders Myco never asks about',
+    note: 'A repository in one of these folders is never listed in Needs you or named to your agents. What they do there is still kept for a while, so connecting it later loses nothing. A folder it captures wins over one here.',
+    none: 'None: every repository it doesn’t capture is listed in Needs you.',
+    addLabel: 'Folder never to ask about',
+    placeholder: '~/scratch',
     refusal: captureFolderRefusal,
   },
   {
@@ -134,6 +143,31 @@ function FolderList({ field, stored, folders, refusedSave, onChange, onClear }: 
   );
 }
 
+/** The repositories dismissed from Needs you on this machine, each by its folder name, with a way to be asked again. */
+function Dismissed({ machineId, leaf }: { machineId: string; leaf: MachineLeaf }) {
+  const client = useQueryClient();
+  const restore = useMutation({
+    mutationFn: (rootKey: string) => postJson(`/api/uncaptured/${encodeURIComponent(machineId)}/${encodeURIComponent(rootKey)}/restore`, {}),
+    onSettled: () => client.invalidateQueries({ queryKey: ['machine-settings', machineId] }),
+  });
+  const entries = Object.entries((leaf.nextEffective ?? leaf.value ?? {}) as Record<string, string>).sort(([, a], [, b]) => a.localeCompare(b));
+  return (
+    <section aria-label="Repositories Myco doesn’t ask about" className="flex flex-col gap-s2" data-machine-leaf={leaf.leaf}>
+      <span className="t-body font-medium text-ink">Repositories Myco doesn’t ask about</span>
+      <p className="t-small text-muted">{entries.length === 0 ? 'None: you haven’t dismissed any repository from Needs you.' : 'Dismissed from Needs you. Ask again to see one there the next time an agent works in it.'}</p>
+      {entries.length > 0 && <ul className="flex flex-col gap-s1">
+        {entries.map(([rootKey, label]) => (
+          <li key={rootKey} className="flex items-center justify-between gap-s3 t-body text-ink">
+            <span className="min-w-0 truncate">{label}</span>
+            <Button size="sm" variant="ghost" pending={restore.isPending && restore.variables === rootKey} onClick={() => restore.mutate(rootKey)}>Ask again about {label}</Button>
+          </li>
+        ))}
+      </ul>}
+      {restore.error && <p role="alert" className="t-small text-bad">Not changed: {refusalWords(restore.error)}</p>}
+    </section>
+  );
+}
+
 function SettingsBody({ machine, onClose }: { machine: { id: string; name: string }; onClose: () => void }) {
   const client = useQueryClient();
   const settings = useQuery({
@@ -178,6 +212,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
     onSettled: () => client.invalidateQueries({ queryKey: ['machine-settings', machine.id] }),
   });
   const connections = settings.data?.leaves.find((leaf) => leaf.leaf === 'capture.connect_roots');
+  const dismissed = settings.data?.leaves.find((leaf) => leaf.leaf === DISMISSED_ROOTS_LEAF);
   const connectedCount = Object.keys((connections?.nextEffective ?? connections?.effective ?? connections?.value ?? {}) as object).length;
   const cachedCount = Object.keys((connections?.effective ?? connections?.appliedValue ?? {}) as object).length;
 
@@ -206,6 +241,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
             {connections.application !== 'unreported' && connections.appliedValue !== undefined && <StoredValue summary="Currently applied connections" value={connections.effective ?? connections.appliedValue} />}
             {(connections.nextSource ?? connections.source) === 'invalid' && <Button variant="ghost" pending={clear.isPending} onClick={() => clear.mutate(connections.leaf)}>Remove entries that no longer apply</Button>}
           </section>}
+          {dismissed && <Dismissed machineId={machine.id} leaf={dismissed} />}
           {clear.error && <p role="alert" className="t-small text-bad">Not cleared: {refusalWords(clear.error)}</p>}
           <DialogFooter>
             <Button variant="ghost" onClick={onClose}>Close</Button>

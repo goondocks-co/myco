@@ -92,20 +92,22 @@ async function expectCapture(page: Page, viewport: ViewportName, role: 'admin' |
 
 /**
  * The fixture's repositories a machine is not capturing yet, as `role` is shown them: an admin every machine's, a member
- * their own. They are one line of "Needs you" that opens to each; it is closed again before returning.
+ * their own. They are one line of "Needs you", a count with no names, whose Review lists each; it is closed again before returning.
  */
 async function expectWaitingRepositories(within: Locator, role: 'admin' | 'member'): Promise<void> {
   const group = within.locator('[data-repositories]');
   await expect(group).toHaveAttribute('data-needs-you-item', 'bad');
   await expect(group).toContainText(role === 'admin' ? '5 repositories aren’t being captured yet' : '4 repositories aren’t being captured yet');
   await expect(group).toContainText('Work in 2 of them isn’t being kept.');
-  await group.getByRole('button', { name: 'See each' }).click();
-  const rows = group.locator('[data-repository]');
+  await expect(group).not.toContainText('field-notes');
+  await group.getByRole('button', { name: 'Review' }).click();
+  const review = within.page().getByRole('dialog', { name: /repositories aren’t being captured yet/ });
+  const rows = review.locator('[data-repository]');
   await expect(rows).toHaveCount(role === 'admin' ? 5 : 4);
   // An archived project holds old-site: nothing connects it, and an admin is pointed to where the project is restored.
   const oldSite = rows.filter({ hasText: 'old-site isn’t being captured yet' });
   await expect(oldSite).toContainText('The project it belongs to is archived. An admin can restore it from Projects.');
-  await expect(oldSite.getByRole('button')).toHaveCount(0);
+  await expect(oldSite.getByRole('button', { name: /^Connect/ })).toHaveCount(0);
   await expect(oldSite.getByRole('link', { name: 'Open Projects →' })).toHaveCount(role === 'admin' ? 1 : 0);
   await expect(rows.filter({ hasText: 'prototype isn’t being captured yet' })).toContainText('No project holds it yet, and only an admin can start a new one.');
   const notes = rows.filter({ hasText: 'field-notes isn’t being captured yet' });
@@ -115,6 +117,7 @@ async function expectWaitingRepositories(within: Locator, role: 'admin' | 'membe
   await expect(rows.filter({ hasText: 'sketches isn’t being captured yet' })).toContainText('Work there older than 7 days wasn’t kept.');
   if (role === 'admin') {
     await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toHaveCount(0);
+    await expect(notes.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
     await expect(notes).toContainText('Only the member who claimed this machine can change which folders are recorded or connect repositories.');
     const gadget = rows.filter({ hasText: 'gadget isn’t being captured yet' });
     await expect(gadget).toHaveAttribute('data-needs-you-item', 'warn');
@@ -122,11 +125,12 @@ async function expectWaitingRepositories(within: Locator, role: 'admin' | 'membe
     await expect(gadget).toContainText('4 sessions on Ada’s studio Mac so far, most recently 25 min ago.');
   } else {
     await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toBeVisible();
-    await expect(within).not.toContainText('gadget');
+    await expect(notes.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+    await expect(review).not.toContainText('gadget');
   }
-  await expect(within).not.toContainText(/uncaptured/i);
-  await group.getByRole('button', { name: 'See each' }).click();
-  await expect(rows).toHaveCount(0);
+  await expect(review).not.toContainText(/uncaptured/i);
+  await within.page().keyboard.press('Escape');
+  await expect(review).toHaveCount(0);
 }
 
 test.describe('Today', () => {
@@ -221,8 +225,8 @@ test.describe('Today', () => {
   async function openRepositories(page: Page, viewport: ViewportName): Promise<Locator> {
     const needsYou = page.locator('[data-needs-you]');
     if (viewport === 'phone') await needsYou.getByRole('button', { name: /things need you/ }).click();
-    await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
-    const gadget = needsYou.locator('[data-repository]').filter({ hasText: 'gadget isn’t being captured yet' });
+    await needsYou.locator('[data-repositories]').getByRole('button', { name: 'Review' }).click();
+    const gadget = page.getByRole('dialog').locator('[data-repository]').filter({ hasText: 'gadget isn’t being captured yet' });
     await gadget.scrollIntoViewIfNeeded();
     return gadget;
   }
@@ -279,8 +283,8 @@ test.describe('Today', () => {
       try {
         const needsYou = page.locator('[data-needs-you]');
         if (viewport === 'phone') await needsYou.getByRole('button', { name: /1 thing needs you/ }).click();
-        await needsYou.locator('[data-repositories]').getByRole('button', { name: 'See each' }).click();
-        const prototype = needsYou.locator('[data-repository]').filter({ hasText: 'prototype isn’t being captured yet' });
+        await needsYou.locator('[data-repositories]').getByRole('button', { name: 'Review' }).click();
+        const prototype = page.getByRole('dialog').locator('[data-repository]').filter({ hasText: 'prototype isn’t being captured yet' });
         await prototype.getByRole('button', { name: 'Connect prototype' }).click();
         const dialog = page.getByRole('dialog', { name: 'Connect prototype' });
         await expect(dialog).toBeVisible();

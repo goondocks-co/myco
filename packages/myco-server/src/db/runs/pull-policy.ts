@@ -23,8 +23,17 @@ const accepts = (project: string, task: string) => {
   return gate?.kind === 'capability' ? capabilityOnSql(project,literal(gate.capability)) : projectAcceptsWorkSql(project);
 };
 export const CURATION_MAX_FAILURES=3;
+/** A group the claim still has an attempt for: a due instant, set by each claim's backoff, and attempts under the bound. */
+export function curationAttemptLeftSql(project:string):string {
+  return `w.project_id=${project} AND w.due_at IS NOT NULL AND w.failures<${CURATION_MAX_FAILURES}`;
+}
+/** Whether the claim takes the group `subject` names again by itself, now or once its backoff passes: undecided, with an attempt left. */
+export function curationSubjectRetriesSql(project:string,subject:string):string {
+  return `EXISTS(SELECT 1 FROM spore_curation_work w WHERE ${curationAttemptLeftSql(project)} AND w.decision IS NULL
+    AND ${subject}='curation:'||w.project_id||':'||w.cluster_key)`;
+}
 export function curationDueWorkSql(project:string,now:number|string):string {
-  return `w.project_id=${project} AND w.due_at IS NOT NULL AND w.due_at<=${instant(now)} AND w.failures<${CURATION_MAX_FAILURES}
+  return `${curationAttemptLeftSql(project)} AND w.due_at<=${instant(now)}
     AND (w.failures>0 OR (SELECT COUNT(*) FROM (SELECT 1 FROM spore_curation_work INDEXED BY idx_curation_first_started
       WHERE project_id=${project} AND first_started_at IS NOT NULL AND first_started_at>${before(now,BUDGET_WINDOW_MS)}
       LIMIT ${CURATION_DAILY_LIMIT_MAX}))<${curationDailyLimitSql(project)})`;

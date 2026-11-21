@@ -62,6 +62,8 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'capture.prompt_file_roots': { valid: ['~/tasks'], invalid: ['/', '~/tasks'], consume: (home) => machinePromptFileRoots('https://s', home) },
   'capture.auto_join_roots': { valid: ['~/Work'], invalid: ['/', '~/Work'], consume: (home) => machineAutoJoinLeaves('https://s', home).autoJoinRoots },
   'capture.connect_roots': { valid: { [ROOT_KEY]: 'proj_1' }, invalid: { [ROOT_KEY]: 'proj_1', broken: 7 }, consume: (home) => machineAutoJoinLeaves('https://s', home).connectRoots },
+  'capture.quiet_roots': { valid: ['~/scratch'], invalid: ['/', '~/scratch'], consume: (home) => machineAutoJoinLeaves('https://s', home).quietRoots },
+  'capture.dismissed_roots': { valid: { [ROOT_KEY]: 'gadget' }, invalid: { [ROOT_KEY]: 'gadget', broken: 'x' }, consume: (home) => machineAutoJoinLeaves('https://s', home).dismissedRoots },
 };
 
 describe('machine settings effective contract', () => {
@@ -185,7 +187,7 @@ describe('machine settings effective contract', () => {
       const r = await rig(target);
       const legacy = await r.request(memberPost(r.token, {}, '/members/settings'));
       const legacyMachine = (await legacy.json() as { machine: unknown }).machine;
-      expect(legacyMachine).toEqual({ leaves: { 'capture.plan_dirs': [], 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} } });
+      expect(legacyMachine).toEqual({ leaves: { 'capture.plan_dirs': [], 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {}, 'capture.quiet_roots': [], 'capture.dismissed_roots': {} } });
       cacheMachineSettings('https://old', legacyMachine, r.home);
       expect(machineSettingsHeaders('https://old', r.home)).toMatchObject({ [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE });
       expect(machineSettingsHeaders('https://old', r.home)[MACHINE_SETTINGS_REVISION_HEADER]).toBeUndefined();

@@ -1304,7 +1304,8 @@ function reportAutoJoin(out: (line: string) => void, selection: { root: string |
   const mine = (root: string): boolean => selection.all || (selection.root !== null && canonicalRootIdentity(root) === canonicalRootIdentity(selection.root));
   for (const held of pendingImportHolds(mycoHome).filter(held => mine(held.root))) out(held.message);
   for (const state of listAutoJoinStates(mycoHome).filter((s) => s.outcome !== 'joined' && mine(s.root))) {
-    const why = state.outcome === 'outside_folders' ? 'outside the folders this machine captures'
+    const why = state.outcome === 'outside_folders'
+      ? `${state.placement === 'quiet' ? 'under a folder never asked about, or dismissed' : 'outside the folders this machine captures'}${state.detail ? ` — ${state.detail}` : ''}`
       : state.outcome === 'unreachable' ? `the Deployment could not be reached (${state.detail ?? 'no answer'}); tried again at the next hook`
       : `${state.reason ?? 'refused'}${state.detail ? ` — ${state.detail}` : ''}`;
     out(`not joined: ${state.root} — ${why} (last tried ${when(state.attemptAt)})`);

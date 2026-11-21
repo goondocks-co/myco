@@ -133,8 +133,25 @@ export const MACHINE_SETTING_SPECS = {
   'capture.prompt_file_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'prompt-files', default: [] as string[] },
   'capture.auto_join_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'capture', default: ['~/Repos'] },
   'capture.connect_roots': { type: 'root-map', maxItems: 256, default: {} as Record<string, string>, serverWritten: true },
+  /** Folders whose repositories this machine never asks about: none is reported to "Needs you" or named to an agent. */
+  'capture.quiet_roots': { type: 'path-list', maxItems: 16, maxChars: 256, folders: 'capture', default: [] as string[] },
+  /**
+   * The repositories dismissed from "Needs you", by key, each with its folder name so its member can find it to ask
+   * again: the Deployment no longer lists them, whatever the machine reports.
+   */
+  'capture.dismissed_roots': { type: 'root-labels', maxItems: 1024, maxChars: 128, default: {} as Record<string, string>, serverWritten: true },
 } as const;
 export type MachineSettingLeaf = keyof typeof MACHINE_SETTING_SPECS;
+
+/** Why `label` is not a repository's folder name of at most `maxChars`, or null when it is one. */
+export function repositoryLabelRefusal(label: unknown, maxChars: number): string | null {
+  if (typeof label !== 'string' || label.trim() === '') return 'expected the repository\'s folder name';
+  if (label.length > maxChars) return `expected a folder name of at most ${maxChars} characters`;
+  return /[\u0000-\u001F\u007F/\\]/.test(label) ? 'expected a folder name, not a path' : null;
+}
+
+/** The machine leaf that holds the repositories dismissed from "Needs you". */
+export const DISMISSED_ROOTS_LEAF = 'capture.dismissed_roots';
 
 /** What a hook can use from a stored machine setting; rejected entries remain stored on the Deployment. */
 export function resolveMachineSetting(leaf: MachineSettingLeaf, value: unknown): { effective: unknown; refusal: string | null } {
@@ -144,6 +161,12 @@ export function resolveMachineSetting(leaf: MachineSettingLeaf, value: unknown):
     const entries = Object.entries(value);
     const valid = entries.filter(([key, project]) => ROOT_KEY_PATTERN.test(key) && typeof project === 'string' && (project === '' || /^[A-Za-z0-9._-]{1,64}$/.test(project)));
     return { effective: Object.fromEntries(valid.slice(0, spec.maxItems)), refusal: valid.length !== entries.length || entries.length > spec.maxItems ? 'Some stored repository connections cannot be used.' : null };
+  }
+  if (spec.type === 'root-labels') {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return { effective: spec.default, refusal: 'Expected a map of repositories to their folder names.' };
+    const entries = Object.entries(value);
+    const valid = entries.filter(([key, label]) => ROOT_KEY_PATTERN.test(key) && repositoryLabelRefusal(label, spec.maxChars) === null);
+    return { effective: Object.fromEntries(valid.slice(0, spec.maxItems)), refusal: valid.length !== entries.length || entries.length > spec.maxItems ? 'Some stored repositories cannot be used.' : null };
   }
   if (!Array.isArray(value)) return { effective: spec.default, refusal: 'Expected a list of folders.' };
   const rule = folderRule('folders' in spec ? spec.folders : undefined);
@@ -396,7 +419,9 @@ export const REPORT_UNCAPTURED_PATH = '/members/uncaptured';
 /**
  * Where a machine says what became of a repository it reported: `{ rootKey, state }`. `connected` forgets the report
  * (a `myco member join` connected it); `left` forgets it and stops the machine being told to connect it (`myco member
- * leave` opted it out); `full` and `expired` record that the machine stopped holding its capture.
+ * leave` opted it out); `quiet` forgets it, as it lies under a folder the machine never asks about
+(`capture.quiet_roots`) or dismissed, and is accepted (`persisted: true`, `changed` saying whether a report was
+waiting) even when none was; `full` and `expired` record that the machine stopped holding its capture.
  *
  * Every report and resolve also carries `held` (what the machine holds of the repository's capture now) and
  * `sessions` (how many sessions met it after the machine last reported it).

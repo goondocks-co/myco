@@ -100,6 +100,24 @@ export const CLOCK_ACTOR = 'clock';
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
 type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable' | 'repository_backoff';
 
+/**
+ * The skips that only wait for a later wake to take the task: its interval not yet passed, a run of it still in
+ * flight, the day's runs used under a positive ceiling. Every other skip, and any added later, waits for a person.
+ * `decideTask` passes over these when asked, so the gates behind them are still decided.
+ */
+const LATER_WAKE_SKIPS: ReadonlySet<ScheduleSkip> = new Set<ScheduleSkip>(['not_yet', 'already_running', 'max_runs_per_day']);
+const NO_SKIPS: ReadonlySet<ScheduleSkip> = new Set();
+
+/**
+ * Whether a later wake takes `task` in the Project by itself: scheduling is on, the schedule can dispatch at all (some
+ * power state, a positive daily ceiling), and `decideTask` admits it once the `LATER_WAKE_SKIPS` waits are passed over.
+ */
+export async function laterWakeTakes(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, leaves: Pick<ScheduleLeaves, 'enabled' | 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts: ScheduleFacts): Promise<boolean> {
+  // A schedule no wake can ever dispatch is closed whatever this wake's skip says first: no power state, no daily run.
+  if (!leaves.enabled || schedule.runIn.length === 0 || schedule.maxRunsPerDay === 0) return false;
+  return await decideTask(env, projectId, lastReceivedAt, task, schedule, schedule.runIn[0]!, leaves, now, facts, undefined, LATER_WAKE_SKIPS) === null;
+}
+
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
   dispatched: number;
@@ -154,7 +172,7 @@ export async function readScheduleFacts(
  * or null when the task should be dispatched. Reads schedule facts for this Project
  * where none are supplied, using the current declared schedule.
  */
-export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: Pick<ScheduleLeaves, 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts?: ScheduleFacts, workerAvailable = (name: string) => repositoryWorkerAvailable(env, name, now)): Promise<ScheduleSkip | null> {
+export async function decideTask(env: ServerEnv, projectId: string, lastReceivedAt: number | null, task: string, schedule: TaskSchedule, state: PowerState, leaves: Pick<ScheduleLeaves, 'activeWindowDays' | 'coldThresholdDays'>, now: number, facts?: ScheduleFacts, workerAvailable = (name: string) => repositoryWorkerAvailable(env, name, now), passOver: ReadonlySet<ScheduleSkip> = NO_SKIPS): Promise<ScheduleSkip | null> {
   if (schedule.enabled === false) return 'disabled';
   if (lastReceivedAt === null || now - lastReceivedAt > leaves.activeWindowDays * DAY_MS) return 'quiet';
   if (schedule.runWhenCold !== true && now - lastReceivedAt > leaves.coldThresholdDays * DAY_MS) return 'cold';
@@ -162,7 +180,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   const runs = held.runs.get(taskFactsKey(projectId, task)) ?? NO_RUNS;
   const gate = admissionForTask(task);
   if (gate?.kind === 'capability' && !held.capabilities.has(taskFactsKey(projectId, gate.capability))) return 'capability_off';
-  if (schedule.overlap === 'skip' && runs.live) return 'already_running';
+  if (schedule.overlap === 'skip' && runs.live && !passOver.has('already_running')) return 'already_running';
   if (REQUIRED_REPOSITORY_TASKS.includes(task) && held.repositoryFailures?.some(failure => failure.projectId === projectId && failure.backoff && now < failure.retryAt)) return 'repository_backoff';
 
   const accelerator = schedule.accelerator === undefined ? undefined : declared(ACCELERATORS, schedule.accelerator.name);
@@ -171,7 +189,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
     : null;
   const intervalMs = effectiveIntervalSeconds(schedule.intervalSeconds, count, schedule.accelerator?.thresholds) * 1000;
   const last = runs.lastEntryAt;
-  if (last !== null && now - last < intervalMs) return 'not_yet';
+  if (last !== null && now - last < intervalMs && !passOver.has('not_yet')) return 'not_yet';
 
   if (!(schedule.runIn as readonly string[]).includes(state)) return 'not_in_state';
   if (REQUIRED_REPOSITORY_TASKS.includes(task)) {
@@ -185,7 +203,7 @@ export async function decideTask(env: ServerEnv, projectId: string, lastReceived
   }
   if (schedule.maxRunsPerDay !== undefined) {
     const used = runs.entriesSince;
-    if (used >= schedule.maxRunsPerDay) return 'max_runs_per_day';
+    if (used >= schedule.maxRunsPerDay) return passOver.has('max_runs_per_day') ? null : 'max_runs_per_day';
     const reserve = schedule.reservedRunsPerDay;
     if (reserve !== undefined && used >= Math.max(0, schedule.maxRunsPerDay - reserve.count)) {
       const check = declared(PRE_CONDITIONS, reserve.preCondition);

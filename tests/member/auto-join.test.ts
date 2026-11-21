@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markLeft, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
+  AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markLeft, markSweepDone, placeRepository, notCapturedNotice, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -149,6 +149,11 @@ describe('where a repository stands', () => {
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, leaves)).toBe('eligible');
     expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, leaves)).toBe('outside_folders');
     expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, connectRoots: { [rootKeyFor(outside, mycoHome)]: '' } })).toBe('connected');
+    // A folder never asked about, or a repository dismissed from "Needs you", is quiet; a captured folder still wins.
+    expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, quietRoots: [base] })).toBe('quiet');
+    expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { ...leaves, quietRoots: [base] })).toBe('eligible');
+    expect(placeRepository({ root: outside, rootKey: rootKeyFor(outside, mycoHome) }, { ...leaves, dismissedRoots: { [rootKeyFor(outside, mycoHome)]: 'gadget' } })).toBe('quiet');
+    expect(notCapturedNotice({ outcome: 'outside_folders', serverUrl: 'https://s', placement: 'quiet' }, [], null)).toBeNull();
     // `~/` names a folder under the home folder; a relative entry names none.
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['~/Repos', 'Repos'], connectRoots: {} }, { home: base })).toBe('eligible');
     expect(placeRepository({ root: inside, rootKey: rootKeyFor(inside, mycoHome) }, { autoJoinRoots: ['Repos'], connectRoots: {} }, { home: base })).toBe('outside_folders');
@@ -453,6 +458,40 @@ describe('myco member auto-join', () => {
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'outside_folders' });
     expect(uncaptured()).toEqual([{ root_key: rootKeyFor(root, mycoHome), label: 'gadget', reason: 'outside_folders', misses: 1 }]);
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
+  });
+
+  it('has the Deployment forget a repository under a folder never asked about, says when an older one refuses, and asks again', async () => {
+    const root = repository(path.join(base, 'scratch'), 'gadget', 'https://github.com/acme/gadget.git');
+    await join(['--root', root]);
+    expect(uncaptured().map((r) => r.label)).toEqual(['gadget']);
+    // The member adds the folder on the dashboard; this machine caches it at a session start anywhere, with no agent in the repository.
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.quiet_roots', ?, 1, ?)`, [TEST_MACHINE_ID, JSON.stringify([path.join(base, 'scratch')]), `mem_${TEST_MACHINE_ID}`]);
+    cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': [path.join(base, 'Repos')], 'capture.connect_roots': {}, 'capture.quiet_roots': [path.join(base, 'scratch')] } }, mycoHome);
+    const older: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      return (await req.clone().text()).includes('"quiet"') ? Response.json({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, full or expired' }) : rig.fetch(req);
+    };
+    await joinPass(mycoHome, { fetch: older })(Date.now() + 60_000, { force: false });
+    expect(uncaptured()).toHaveLength(1);
+    expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).toMatchObject({ placement: 'quiet', detail: expect.stringContaining('state must be') });
+    expect((await join(['--root', root]))[0]).toEqual({ root, result: 'outside_folders' });
+    expect(uncaptured()).toEqual([]);
+    expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).not.toHaveProperty('detail');
+  });
+
+  it('sends quiet once for a report already gone, and never for a repository connected since it was reported', async () => {
+    const dismissed = repository(path.join(base, 'scratch'), 'dismissed', null);
+    const joined = repository(path.join(base, 'scratch'), 'joined-late', null);
+    const connected = repository(path.join(base, 'Repos'), 'connected', 'https://github.com/acme/connected.git');
+    for (const root of [dismissed, joined, connected]) await join(['--root', root]);
+    // The dashboard dismissed one, clearing its report; the other was connected before its state settled.
+    rig.env.sqlite.run(`DELETE FROM uncaptured_roots WHERE root_key = ?`, [rootKeyFor(dismissed, mycoHome)]);
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.quiet_roots', ?, 1, ?)`, [TEST_MACHINE_ID, JSON.stringify([path.join(base, 'scratch')]), `mem_${TEST_MACHINE_ID}`]);
+    writeRegistryEntry({ ...readRegistryEntry(connected, mycoHome)!, root: joined }, { mycoHome });
+    const { fetch, requests } = recordingFetch(rig.fetch);
+    expect((await runAutoJoin(['--root', dismissed], { mycoHome, fetch, stdout: () => {}, stderr: () => {} }))[0]).toEqual({ root: dismissed, result: 'outside_folders' });
+    await joinPass(mycoHome, { fetch })(Date.now() + 60_000, { force: false });
+    expect(requests.filter((r) => r.path === '/members/uncaptured/state').map((r) => JSON.parse(r.body!).rootKey)).toEqual([rootKeyFor(dismissed, mycoHome)]);
   });
 
   it('holds a repository with no remote until it is connected from "Needs you", then joins and delivers what it held', async () => {

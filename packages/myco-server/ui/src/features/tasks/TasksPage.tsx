@@ -7,8 +7,9 @@ import { useTaskDescriptions } from '../../hooks/use-tasks';
 import { useTaskRuns } from '../../hooks/use-work';
 import { useNow } from '../../hooks/use-today';
 import { harnessLabel } from '../../lib/harness';
-import { projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX } from '../../routes/nav';
+import { projectPath, runPath, TASKS_SUFFIX } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
+import { WorkTabs } from '../work/WorkTabs';
 import { RunTaskConfirm, StartedLine, type StartedRun } from '../work/RunTask';
 import { ModelSummary, displayModel } from '../work/ModelSummary';
 import { OnwardLink } from '../work/OutcomeCard';
@@ -38,13 +39,13 @@ export function TasksPage({ projectId }: { projectId: string | null }) {
       <header className="flex flex-wrap items-start justify-between gap-s3">
         <div className="flex min-w-0 flex-col gap-s2">
           <div className="flex flex-wrap items-center gap-x-s3 gap-y-s2">
-            <h1 className="t-display text-ink">Tasks</h1>
+            <h1 className="t-display text-ink">Myco’s work</h1>
             <PageScope />
           </div>
           <p className="max-w-measure t-body text-muted">What Myco does, when it runs, and what each task must leave behind. Start one by hand with Run now.</p>
         </div>
-        <OnwardLink to={projectId === null ? WORK_SUFFIX : projectPath(projectId, WORK_SUFFIX)}>Myco’s work</OnwardLink>
       </header>
+      <WorkTabs projectId={projectId} section="tasks" />
       <ReadState data={tasks.data} pending={tasks.isPending} error={tasks.error} onRetry={() => void tasks.refetch()} label="tasks">
         {(data) => <section aria-label="Myco’s tasks" className="grid min-w-0 items-start gap-s4 xl:grid-cols-2">
           {data.tasks.map((task) => <TaskCard key={task.task} task={task} projectId={projectId} started={started?.task === task.task ? started : null} onRun={() => { setStarted(null); setAsking(task.task); }} />)}

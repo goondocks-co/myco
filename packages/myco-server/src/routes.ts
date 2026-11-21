@@ -26,7 +26,7 @@ import { handleRepository, handleSaveRepository, handleRemoveRepository } from '
 import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
 import { handleMachineActivity, handleMachines, handleRenameMachine, handleStopMachine } from './api/machines.js';
-import { handleConnectUncaptured, handleListUncaptured } from './api/uncaptured.js';
+import { handleConnectUncaptured, handleDismissUncaptured, handleListUncaptured, handleRestoreUncaptured } from './api/uncaptured.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { CredentialContext, RunnerContext, UnboundMemberContext } from './context.js';
 import type { AuthContext, DeploymentContext, GrantContext, OwnerContext, RouteContext, RunContext, SessionContext, StreamContext } from './context.js';
@@ -390,6 +390,8 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('credential', 'edit', 'machine', ['member']), method: 'POST', path: '/api/machines/{machineId}/stop', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/stop$/, auth: 'session', authority: 'member', handler: handleStopMachine },
   { authorization: httpPolicy('machine', 'read', 'deployment', ['member']), method: 'GET', path: '/api/uncaptured', auth: 'session', authority: 'member', handler: handleListUncaptured },
   { authorization: httpPolicy('machine-settings', 'claimant.edit', 'machine', ['member']), method: 'POST', path: '/api/uncaptured/{machineId}/{rootKey}/connect', pattern: /^\/api\/uncaptured\/(?<machineId>[A-Za-z0-9._-]{1,64})\/(?<rootKey>[0-9a-f]{16,64})\/connect$/, auth: 'session', authority: 'member', handler: handleConnectUncaptured },
+  { authorization: httpPolicy('machine-settings', 'claimant.edit', 'machine', ['member']), method: 'POST', path: '/api/uncaptured/{machineId}/{rootKey}/dismiss', pattern: /^\/api\/uncaptured\/(?<machineId>[A-Za-z0-9._-]{1,64})\/(?<rootKey>[0-9a-f]{16,64})\/dismiss$/, auth: 'session', authority: 'member', handler: handleDismissUncaptured },
+  { authorization: httpPolicy('machine-settings', 'claimant.edit', 'machine', ['member']), method: 'POST', path: '/api/uncaptured/{machineId}/{rootKey}/restore', pattern: /^\/api\/uncaptured\/(?<machineId>[A-Za-z0-9._-]{1,64})\/(?<rootKey>[0-9a-f]{16,64})\/restore$/, auth: 'session', authority: 'member', handler: handleRestoreUncaptured },
   { authorization: httpPolicy('machine', 'edit', 'machine', ['member']), method: 'PATCH', path: '/api/machines/{machineId}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'member', handler: handleRenameMachine },
   { authorization: httpPolicy('machine-settings', 'claimant.read', 'machine', ['member']), method: 'GET', path: '/api/machines/{machineId}/settings', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings$/, auth: 'session', authority: 'member', handler: handleMachineSettings },
   { authorization: httpPolicy('machine-settings', 'claimant.edit', 'machine', ['member']), method: 'PUT', path: '/api/machines/{machineId}/settings/{leaf}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/settings\/(?<leaf>[A-Za-z0-9._]{1,96})$/, auth: 'session', authority: 'member', handler: handleSetMachineSetting },

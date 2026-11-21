@@ -109,10 +109,10 @@ export interface WorkAnswer {
 
 /** One thing an administrator should act on: a kind, a tone and the numbers its words need. */
 export type AttentionItem =
-  | { kind: 'repository_preparation_failed'; tone: 'warn'; projectId: string; runId: string; failure: RepositoryFailure; failures: number; retryAt: number; latestAt: number; task: string; backoff: boolean }
+  | { kind: 'repository_preparation_failed'; tone: 'warn'; projectId: string; runId: string; failure: RepositoryFailure; failures: number; retryAt: number; latestAt: number; task: string; backoff: boolean; retrying: boolean }
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
   | { kind: 'backup_overdue'; tone: 'warn'; lastBackupAt: number | null; intervalHours: number }
-  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; interruptionMachine?: string | null; interruptionCode?: string }
+  | { kind: 'outcome_failed'; tone: 'bad'; projectId: string; outcome: OutcomeKind; task: string; failures: number; since: number; latestAt: number; runId: string; retrying: boolean; interruptionMachine?: string | null; interruptionCode?: string }
   | { kind: 'runs_without_audit'; tone: 'warn'; projectId: string; runs: number; closed: number; since: number; latestAt: number; runId: string }
   | { kind: 'search_index_behind'; tone: 'warn'; pendingBlobs: number; pendingSince: number | null; failedUpdates: number; failingSince: number | null; lastSuccessAt: number | null }
   | { kind: 'transcripts_stopped'; tone: 'warn'; projectId: string; transcripts: number; latestAt: number | null; reasons: Record<string, number>; latestDiagnostic?: { branch: 'malformed_lines' | 'event_not_stored' | 'no_progress' | 'event_refused' | 'blob_absent' | 'record_too_large' | 'scheme_unread' | 'scheme_conflict' | 'record_kind_undeclared' | 'record_source_invalid' | 'record_identity_scheme_unsupported'; offset: number; lineKind: string } }
@@ -126,6 +126,9 @@ export type AttentionItem =
   | { kind: 'harness_capture_silent'; tone: 'warn'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
 
 export type AttentionKind = AttentionItem['kind'];
+
+/** Whether Myco tries an item again by itself: it belongs with Myco's work as stuck or failing, not in "Needs you". */
+export const retrying = (item: AttentionItem): boolean => 'retrying' in item && item.retrying === true;
 
 /** `GET /api/attention`. */
 export interface AttentionAnswer {
@@ -176,6 +179,19 @@ export type ConnectRefusalCode = 'archived' | 'remote_bound' | 'auto_create_off'
 export interface ConnectRefusal {
   error: ConnectRefusalCode;
   reason: string;
+}
+
+/** `POST /api/uncaptured/{machineId}/{rootKey}/dismiss`: optionally a folder on that machine never to ask about. */
+export interface DismissRequest {
+  folder?: string;
+}
+
+/** What the dismissal answers: the repository is no longer listed, and the folder rule, when given, is saved. */
+export interface DismissAnswer {
+  dismissed: true;
+  machineId: string;
+  rootKey: string;
+  folder: string | null;
 }
 
 /** What the connect answers: the machine joins at a hook in the repository, within minutes. */

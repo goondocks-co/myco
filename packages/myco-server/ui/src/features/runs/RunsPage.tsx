@@ -8,6 +8,7 @@ import { fetchJson } from '../../lib/api';
 import { harnessLabel } from '../../lib/harness';
 import { live } from '../../lib/live';
 import { runPath, runnerPath } from '../../routes/nav';
+import { WorkTabs } from '../work/WorkTabs';
 import { AdminPage, AdminSection } from '../admin/AdminFrame';
 import { taskWords } from '../admin/workers';
 import { runErrorWords, shortTime } from '../work/words';
@@ -101,13 +102,14 @@ export function RunsPage() {
   const words = WINDOW_WORDS[window];
   const answer = hours.data;
   return (
-    <AdminPage name="runs" title="Runs" lede="Every run Myco’s work finished: when, on which runner, and what failed."
+    <AdminPage name="runs" title="Myco’s work" lede="Every run Myco’s work finished: when, on which runner, and what failed."
       actions={<>
         <Select label="Project" value={projectId ?? ALL_PROJECTS} onValueChange={(value) => set({ project: value === ALL_PROJECTS ? null : value })}
           options={[{ value: ALL_PROJECTS, label: 'All projects' }, ...projects.map((project) => ({ value: project.projectId, label: project.name ?? project.projectId }))]} />
         <FilterPills label="Window" value={window} onChange={(value) => set({ window: value === 'day' ? null : value })}
           options={(['day', 'week'] as const).map((value) => ({ value, label: WINDOW_WORDS[value].pill }))} />
       </>}>
+      <WorkTabs projectId={projectId} section="runs" />
       {hours.error !== null && <ErrorState error={hours.error} onRetry={() => void hours.refetch()}><p>When runs finished is unavailable.</p></ErrorState>}
       {hours.isPending && <p className="t-body text-muted">Loading runs…</p>}
       {answer !== undefined && (

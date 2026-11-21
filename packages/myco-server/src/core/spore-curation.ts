@@ -1,4 +1,4 @@
-import { curationPolicy, curationAdmissionSql, CURATION_MAX_FAILURES } from '../db/runs/pull-policy.js';
+import { curationPolicy, curationAdmissionSql, curationSubjectRetriesSql, CURATION_MAX_FAILURES } from '../db/runs/pull-policy.js';
 import { curationClaimWrite, curationDirtyWrite } from '../db/runs/claim-companions.js';
 import { mutualCloseness } from '@goondocks/myco-shared/relevance';
 import type { RelationalStore, ServerEnv } from './adapters.js';
@@ -224,6 +224,7 @@ function curationStage(estimateKey?: string): PulledStage {
   return {
     level: 5, task: CURATION_TASK, policy:curationPolicy, estimateKey, switchedOn: curationAnyEnabledSql(), withEstimate: curationStage,
     due: (project, now) => ({ sql: curationAdmissionSql(project, now, estimateKey), params: [] }),
+    retries: (project, subject) => curationSubjectRetriesSql(project, subject),
     waiting: (db, scope) => curationWaiting(db, scope, estimateKey),
     head: async (db, projectId, now) => {
       const row = await readCurationDueHead(db, projectId, now);
