@@ -23,7 +23,9 @@ export interface SearchFilters {
 export interface SearchRequest {
   /** Each word as a full-text phrase, stopwords removed. */
   terms: string[];
-  wordTruncation?: { actual: number; searched: number };
+  wordTruncation?: { actual: number; searched: number; words?: string[] };
+  /** All meaningful phrases bind the request independently of frequency-based selection. */
+  sourceTerms: string[];
   /** The words as typed, lowercased, for cutting snippets. */
   words: string[];
   types: SearchType[];
@@ -33,7 +35,7 @@ export interface SearchRequest {
   limit: number;
   filters: SearchFilters;
   cursor: string | null;
-  /** The newest matches one ranking reads, shared among the kinds; `SEARCH_WINDOW` unless a caller inside the server asks for fewer. */
+  /** The candidates one ranking reads, shared among the kinds; `SEARCH_WINDOW` unless a caller inside the server asks for fewer. */
   window: number;
 }
 
@@ -81,8 +83,9 @@ export function searchRequest(options: SearchOptions): SearchRequest {
   }
   if (options.since !== undefined) filters.since = options.since;
   if (options.until !== undefined) filters.until = options.until;
+  const terms = kept.map(phrase);
   return {
-    terms: words.map(phrase), words: words.map((word) => word.toLowerCase()), types, mode, match, order, limit, filters,
+    sourceTerms: terms, terms, words: words.map((word) => word.toLowerCase()), types, mode, match, order, limit, filters,
     ...(kept.length > words.length ? { wordTruncation: { actual: kept.length, searched: words.length } } : {}),
     cursor: options.cursor === undefined || options.cursor === '' ? null : options.cursor, window: SEARCH_WINDOW,
   };
@@ -143,7 +146,7 @@ export const recordMs = (docId: number) => Math.floor(docId / DOC_IDS_PER_SECOND
 
 /** The query, filters and reach a cursor belongs to, as a short digest: a cursor from another search is refused. */
 export function searchBinding(reach: string, request: SearchRequest): string {
-  const text = JSON.stringify([reach, request.types, request.terms, request.match, request.order, request.filters]);
+  const text = JSON.stringify([reach, request.types, request.sourceTerms, request.match, request.order, request.filters]);
   let hash = 0x811c9dc5;
   for (const byte of new TextEncoder().encode(text)) { hash ^= byte; hash = Math.imul(hash, 0x01000193) >>> 0; }
   return hash.toString(36);
@@ -155,13 +158,13 @@ const ID_CHARS = String(Number.MAX_SAFE_INTEGER).length + 1;
  * The longest cursor this search writes, base64url: a ranking cursor names at most a page of listed ids (one hit each at
  * most), one fence per kind, its position and its binding.
  */
-const CURSOR_MAX_CHARS = Math.ceil(((2 * SEARCH_MAX_LIMIT + 8) * ID_CHARS + 256) * 4 / 3);
+const CURSOR_MAX_CHARS = Math.ceil(((2 * SEARCH_MAX_LIMIT + 8) * ID_CHARS + 256 + SEARCH_QUERY_MAX_CHARS * 2) * 4 / 3);
 
 /** Where a page ends: after a document listed by time, after page one of a ranking, or at a place in a stored ranking. */
 export type SearchCursor =
-  | { o: 't'; b: string; a: number; k?: number }
+  | { o: 't'; b: string; a: number; k?: number; q?: string[] }
   | { o: 'r'; b: string; at: number; f: Partial<Record<DocumentKind, number>>; l: [number, number][] }
-  | { o: 'w'; b: string; s: string; r: number; n: number };
+  | { o: 'w'; b: string; s: string; r: number; n: number; q?: string[] };
 
 export function encodeCursor(cursor: SearchCursor): string {
   let binary = '';
@@ -180,15 +183,19 @@ export function decodeCursor(value: string, binding: string): SearchCursor {
   } catch { throw foreign(); }
   const c = parsed as Record<string, unknown>;
   if (typeof c !== 'object' || c === null || c.b !== binding) throw foreign();
+  if (c.q !== undefined && (!Array.isArray(c.q) || c.q.length > SEARCH_MAX_TERMS || !c.q.every((term) => typeof term === 'string'))) throw foreign();
+  const selected = c.q === undefined ? {} : { q: c.q as string[] };
   const ids = (value: unknown) => Array.isArray(value) && value.every((id) => Number.isSafeInteger(id));
   if (c.o === 't' && Number.isSafeInteger(c.a) && (c.k === undefined || Number.isSafeInteger(c.k))) {
-    return { o: 't', b: binding, a: c.a as number, ...(c.k === undefined ? {} : { k: c.k as number }) };
+    return { o: 't', b: binding, a: c.a as number, ...selected, ...(c.k === undefined ? {} : { k: c.k as number }) };
   }
   const keys = (value: unknown) => Array.isArray(value) && value.every((key) => Array.isArray(key) && key.length === 2 && ids(key));
   if (c.o === 'r' && Number.isSafeInteger(c.at) && typeof c.f === 'object' && c.f !== null && keys(c.l) && (c.l as unknown[]).length <= SEARCH_MAX_LIMIT
     && Object.values(c.f).every((id) => Number.isSafeInteger(id))) {
     return { o: 'r', b: binding, at: c.at as number, f: c.f as Partial<Record<DocumentKind, number>>, l: c.l as [number, number][] };
   }
-  if (c.o === 'w' && typeof c.s === 'string' && Number.isSafeInteger(c.r) && Number.isSafeInteger(c.n)) return { o: 'w', b: binding, s: c.s, r: c.r as number, n: c.n as number };
+  if (c.o === 'w' && typeof c.s === 'string' && Number.isSafeInteger(c.r) && Number.isSafeInteger(c.n)) {
+    return { o: 'w', b: binding, s: c.s, r: c.r as number, n: c.n as number, ...selected };
+  }
   throw foreign();
 }

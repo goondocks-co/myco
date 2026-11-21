@@ -117,10 +117,10 @@ describe('tool parity', () => {
         const type = frozen.inputSchema.properties.type as { enum: string[] };
         type.enum = type.enum.filter((value) => value !== 'skill');
         expect(current.description).not.toContain('skills');
-        // One search operation (#2101 S5c): a conversation's turns are the one kind `card`, a word search ranks a bounded
-        // window of the newest matches and continues into older ones, and the tool states its limits from the server's own.
+        // Word search declares its global candidate bound and its conversation-card kind.
         expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual([...SEARCH_TYPES, 'all']);
-        expect(current.description).toContain(`ranks the newest ${SEARCH_WINDOW} matches`);
+        expect(current.description).toContain(`up to ${SEARCH_WINDOW} shared across kinds`);
+        expect(current.description).toContain('global FTS5 relevance candidates');
         expect(current.description).toContain('never counts its matches');
         expect(current.cortex?.guidance).toContain('card hits identify the session and prompt');
         current.description = frozen.description;

@@ -4,24 +4,24 @@ import { SEARCH_DOCUMENTS_CATCHUP } from './catchup.js';
 
 /**
  * Reads of the search projection. A window is a bounded walk of one full-text expression's matches by `doc_id`, newest
- * or oldest first; presence lookups test one expression against a list of `doc_id`s. None of them ranks inside the
+ * or oldest first; presence lookups test one expression against a list of `doc_id`s. `relevance.ts` owns global ranking inside the
  * full-text index. `hydration.ts` reads a page's documents back with their records.
  */
 
-const newest = read<[match: string, low: number, high: number, limit: number], { doc_id: number }>({ name: 'searchDocuments.windowNewest',
-  sql: 'SELECT rowid AS doc_id FROM search_documents_fts WHERE search_documents_fts MATCH ?1 AND rowid >= ?2 AND rowid <= ?3 ORDER BY rowid DESC LIMIT ?4' });
+const newest = read<[match: string, low: number, high: number, limit: number, excluded: string], { doc_id: number }>({ name: 'searchDocuments.windowNewest',
+  sql: 'SELECT rowid AS doc_id FROM search_documents_fts WHERE search_documents_fts MATCH ?1 AND rowid >= ?2 AND rowid <= ?3 AND rowid NOT IN (SELECT value FROM json_each(?5)) ORDER BY rowid DESC LIMIT ?4' });
 const oldest = read<[match: string, low: number, high: number, limit: number], { doc_id: number }>({ name: 'searchDocuments.windowOldest',
   sql: 'SELECT rowid AS doc_id FROM search_documents_fts WHERE search_documents_fts MATCH ?1 AND rowid >= ?2 AND rowid <= ?3 ORDER BY rowid LIMIT ?4' });
 const present = read<[match: string, ids: string], { doc_id: number }>({ name: 'searchDocuments.present',
   sql: 'SELECT rowid AS doc_id FROM search_documents_fts WHERE search_documents_fts MATCH ?1 AND rowid IN (SELECT value FROM json_each(?2))' });
 
 /** One window: up to `limit` matches of `match` with `doc_id` in `[low, high]`, newest or oldest first. */
-export interface WindowRead { match: string; low: number; high: number; limit: number; direction: 'newest' | 'oldest' }
+export interface WindowRead { match: string; low: number; high: number; limit: number; direction: 'newest' | 'oldest'; excluded?: readonly number[] }
 
 /** Each window's `doc_id`s and, after them, each presence lookup's `doc_id`s, in one read set. */
 export async function readWindows(db: RelationalStore, windows: readonly WindowRead[], lookups: readonly { match: string; ids: readonly number[] }[] = []): Promise<{ windows: number[][]; lookups: Set<number>[] }> {
   const bound: Bound<{ doc_id: number }, 'read'>[] = [
-    ...windows.map((w) => (w.direction === 'newest' ? newest : oldest).bind(w.match, w.low, w.high, w.limit)),
+    ...windows.map((w) => w.direction === 'newest' ? newest.bind(w.match, w.low, w.high, w.limit, JSON.stringify(w.excluded ?? [])) : oldest.bind(w.match, w.low, w.high, w.limit)),
     ...lookups.map((l) => present.bind(l.match, JSON.stringify(l.ids))),
   ];
   if (bound.length === 0) return { windows: [], lookups: [] };

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
 import { renderCard } from '@goondocks/myco-shared/turn-card';
-import { SEARCH_WINDOW, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS } from '@goondocks/myco-shared/search-types';
+import { SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS } from '@goondocks/myco-shared/search-types';
 import { SearchRefused } from '@myco-server-worker/core/search-query.js';
 import { searchFixture, type SearchFixture } from './helpers/search-fixture.js';
 
@@ -60,20 +60,6 @@ describe('a word search', () => {
     expect(titles).toEqual({ heading: 'Cobalt eviction', blank: 'Cobalt eviction', fence: 'Cobalt eviction', table: 'Cobalt eviction', front: 'Cobalt eviction', code: 'cobalt eviction()' });
   });
 
-  it(`ranks only the newest ${SEARCH_WINDOW} matches of a kind: a better but older match waits for a later page, and with fewer matches it ranks first`, async () => {
-    const f = fixture();
-    f.spore('best-but-oldest', 'zircon detail', { agent_line: 'zircon', created_at: 1_000 });
-    f.sqlite.transaction(() => { for (let i = 0; i < SEARCH_WINDOW - 1; i += 1) f.spore(`s${i}`, 'zircon detail', { created_at: 10_000 + i * 1_000 }); })();
-    const few = await f.search('zircon', { mode: 'fts', type: 'spore' });
-    expect({ first: few.hits[0]?.id, partial: few.partial }).toEqual({ first: 'best-but-oldest', partial: false });
-    f.spore('one-more', 'zircon detail', { created_at: 900_000_000 });
-    const many = await f.search('zircon', { mode: 'fts', type: 'spore' });
-    expect(ids(many)).not.toContain('best-but-oldest');
-    expect(many.partial).toBe(true);
-    expect(many.coverage.horizon).not.toBeNull();
-    expect(many.nextCursor).not.toBeNull();
-  });
-
   it('narrows by status, type, session, agent, branch and time, and leaves out kinds a filter cannot match', async () => {
     const f = fixture();
     f.session('sa', { title: 'unrelated', agent: 'codex', branch: 'main' });
@@ -118,7 +104,7 @@ describe('a word search', () => {
   it('refuses what it cannot search, naming what to send instead', async () => {
     const f = fixture();
     expect(await refusal(f.search('the of and', { mode: 'fts' }))).toMatchObject({ code: 'stopwords_only' });
-    f.spore('long-question', 'cobalt');
+    f.spore('long-question', 'cobalt missing');
     const question = `${'cobalt '.repeat(SEARCH_MAX_TERMS)}missing`;
     expect(await f.search(question, { mode: 'fts' })).toMatchObject({ hits: [{ id: 'long-question' }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
     expect(await f.search(question, { mode: 'auto' })).toMatchObject({ hits: [{ id: 'long-question' }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });

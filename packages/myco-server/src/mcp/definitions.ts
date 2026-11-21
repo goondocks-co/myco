@@ -18,7 +18,7 @@ import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
 import { AGENT_LINE_NOTATION_RULES, AGENT_LINE_RULE } from '../core/agent-line.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
-import { SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOPWORDS, SEARCH_TOOL_LIMIT, SEARCH_TYPES, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS } from '@goondocks/myco-shared/search-types';
+import { SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_RELEVANCE_WEIGHTS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOPWORDS, SEARCH_TOOL_LIMIT, SEARCH_TYPES, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS } from '@goondocks/myco-shared/search-types';
 
 /**
  * What the tenancy argument means on the member surface.
@@ -99,7 +99,7 @@ const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEnt
 const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id for one replacement or successor_ids for a split. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Queries must contain 1–${SEARCH_QUERY_MAX_CHARS} characters; longer queries are refused. Semantic search embeds the whole question. Word search ignores common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) and searches the first ${SEARCH_MAX_TERMS} meaningful words; wordTruncation reports actual and searched word counts when shortened, including semantic fallback. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
+    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id for one replacement or successor_ids for a split. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search first ranks global FTS5 relevance candidates: up to ${SEARCH_WINDOW} shared across kinds plus bounded combinations of a plan's title and body, with title or line weighted ${SEARCH_RELEVANCE_WEIGHTS.headline / SEARCH_RELEVANCE_WEIGHTS.body} times body text. That ranking is frozen for paging. partial: true means matches remain outside the window; nextCursor finishes it then continues in locally ranked historical windows. coverage.horizon is null for the global window and a time edge for historical windows. An answer never counts its matches. Queries must contain 1–${SEARCH_QUERY_MAX_CHARS} characters; longer queries are refused. Semantic search embeds the whole question. Word search ignores common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) and searches up to ${SEARCH_MAX_TERMS} meaningful words, preferring words with fewer matches in bounded frequency probes; wordTruncation reports actual and searched counts and the selected words when shortened, including semantic fallback. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -123,7 +123,7 @@ const definitions: readonly ServedToolDefinition[] = [
           "type": "string",
           "maxLength": SEARCH_QUERY_MAX_CHARS,
           "minLength": 1,
-          "description": `Natural language question, 1–${SEARCH_QUERY_MAX_CHARS} characters. Semantic search embeds it whole; word search and semantic fallback use the first ${SEARCH_MAX_TERMS} meaningful words and report wordTruncation. Example: cobalt cache`
+          "description": `Natural language question, 1–${SEARCH_QUERY_MAX_CHARS} characters. Semantic search embeds it whole; word search and semantic fallback use up to ${SEARCH_MAX_TERMS} meaningful words, preferring rarer words by bounded frequency probes, and report the selected words in wordTruncation. Example: cobalt cache`
         },
         "type": {
           "type": "string",
@@ -139,7 +139,7 @@ const definitions: readonly ServedToolDefinition[] = [
         "match": {
           "type": "string",
           "enum": ["all", "any"],
-          "description": "all (default): a hit holds every word. any: a hit holds at least one, ranked by how many it holds."
+          "description": "all (default): a hit holds every searched word. any: a hit holds at least one, ranked by FTS5 relevance with rarer words and title matches weighted higher."
         },
         "observation_type": {
           "type": "string",
@@ -188,7 +188,7 @@ const definitions: readonly ServedToolDefinition[] = [
         "order": {
           "type": "string",
           "enum": ["relevance", "time"],
-          "description": "relevance (default) ranks the newest matches, best first, and later pages continue into older ones. time lists the matches of one type (spore, plan or card) oldest first. Both continue by nextCursor; a semantic answer is the nearest matches alone, so pass mode fts to page through every match."
+          "description": "relevance (default) starts with global relevance candidates, pages their frozen ranking, then continues in locally ranked historical windows. time lists the matches of one type (spore, plan or card) oldest first. Both continue by nextCursor; a semantic answer is the nearest matches alone, so pass mode fts to page through every match."
         },
         "cursor": {
           "type": "string",

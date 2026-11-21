@@ -21,6 +21,37 @@ Project instructions arrive at session start. Relevant spores and plans return w
 
 These tools read and edit project intelligence. Administration belongs in the dashboard and CLI. See [Actors & boundaries](architecture/actors-and-boundaries.md).
 
+### Word search
+
+`myco_search` searches sessions, spores, plans and conversation cards. `mode: "fts"` uses words;
+semantic search also falls back to words when vectors cannot answer. `match: "all"` requires every
+searched word, including words held across a plan's title and stored body. `match: "any"` accepts
+any searched word.
+
+Relevance starts with global FTS5 BM25 candidates, with a title or agent line weighted twice body text.
+The first window holds up to 500 candidates shared across document kinds, plus bounded candidates
+for words split across a plan's documents. It is selected by relevance before a time window is applied.
+Its order is stored immediately, so writes to other records cannot reorder its later pages.
+`nextCursor` finishes that ranking, then continues through the remaining matches in historical windows,
+each ranked within its own window. Later windows are not one global relevance order.
+
+`partial: true` means matches remain outside the current ranking window; it does not mean more hits
+than the requested page size. `coverage.horizon` is null for the global window, and gives the historical
+window's oldest reached time when that window is partial. `coverage.state` and `pendingBlobs` still
+report index completeness. Stored rankings expire after 15 minutes; restart without a cursor after
+`cursor_expired`. `order: "time"` lists one type (spore, plan or card) oldest first with its own cursor.
+
+Word search ignores common words and searches at most 16 meaningful words. For longer questions,
+bounded frequency probes prefer words with fewer matches in the requested Project, types and indexed
+filters. Each probe stops after 17 matches per kind; equally common words retain their input order.
+This distinguishes rare words without claiming exact frequency for common words. `wordTruncation`
+reports `actual`, `searched` and `words`, including semantic fallback. Semantic search embeds the whole
+question. Example: `{"query":"repair windows service absolute path","type":"spore","mode":"fts","match":"any"}`.
+
+D1 billed rows are bounded by the candidate, word and page limits; FTS5's internal ranking CPU still
+grows with matching postings. The operation reads the search projection and bounded record lookups,
+never event history. No schema change or re-index of stored content is needed.
+
 ### Name the project
 
 Every tool accepts `project`: the project ID or the repository's Git remote. Pass it on every call. A read without it may use the connection's default project; a write without it is refused. Use `myco_cortex` with `op: "instructions"` to learn the project ID.

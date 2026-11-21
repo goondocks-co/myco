@@ -1,5 +1,5 @@
 /**
- * A search costs D1 the same when ten times the records match it: every window it ranks is full at both sizes, in a
+ * A search bills D1 the same rows when ten times the records match it: every window it ranks is full at both sizes, in a
  * Project's search and across Projects, for every shape a caller asks, its later pages, a search by time, the backlog it
  * reports, and a write it indexes. And D1 answers the widest search a caller may ask.
  */
@@ -9,7 +9,7 @@ import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapte
 import { MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
 import { searchAcross, searchDeployment } from '@myco-server-worker/core/search.js';
 import { pendingSearchBlobs, searchBacklog } from '@myco-server-worker/db/search/blob-index.js';
-import { SEARCH_WINDOW, type SearchAnswer, type SearchOptions } from '@goondocks/myco-shared/search-types';
+import { SEARCH_WINDOW, SEARCH_MAX_TERMS, type SearchAnswer, type SearchOptions } from '@goondocks/myco-shared/search-types';
 import { createProject } from '@myco-server-worker/db/storage/projects.js';
 import { schemaD1Root } from './helpers/schema-template.js';
 import { d1TwoScale, eachUnit, expectTwoScale, type CostCase, type CostRun } from './helpers/two-scale.js';
@@ -36,6 +36,7 @@ const SHAPES: Record<string, SearchOptions> = {
   filtered: { query: 'cobalt', mode: 'fts', status: 'active', observation_type: 'gotcha', since: 1, until: 2_000_000_000 },
   session: { query: 'cobalt', mode: 'fts', session_id: 's1' },
   released: { query: 'cobalt', mode: 'fts', release_state: 'released', release_confidence: 'high' },
+  longQuestion: { query: `${'cobalt '.repeat(SEARCH_MAX_TERMS)}zqxrare`, mode: 'fts', match: 'any', type: 'spore' },
   anyWord: { query: 'cobalt zqxrare', mode: 'fts', match: 'any', type: 'spore' },
   /** Every match is a Codex session's, so this filter rejects the whole window. */
   rejecting: { query: 'cobalt', mode: 'fts', agent: 'claude' },
@@ -66,7 +67,7 @@ async function grow(db: RelationalStore, from: number, to: number) {
 }
 
 /**
- * A first page and the pages that follow it: the second stores the ranking, the third reads it. Each size reads as a
+ * A first page stores its ranking; the pages that follow read it. Each size reads as a
  * reader of its own, so the rankings one reader holds (at most `SEARCH_WINDOWS_PER_READER`) are the same at both.
  */
 function pagedCases(reach: string, ask: Ask, opts: SearchOptions): CostCase[] {
@@ -83,7 +84,7 @@ function pagedCases(reach: string, ask: Ask, opts: SearchOptions): CostCase[] {
 
 const cases: CostCase[] = [
   ...Object.entries(REACHES).flatMap(([reach, ask]) => Object.entries(SHAPES)
-    .map(([shape, opts]): CostCase => ({ name: `${reach} search, ${shape}`, run: (db) => ask(db, opts) }))),
+    .map(([shape, opts]): CostCase => ({ name: `${reach} search, ${shape}`, run: (db, at) => ask(db, opts, `member:cost-${reach}-${shape}-${at.scale}`) }))),
   ...Object.entries(REACHES).flatMap(([reach, ask]) => pagedCases(reach, ask, SHAPES.one!)),
   ...pagedCases('rejecting', REACHES.project!, SHAPES.rejecting!),
   ...pagedCases('conversation by time', REACHES.project!, { query: 'cobalt', mode: 'fts', type: 'card', session_id: 's1', order: 'time' }),

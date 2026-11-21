@@ -1,18 +1,10 @@
 import type { RelationalStore } from './adapters.js';
 import { documentOrdering, documentsOfPlans, plansOfDocuments, readWindows, type WindowRead } from '../db/search/documents.js';
+import { relevanceWindows } from '../db/search/relevance.js';
 import { docIdRange, headlineExpression, textExpression, windowExpression, type DocumentKind, type SearchRequest } from './search-query.js';
 
-/**
- * Relevance over a bounded window. Each document kind searched reads its newest matches below a fence, an equal share
- * of the request's window (`SEARCH_WINDOW`), so no kind crowds out another; one more than its share says older matches
- * remain. The window is ranked from what it alone holds: a match whose headline (a session's or plan's title, a spore's
- * line, a card's headline) holds the query's words ranks first, each word weighted by how few of the window's headlines
- * hold it; matches then follow newest first, and records of the same instant by their identity. Every read is a bounded
- * walk of the full-text index or a lookup of the window's own ids, so a ranking costs the same however many records match.
- */
-
-/** Where one kind's walk stands: the lowest `doc_id` it has ranked, and whether older matches remain below it. */
-export interface KindWindow { low: number; partial: boolean }
+/** A kind's remaining historical walk and the global candidates it must not repeat. */
+export interface KindWindow { low: number; partial: boolean; excluded?: number[]; resume?: number }
 
 /**
  * One ranked document. A plan's own document or a chunk of its body names the plans it lists: a plan is listed once, at
@@ -37,8 +29,6 @@ export interface RankedWindow {
   entries: RankedEntry[];
   /** Each kind's walk after this window. */
   kinds: Partial<Record<DocumentKind, KindWindow>>;
-  /** Each kind's highest `doc_id` in this window: where a re-read of the same window starts. */
-  fences: Partial<Record<DocumentKind, number>>;
   /** Each id's score in [0, 1]. */
   scores: Map<number, number>;
 }
@@ -47,32 +37,37 @@ export interface RankedWindow {
 const windowShare = (size: number, kinds: number) => Math.max(1, Math.floor(size / Math.max(1, kinds)));
 
 /**
- * Ranks the newest matches of each kind at or below its `high` fence. A plan holds a match its title, its inline text
- * and its stored body's chunks hold together: with several words, each word's newest plan and chunk matches are read
+ * Ranks global FTS5 candidates first; a continuation ranks the remaining newest matches below its fence. A plan holds
+ * a match its title, its inline text and its stored body's chunks hold together: with several words, each word's plan and chunk matches are read
  * too, and a plan every word reached joins the window as the newest of its documents that did.
  */
 export async function rankWindow(db: RelationalStore, projects: readonly string[], request: SearchRequest,
-  highs: Partial<Record<DocumentKind, number>>, older = false): Promise<RankedWindow> {
+  options: { highs: Partial<Record<DocumentKind, number>>; previous?: Partial<Record<DocumentKind, KindWindow>> }): Promise<RankedWindow> {
+  const { highs, previous = {} } = options;
+  const older = options.previous !== undefined;
   const kinds = Object.keys(highs) as DocumentKind[];
   const share = windowShare(request.window, kinds.length);
   const { low } = docIdRange(request.filters);
-  const reads: WindowRead[] = kinds.map((kind) => ({ match: windowExpression(kind, projects, request), low, high: highs[kind]!, limit: share + 1, direction: 'newest' }));
+  const reads: WindowRead[] = kinds.map((kind) => ({ match: windowExpression(kind, projects, request), low, high: highs[kind]!, limit: share + 1, direction: 'newest', excluded: previous[kind]?.excluded }));
   const planKinds = (['plan', 'chunk'] as const).filter((kind) => kinds.includes(kind));
   const perWord = planKinds.length > 0 && request.match === 'all' && request.terms.length > 1;
   const wordShare = Math.max(1, Math.floor(share / request.terms.length));
   if (perWord) {
     for (const term of request.terms) for (const kind of planKinds) {
-      reads.push({ match: windowExpression(kind, projects, request, [term]), low, high: highs[kind]!, limit: wordShare + 1, direction: 'newest' });
+      reads.push({ match: windowExpression(kind, projects, request, [term]), low, high: highs[kind]!, limit: wordShare + 1, direction: 'newest', excluded: previous[kind]?.excluded });
     }
   }
-  const found = (await readWindows(db, reads)).windows;
-  const window: RankedWindow = { entries: [], kinds: {}, fences: {}, scores: new Map() };
+  const global = older ? null : await relevanceWindows(db, reads);
+  const found = global === null ? (await readWindows(db, reads)).windows : global.map((rows) => rows.map((row) => Number(row.doc_id)));
+  const relevance = new Map<number, number>();
+  for (const rows of global ?? []) for (const row of rows) relevance.set(Number(row.doc_id), Math.max(relevance.get(Number(row.doc_id)) ?? 0, -Number(row.relevance)));
+  const window: RankedWindow = { entries: [], kinds: {}, scores: new Map() };
   const byKind = new Map<DocumentKind, number[]>();
   kinds.forEach((kind, i) => {
     const ids = found[i]!.slice(0, share);
     byKind.set(kind, ids);
-    window.kinds[kind] = { low: ids.at(-1) ?? low, partial: found[i]!.length > share };
-    window.fences[kind] = ids[0] ?? highs[kind]!;
+    window.kinds[kind] = { low: older ? ids.at(-1) ?? low : low, partial: found[i]!.length > share,
+      ...(older ? { excluded: previous[kind]?.excluded } : { resume: highs[kind]!, excluded: ids }) };
   });
   if (perWord) {
     const words = request.terms.map((_, t) => planKinds.map((kind, k) => ({ kind, ids: found[kinds.length + t * planKinds.length + k]! })));
@@ -88,11 +83,16 @@ export async function rankWindow(db: RelationalStore, projects: readonly string[
     for (const { id, kind } of newest.values()) byKind.set(kind, [...byKind.get(kind)!, id]);
     for (const w of words.flat()) {
       const held = window.kinds[w.kind]!;
-      window.kinds[w.kind] = { low: Math.min(held.low, w.ids.slice(0, wordShare).at(-1) ?? held.low), partial: held.partial || w.ids.length > wordShare };
+      window.kinds[w.kind] = { ...held, low: older ? Math.min(held.low, w.ids.slice(0, wordShare).at(-1) ?? held.low) : low, partial: held.partial || w.ids.length > wordShare };
     }
   }
   const ids = [...new Set([...byKind.values()].flat())];
-  window.scores = await presenceScores(db, ids, request);
+  if (global === null) window.scores = await presenceScores(db, ids, request);
+  else {
+    const best = Math.max(0, ...relevance.values());
+    window.scores = new Map(ids.map((id) => [id, best === 0 ? 0 : (relevance.get(id) ?? 0) / best]));
+    for (const [kind, selected] of byKind) window.kinds[kind]!.excluded = [...new Set([...(window.kinds[kind]!.excluded ?? []), ...selected])];
+  }
   const order = await documentOrdering(db, ids);
   const at = (id: number) => order.get(id)?.at ?? 0;
   const key = (id: number) => order.get(id)?.key ?? '';
@@ -102,6 +102,8 @@ export async function rankWindow(db: RelationalStore, projects: readonly string[
   // On an older window, a plan one of whose matching documents lies above this window's fence was listed by a newer one.
   const listedAbove = new Set<string>();
   if (older) {
+    const excludedPlans = await plansOfDocuments(db, Object.values(previous).flatMap((kind) => kind?.excluded ?? []));
+    for (const owned of excludedPlans.values()) for (const plan of owned) listedAbove.add(plan);
     const matching = await matchingPlanDocuments(db, projects, request, [...new Set([...plans.values()].flat())]);
     for (const [plan, docs] of matching) if (docs.some((doc) => doc.doc_id > (highs[doc.kind] ?? -1))) listedAbove.add(plan);
   }

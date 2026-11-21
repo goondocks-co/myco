@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { searchAcross, searchDeployment } from '@myco-server-worker/core/search.js';
 import { SearchRefused } from '@myco-server-worker/core/search-query.js';
-import { SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS, type SearchOptions } from '@goondocks/myco-shared/search-types';
+import { SEARCH_WINDOW, SEARCH_MAX_TERMS, SEARCH_WINDOW_TTL_MS, type SearchOptions } from '@goondocks/myco-shared/search-types';
 import { SEARCH_WINDOWS_PER_READER } from '@myco-server-worker/db/search/result-windows.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
@@ -44,14 +44,19 @@ async function walk(read: (cursor?: string) => Promise<{ hits: { type: string; i
 const options = (over: Partial<SearchOptions> = {}): SearchOptions => ({ query: 'cobalt', mode: 'fts', limit: 100, ...over });
 const refusal = async (promise: Promise<unknown>) => { try { await promise; } catch (error) { if (error instanceof SearchRefused) return error.code; throw error; } return null; };
 
-it(`walks a relevance search past ${SEARCH_WINDOW} matches to every match once, in a Project, across Projects and across kinds, on both stores`, async () => {
+it(`ranks an old relevant note first and walks past ${SEARCH_WINDOW} matches to every match once, in a Project, across Projects and across kinds, on both stores`, async () => {
   await withDocumentStores(async (db, target) => {
     await seed(db);
     await spores(db, 'project', SEARCH_WINDOW + 150);
     await spores(db, 'other', 40, 'ot');
+    await run(db, "UPDATE spores SET content = 'cobalt repair windows service absolute path', agent_line = 'repair windows service absolute path' WHERE project_id = 'project' AND id = 'sp0000'");
     const env = envOf(db);
     const scope = { projectId: 'project' };
-    const one = await walk((cursor) => searchDeployment(env, scope, options({ type: 'spore', ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
+    const one = await walk((cursor) => searchDeployment(env, scope, options({ query: 'How do I repair the windows service when its path is not absolute cobalt', match: 'any', type: 'spore', ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
+    expect(one[0]).toBe('spore:sp0000');
+    const shortened = await searchDeployment(env, scope, options({ query: `${'COBALT '.repeat(SEARCH_MAX_TERMS)}ABSOLUTE`, type: 'spore' }), 'member:a', NOW);
+    expect(shortened.hits[0]?.id).toBe('sp0000');
+    expect(shortened.wordTruncation?.words).toContain('absolute');
     expect({ target, listed: one.length, unique: new Set(one).size }).toEqual({ target, listed: SEARCH_WINDOW + 150, unique: SEARCH_WINDOW + 150 });
     const across = await walk((cursor) => searchAcross(env, { all: true }, options({ type: 'spore', ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
     expect({ target, unique: new Set(across).size }).toEqual({ target, unique: SEARCH_WINDOW + 190 });
@@ -75,7 +80,7 @@ it('reaches the older matches of a filter that rejects the whole newest window, 
       const first = await searchDeployment(env, { projectId: 'project' }, options({ type: 'spore', agent: 'codex', limit }), 'member:a', NOW);
       const listed = await walk((cursor) => searchDeployment(env, { projectId: 'project' }, options({ type: 'spore', agent: 'codex', limit, ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));
       expect({ target, limit, first: first.hits.length, partial: first.partial, more: first.nextCursor !== null, listed: listed.length, unique: new Set(listed).size })
-        .toEqual({ target, limit, first: 0, partial: true, more: true, listed: 40, unique: 40 });
+        .toEqual({ target, limit, first: limit, partial: true, more: true, listed: 40, unique: 40 });
     }
   });
 });
@@ -93,6 +98,7 @@ it('still lists every remaining match of a filtered search once when records cha
     const scope = { projectId: 'project' };
     const page = (cursor: string) => searchDeployment(env, scope, options({ type: 'spore', agent: 'codex', limit: 3, cursor }), 'member:a', NOW);
     const first = await searchDeployment(env, scope, options({ type: 'spore', agent: 'codex', limit: 3 }), 'member:a', NOW);
+    await spores(db, 'other', 200, 'stats');
     // Between the pages: delete the Claude spores page one rejected, and give the oldest Codex spore a headline that ranks it first.
     const listedFirst = first.hits.map((hit) => hit.id).sort();
     await run(db, "DELETE FROM spores WHERE project_id = 'project' AND session_id = 'sc' AND id > ?", listedFirst[0]);
@@ -135,7 +141,7 @@ it('continues only for the reader that stored the ranking, until it expires, and
     expect(await refusal(searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: second.nextCursor! }), 'member:a', NOW + SEARCH_WINDOW_TTL_MS + 1))).toBe('cursor_expired');
     const kept = await searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: first.nextCursor! }), 'member:a', NOW + 1);
     for (let i = 0; i < SEARCH_WINDOWS_PER_READER; i += 1) {
-      const page = await searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: first.nextCursor! }), 'member:a', NOW + 2 + i);
+      const page = await searchDeployment(env, scope, options({ type: 'spore', limit: 5 }), 'member:a', NOW + 2 + i);
       expect(page.hits).toHaveLength(5);
     }
     expect({ target, evicted: await refusal(searchDeployment(env, scope, options({ type: 'spore', limit: 5, cursor: kept.nextCursor! }), 'member:a', NOW + 100)) })

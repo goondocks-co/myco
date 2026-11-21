@@ -52,7 +52,7 @@ export const search: ParityScenario = {
     const indexed = await waitFor(async () => { await wake(target); return searchFor(word); }, (answer) => answer.coverage.pendingBlobs === 0);
     expect(indexed.coverage.pendingBlobs).toBe(0);
     const longQuestion = `${`${word} `.repeat(SEARCH_MAX_TERMS)}unmatched`;
-    expect(await searchFor(longQuestion, { mode: 'fts', type: 'spore' })).toMatchObject({ hits: [{ id: spore.id }], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
+    expect(await searchFor(longQuestion, { mode: 'fts', type: 'spore' })).toMatchObject({ hits: [], wordTruncation: { actual: SEARCH_MAX_TERMS + 1, searched: SEARCH_MAX_TERMS } });
     expect(indexed.hits.map((r) => r.type).sort()).toEqual(['card', 'plan', 'session', 'spore']);
     expect({ ...await mcp(target, 'myco_search', { query: word, limit: 20 }) as unknown as SearchAnswer, asOf: 0 }).toEqual({ ...indexed, asOf: 0 });
     expect((await searchFor(`${word} distantneedle`)).hits.map((r) => r.id).sort()).toEqual([prompt, plan].sort());
@@ -62,7 +62,9 @@ export const search: ParityScenario = {
     expect(await searchFor(word, { mode: 'semantic' })).toMatchObject({ hits: indexed.hits, mode: 'fts', provider_unavailable: true, fallback_reason: 'provider_unavailable' });
     // Ranked matches page by cursor through every match once, on every store. Ids and times are the server's.
     const paged = `pagedword${stamp}`;
+    const old = await saveSpore(target, `${paged} repair windows service absolute path`);
     for (let i = 0; i < 7; i += 1) await saveSpore(target, `${`${paged} `.repeat(1 + (i % 3))}body ${i}`);
+    expect((await searchFor(`${paged} repair windows service absolute path`, { type: 'spore', mode: 'fts', match: 'any' })).hits[0]?.id).toBe(old.id);
     const walked: string[] = [];
     for (let cursor: string | null = null, page = 0; page < 10; page += 1) {
       const answer = await searchFor(paged, { type: 'spore', mode: 'fts', limit: '3', ...(cursor === null ? {} : { cursor }) });
@@ -70,7 +72,7 @@ export const search: ParityScenario = {
       cursor = answer.nextCursor;
       if (cursor === null) break;
     }
-    expect({ n: walked.length, unique: new Set(walked).size }).toEqual({ n: 7, unique: 7 });
+    expect({ n: walked.length, unique: new Set(walked).size }).toEqual({ n: 8, unique: 8 });
     const base = `${target.url}/api/projects/${target.projectId}/search`;
     expect((await fetch(`${base}?q=${word}`, { headers: target.memberHeaders() })).status).toBe(401);
     expect((await fetch(`${base}?q=${word}&type=canopy`, { headers: target.ownerHeaders() })).status).toBe(400);
