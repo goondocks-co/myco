@@ -194,7 +194,9 @@ describe('the dashboard', () => {
     expect(leaves.filter((leaf) => leaf.leaf === 'capture.quiet_roots' || leaf.leaf === 'capture.dismissed_roots').map((leaf) => leaf.value)).toEqual([['~/scratch'], { [KEY_B]: 'members-repo' }]);
     // The machine forgets a report under a folder it never asks about.
     await r.machine(r.member, '/members/uncaptured', { rootKey: KEY_A, label: 'other', reason: 'outside_folders' });
-    expect(await r.machine(r.member, '/members/uncaptured/state', { rootKey: KEY_A, state: 'quiet' })).toEqual({ persisted: true });
+    expect(await r.machine(r.member, '/members/uncaptured/state', { rootKey: KEY_A, state: 'quiet' })).toEqual({ persisted: true, changed: true });
+    // Already forgotten, a quiet is still accepted.
+    expect(await r.machine(r.member, '/members/uncaptured/state', { rootKey: KEY_A, state: 'quiet' })).toEqual({ persisted: true, changed: false });
     expect((await r.dashboard('GET', '/api/uncaptured', MEMBER_SUB)).body.items).toEqual([]);
   });
 

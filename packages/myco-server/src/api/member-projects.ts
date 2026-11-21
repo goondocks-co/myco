@@ -150,7 +150,8 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
  * `POST /members/uncaptured/state` with `{ rootKey, state }`: what became of a repository the machine reported.
  * `connected` forgets it, as a `myco member join` there connected it; `left` forgets it and stops telling the machine
  * to connect it, as `myco member leave` opted it out; `full` and `expired` record that the machine no longer holds its
- * capture; `quiet` forgets it, as it lies under a folder the member's machine never asks about. A repository the
+ * capture; `quiet` forgets it, as it lies under a folder the member's machine never asks about, and is accepted
+ * (`persisted: true`, with `changed` saying whether a report was waiting) even when none was. Otherwise a repository the
  * machine never reported changes nothing.
  */
 export async function handleUncapturedState(env: ServerEnv, ctx: CredentialContext): Promise<Response> {
@@ -168,7 +169,12 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: cleared.results.length > 0 || untold.changed });
   }
-  const [written] = await commit(env.db, state === 'connected' || state === 'quiet' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
+  if (state === 'quiet') {
+    // Accepted whether or not a report was waiting: a report cleared already (dismissed, pruned) is forgotten all the same.
+    const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
+    return ok({ persisted: true, changed: cleared.results.length > 0 });
+  }
+  const [written] = await commit(env.db, state === 'connected' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
   // Connected, it is no longer dismissed: should it ever stop being captured, "Needs you" asks about it again.
   const restored = state === 'connected' ? await restoreMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now) : null;
   return ok({ persisted: written.results.length > 0 || (restored?.applied === true && restored.changed) });

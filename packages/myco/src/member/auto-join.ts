@@ -470,13 +470,25 @@ export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
 }
 
 /**
- * Repositories this machine reported for "Needs you", or found quiet without the Deployment taking it, that the
- * settings it holds now place under a folder never asked about or dismissed: the Deployment is still to forget them.
+ * Whether the Deployment is still to forget `state`'s repository: reported for "Needs you", or found quiet without the
+ * Deployment taking it, with no connection of its own, and placed quiet by the settings this machine holds now.
  */
-export function quietUntold(mycoHome: string): AutoJoinState[] {
-  return listAutoJoinStates(mycoHome).filter((state) => state.outcome !== 'joined'
+function quietUntold(state: AutoJoinState, mycoHome: string): boolean {
+  return state.outcome !== 'joined'
     && ((state.placement === 'outside_folders' && state.reportedAt !== undefined) || (state.placement === 'quiet' && state.quietAt === undefined))
-    && placeRepository(state, machineAutoJoinLeaves(state.serverUrl, mycoHome)) === 'quiet');
+    && readRegistryEntryResult(state.root, mycoHome).status === 'missing'
+    && placeRepository(state, machineAutoJoinLeaves(state.serverUrl, mycoHome)) === 'quiet';
+}
+
+/** The repositories the Deployment is still to forget, by `quietUntold`. */
+export function quietCandidates(mycoHome: string): AutoJoinState[] {
+  return listAutoJoinStates(mycoHome).filter((state) => quietUntold(state, mycoHome));
+}
+
+/** `candidate`'s repository as it stands now, read again (state, binding, settings), or null when it is no longer to forget. */
+export function stillQuietUntold(candidate: Pick<AutoJoinState, 'rootKey' | 'serverUrl'>, mycoHome: string): AutoJoinState | null {
+  const state = readAutoJoinState(candidate.rootKey, mycoHome, candidate.serverUrl);
+  return state !== null && quietUntold(state, mycoHome) ? state : null;
 }
 
 /** Whether a repository is due an attempt: never tried, or tried and not joined at least `AUTO_JOIN_RETRY_MS` ago. */

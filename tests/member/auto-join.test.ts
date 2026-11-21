@@ -479,6 +479,21 @@ describe('myco member auto-join', () => {
     expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).not.toHaveProperty('detail');
   });
 
+  it('sends quiet once for a report already gone, and never for a repository connected since it was reported', async () => {
+    const dismissed = repository(path.join(base, 'scratch'), 'dismissed', null);
+    const joined = repository(path.join(base, 'scratch'), 'joined-late', null);
+    const connected = repository(path.join(base, 'Repos'), 'connected', 'https://github.com/acme/connected.git');
+    for (const root of [dismissed, joined, connected]) await join(['--root', root]);
+    // The dashboard dismissed one, clearing its report; the other was connected before its state settled.
+    rig.env.sqlite.run(`DELETE FROM uncaptured_roots WHERE root_key = ?`, [rootKeyFor(dismissed, mycoHome)]);
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.quiet_roots', ?, 1, ?)`, [TEST_MACHINE_ID, JSON.stringify([path.join(base, 'scratch')]), `mem_${TEST_MACHINE_ID}`]);
+    writeRegistryEntry({ ...readRegistryEntry(connected, mycoHome)!, root: joined }, { mycoHome });
+    const { fetch, requests } = recordingFetch(rig.fetch);
+    expect((await runAutoJoin(['--root', dismissed], { mycoHome, fetch, stdout: () => {}, stderr: () => {} }))[0]).toEqual({ root: dismissed, result: 'outside_folders' });
+    await joinPass(mycoHome, { fetch })(Date.now() + 60_000, { force: false });
+    expect(requests.filter((r) => r.path === '/members/uncaptured/state').map((r) => JSON.parse(r.body!).rootKey)).toEqual([rootKeyFor(dismissed, mycoHome)]);
+  });
+
   it('holds a repository with no remote until it is connected from "Needs you", then joins and delivers what it held', async () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
     await runHook('session-start', { session_id: 'sess-n', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-n'), cwd: root }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });

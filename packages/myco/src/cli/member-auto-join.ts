@@ -26,7 +26,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import {
   clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, pendingImportWork, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, requestJoin, sweepDone, takeRepositoryLock,
-  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, quietUntold, rootKeyFor, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
+  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, quietCandidates, rootKeyFor, stillQuietUntold, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import type { HelperPass } from '../member/helper.js';
@@ -345,15 +345,18 @@ const QUIET_RECHECK_LIMIT = 32;
  * on the Deployment and its state recorded quiet, without waiting for an agent to work there again. Bounded per pass.
  */
 async function forgetQuieted(run: AttemptRun, err: (line: string) => void, deadline: number): Promise<boolean> {
-  for (const state of quietUntold(run.mycoHome).slice(0, QUIET_RECHECK_LIMIT)) {
+  for (const candidate of quietCandidates(run.mycoHome).slice(0, QUIET_RECHECK_LIMIT)) {
     if (run.now() >= deadline) return true;
-    const membership = readDeploymentMembership(state.serverUrl, run.mycoHome);
+    const membership = readDeploymentMembership(candidate.serverUrl, run.mycoHome);
     if (membership === null) continue;
-    await isolateRepository(state.root, err, async () => {
-      const lock = takeRepositoryLock(state.rootKey, run.mycoHome);
+    await isolateRepository(candidate.root, err, async () => {
+      const lock = takeRepositoryLock(candidate.rootKey, run.mycoHome);
       if (lock === null) return;
       try {
         const opened = await openDeploymentRequests('registry', { fetch: run.fetch, mycoHome: run.mycoHome, requestTimeoutMs: REQUEST_TIMEOUT_MS }, membership.serverUrl);
+        // Read again under the lock, after the credential is ready: a connection or settings that moved since send nothing.
+        const state = stillQuietUntold(candidate, run.mycoHome);
+        if (state === null) return;
         const refusal = opened.ok ? await tellQuiet(opened.value, state.rootKey) : opened.error.message;
         writeAutoJoinState({ ...state, placement: 'quiet', detail: refusal ?? undefined, ...(refusal === null ? { quietAt: run.now() } : {}) }, run.mycoHome);
         if (refusal !== null) err(`auto-join ${state.root}: ${refusal}`);
