@@ -7,7 +7,7 @@ import { saveSetupFile } from '@myco/setup/answers.js';
 import { observeSetupStatus } from '@myco/setup/observe.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 
-it.skipIf(process.platform === 'win32')('doctor and setup status discover operator tools without network or filesystem writes', async () => {
+it.skipIf(process.platform === 'win32')('doctor and setup status discover installed tools without filesystem writes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-tools-readonly-'));
   const home = path.join(root, 'myco');
   const bin = path.join(root, 'bin');

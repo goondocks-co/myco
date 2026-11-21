@@ -156,10 +156,8 @@ it('resolves Windows npm shims through the Node installation and preserves liter
   expect(call.command).toBe(path.join(node, 'node.exe'));
   expect(call.args).toEqual([entry, ...args]);
   await runner.run('npx', ['--no-install', 'wrangler', 'secret', 'put', 'FIXTURE'], { input: 'private-fixture', stdio: 'inherit', env: { PATH: `${shim};${node}` } });
-  const discovery = h.calls.at(-2)!;
-  expect(discovery.options?.input).toBeUndefined();
-  expect(discovery.options?.stdio).toBeUndefined();
-  expect(h.calls.at(-1)?.options?.input).toBe('private-fixture');
+  expect(h.calls.find(call => call.args.includes('secret'))?.options?.input).toBe('private-fixture');
+  expect(h.calls.filter(call => !call.args.includes('secret')).every(call => call.options?.input === undefined && call.options?.stdio === undefined)).toBe(true);
 });
 
 it('repairs older and damaged private installations through one rollback-safe setup writer', async () => {
