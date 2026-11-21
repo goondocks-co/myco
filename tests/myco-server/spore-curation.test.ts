@@ -9,6 +9,7 @@ import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { answerSporeCuration, curationAssignment } from '@myco-server-worker/core/spore-curation.js';
 import { runCloseRefusal } from '@myco-server-worker/core/run-postconditions.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES } from '@myco-server-worker/core/spore-curation-contract.js';
+import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getSpore } from '@myco-server-worker/db/spores/records.js';
 import { listSupersedingSporeIds, listSupersededSporeIds } from '@myco-server-worker/db/spores/edges.js';
 import { readCurationAnswer, readCurationCoverage } from '@myco-server-worker/db/spores/curation-answer.js';
@@ -27,6 +28,29 @@ test('a curation answer is checked for code notation like every other agent line
       const result=await f.call(claim.run.runToken,'myco_run_curation',{...keepAnswer(['gotcha-b']),notes:[{...note(['decision-a']),agent_line:line}]});
       expect(result).toMatchObject(refused.includes(line) ? {ok:false,error:expect.stringContaining('contains code notation')} : {completed:true,applied:false});
     } finally {f.sqlite.close();}
+  }
+});
+
+test('a member whose stored agent_line carries code notation is named to the run, refused as a keep, and accepted rewritten from itself or merged once', async () => {
+  const body = 'Detection alone is not responsibility: reconcile in cli/member.ts; E_OWNED appears after 3 retries.';
+  for (const merged of [false, true]) {
+    const f = await fixture();
+    try {
+      await f.enable(); await f.add('decision-a', [1,0], f.now, body); await f.add('gotcha-b');
+      f.sqlite.run("UPDATE spores SET agent_line='For machine agent status, reconcile owned registrations (cli/member.ts).' WHERE id='decision-a'");
+      await f.discover();
+      const claim = await f.poll(); if (!claim.claimed) throw new Error('group not claimed');
+      expect(claim.run.instruction).toContain('"line_check":"The agent_line carries code notation \\"cli/member.ts\\"."');
+      expect(claim.run.instruction!.split('"line_check"')).toHaveLength(2);
+      const kept = await f.call(claim.run.runToken, 'myco_run_curation', keepAnswer(['decision-a', 'gotcha-b'])) as { error: string };
+      expect(kept.error).toContain('member "decision-a" cannot be kept as it is: The agent_line carries code notation "cli/member.ts". Remove it from keep and write it again as a new note with sources ["decision-a"]');
+      const rewrite = note(merged ? ['decision-a', 'gotcha-b'] : ['decision-a'], `When a machine shows another agent as its own, check what it registered. ${body}`);
+      const done = await f.call(claim.run.runToken, 'myco_run_curation', { ...keepAnswer(merged ? [] : ['gotcha-b']), notes: [rewrite] }) as { applied: boolean; notes: { id: string }[] };
+      const id = done.notes[0]!.id; expect(done).toMatchObject({ applied: true, notes: [{ id }] });
+      expect((await getSpore(f.db, scope, id))!.content).toContain(body);
+      expect((await getSpore(f.db, scope, 'decision-a'))!.status).toBe('consolidated');
+      expect(await listSupersedingSporeIds(f.db, scope, 'decision-a')).toEqual([id]);
+    } finally { f.sqlite.close(); }
   }
 });
 
@@ -132,6 +156,7 @@ test('refusals name coverage, bounds and lexical code notation; exhausted attemp
     { answer: {notes:Array.from({length:CURATION_NEW_NOTES+1},()=>note(['decision-a'])),keep:['gotcha-b']}, error: `notes has ${CURATION_NEW_NOTES+1} entries; limit ${CURATION_NEW_NOTES}` },
     { answer: {keep:['decision-a']}, error:'answer omits 1 members' },
     { answer: {notes:[{...note(['decision-a']),agent_line:'Use capture_spool() to retain data.'}],keep:['gotcha-b']}, error:'contains code notation' },
+    { answer: {notes:[{...note(['decision-a']),agent_line:'a'.repeat(AGENT_LINE_MAX_CHARS+5)}],keep:['gotcha-b']}, error:`, 5 more than the ${AGENT_LINE_MAX_CHARS} allowed; shorten that line by at least 5 characters` },
     { answer: {notes:[note(['decision-a'])],keep:['decision-a','gotcha-b']}, error:'occurs in both sources and keep' },
     { answer: {keep:['decision-a'],retire:[{id:'gotcha-b',reason:'External evidence.',made_unnecessary_by:'outside'}]}, error:'expected a kept member id' },
   ];

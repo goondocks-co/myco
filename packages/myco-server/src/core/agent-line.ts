@@ -35,9 +35,12 @@ export function agentLineNotation(line: string): string | null {
   return first?.[0] ?? null;
 }
 
+/** An agent line as it is stored and counted: one line, runs of whitespace as one space. */
+export const normalizeAgentLine = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
 export function admitAgentLine(value: unknown): { line: string } | { error: string } {
   if (typeof value !== 'string') return { error: 'agent_line is missing; expected nonempty text within ' + AGENT_LINE_MAX_CHARS + ' characters' };
-  const line = value.replace(/\s+/g, ' ').trim();
+  const line = normalizeAgentLine(value);
   return line.length === 0 || line.length > AGENT_LINE_MAX_CHARS
     ? { error: 'agent_line is ' + line.length + ' characters after whitespace normalization; the limit is ' + AGENT_LINE_MAX_CHARS }
     : { line };
