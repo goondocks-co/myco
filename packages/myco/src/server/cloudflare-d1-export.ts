@@ -698,7 +698,7 @@ function exporter(context: D1ExportContext) {
     }
     if (first.kind === 'refused-login') {
       fs.rmSync(file, { force: true });
-      throw new ObjectReadError(`Cloudflare refused the operator's login for the D1 export (HTTP ${first.status}); run wrangler login, then back up again`, { transient: false });
+      throw new ObjectReadError(`Cloudflare refused the operator's login for the D1 export (HTTP ${first.status}); run myco setup --create cloudflare, then back up again`, { transient: false });
     }
     if (first.kind === 'unknown') throw new D1ExportUnsettled(intent, first.detail, marginMs);
     if (first.kind === 'ended') {

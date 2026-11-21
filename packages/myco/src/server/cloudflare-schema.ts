@@ -71,7 +71,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
       options.report?.(`Database rollback: ${restoreCommand(bookmark)}`);
       options.report?.('Confirm the restore prompt with y; it cancels in-flight queries and prints an undo bookmark.');
       options.report?.(record.versionId === null
-        ? 'Roll back the Worker too if its code depends on the new schema; find the prior version with `wrangler deployments list`.'
+        ? 'Roll back the Worker too if its code depends on the new schema; run `myco doctor` to find the selected tool and use its deployments list command to find the prior version.'
         : `Roll back the Worker too if its code depends on the new schema: myco server rollback --target cloudflare --account-id=${quote(record.accountId)} --version=${quote(record.versionId)}`);
     }
   }

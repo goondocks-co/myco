@@ -18,7 +18,7 @@ const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  assertWranglerReady, decorateWranglerRunner,
+  assertWranglerReady, decorateWranglerRunner, operationWranglerRunner,
   CloudflareAuthenticationError,
   isCloudflareAuthenticationRefusal,
   ensureCommandDir,
@@ -78,7 +78,7 @@ function lifecycleOperation<Options extends LifecycleOptions, Result>(
   operation: (options: Options, record: DeploymentRecord | null) => Promise<Result>,
 ): (options: Options) => Promise<Result> {
   const admitted = async (supplied: Options) => {
-    const options = { ...supplied };
+    const options = { ...supplied, runner: operationWranglerRunner(supplied.runner) };
     const record = verb === 'status' ? peekDeploymentRecord(options.mycoHome) : readDeploymentRecord(options.mycoHome);
     if (record !== null && options.accountId !== record.accountId) {
       const label = verb === 'create' || verb === 'update' ? 'schema update' : verb;
@@ -490,7 +490,7 @@ export const rollbackCloudflareDeployment = lifecycleOperation('rollback', async
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
   await preflight(options);
   const target = options.versionId ?? record.previousVersionId ?? '';
-  if (target === '') throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (wrangler deployments list names the versions).');
+  if (target === '') throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (myco doctor shows the selected tool; its deployments list command names the versions).');
   if (options.versionId === undefined) {
     let live;
     try { live = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }); }

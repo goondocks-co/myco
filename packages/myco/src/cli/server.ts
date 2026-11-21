@@ -461,7 +461,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
     if (command === 'rollback' && target() === 'cloudflare') {
       const versionFlag = flags.get('version');
       const messageFlag = flags.get('message');
-      if (versionFlag === '' || versionFlag === 'true') fail('pass --version <id> (`wrangler deployments list` names them), or omit the flag to use the record\'s last recorded version.');
+      if (versionFlag === '' || versionFlag === 'true') fail('pass --version <id> (`myco doctor` shows the selected tool; its deployments list command names versions), or omit the flag to use the record\'s last recorded version.');
       const rolled = await rollbackCloudflareDeployment({
         ...cloudflareOptions(),
         versionId: versionFlag,

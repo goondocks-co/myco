@@ -41,16 +41,9 @@ simple = { limit = 300, period = 60 }
 # credential. Optional: a Deployment that never stores one serves
 # every other route without it, and the failure belongs at the first seal.
 #
-# Create the store and the secret once, then bind. An account holds ONE
-# secrets store: reuse the existing store id (npx wrangler secrets-store
-# store list --remote) rather than creating a second.
-#   npx wrangler secrets-store store create myco --remote   # only when the account has none
-#   head -c 32 /dev/urandom | base64 | npx wrangler secrets-store secret create <STORE-ID> \
-#     --name myco-secret-wrap-key --scopes workers --remote
-#
-# Rotating this value makes every stored credential unreadable until it is
-# re-entered; a slot in that state reports `readable: false` rather than failing
-# the whole surface. See #964.
+# myco server create --target cloudflare ensures the account's store and wrapping secret.
+# myco doctor identifies the selected tool for operator inspection.
+# Rotating the wrapping key requires re-entering the credentials sealed under it.
 # [[secrets_store_secrets]]
 # binding = "SECRET_WRAP_KEY"
 # store_id = "<STORE-ID>"

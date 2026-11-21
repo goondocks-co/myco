@@ -851,7 +851,7 @@ describe('the prerequisites every verb checks first', () => {
     const held = process.env.CLOUDFLARE_API_TOKEN;
     delete process.env.CLOUDFLARE_API_TOKEN;
     try {
-      const anonymous = () => runner({ 'wrangler whoami': { code: 1, stderr: 'not authenticated' } });
+      const anonymous = () => runner({ 'wrangler whoami': { code: 1, stdout: '{"loggedIn":false}', stderr: 'not authenticated' } });
       for (const { verb, run } of EVERY_VERB) {
         calls = [];
         const home = freshHome();
@@ -968,7 +968,7 @@ describe('what the CLI prints when this machine is not ready', () => {
   it.skipIf(process.platform === 'win32')('GATE: with no wrangler, `server create --target cloudflare` prints the install refusal and exits 1', async () => {
     const refused = await withEnvironment(npxAnswering('echo "npm error canceled" >&2; exit 1'), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT]);
     expect({ exited: refused.exited, lines: refused.said.split('\n').length }).toEqual({ exited: true, lines: 1 });
-    expect(refused.said).toContain('Wrangler is not installed');
+    expect(refused.said).toContain('pinned Wrangler');
     expect(refused.said).not.toContain('posix_spawn');
   });
 
