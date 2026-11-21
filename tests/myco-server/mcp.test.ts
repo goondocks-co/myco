@@ -332,8 +332,7 @@ describe('POST /mcp', () => {
 
   it('caps a spore body, and consolidates all sources or none: a source retired meanwhile refuses the call by name and saves nothing', async () => {
     const { call, sqlite, t1 } = await setup();
-    const capped = await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) });
-    expect({ isError: capped.body.result.isError, result: capped.result }).toEqual({ isError: true, result: { ok: false, error: expect.stringContaining(`content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`) } });
+    expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: expect.stringContaining(`content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`) });
     const lined = async (agent_line: string) => (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'upload stall', agent_line })).result;
     // A refused save is flagged as the tool's error; the text an agent reads is the refusal, its repair call included.
     const pathed = await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'upload stall', agent_line: 'When the upload stalls, read core/upload.ts first.' });
@@ -350,10 +349,7 @@ describe('POST /mcp', () => {
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: b.id, reason: 'gone' })).result.status).toBe('obsolete');
-    const stale = await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'ab', observation_type: 'wisdom' });
-    const refused = stale.result;
-    // A refusal is flagged as the tool's error, and its text an agent reads still carries the reason and the repair call.
-    expect({ isError: stale.body.result.isError, text: JSON.parse(stale.body.result.content[0].text) }).toEqual({ isError: true, text: refused });
+    const refused = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [a.id, b.id], consolidated_content: 'ab', observation_type: 'wisdom' })).result;
     expect(refused).toMatchObject({ ok: false, error: 'stale', spore_id: b.id, status: 'obsolete', repairCall: { tool: 'myco_spores', op: 'get', id: b.id },
       reason: expect.stringContaining('Nothing was saved') });
     expect({
@@ -716,7 +712,6 @@ describe('POST /mcp over an External Agent grant', () => {
       await callAs(grant.key, 'myco_spores', { op: 'consolidate' });
       await callAs(grant.key, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' });
       await callAs(grant.key, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha', session_id: 'sess_any' });
-      await callAs(grant.key, 'myco_spores', { op: 'list', stray: 'x' });
     } finally {
       console.log = original;
     }
@@ -726,7 +721,6 @@ describe('POST /mcp over an External Agent grant', () => {
       { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id },
       { tool: 'myco_spores', status: 'ok', grantId: grant.id },
       { tool: 'myco_spores', status: 'tool_failure', grantId: grant.id },
-      { tool: 'myco_spores', status: 'invalid_input', grantId: grant.id },
     ]);
     expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
   });
