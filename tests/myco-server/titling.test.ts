@@ -546,6 +546,7 @@ describe('direct session titles', () => {
     await h.ask('direct'); await h.settle();
     const coverage = () => h.sqlite.query("SELECT title_through_turn_key AS turn FROM sessions WHERE session_id='direct'").get() as { turn: string };
     expect(coverage().turn).toBe('opening');
+    h.prompt('direct', 'relayed', 'Relayed message', NOW - 1500, 'system'); h.response('direct', 'relayed', 'relayed-reply', 'Earlier harness work done', NOW - 1450); h.prompt('direct', 'ping', 'Ping', NOW - 1400, 'system');
     h.prompt('direct', 'finished', 'Complete the implementation', NOW - 1000, 'agent_dispatch');
     h.response('direct', 'finished', 'result', 'Committed three changes and verified all checks.', NOW - 500);
     h.sqlite.run("UPDATE sessions SET last_received_at=? WHERE session_id='direct'", [NOW]);
@@ -555,6 +556,7 @@ describe('direct session titles', () => {
     expect(await backfillTitles(h.env, quiet, 'idle')).toBe(1);
     await h.settle();
     expect(coverage().turn).toBe('finished');
+    expect(instructions.at(-1)).toContain('[Agent closing reply] Earlier harness work done');
     expect(await backfillTitles(h.env, quiet + 1000, 'idle')).toBe(0);
     h.response('direct', 'finished', 'final', 'All work is committed.', quiet + 3000);
     h.sqlite.run("UPDATE sessions SET ended_at=?,last_received_at=? WHERE session_id='direct'", [quiet + 4000, quiet + 4000]);
