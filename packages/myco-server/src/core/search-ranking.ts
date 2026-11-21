@@ -57,7 +57,7 @@ export async function rankWindow(db: RelationalStore, projects: readonly string[
     const relevant = strategy === 'admitted' && !older && eligible.length > 0;
     const anchor = terms.length === 1 ? terms[0]! : previous[kind]?.anchor ?? rarest;
     const chosen = request.match === 'all' ? [anchor] : relevant ? eligible : terms;
-    const capacity = relevant ? SEARCH_WORD_CEILING * (request.match === 'all' ? 1 : eligible.length) : older ? limit - 1 : Math.min(limit - 1, SEARCH_WORD_CEILING);
+    const capacity = relevant ? SEARCH_WORD_CEILING * (request.match === 'all' ? 1 : eligible.length) + (limit - 1) : older || strategy === 'admitted' ? limit - 1 : Math.min(limit - 1, SEARCH_WORD_CEILING);
     const expression = `${kindExpression(kind, request)} AND {headline body}:(${chosen.join(' OR ')})`;
     const read: WindowRead = { match: older ? windowExpression(kind, projects, request, terms) : `${projectExpression(projects)} AND ${expression}`, low, high: highs[kind]!,
       limit: capacity + 1, direction: 'newest', excluded: previous[kind]?.excluded };
@@ -70,12 +70,15 @@ export async function rankWindow(db: RelationalStore, projects: readonly string[
   const perWord = planKinds.length > 0 && request.match === 'all' && request.terms.length > 1;
   const wordShare = Math.max(1, Math.floor(share / request.terms.length));
   if (perWord) for (const term of request.terms) for (const kind of planKinds) selections.push(selection(kind, [term], wordShare + 1, 'newest'));
+  const newest = older ? [] : (await readWindows(db, kinds.map((kind) => ({ match: windowExpression(kind, projects, request), low, high: highs[kind]!, limit: share + 1, direction: 'newest' as const })))).windows;
   const raw = older ? (await readWindows(db, selections.map((s) => s.read))).windows : selections.map((s, i) => {
+    if (i < kinds.length && !s.relevant) return newest[i]!;
     const words = request.match === 'all' && !s.relevant && i < kinds.length ? request.terms : s.terms;
     const lists = words.map((term) => [...(request.wordMatches?.[s.kind]?.get(term)?.ids ?? [])]);
     const ids = [...new Set(lists.flat())].sort((a, b) => b - a);
     const matches = request.match === 'all' && !s.relevant && i < kinds.length
       ? ids.filter((id) => id >= s.cutoff && lists.every((list) => list.includes(id))) : ids;
+    if (i < kinds.length) return [...new Set([...matches, ...newest[i]!.slice(0, share)])].sort((a, b) => b - a).slice(0, s.capacity + 1);
     return matches.slice(0, s.capacity + 1);
   });
   const held = await documentOrdering(db, options.listed ?? []);
@@ -89,8 +92,8 @@ export async function rankWindow(db: RelationalStore, projects: readonly string[
     const candidates = found[i]!;
     const listed = [...held].filter(([, doc]) => doc.kind === kind).map(([id]) => id);
     byKind.set(kind, [...new Set([...candidates, ...listed])]);
-    window.kinds[kind] = { low: selected.relevant ? low : !older && request.match === 'all' ? raw[i]!.length > selected.capacity ? raw[i]![selected.capacity - 1]! : selected.cutoff : raw[i]!.slice(0, selected.capacity).at(-1) ?? low,
-      partial: found[i]!.length > share || raw[i]!.length > selected.capacity || selected.omitted || (!older && !selected.relevant),
+    window.kinds[kind] = { low: selected.relevant ? low : raw[i]!.slice(0, selected.capacity).at(-1) ?? low,
+      partial: found[i]!.length > share || raw[i]!.length > selected.capacity || selected.omitted || (!older && newest[i]!.length > share),
       anchor: selected.anchor, omitted: older ? previous[kind]?.omitted : request.candidateWords?.find((entry) => entry.kind === kind)?.omitted, excluded: [...new Set([...(previous[kind]?.excluded ?? []), ...listed])],
       ...(selected.relevant ? { resume: highs[kind]! } : {}) };
     window.fences[kind] = selected.relevant ? highs[kind]! : raw[i]![0] ?? selected.head ?? highs[kind]!;
@@ -192,7 +195,12 @@ async function presenceScores(db: RelationalStore, ids: readonly number[], reque
       });
       return targets.length ? [{ ...window, targets }] : [];
     });
-    const bounded = (window: typeof missing[number]) => window.terms.some((term) => (request.frequencies?.[window.kind]?.get(term) ?? 0) <= SEARCH_WORD_CEILING);
+    // The bounded lookup reads only records holding one of the window's less common words; a window that also ranks newest matches is looked up directly.
+    const bounded = (window: typeof missing[number]) => {
+      const own = new Set(window.terms.filter((term) => (request.frequencies?.[window.kind]?.get(term) ?? 0) <= SEARCH_WORD_CEILING)
+        .flatMap((term) => [...(request.wordMatches?.[window.kind]?.get(term)?.ids ?? [])]));
+      return own.size > 0 && window.ids.every((id) => own.has(id));
+    };
     const ranges = missing.filter(bounded);
     if (ranges.length) {
       const looked = await windowPresence(db, { scope: windows.scope, windows: ranges, terms: request.terms });
@@ -211,7 +219,7 @@ async function presenceScores(db: RelationalStore, ids: readonly number[], reque
   request.terms.forEach((_, t) => {
     const headline = present[t]!.headline;
     const text = present[t]!.text;
-    const holders = text;
+    const holders = request.match === 'all' ? headline : text;
     const weight = Math.log(1 + ids.length / (1 + holders.size));
     best += weight * (SEARCH_RELEVANCE_WEIGHTS.headline + SEARCH_RELEVANCE_WEIGHTS.body);
     for (const id of ids) scores.set(id, scores.get(id)! + weight * ((headline.has(id) ? SEARCH_RELEVANCE_WEIGHTS.headline : 0) + (text.has(id) ? SEARCH_RELEVANCE_WEIGHTS.body : 0)));

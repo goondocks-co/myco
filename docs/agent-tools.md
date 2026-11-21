@@ -29,12 +29,11 @@ searched word, including words held across a plan's title and stored body. `matc
 any searched word.
 
 Word search returns its best matches first, with title or line matches counted twice as much as body
-matches. Words found in more than 128 records of one kind do not select relevance candidates for
-that kind, but still count when scoring the selected records. `candidateWords` lists those words by kind; `chunk` means a stored plan body.
-If only very common words remain for a kind, search starts with up to 128 newer matches. With
-`match: "all"`, it checks a bounded range covered by every word; this can return an empty partial
-page even when older matches exist. `nextCursor` continues
-through the remaining matches, using newer history first. Ties favor newer records.
+matches. It ranks the newest matches together with every match of the question's less common words,
+however old. A word found in more than 128 records of one kind is too common to bring older records
+in for that kind, but still counts when scoring; `candidateWords` lists those words by kind (`chunk`
+means a stored plan body). `nextCursor` continues through the remaining matches, newest first. Ties
+favor newer records.
 
 `partial: true` means more history remains outside the current window. `coverage.horizon` gives
 the window's time edge when newer history was selected, otherwise null. A partial answer can have

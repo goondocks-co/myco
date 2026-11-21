@@ -58,6 +58,10 @@ it(`ranks an old relevant note first and walks past ${SEARCH_WINDOW} matches to 
     await run(db, "UPDATE spores SET content = content || ' ' || ? WHERE project_id = 'project'", longWords);
     const shortened = await searchDeployment(env, scope, options({ query: `${longWords} TERM0 ABSOLUTE`, type: 'spore' }), 'member:a', NOW);
     expect(shortened.hits[0]?.id).toBe('sp0000');
+    // Common words alone, with or without a word nothing holds: the newest matches are still ranked, best line first.
+    await run(db, "UPDATE spores SET agent_line = 'cobalt term1 term2' WHERE project_id = 'project' AND id = 'sp0300'");
+    for (const over of [{ query: 'why cobalt term1 term2', match: 'any' as const }, { query: 'cobalt term1 term2' }])
+      expect((await searchDeployment(env, scope, options({ ...over, type: 'spore', limit: 10 }), 'member:a', NOW)).hits[0]?.id).toBe('sp0300');
     expect(shortened.wordTruncation?.words).toContain('absolute');
     expect({ target, listed: one.length, unique: new Set(one).size }).toEqual({ target, listed: SEARCH_WINDOW + 150, unique: SEARCH_WINDOW + 150 });
     const across = await walk((cursor) => searchAcross(env, { all: true }, options({ type: 'spore', ...(cursor === undefined ? {} : { cursor }) }), 'member:a', NOW));

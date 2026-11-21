@@ -9,10 +9,10 @@ export const SEARCH_MAX_LIMIT = 100;
 export const SEARCH_QUERY_MAX_CHARS = 512;
 /** The most words a search matches; words in `SEARCH_STOPWORDS` are not counted. */
 export const SEARCH_MAX_TERMS = 16;
-/** A word may select relevance candidates within this many scoped documents; common-only first windows share the bound. */
+/** A word found in at most this many scoped documents brings all of them into the first ranking, however old. */
 export const SEARCH_WORD_CEILING = 128;
 /**
- * The largest relevance window, shared among kinds; common-only first windows also obey `SEARCH_WORD_CEILING`.
+ * The newest matches one ranking reads, shared among kinds; less common words add their older matches to it.
  * When more may match, the answer is `partial`;
  * later pages finish the stored ranking then continue through the remaining matches in historical windows.
  */
