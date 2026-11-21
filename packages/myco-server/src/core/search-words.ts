@@ -3,7 +3,7 @@ import type { RelationalStore } from './adapters.js';
 import { wordFrequencies, wordPostings } from '../db/search/relevance.js';
 import { docIdRange, documentKinds, SearchRefused, projectExpression, kindExpression, type DocumentKind, type SearchRequest } from './search-query.js';
 
-/** Select distinct words and admit candidate selection against capped per-kind frequencies. */
+/** Select distinct words, rarer first, and admit candidate selection against capped per-kind frequencies. */
 export async function selectSearchWords(db: RelationalStore, projects: readonly string[], request: SearchRequest, options: { held?: readonly string[]; probe: boolean; highs?: Partial<Record<DocumentKind, number>> }): Promise<void> {
   const { held } = options;
   if (held !== undefined && (held.length > SEARCH_MAX_TERMS || new Set(held).size !== held.length || held.some((term) => !request.sourceTerms.includes(term)))) {
@@ -16,9 +16,11 @@ export async function selectSearchWords(db: RelationalStore, projects: readonly 
     : [];
   const frequencies = Object.fromEntries(kinds.map((kind, k) => [kind, new Map(terms.map((term, t) => [term, counts[k]?.[t] ?? 0]))]));
   request.frequencies = frequencies;
+  // A word nothing holds can neither find nor score a record when any word may match, so it yields its place to one that does.
+  const absent = (word: { count: number }) => Number(request.match === 'any' && word.count === 0);
   const selected = held ?? (request.wordTruncation === undefined ? terms : terms.map((term, index) => ({ term, index,
     count: kinds.reduce((sum, kind) => sum + frequencies[kind]!.get(term)!, 0) }))
-    .sort((a, b) => a.count - b.count || a.index - b.index).slice(0, SEARCH_MAX_TERMS).sort((a, b) => a.index - b.index).map(({ term }) => term));
+    .sort((a, b) => absent(a) - absent(b) || a.count - b.count || a.index - b.index).slice(0, SEARCH_MAX_TERMS).sort((a, b) => a.index - b.index).map(({ term }) => term));
   if (options.probe) {
     const range = docIdRange(request.filters);
     const matches = await wordPostings(db, { scope: projectExpression(projects), prefixes: kinds.map((kind) => ({ expression: kindExpression(kind, request), high: options.highs?.[kind] ?? range.high })),
