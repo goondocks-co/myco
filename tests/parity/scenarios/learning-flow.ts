@@ -60,10 +60,10 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   await ageRows(target as ParityTarget, { table: 'turn_cards', column: 'due_at', byMs: 3_600_000, match: { project_id: target.projectId, session_id: session } });
   expect(await pulledNeeds()).toMatchObject([{ what: expect.stringContaining('Summarize session turns has waited'), runId: null }]);
   const claim = () => post<Claim>('/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES });
-  const call = async <T = unknown>(run: Claim['run'], name: string, input: Record<string, unknown>): Promise<T> => {
+  const call = async <T = unknown>(run: Claim['run'], name: string, input: Record<string, unknown>, refused = false): Promise<T> => {
     const body = await post<{ error?: unknown; result: { isError?: boolean; structuredContent: { result: T } } }>('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: target.projectId, ...input } } }, memberHeadersFor(run.runToken, target.projectId));
     expect(body.error).toBeUndefined();
-    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.isError === true).toBe(refused);
     return body.result.structuredContent.result;
   };
   const settle = async (run: Claim['run'], action: string) => {
@@ -76,7 +76,7 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   const material = await call<CardMaterial>(cards.run, 'myco_run_cards', { op: 'material' });
   expect(material.turns).toHaveLength(1);
   expect(material.turns[0].complete).toBe(false);
-  expect(await call(cards.run, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] })).toMatchObject({ code: 'material_unread' });
+  expect(await call(cards.run, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] }, true)).toMatchObject({ code: 'material_unread' });
   const source = async (run: Claim['run'], tool: string) => {
     let cursor: string | undefined, raw = '';
     do {
@@ -96,6 +96,8 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   expect(learning).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
   const slice = await call<LearningMaterial>(learning.run, 'myco_run_learning', { op: 'material' });
   expect(slice.cards[0].card).toContain(EXACT_ERROR);
+  // A refused save, then the corrected one: the refusal is flagged and the run still closes on its work.
+  expect(await call(learning.run, 'myco_spores', { op: 'save', type: 'gotcha', session_id: 'sess_not_dispatched', agent_line: 'When refused, correct the call.', content: 'refused first' }, true)).toMatchObject({ ok: false, error: expect.stringContaining('Next call: myco_run_learning') });
   const saved = await call<{ id: string }>(learning.run, 'myco_spores', { op: 'save', type: 'gotcha', session_id: session,
     agent_line: 'When capture refuses a spool lease, reopen it under its recorded owner.',
     content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` });

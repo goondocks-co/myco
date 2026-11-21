@@ -6,12 +6,19 @@ import { SERVER_INSTRUCTIONS, FIRST_MODERN_REVISION, servedMcpVersions } from '@
  * `tools/list` filters the registered operations through their authorization
  * declarations and the caller's grant or task allowlist. `tools/call` validates the
  * arguments against the definition, resolves the op through the registry, and
- * runs the handler with the caller's context. A failure the caller can act on
- * — bad arguments, an unknown tool, an op not yet served, a storage fault — is
- * a JSON-RPC error whose `data.code` names it; the member-side CLI and bridge
- * classify on that code (`packages/myco/src/mcp/client-call.ts` `classifyMcpError`).
- * A result carries the serialized text for an agent and the raw value under
- * `structuredContent.result` for a client that wants the shape entire.
+ * runs the handler with the caller's context. A result carries the serialized
+ * text for an agent and the raw value under `structuredContent.result` for a
+ * client that wants the shape entire.
+ *
+ * A refusal the caller can repair — bad arguments, an op not served, a rule the
+ * call did not meet, a credential that ended — is a result flagged `isError`,
+ * as the protocol asks of an error that originates in the tool: its text is the
+ * `{ ok: false, error }` an agent reads, with the `code` where the tool names
+ * one (`refusalOf` answers `tool_failure` where it names none), so a client,
+ * telemetry and a run's record all read it as refused. Only a name this
+ * principal may not call is a JSON-RPC error, whose `data.code` (`unknown_tool`)
+ * the member-side CLI classifies (`packages/myco/src/mcp/client-call.ts`
+ * `classifyMcpError`); a storage fault is the pipeline's retryable answer.
  *
  * A grant and a run are judged before validation: a (tool, op) off the
  * principal's allowlist, or a `project` naming any Project but the
@@ -23,7 +30,8 @@ import { SERVER_INSTRUCTIONS, FIRST_MODERN_REVISION, servedMcpVersions } from '@
  * surface, or its tenancy, for itself.
  *
  * The low-level `Server` is used deliberately: the SDK's `McpServer` answers a
- * thrown error as an `isError` result, which drops the code the clients key on.
+ * thrown error as an `isError` result of bare text, which drops the code and the
+ * repair call a refusal carries, and an unknown tool with no code at all.
  */
 import { ProtocolError, Server, SUPPORTED_PROTOCOL_VERSIONS, type Tool } from '@modelcontextprotocol/server';
 import { acceptedActions } from '../core/run-postconditions.js';
@@ -32,7 +40,7 @@ import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../
 import { emit } from '../telemetry.js';
 import { projectForRemote } from '../core/remotes.js';
 import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
-import { boundProject, isToolFailure, namedProject, principalFields, recordRunToolCall, type ToolContext, type ProtocolContext } from './context.js';
+import { boundProject, namedProject, principalFields, recordRunToolCall, refusalOf, type ToolContext, type ProtocolContext } from './context.js';
 import { resolveTenancyArgument } from '../api/scope.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
 import { externalDefinitions, isExternalCall } from './external.js';
@@ -108,7 +116,7 @@ export const GRANT_INSTRUCTIONS = [
 
 /** The ceiling on what rides every handshake. */
 export const SERVER_INSTRUCTIONS_MAX_BYTES = 2048;
-/** The JSON-RPC error code every tool failure answers with; `data.code` carries the name. */
+/** The JSON-RPC error code a call no tool answered carries; `data.code` carries the name. */
 const TOOL_ERROR_CODE = -32000;
 /**
  * The first protocol revision of the SDK's modern era. The Deployment serves the
@@ -123,9 +131,14 @@ export { FIRST_MODERN_REVISION };
 /** Every revision the Deployment serves; a client probing for a later era is answered method-not-found and runs the legacy handshake. */
 export const SERVED_PROTOCOL_VERSIONS: readonly string[] = servedMcpVersions(SUPPORTED_PROTOCOL_VERSIONS);
 
-/** Every result answers its JSON. */
-function serializeResult(_tool: AnyTool, result: unknown): string {
-  return JSON.stringify(result);
+/**
+ * A call's reply: the result as JSON text an agent reads and whole under
+ * `structuredContent.result`. A refusal is flagged `isError`, as the protocol
+ * asks of an error that originates in the tool; its result is what the tool
+ * answered, naming its `code` where the tool names one.
+ */
+function reply(result: unknown, refused: boolean) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: { result }, ...(refused ? { isError: true } : {}) };
 }
 
 /** An answer past what a harness holds whole, refused saying how to ask for less rather than lost to a file its run cannot read. */
@@ -134,9 +147,6 @@ function answerHeldWhole(result: unknown): unknown {
   if (bytes <= RUN_ANSWER_BYTES) return result;
   return { ok: false, code: 'answer_too_long', error: `this answer is ${bytes} bytes, past the ${RUN_ANSWER_BYTES} one answer may carry: ask for less, with a smaller limit or a narrower search` };
 }
-
-/** The code a run's call is recorded with when its tool answered with a failure rather than raising one. */
-const RETURNED_FAILURE = 'tool_failure';
 
 const toolError = (err: ToolError): ProtocolError => new ProtocolError(TOOL_ERROR_CODE, err.message, { code: err.code });
 
@@ -374,28 +384,32 @@ export function createProtocolServer(ctx: ProtocolContext, version: string, onFa
     // how a run cut short by a failing tool is.
     const began = Date.now();
     let admission: { tool: AnyTool; op: string } | null = null;
+    let answered: { tool: string; op?: string; result: unknown };
     try {
-      const { tool, op, result: answered } = await callTool(ctx, name, args, (call) => { admission = call; });
-      const result = surfaceFor(ctx).answer(answered);
-      emit({ kind: 'mcp_tool', tool, op, status: 'ok', ...principalFields(ctx) });
-      if (ctx.projectId !== null) {
-        const failure = isToolFailure(result) ? { code: RETURNED_FAILURE, message: result.error } : undefined;
-        await recordRunToolCall(ctx, { tool, op, durationMs: Date.now() - began, ...(failure === undefined ? {} : { failure }) });
-      }
-      return { content: [{ type: 'text' as const, text: serializeResult(tool, result) }], structuredContent: { result } };
+      const call = await callTool(ctx, name, args, (admitted) => { admission = admitted; });
+      answered = { tool: call.tool, op: call.op, result: surfaceFor(ctx).answer(call.result) };
     } catch (err) {
       if (!(err instanceof ToolError)) onFailure(err);
       const failure = err instanceof ToolError ? err : new ToolError('tool_call_failed', 'the Deployment could not complete the call');
-      // A refused call is named in telemetry and writes nothing: a credential may
-      // not turn calls it is not admitted to make into rows.
-      emit({ kind: 'mcp_tool', tool: surfaceFor(ctx).definitionOf(name) === undefined ? 'unknown' : name, status: failure.code, ...principalFields(ctx) });
       // Set inside `callTool`, which control-flow narrowing does not follow.
       const admitted = admission as { tool: AnyTool; op: string } | null;
-      if (admitted !== null && ctx.projectId !== null) {
-        await recordRunToolCall(ctx, { ...admitted, durationMs: Date.now() - began, failure: { code: failure.code, message: failure.message } });
+      if (failure.code === 'unknown_tool' || !(err instanceof ToolError)) {
+        // A refused call is named in telemetry and writes nothing: a credential may
+        // not turn calls it is not admitted to make into rows.
+        emit({ kind: 'mcp_tool', tool: surfaceFor(ctx).definitionOf(name) === undefined ? 'unknown' : name, status: failure.code, ...principalFields(ctx) });
+        if (admitted !== null && ctx.projectId !== null) {
+          await recordRunToolCall(ctx, { ...admitted, durationMs: Date.now() - began, failure: { code: failure.code, message: failure.message } });
+        }
+        throw toolError(failure);
       }
-      throw toolError(failure);
+      answered = { tool: admitted?.tool ?? name, ...(admitted === null ? {} : { op: admitted.op }), result: { ok: false, code: failure.code, error: failure.message } };
     }
+    const refusal = refusalOf(answered.result);
+    emit({ kind: 'mcp_tool', tool: answered.tool, ...(answered.op === undefined ? {} : { op: answered.op }), status: refusal?.code ?? 'ok', ...principalFields(ctx) });
+    if (answered.op !== undefined && ctx.projectId !== null) {
+      await recordRunToolCall(ctx, { tool: answered.tool, op: answered.op, durationMs: Date.now() - began, ...(refusal === null ? {} : { failure: refusal }) });
+    }
+    return reply(answered.result, refusal !== null);
   });
 
   return server;

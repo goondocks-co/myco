@@ -67,7 +67,8 @@ export const grants: ParityScenario = {
     const foreign = await asGrant(key, 'tools/call', { name: 'myco_spores', arguments: { op: 'list', project: `elsewhere-${stamp}` } });
     expect(foreign.body.error).toEqual({ code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } });
     const misspelled = await asGrant(key, 'tools/call', { name: 'myco_spores', arguments: { op: 'list', project_id: target.projectId } });
-    expect([misspelled.body.error?.data?.code, String(misspelled.body.error?.message).includes("'project_id'")]).toEqual(['invalid_input', true]);
+    const spelled = misspelled.body.result;
+    expect([spelled?.isError, spelled?.structuredContent?.result?.code, String(spelled?.structuredContent?.result?.error).includes("'project_id'")]).toEqual([true, 'invalid_input', true]);
 
     // Revoked: no answer for the key, every row it wrote keeps its attribution.
     const revoked = await ownerPost(`/api/projects/${target.projectId}/grants/${id}/revoke`);

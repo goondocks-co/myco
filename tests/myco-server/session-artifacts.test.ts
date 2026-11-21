@@ -94,7 +94,7 @@ describe('myco_outcomes report', () => {
     for (const artifact_id of ['  ', 'a'.repeat(257), 'v1\n2']) {
       expect({ artifact_id: artifact_id.slice(0, 10), answer: await r.report(r.t1.token, { artifact_id }) }).toEqual({ artifact_id: artifact_id.slice(0, 10), answer: { ok: false, error: ARTIFACT_ID_REASON } });
     }
-    expect((await r.report(r.t1.token, { kind: 'commit' })).rpcError.data.code).toBe('invalid_input');
+    expect((await r.report(r.t1.token, { kind: 'commit' })).code).toBe('invalid_input');
     expect(r.rows()).toEqual([]);
   });
 

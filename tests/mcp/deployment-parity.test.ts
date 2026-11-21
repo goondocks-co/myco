@@ -101,7 +101,10 @@ describe('the member tool surface over a real Deployment', () => {
 
     // A write names its Project; the member credential reaches every Project of the Deployment.
     const unnamed = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'no project named' }));
-    expect({ ok: unnamed.envelope.ok, code: unnamed.envelope.error?.code }).toEqual({ ok: false, code: 'invalid_input' });
+    expect({ status: unnamed.status, ok: unnamed.envelope.ok, code: unnamed.envelope.error?.code }).toEqual({ status: 1, ok: false, code: 'invalid_input' });
+    // A rule the call did not meet is the tool's refusal: the same failing envelope and exit status, with what the tool said.
+    const ruled = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'not mine', project: 'proj_1', session_id: 'sess_not_held' }));
+    expect({ status: ruled.status, envelope: ruled.envelope }).toEqual({ status: 1, envelope: { ok: false, tool: 'myco_spores', error: { code: 'tool_failure', message: 'session_id not found' } } });
 
     const saved = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'over the wire', project: 'proj_1' }));
     expect({ ok: saved.envelope.ok, type: saved.envelope.result?.observation_type }).toEqual({ ok: true, type: 'gotcha' });
@@ -125,7 +128,8 @@ describe('the member tool surface over a real Deployment', () => {
       expect(tools.tools.map((t) => t.name).sort()).toEqual(TOOL_DEFINITIONS.map((d) => d.name).sort());
       const spores = await client.callTool({ name: 'myco_spores', arguments: { op: 'list' } });
       expect((spores.structuredContent as { result: { total: number } }).result.total).toBe(1);
-      await expect(client.callTool({ name: 'myco_sessions', arguments: { op: 'purge' } })).rejects.toThrow(/Invalid argument 'op' for tool myco_sessions/);
+      const purge = await client.callTool({ name: 'myco_sessions', arguments: { op: 'purge' } });
+      expect({ isError: purge.isError, says: /Invalid argument 'op' for tool myco_sessions/.test(JSON.stringify(purge.content)) }).toEqual({ isError: true, says: true });
     } finally {
       await client.close().catch(() => undefined);
     }

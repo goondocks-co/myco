@@ -35,7 +35,7 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
       } };
     } catch (error) {
       if (error instanceof RunNotFound) return { ok: false, op, error: 'run not found' };
-      if (error instanceof RunBodyUnavailable) return { ok: false, op, error: error.code, message: error.message, retryable: error.retryable };
+      if (error instanceof RunBodyUnavailable) return { ok: false, op, code: error.code, error: error.message, retryable: error.retryable };
       throw error;
     }
   }

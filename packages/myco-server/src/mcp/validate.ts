@@ -13,7 +13,7 @@ import type { JsonSchemaProperty, ToolDefinition } from './definitions.js';
 
 export type ToolInput = Record<string, unknown>;
 
-/** A failure the caller can act on, carried to the wire as a JSON-RPC error with `data.code`. */
+/** A failure the caller can act on: `unknown_tool` reaches the wire as a JSON-RPC error with `data.code`, every other code as a refused result naming it (`server.ts`). */
 export class ToolError extends Error {
   constructor(
     readonly code: 'invalid_input' | 'unknown_tool' | 'not_served' | 'tool_call_failed',
