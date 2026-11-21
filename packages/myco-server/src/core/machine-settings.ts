@@ -14,10 +14,9 @@ import type { RelationalStore } from './adapters.js';
 import { leafRuleViolation, type LeafSpec } from './settings.js';
 import {
   acknowledgeMachineRevision, clearMachineLeaf, invalidateMachineCache, noteMachineContract, publishMachineSnapshot, putMachineLeaf,
-  reportMachineUpdates, readClaimant, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
-  type MachineSettingRow,
+  reportMachineUpdates, readClaimant, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots, commitDismissal,
+  type LeafEdit, type MachineSettingRow,
 } from '../db/settings/machines.js';
-import { commitDismissal, type LeafEdit } from '../db/settings/machine-dismissals.js';
 
 /**
  * The repositories a machine is told to connect from "Needs you", by key: each names the project it joins, or `''` for
