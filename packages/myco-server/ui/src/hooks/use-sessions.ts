@@ -239,6 +239,8 @@ export interface TurnRow {
   mycoCalls: number;
   /** Null until this session's document catches up: only `toolCallCount` is known then. */
   toolRollup: ToolRollup | null;
+  /** What a turn no person typed was, then its substance, in the server's words; null for a person's turn. */
+  lead: string | null;
 }
 
 export type TurnSignal = 'high' | 'low' | 'none';

@@ -41,24 +41,31 @@ function isBackground(origin: string): boolean {
 
 function OutlineRow({ turn, to, open, replace, showError, agent, learningAgedOut }: { turn: TurnRow; to: string; open: boolean; replace: boolean; showError: boolean; agent: string | null; learningAgedOut: boolean }) {
   const time = <time dateTime={new Date(turn.createdAt).toISOString()} className="pt-px t-meta tabular-nums text-faint">{clockWords(turn.createdAt)}</time>;
-  const prompt = promptPreview(turn, agent);
+  // A turn no person typed leads with what it was, in the server's words; its card's headline follows.
+  const lead = turn.lead ?? null;
+  const prompt = lead ?? promptPreview(turn, agent);
+  const mechanical = isMechanical(turn.headline);
+  const headline = mechanical ? null : turn.headline ?? null;
   if (isBackground(turn.origin)) {
     return (
       <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-turn-row={turn.promptId} data-testid={`row-${turn.promptId}`} data-background="" className={cn(rowFrame, 'py-s1', open && selectedRow)}>
         {time}
-        <span className="truncate t-meta text-muted">{turn.headline != null && !isMechanical(turn.headline) ? turn.headline : prompt}</span>
+        <span className="truncate t-meta text-muted">{lead !== null && headline !== null ? `${lead} — ${headline}` : headline ?? prompt}</span>
       </Link>
     );
   }
-  const mechanical = isMechanical(turn.headline);
-  const headline = mechanical ? null : turn.headline ?? null;
   const typed = turn.origin === 'user';
   const firstError = showError ? turn.toolRollup?.firstError ?? null : null;
   return (
     <Link to={to} replace={replace} aria-current={open ? 'true' : undefined} data-turn-row={turn.promptId} data-testid={`row-${turn.promptId}`} className={cn(rowFrame, open && selectedRow)}>
       {time}
       <span className="flex min-w-0 flex-col gap-px">
-        {headline !== null ? (
+        {lead !== null && headline !== null ? (
+          <>
+            <span className="line-clamp-2 t-small font-medium text-ink">{lead}</span>
+            <span className="truncate t-meta text-muted">{headline}</span>
+          </>
+        ) : headline !== null ? (
           <>
             <span className="line-clamp-2 t-small font-medium text-ink">{headline}</span>
             <span className="truncate t-meta text-muted">{typed ? `“${prompt}”` : prompt}</span>
@@ -71,7 +78,7 @@ function OutlineRow({ turn, to, open, replace, showError, agent, learningAgedOut
         )}
         {firstError !== null && <span className="truncate t-mono text-bad" data-first-error="">{firstError}</span>}
         <span className="mt-s1 flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-faint">
-          {turn.origin === 'agent_dispatch' && <span>{turnOriginLabel(turn)}</span>}
+          {turn.origin === 'agent_dispatch' && lead === null && <span>{turnOriginLabel(turn)}</span>}
           {MARK_WORDS.filter(([mark]) => turn.marks?.[mark] === true).map(([mark, word]) => <span key={mark} className="font-medium text-ink-2">{word}</span>)}
           {turn.toolRollup != null && turn.failedTools > 0 && <span className="font-medium text-bad">{turn.failedTools.toLocaleString()} failed</span>}
           {turn.toolRollup != null && turn.mycoCalls > 0 && <span className="font-semibold text-primary">Myco {turn.mycoCalls.toLocaleString()}</span>}

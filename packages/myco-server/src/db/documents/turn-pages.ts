@@ -15,7 +15,7 @@ export interface TurnPageRow {
   prompt_id: string; origin: string | null; prompt_kind: string | null; thread_label: string | null; preview: string | null; text_chars: number | null;
   created_at: number; position: number; tools: number; replies: number; children: number; plans: number; failed_tools: number; myco_calls: number;
   card_input_hash: string | null; live_input_hash: string | null; card_state: string | null; carded_at: number | null;
-  tool_rollup: string | null; headline: string | null; signal: 'high' | 'low' | 'none' | null; marks: string | null; attachments: number;
+  tool_rollup: string | null; lead_facts: string | null; headline: string | null; signal: 'high' | 'low' | 'none' | null; marks: string | null; attachments: number;
 }
 
 interface Shape { originView: OriginView; filter: TurnFilter | 'all'; origins: 'user' | 'all' | 'set'; exact: boolean; order: Direction; boundary: Boundary }
@@ -44,7 +44,7 @@ function variantSql(shape: Shape): string {
     : `session_prompts p ${shape.exact ? '' : shape.filter === 'failed' || shape.filter === 'myco' ? `INDEXED BY idx_session_prompts_${shape.filter}` : shape.origins === 'user' ? 'INDEXED BY idx_session_prompts_user_turns' : ''}
           LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.prompt_id`;
   return `SELECT p.prompt_id,${origin} AS origin,p.prompt_kind,p.thread_label,p.preview,p.text_chars,p.created_at,
-        ${column} AS position,p.tools,p.replies,p.children,p.plans,p.failed_tools,p.myco_calls,p.tool_rollup,c.input_hash AS card_input_hash,p.input_hash AS live_input_hash,c.state AS card_state,c.carded_at,c.headline,c.signal,c.marks,
+        ${column} AS position,p.tools,p.replies,p.children,p.plans,p.failed_tools,p.myco_calls,p.tool_rollup,p.lead_facts,c.input_hash AS card_input_hash,p.input_hash AS live_input_hash,c.state AS card_state,c.carded_at,c.headline,c.signal,c.marks,
         (SELECT COUNT(*) FROM attachments a WHERE a.project_id=p.project_id AND a.session_id=p.session_id AND a.prompt_id=p.prompt_id) AS attachments
       FROM ${source} WHERE ${conditions.join(' AND ')}
       ORDER BY ${column} ${shape.order},${id} ${shape.order} LIMIT {limit}`;

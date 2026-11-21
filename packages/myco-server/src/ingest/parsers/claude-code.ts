@@ -31,7 +31,7 @@ import { isInstructionOrigin } from '../../read/extraction-origins.js';
  */
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { MAIN_THREAD, type ClaudePromptShape, type PromptClaim } from '@goondocks/myco-shared/prompt-identity';
-import { evaluatePromptRules, notificationEnvelopes, promptEnvelope } from '@goondocks/myco-shared/capture-rules';
+import { evaluatePromptRules, notificationEnvelopes, promptEnvelope, promptNotice } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import {
@@ -197,8 +197,10 @@ export const claudeCodeParser: TranscriptParser = {
     const v2Prompt = async (row: { id: string; text: string; origin: WirePromptOrigin; kind: string; claim: PromptClaim; key?: string; thread: string; record?: string },
       createdAt: number, offset: number, sourceRecord: Record<string, unknown>): Promise<void> => {
       await flushReply();
+      // A notice is what a notification no person typed says finished, read by the declarations of this harness's manifest.
+      const notice = row.origin === 'user' ? null : promptNotice(CAPTURE_RULE_BUNDLES, 'claude-code', row.text);
       events.push({ kind: 'prompt', payload: {
-        promptId: row.id, text: row.text, origin: row.origin, promptKind: row.kind, claim: row.claim,
+        promptId: row.id, text: row.text, origin: row.origin, promptKind: row.kind, claim: row.claim, ...(notice === null ? {} : { notice }),
         ...(row.key === undefined ? {} : { sourceKey: row.key }), sourceThread: row.thread, ...(row.record === undefined ? {} : { sourceRecord: row.record }),
       }, createdAt, offset, ...(row.claim === 'context' ? { opensTurn: false } : {}) });
       if (row.claim !== 'context') promptId = row.id;

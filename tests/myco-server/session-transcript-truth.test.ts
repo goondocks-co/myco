@@ -146,6 +146,44 @@ test('captured launch lineage assigns only the opening turn to another agent', a
 });
 
 
+test('each turn no person typed leads with what it was, from its own file read, notice and launch lineage', async () => {
+  const fixture = sqliteEnv();
+  const now = Date.now();
+  const issued = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine' }, now);
+  const said = (uuid: string, text: string, opener: Record<string, unknown> = { promptSource: 'typed' }) => ({ type: 'user', uuid, promptId: `key-${uuid}`, ...opener, message: { content: text } });
+  const read = (id: string, path: string, output: string) => [
+    { type: 'assistant', uuid: id, message: { content: [{ type: 'tool_use', id, name: 'Read', input: { file_path: path } }] } },
+    { type: 'user', uuid: `${id}-done`, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: output }] } }];
+  const opening = 'Your task is in /work/task.md. Read that whole file now.';
+  const transcript = [said('task', opening), ...read('read-task', '/work/task.md', '     1\t# Fix the flaky test\n     2\t\n     3\tDetails follow.'),
+    said('notice', `<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command "Run focused tests ${'測'.repeat(160)}" completed (exit code 0)</summary>\n</task-notification>`, { origin: { kind: 'task-notification' } }),
+    said('note', '<hc from="t2">Plain note</hc>'),
+    said('relay', '<hc from="t1">Your message is in /work/message.md. Read that whole file now.</hc>'), ...read('read-message', '/work/message.md', 'Stop after the first commit.\nThen report.')].map(value => ({ ...value, timestamp: instant }));
+  const get = async (path: string) => (await worker.fetch(await asOwner(fixture.db, `/api/projects/proj_1/sessions/${path}`), { ...fixture.env, ...OWNER_ENV })).json() as Promise<any>;
+  try {
+    for (const parent of [undefined, 'parent-session']) {
+      const session = parent === undefined ? 'unlaunched' : 'launched';
+      await worker.fetch(memberPost(issued.token, envelope({ eventId: crypto.randomUUID(), sessionId: session, kind: 'session.start', createdAt: now,
+        payload: { agent: 'claude-code', startedAt: now, launchParentSessionId: launchParentSession(session, parent === undefined ? {} : { BAGGAGE: `gen_ai.conversation.id=${parent}` }) } })), fixture.env);
+      const tx = `tx_${(parent === undefined ? 'e' : 'f').repeat(32)}`, lines = transcript.map(value => JSON.stringify(value)).join('\n') + '\n';
+      const publish = async (at: number) => { for (let pass = 0; pass < 20 && (await publishDocuments(env, at, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now })).more; pass++); };
+      const env = await captureDocumentTranscript(fixture.db, fixture.bucket, session, tx, lines, now, 0, 'claude-code', 'proj_1');
+      await publish(now + 700_000);
+      const turns = (await get(`${session}/turns?origins=user,system,agent_dispatch,hook_injected,unknown`)).rows;
+      expect(turns.map((turn: any) => turn.lead)).toEqual([parent === undefined ? null : 'Task from the launching agent: Fix the flaky test',
+        expect.stringMatching(/^Background command finished: Run focused tests 測+ \(exit 0\)$/), 'Harness: Plain note', `${parent === undefined ? 'Message' : 'From the launching agent'}: Stop after the first commit.`]);
+      expect((await get(`${session}/turns/${turns[0].promptId}`)).prompt.text).toBe(opening);
+      const mcp = await worker.fetch(memberPost(issued.token, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_sessions', arguments: { project: 'proj_1', op: 'get', id: session } } }, '/mcp'), fixture.env);
+      expect((await mcp.json() as any).result.structuredContent.result.turns.rows.map((turn: any) => turn.lead)).toEqual(turns.map((turn: any) => turn.lead));
+      // A read that later failed is no longer the turn's file: its lead falls back to the speaker and line.
+      await captureDocumentTranscript(fixture.db, fixture.bucket, session, tx, JSON.stringify({ type: 'user', uuid: 'read-message-failed', timestamp: instant,
+        message: { content: [{ type: 'tool_result', tool_use_id: 'read-message', is_error: true, content: 'Permission denied' }] } }) + '\n', now + 800_000, new TextEncoder().encode(lines).byteLength, 'claude-code', 'proj_1');
+      await publish(now + 1_500_000);
+      expect((await get(`${session}/turns?origins=system`)).rows.at(-1).lead).toBe('Harness: Your message is in /work/message.md. Read that whole file now.');
+    }
+  } finally { fixture.sqlite.close(); }
+});
+
 test('parent-bearing and person sessions title and learn their three instructions', async () => {
   for (const parent of [undefined, 'parent-session']) await withDocumentStores(async db => {
     const now = Date.now();

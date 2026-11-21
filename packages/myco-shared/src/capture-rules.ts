@@ -14,6 +14,8 @@ export interface CaptureRuleBundle {
   planTags?: readonly string[];
   /** Tags of system-notification envelopes this harness declares. Absent means it declares none. */
   notificationEnvelopes?: readonly string[];
+  /** What this harness's notification envelopes say, from its manifest's `capture.notificationNotices`. */
+  notificationNotices?: readonly NotificationNoticeDeclaration[];
   transcriptTimestamps?: 'recorded' | 'synthetic';
   /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;
@@ -40,6 +42,57 @@ export function sourceTimestampsRecorded(bundles: readonly CaptureRuleBundle[], 
 export function notificationEnvelopes(bundles: readonly CaptureRuleBundle[], agent: string | null): readonly string[] {
   if (agent === null || agent === '') return [];
   return bundles.find((bundle) => bundle.name === agent)?.notificationEnvelopes ?? [];
+}
+
+export interface NotificationNoticeDeclaration { envelope: string; line: string; kind: 'background_command'; pattern: string }
+/** What finished, as a prompt records it at capture: what ran and, when its harness said, the exit code. */
+export interface PromptNotice { kind: 'background_command'; description: string; exitCode: number | null }
+/** Characters a notice's description keeps. */
+export const NOTICE_DESCRIPTION_CHARS = 160;
+/** UTF-8 bytes a notice's JSON may take, escaping and fixed fields included: the producer clips to it and admission checks it. */
+export const NOTICE_JSON_BYTES = 512;
+/** Characters of a declared line element a notice reads; a longer line records no notice. */
+const NOTICE_LINE_CHARS = 2_048;
+
+/** The text of `<line>…</line>` inside the closed `<envelope …>…</envelope>` the prompt opens with, by one forward scan; null when malformed. */
+function noticeLine(text: string, envelope: string, line: string): string | null {
+  const body = text.trimStart();
+  if (!envelopeTagAtStart(body, [envelope])) return null;
+  const opened = body.indexOf('>') + 1;
+  if (opened === 0 || body[opened - 2] === '/') return null;
+  const closed = body.indexOf(`</${envelope}>`, opened);
+  if (closed < 0) return null;
+  const start = body.indexOf(`<${line}>`, opened);
+  if (start < 0 || start >= closed) return null;
+  const from = start + line.length + 2;
+  const end = body.indexOf(`</${line}>`, from);
+  if (end < 0 || end > closed || end - from > NOTICE_LINE_CHARS) return null;
+  return body.slice(from, end).replace(/\s+/g, ' ').trim();
+}
+
+const noticeBytes = (notice: PromptNotice): number => new TextEncoder().encode(JSON.stringify(notice)).byteLength;
+
+/**
+ * The notice a prompt carries: the first declaration of `agent` whose closed envelope the prompt opens with and whose
+ * line element inside it its pattern matches. The description is clipped at a code point boundary until the notice's
+ * JSON fits `NOTICE_JSON_BYTES`; null for any other prompt, or when no description fits.
+ */
+export function promptNotice(bundles: readonly CaptureRuleBundle[], agent: string | null, text: string): PromptNotice | null {
+  const declared = bundles.find((bundle) => bundle.name === agent)?.notificationNotices ?? [];
+  for (const declaration of declared) {
+    const line = noticeLine(text, declaration.envelope, declaration.line);
+    const groups = line === null ? undefined : new RegExp(declaration.pattern).exec(line)?.groups;
+    const points = Array.from(groups?.description?.trim() ?? '');
+    const exitCode = groups?.exitCode === undefined ? null : Number(groups.exitCode);
+    const notice: PromptNotice = { kind: declaration.kind, description: '', exitCode: Number.isSafeInteger(exitCode) ? exitCode : null };
+    let kept = 0;
+    for (let length = 0; kept < points.length && length + points[kept]!.length <= NOTICE_DESCRIPTION_CHARS; kept++) length += points[kept]!.length;
+    for (; kept > 0; kept--) {
+      notice.description = points.slice(0, kept).join('').trimEnd();
+      if (notice.description !== '' && noticeBytes(notice) <= NOTICE_JSON_BYTES) return notice;
+    }
+  }
+  return null;
 }
 
 /** A prompt that is one complete system-notification envelope its harness declares, with nothing after the closing tag. */

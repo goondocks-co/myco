@@ -10,6 +10,8 @@ import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './sco
 import { documentCountersRow, liveDocumentHasInstruction, turnAnchor } from '../db/documents/catalog-reads.js';
 import { promptLocator } from '../db/documents/prompt-locator.js';
 import { turnPageRows, type OriginScope, type OriginView } from '../db/documents/turn-pages.js';
+import { turnLeadSession } from '../db/documents/turn-lead-session.js';
+import { turnLead } from './turn-lead.js';
 
 export interface CatalogTurnRow {
   promptId: string;
@@ -32,6 +34,8 @@ export interface CatalogTurnRow {
   failedTools: number;
   mycoCalls: number;
   toolRollup: ToolRollup | null;
+  /** What a turn no person typed was, in plain words, then its substance; null for a person's turn. */
+  lead: string | null;
 }
 
 /**
@@ -57,9 +61,12 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   const exact = opts.promptId === undefined ? undefined : await promptLocator(db, scope.projectId, sessionId, opts.promptId);
   if (exact === null || (exact !== undefined && exact.turn === null)) return { rows: [], cursor: null };
   const exactTurn = exact?.turn ?? undefined;
+  let session: ReturnType<typeof turnLeadSession> | undefined;
+  const leadSession = () => (session ??= turnLeadSession(db, scope.projectId, sessionId));
   const read = async (take: number, order: 'ASC' | 'DESC', boundary: { createdAt: number; id: string } | null, inclusive = false, exact = false) => {
     const results = await turnPageRows(db, { project: scope.projectId, session: sessionId, filter: opts.filter, origins, originView, turn: exactTurn, order,
       boundary: boundary === null ? null : { ...boundary, inclusive }, limit: take + (exact ? 0 : 1) });
+    const context = results.length === 0 ? null : await leadSession();
     return results.map(r => ({
       promptId: String(r.prompt_id), origin: String(r.origin ?? 'user'), promptKind: (r.prompt_kind as string | null) ?? null,
       threadLabel: (r.thread_label as string | null) ?? null, preview: (r.preview as string | null) ?? null,
@@ -70,6 +77,7 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
       signal: (r.signal as CatalogTurnRow['signal']) ?? null, marks: r.marks == null ? null : JSON.parse(String(r.marks)) as CardMarks,
       failedTools: Number(r.failed_tools), mycoCalls: Number(r.myco_calls),
       toolRollup: r.tool_rollup == null ? null : JSON.parse(String(r.tool_rollup)) as ToolRollup,
+      lead: turnLead({ promptId: String(r.prompt_id), origin: String(r.origin ?? 'user'), preview: r.preview, leadFacts: r.lead_facts }, context!),
     }));
   };
   let rows;

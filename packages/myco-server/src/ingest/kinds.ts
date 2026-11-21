@@ -3,6 +3,7 @@ import { utf8 } from '../hash.js';
 import { AHEAD_OF_CLOCK, aheadOfClock, ID_GRAMMAR, MAX_ID_CHARS, MAX_PAYLOAD_BYTES, type ClockSource, type Refused } from './envelope.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { MAX_FILE_PATH_CHARS, MAX_FILES_AFFECTED, PLAN_SOURCES, PLAN_STATUSES, PROMPT_ORIGINS, TRANSCRIPT_ROLES, TOOL_RESULT_REASONS, TURN_KIND, TURN_PHASES } from '@goondocks/myco-shared/member-protocol';
+import { NOTICE_JSON_BYTES } from '@goondocks/myco-shared/capture-rules';
 import { CONTEXT_DELIVERED_KIND, DELIVERED_SESSION_RECORDS, HOOK_NAMED_SCHEMES, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
@@ -145,6 +146,8 @@ export const KINDS: readonly KindSpec[] = [
       sourceKey: str(128, 'source_key'),
       sourceThread: str(128, 'source_thread'),
       sourceRecord: str(128, 'source_record'),
+      /** What a notification prompt says finished (`PromptNotice`), recorded by the transcript parse from its harness's declarations. */
+      notice: { bound: { type: 'json', maxBytes: NOTICE_JSON_BYTES } },
     },
     exactlyOne: ['text', 'blob'],
     projection: 'prompt_batches',

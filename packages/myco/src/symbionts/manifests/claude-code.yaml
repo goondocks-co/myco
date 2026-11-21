@@ -34,6 +34,14 @@ capture:
   # the tag with hyphens written as underscores. A prompt that is only one such
   # envelope is not injected.
   notificationEnvelopes: [task-notification]
+  # A background command the agent started tells its end in one <task-notification>, whose <summary> reads
+  # `Background command "<description>" completed (exit code N)` (or failed / was stopped). Capture records the
+  # description and exit code on the prompt, so a turn list can say what finished without reading the envelope.
+  notificationNotices:
+    - envelope: task-notification
+      line: summary
+      kind: background_command
+      pattern: '^Background command "(?<description>.+)" (?:completed|failed|was stopped|was killed)(?:.*?exit code (?<exitCode>-?\d+))?'
   # A session that continues one compacted starts with `source: compact` (`member/compaction.ts`).
   compactionStart:
     field: source

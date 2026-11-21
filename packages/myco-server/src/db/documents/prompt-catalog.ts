@@ -46,9 +46,12 @@ const placePrompts = write<[placed: string, ...DocumentKey]>({ name: 'documentPr
   UPDATE session_prompts SET page=j.page FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id` });
 const count = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field}+COALESCE(json_extract(j.value,'$.added.${field}'),0))`;
 const kept = (field: string) => `${field}=COALESCE(json_extract(j.value,'$.${field}'),${field})`;
+/** A present `lead_facts` (null included) sets them; a `lead_merge` patches its facts over those stored; neither keeps them. */
+const leadFacts = `lead_facts=CASE WHEN json_type(j.value,'$.lead_facts') IS NOT NULL THEN json_extract(j.value,'$.lead_facts')
+    WHEN json_extract(j.value,'$.lead_merge') IS NOT NULL THEN json_patch(COALESCE(lead_facts,'{}'),json_extract(j.value,'$.lead_merge')) ELSE lead_facts END`;
 const settleTurns = write<[turns: string, ...DocumentKey]>({ name: 'documentPrompts.settleTurns', sql: `WITH j(id,value) AS MATERIALIZED (SELECT json_extract(value,'$.id'),value FROM json_each(?1))
   UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
-    ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')},${kept('source_bytes')}
+    ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${leadFacts},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')},${kept('source_bytes')}
   FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id AND prompt_id IN (SELECT id FROM j)` });
 
 export const insertPromptsWrite = (key: DocumentKey, prompts: string): Bound => insertPrompts.bind(...key, prompts);
