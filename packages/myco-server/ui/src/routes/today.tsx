@@ -225,9 +225,9 @@ function SessionItem({ entry, scoped, projectName, now }: { entry: SessionEntry;
 }
 
 /**
- * An untitled session: the first line the person typed as its heading, marked
- * with a small "Untitled" tag, or "Untitled session" in secondary text when it
- * has no such line.
+ * An untitled session: what its opening turn was, or the first line the person
+ * typed, as its heading, marked with a small "Untitled" tag, or "Untitled
+ * session" in secondary text when it has no such line.
  */
 function UntitledHeading({ firstPrompt }: { firstPrompt: string | null }) {
   if (firstPrompt === null) return <span className="font-normal text-muted">{UNTITLED_SESSION_LABEL}</span>;

@@ -41,6 +41,8 @@ interface SessionSummary {
   tool_count: number;
   parent_session_id: string | null;
   launch_parent_session_id: string | null;
+  /** What an untitled session's opening turn was when no person typed it; members only, as its turns are. */
+  lead?: string | null;
 }
 
 function summary(row: SessionRow, counts: { prompts: number; toolCalls: number; turns: number }): SessionSummary {
@@ -128,7 +130,8 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
     sessionId,
     quietBefore: await sessionQuietBefore(ctx.env, ctx.now),
   }, ctx.now);
-  return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount, turns: row.turnCount })), cursor: page.cursor };
+  const member = ctx.principal.kind !== 'grant';
+  return { sessions: page.rows.map((row) => ({ ...summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount, turns: row.turnCount }), ...(member ? { lead: row.lead } : {}) })), cursor: page.cursor };
 }
 
 /** Turn locator repair is a named, retryable read refusal on MCP. */
