@@ -15,13 +15,9 @@ import { readCurationAnswer, readCurationCoverage } from '@myco-server-worker/db
 import { CURATION_ANSWER_STEPS } from '@myco-server-worker/db/schema-steps-curation-answer.js';
 import { curationFixture as fixture, keepAnswer, note, scope } from './helpers/curation.js';
 
-test('guidance admits routes and prose while refusing deterministic file, identifier, flag and call notation', async () => {
-  const refused = ['see packages/myco-server/src/core/x.ts', 'read core/spore-curation.ts', 'look at worker-steps.test.ts',
-    'call capture_spool', 'When MYCO_HOME is unset', 'call retry() on the queue', 'pass --force to the CLI', 'see ~/myco/config'];
-  const accepted = ['a path like /api/projects', 'Node.js(22)', 'exit code 1(retry)', 'check outboxLease', 'run npm run check:pr',
-    'measure myco hook startup', 'When a session (or its turns) is retried, keep the canonical identity.',
-    'When budgets hit the cap (5 per day), wait for the next window.', 'When guidance is short-lived (e.g. hotfix), retire it soon.',
-    'When the CI run fails, rerun just the failed shard.', 'When D1 batches exceed 100 statements, split them.'];
+test('a curation answer is checked for code notation like every other agent line', async () => {
+  const refused = ['When the queue stalls, inspect (~/myco/config) first.'];
+  const accepted = ['When using Bun/Node.js for workers, compare the native library versions.'];
   for (const line of [...refused, ...accepted]) {
     const f=await fixture();
     try {

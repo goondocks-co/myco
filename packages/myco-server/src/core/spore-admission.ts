@@ -78,11 +78,11 @@ async function sourceOf(input: SporeWriteInput, ctx: SporeWriteContext, scope: R
 }
 
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
-/** The agent line a write carries, or the one thing wrong with it; a run's line carries no code notation. */
-function agentLineOf(input: SporeWriteInput, ctx: SporeWriteContext): { ok: true; agentLine: string } | SporeWriteFailure {
+/** The agent line a write carries, or the one thing wrong with it; a line carries no code notation. */
+function agentLineOf(input: SporeWriteInput): { ok: true; agentLine: string } | SporeWriteFailure {
   const admitted = admitAgentLine(input.agent_line);
   if ('error' in admitted) return failure(admitted.error + '. ' + AGENT_LINE_GUIDANCE);
-  const notation = ctx.principal.kind === 'run' ? agentLineNotation(admitted.line) : null;
+  const notation = agentLineNotation(admitted.line);
   return notation === null ? { ok: true, agentLine: admitted.line }
     : failure(`agent_line contains code notation ${JSON.stringify(notation)}; nothing was saved. Say the situation and guidance in plain words, keep the path, flag or symbol in the body, and call myco_spores op "${String(input.op)}" again.`, { tool: 'myco_spores', op: String(input.op) });
 }
@@ -202,7 +202,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const by = writerOf(ctx);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
-    const lined = agentLineOf(input, ctx);
+    const lined = agentLineOf(input);
     if (!lined.ok) return lined;
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
@@ -263,7 +263,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const by = writerOf(ctx);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
-    const lined = agentLineOf(input, ctx);
+    const lined = agentLineOf(input);
     if (!lined.ok) return lined;
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;

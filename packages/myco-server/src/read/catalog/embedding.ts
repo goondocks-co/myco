@@ -123,7 +123,7 @@ async function embedding_semanticSearch(db: embedding_import_RelationalStore, sc
     .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
     const record = records.get(JSON.stringify([row.type, row.record_id]))!;
     return {
-      id: row.record_id, type: row.type, title: row.type === 'spore' ? sporeLine(record.agent_line, row.text) : row.title, preview: record.agent_line || row.text.slice(0, embedding_import_SEARCH_PREVIEW_CHARS), score: row.score, created_at: row.created_at,
+      id: row.record_id, type: row.type, title: row.type === 'spore' ? sporeLine(record.agent_line, row.text, row.observation_type) : row.title, preview: record.agent_line || row.text.slice(0, embedding_import_SEARCH_PREVIEW_CHARS), score: row.score, created_at: row.created_at,
       ...(row.type === 'spore' ? { observation_type: row.observation_type } : {}),
       ...(row.session_id === '' ? {} : { session_id: row.session_id }),
       ...(row.prompt_id === null ? {} : { prompt_id: row.prompt_id }),

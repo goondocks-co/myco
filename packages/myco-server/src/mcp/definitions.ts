@@ -15,7 +15,7 @@ import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { DEFAULT_PAGE, MAX_PAGE } from '../read/scope.js';
 import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
-import { AGENT_LINE_RULE } from '../core/agent-line.js';
+import { AGENT_LINE_NOTATION_RULES, AGENT_LINE_RULE } from '../core/agent-line.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
 import { SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOPWORDS, SEARCH_TOOL_LIMIT, SEARCH_TYPES, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS } from '@goondocks/myco-shared/search-types';
@@ -441,7 +441,7 @@ const definitions: readonly ServedToolDefinition[] = [
     },
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters; its field says how to write one. Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters and carrying no code notation; its field says how to write one. ${AGENT_LINE_NOTATION_RULES} Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -561,7 +561,7 @@ const definitions: readonly ServedToolDefinition[] = [
         "agent_line": {
           "type": "string",
           minLength: 1, maxLength: AGENT_LINE_MAX_CHARS,
-          "description": `For op: "save" and "consolidate". ${AGENT_LINE_RULE} Rendered in place of the body wherever the spore is served, so it stands alone. Shorten a refused line and call the same op again. For consolidate, retain the same sources.`
+          "description": `For op: "save" and "consolidate". ${AGENT_LINE_RULE} ${AGENT_LINE_NOTATION_RULES} Rendered in place of the body wherever the spore is served, so it stands alone. Shorten or reword a refused line, keeping any path, flag or symbol in content, and call the same op again. For consolidate, retain the same sources.`
         },
         "provenance_kind": {
           "type": "string",

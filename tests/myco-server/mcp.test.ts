@@ -332,6 +332,17 @@ describe('POST /mcp', () => {
   it('caps a spore body, and consolidates all sources or none: a source retired meanwhile refuses the call by name and saves nothing', async () => {
     const { call, sqlite, t1 } = await setup();
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: expect.stringContaining(`content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`) });
+    const lined = async (agent_line: string) => (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'upload stall', agent_line })).result;
+    expect(await lined('When the upload stalls, read core/upload.ts first.')).toEqual({ ok: false, repairCall: { tool: 'myco_spores', op: 'save' },
+      error: 'agent_line contains code notation "core/upload.ts"; nothing was saved. Say the situation and guidance in plain words, keep the path, flag or symbol in the body, and call myco_spores op "save" again.' });
+    const notation = { 'Inspect (--force) first.': '--force', 'Inspect (./scripts/build).': './scripts/build', 'Check "~/repo" first.': '~/repo', 'Open (C:\\Users) first.': 'C:\\Users',
+      'Read https://docs.example.com/guide.html first.': 'docs.example.com/guide.html', 'Call retry() on the queue.': 'retry()', 'Run fn(a, b) first.': 'fn(a, b)',
+      'When MYCO_HOME is unset, set it.': 'MYCO_HOME', 'Use capture_spool to retain data.': 'capture_spool', 'Look at worker-steps.test.ts first.': 'worker-steps.test.ts' };
+    for (const [line, token] of Object.entries(notation)) expect([line, (await lined(line)).error]).toEqual([line, expect.stringContaining(`code notation ${JSON.stringify(token)};`)]);
+    expect(sqlite.query(`SELECT COUNT(*) c FROM spores WHERE content = 'upload stall'`).get()).toEqual({ c: 0 });
+    for (const line of ['When using Bun/Node.js or node.js(22), pin one runtime.', 'When the status(retry once) or on/off(e.g. maintenance) shows, wait.', 'When reads and/or read/write tokens stall, check I/O.',
+      'Upgrading from 2.0: rerun set-up (e.g. after a re-install) at /api/projects.', 'When a step -- the build -- fails, check outboxLease and exit code 1(retry).'])
+      expect([line, (await lined(line)).status]).toEqual([line, 'active']);
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;
     expect((await call(t1.token, 'myco_spores', { op: 'obsolete', id: b.id, reason: 'gone' })).result.status).toBe('obsolete');

@@ -33,7 +33,7 @@ Search first, then fetch the result in full using its retrieval hint. When recor
   "project": "<project-id>",
   "type": "discovery",
   "content": "What we learned, where it applies, and why it matters.",
-  "agent_line": "When working on this area, follow this guidance in the named file."
+  "agent_line": "When a retried upload stores rows twice, give each upload one id so the retry is ignored."
 }
 ```
 

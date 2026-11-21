@@ -127,7 +127,7 @@ function hitOf(doc: HydratedDocument, input: PageInput, release: ReleaseAnnotati
   const type = typeOf(doc);
   const conversational = type === 'session' || type === 'card';
   const rawTitle = type === 'session' ? (doc.title || `Session ${doc.id.slice(-6)}`)
-    : type === 'plan' ? (doc.title || 'Plan') : type === 'card' ? (doc.title || 'Turn') : sporeLine(doc.line, doc.title ?? '');
+    : type === 'plan' ? (doc.title || 'Plan') : type === 'card' ? (doc.title || 'Turn') : sporeLine(doc.line, doc.title ?? '', doc.observation_type ?? type);
   const text = doc.text ?? (type === 'session' ? doc.title : null);
   const preview = doc.line !== null && doc.line !== '' ? doc.line : snippet(text ?? '', input.request.words, (doc.text_start ?? 1) > 1);
   return {

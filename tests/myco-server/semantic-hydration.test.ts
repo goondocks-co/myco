@@ -12,6 +12,7 @@ import { vectorMatches, type VectorFilters, type VectorHit } from '@myco-server-
 import { notTombstonedSql } from '@myco-server-worker/db/session-read-model.js';
 import { inListChunks } from '@myco-server-worker/read/scope.js';
 import { SEARCH_PREVIEW_CHARS } from '@goondocks/myco-shared/search-types';
+import { SPORE_OPENING_CHARS } from '@myco-server-worker/db/search/spore-opening.js';
 import { seededSqlite, sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { schemaD1Root } from './helpers/schema-template.js';
@@ -148,7 +149,7 @@ for (const target of ['bun', 'workerd-d1'] as const) {
       const previewRows = await semanticHits(previews.db, SCOPE, semantic(matches), [1, 0], { topK: 100, preview: true });
       expect(previewRows.map((row) => row.text.slice(0, SEARCH_PREVIEW_CHARS))).toEqual(all.map((row) => row.text.slice(0, SEARCH_PREVIEW_CHARS)));
       for (const rows of previews.batches) {
-        for (const row of rows) expect(Array.from(String(row.text)).length).toBeLessThanOrEqual(SEARCH_PREVIEW_CHARS);
+        for (const row of rows) expect(Array.from(String(row.text)).length).toBeLessThanOrEqual(row.type === 'spore' ? SPORE_OPENING_CHARS : SEARCH_PREVIEW_CHARS);
       }
       const search = await semanticSearch(db, SCOPE, semantic(matches), ['spore', 'plan', 'session'], { query: 'fixture prompt' }, 100);
       const expected = (await Promise.all(['spore', 'plan', 'session'].map((type) => oracle(db, matches, { type })))).flat()
