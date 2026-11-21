@@ -21,7 +21,7 @@
  */
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { describe, it, expect, afterAll } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,7 +32,8 @@ import { handleStatus } from '@myco-server-worker/api/status.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
-import { migrateAndSeed } from '../helpers/d1.js';
+import { seededSqlite } from '../helpers/d1.js';
+import { schemaFile } from '../helpers/deployment-volume.js';
 import { titleReadySessions, titleSession } from '@myco-server-worker/core/titling.js';
 import {
   sessions_listSessions as listSessions,
@@ -59,7 +60,7 @@ afterAll(() => { for (const root of temporaryRoots) rmSync(root, { recursive: tr
 function seededFile(): { sqlite: Database; blobDir: string } {
   const root = mkdtempSync(join(tmpdir(), 'myco-contract-'));
   temporaryRoots.push(root);
-  const sqlite = migrateAndSeed(new Database(join(root, 'myco.sqlite')));
+  const sqlite = schemaFile(join(root, 'myco.sqlite'), seededSqlite());
   return { sqlite, blobDir: join(root, 'blobs') };
 }
 

@@ -15,32 +15,14 @@
  * - the Host allowlist does NOT apply: the authority is the deployment's public
  *   name, which the proxy owns.
  */
-import { afterAll, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { deploymentVolume } from '../helpers/deployment-volume.js';
+import { describe, expect, it } from 'bun:test';
 import { serve } from '@myco-server-worker/entry/bun.js';
-
-const roots: string[] = [];
-afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
-
-function migratedVolume(): { databasePath: string; blobDir: string } {
-  const root = mkdtempSync(join(tmpdir(), 'myco-remote-'));
-  roots.push(root);
-  const databasePath = join(root, 'myco.sqlite');
-  const sqlite = new Database(databasePath);
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
-  sqlite.close();
-  return { databasePath, blobDir: join(root, 'blobs') };
-}
 
 /** Serve under the proxy transport and hand back a request helper. */
 async function remoteDeployment(config: { header?: string; trustedHops?: number }) {
   const started = await serve({
-    ...migratedVolume(),
+    ...deploymentVolume(),
     transport: 'proxy',
     sourceFrom: 'proxy',
     bind: 'all',

@@ -6,11 +6,11 @@
  * the rows the Deployment's own sign-in then reads, and wrangler and the sign-in route are scripted.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 import { previewIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { FIRST_OWNER_HAS_MEMBERS, FIRST_OWNER_LINKED, setupFirstOwner } from '@myco-server-worker/core/first-owner.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -30,9 +30,7 @@ afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: 
 
 /** A fresh Deployment's database: every migration applied, no member. */
 function deploymentDatabase(): Database {
-  const sqlite = new Database(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+  const sqlite = schemaSqlite();
   return sqlite;
 }
 

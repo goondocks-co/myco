@@ -9,7 +9,7 @@ import { settingsWriter, settingsRevisions, observedSettingsGuard, writeSwitched
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPatch, asOwnerPost, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
@@ -17,7 +17,7 @@ import { asOwner, asOwnerPatch, asOwnerPost, asOwnerPut, OWNER_ENV } from './hel
 const handles: Database[] = [];
 afterEach(() => { for (const handle of handles.splice(0)) handle.close(); });
 function rig() {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   handles.push(sqlite);
   return { sqlite, db: sqliteRelationalStore(sqlite) };
 }

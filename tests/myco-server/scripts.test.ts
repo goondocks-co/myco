@@ -1,5 +1,5 @@
+import { schemaSqlite } from './helpers/schema-template.js';
 import { describe, it, expect } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, readdirSync, readFileSync } from "../support/fenced-fs.mjs";
 import { join } from 'node:path';
@@ -24,8 +24,7 @@ describe('operator scripts', () => {
     expect(statements[1]).toMatch(/^INSERT INTO member_credentials/);
     expect(out).not.toMatch(/\?/);
     expect(err).not.toMatch(/MYCO_MEMBER_TOKEN=/);
-    const sqlite = new Database(':memory:');
-    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    const sqlite = schemaSqlite({ foreignKeys: false });
     for (const s of statements) sqlite.exec(s);
     expect(sqlite.query(`SELECT id, label, role, revoked_at FROM members WHERE id = 'mem_s'`).get())
       .toEqual({ id: 'mem_s', label: 'mem_s', role: 'admin', revoked_at: null });
@@ -55,8 +54,7 @@ describe('operator scripts', () => {
     const rotatesAfter = (args: string[]): number => {
       const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
       expect(code).toBe(0);
-      const sqlite = new Database(':memory:');
-      for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+      const sqlite = schemaSqlite({ foreignKeys: false });
       sqlite.exec(out);
       return (sqlite.query(`SELECT rotates FROM member_credentials`).get() as { rotates: number }).rotates;
     };
@@ -67,8 +65,7 @@ describe('operator scripts', () => {
     const applied = (args: string[]) => {
       const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', ...args]);
       expect(code).toBe(0);
-      const sqlite = new Database(':memory:');
-      for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+      const sqlite = schemaSqlite({ foreignKeys: false });
       sqlite.exec(out);
       return sqlite.query(`SELECT m.role, c.rotates FROM members m JOIN member_credentials c ON c.member_id = m.id`).get();
     };
@@ -79,8 +76,7 @@ describe('operator scripts', () => {
   it('mint --non-rotating never hands a shared credential to a member that administers the Deployment: applied there, it fails by name, writes no credential and leaves the role as it was', () => {
     const { code, out } = run('mint-local.ts', ['mem_s', 'machine_s', '--non-rotating']);
     expect(code).toBe(0);
-    const sqlite = new Database(':memory:');
-    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    const sqlite = schemaSqlite({ foreignKeys: false });
     sqlite.exec(`INSERT INTO members (id, label, created_at, revoked_at, role) VALUES ('mem_s', 'mem_s', 1, NULL, 'admin')`);
     // Applied statement by statement, as `wrangler d1 execute` reports each: the guard is the one that fails.
     const statements = out.split('\n').filter((l) => !l.startsWith('--')).join('\n').split(';').map((x) => x.trim()).filter(Boolean);
@@ -111,8 +107,7 @@ describe('operator scripts', () => {
     expect(code).toBe(0);
     expect(out.trim()).toMatch(/^UPDATE member_credentials SET revoked_at = \d+, revoked_by = 'mem_m' WHERE lineage_root = \(SELECT lineage_root FROM member_credentials WHERE id = 'mt_mid'\) AND revoked_at IS NULL RETURNING id;$/);
     expect(err).toContain('lineage');
-    const sqlite = new Database(':memory:');
-    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    const sqlite = schemaSqlite({ foreignKeys: false });
     sqlite.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_s', 'proj_s', 0)`);
     sqlite.exec(`INSERT OR IGNORE INTO members (id, label, created_at, revoked_at) VALUES ('mem_m', 'm', 0, NULL)`);
     sqlite.exec(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at)

@@ -3,7 +3,7 @@
  * writer, an unarchive at the limit is refused in its own commit, and a replaced successor activates nothing.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import { activateSuccessor, detectLineageReplay, refreshMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { admitProject, unarchiveProject } from '@myco-server-worker/db/storage/projects.js';
@@ -11,13 +11,13 @@ import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
 import { commit } from '@myco-server-worker/db/index.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 import { issueMemberToken } from './helpers/member-token.js';
 
 const NOW = 1_800_000_000_000;
 
 function rig() {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   return { sqlite, db: sqliteRelationalStore(sqlite) };
 }
 const active = (sqlite: Database) => sqlite.query('SELECT active FROM active_project_count WHERE slot=1').get() as { active: number } | null;

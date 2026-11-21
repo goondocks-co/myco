@@ -7,11 +7,11 @@
  * from the store alone would make every recovery operation a disclosure.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import { deploymentSecretStore, maskSecret, normalizeSecretValue, SecretValueError } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText, WRAPPING_KEY_BYTES, WrappingKeyUnavailableError } from '@myco-server-worker/platform/wrapping-key.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 
 const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(WRAPPING_KEY_BYTES))));
 const OTHER_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(WRAPPING_KEY_BYTES))));
@@ -19,7 +19,7 @@ const OTHER_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Ar
 const ANTHROPIC = 'sk-ant-api03-ZmFrZS1rZXktZm9yLXRlc3Rpbmc';
 
 function rig(keyText: string = KEY) {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   const db = sqliteRelationalStore(sqlite);
   return { sqlite, db, store: deploymentSecretStore(db, wrappingKeyFromText(async () => keyText, 'TEST_KEY')) };
 }

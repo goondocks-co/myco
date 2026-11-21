@@ -3,12 +3,8 @@
  * Each one therefore gets a negative test that fails by name — a condition
  * nothing can violate in a test is a condition nobody is enforcing.
  */
-import { afterAll, describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync } from "../../support/fenced-fs.mjs";
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { deploymentVolume } from '../helpers/deployment-volume.js';
+import { describe, expect, it } from 'bun:test';
 import {
   LOOPBACK_V4,
   LOOPBACK_V6,
@@ -102,25 +98,10 @@ describe('condition 3 — Host-header allowlist', () => {
   });
 });
 
-const roots: string[] = [];
-afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
-
-/** A migrated volume, matching the one `self-hosted-entry.test.ts` builds. */
-function migratedVolume(): { databasePath: string; blobDir: string } {
-  const root = mkdtempSync(join(tmpdir(), 'myco-loopback-'));
-  roots.push(root);
-  const databasePath = join(root, 'myco.sqlite');
-  const sqlite = new Database(databasePath);
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
-  sqlite.close();
-  return { databasePath, blobDir: join(root, 'blobs') };
-}
-
 describe('serve() enforces the contract at startup', () => {
   it('admits the configured public loopback authority across a mapped container port', async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', bind: 'all', port: 0, origin: 'http://127.0.0.1:9000', wakeLoop: false });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', bind: 'all', port: 0, origin: 'http://127.0.0.1:9000', wakeLoop: false });
     try {
       for (const [host, status] of [['127.0.0.1:9000', 200], ['127.0.0.1:9001', 421], ['evil.example:9000', 421], [`127.0.0.1:${started.port}`, 421]] as const) {
         expect((await fetch(`http://127.0.0.1:${started.port}/health`, { headers: { host } })).status).toBe(status);
@@ -131,7 +112,7 @@ describe('serve() enforces the contract at startup', () => {
   it('binds BOTH loopback families and refuses a foreign Host', async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
 
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0, origin: 'https://public.example' });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0, origin: 'https://public.example' });
     try {
       // Both families answer. A half-bound surface is what #835 was.
       for (const authority of [`127.0.0.1:${started.port}`, `[::1]:${started.port}`]) {
@@ -154,7 +135,7 @@ describe('serve() enforces the contract at startup', () => {
 describe('port 0 lands both families on ONE port', () => {
   it('the second family binds the port the kernel chose for the first', async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0 });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0 });
     try {
       expect(started.port).toBeGreaterThan(0);
       // Two families on two ports would not be one deployment: both must answer
@@ -172,7 +153,7 @@ describe('port 0 lands both families on ONE port', () => {
 describe('bind mode reconciles the contract with a network namespace', () => {
   it("defaults to binding the loopback literals", async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0 });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0 });
     try {
       for (const authority of [`127.0.0.1:${started.port}`, `[::1]:${started.port}`]) {
         const res = await fetch(`http://${authority}/health`, { headers: { host: authority } });
@@ -185,7 +166,7 @@ describe('bind mode reconciles the contract with a network namespace', () => {
 
   it("bind 'all' still refuses a foreign Host — the namespace is not the only guard", async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0, bind: 'all' });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0, bind: 'all' });
     try {
       const ok = await fetch(`http://127.0.0.1:${started.port}/health`, {
         headers: { host: `127.0.0.1:${started.port}` },
@@ -205,7 +186,7 @@ describe('bind mode reconciles the contract with a network namespace', () => {
 
   it("bind 'all' does not weaken the refusal of the NAME", async () => {
     const { serve } = await import('@myco-server-worker/entry/bun.js');
-    const started = await serve({ ...migratedVolume(), sourceFrom: 'socket', port: 0, bind: 'all' });
+    const started = await serve({ ...deploymentVolume(), sourceFrom: 'socket', port: 0, bind: 'all' });
     try {
       const res = await fetch(`http://127.0.0.1:${started.port}/health`, {
         headers: { host: `localhost:${started.port}` },

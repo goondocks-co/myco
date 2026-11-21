@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createBunHandler } from '@myco-server-worker/entry/bun.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { deploymentVolume } from '../helpers/deployment-volume.js';
 import { issueMemberToken } from '../helpers/member-token.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { memberPost, envelope } from '../helpers/fixtures.js';
@@ -23,19 +23,16 @@ const roots: string[] = [];
 afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
 
 function volume({ migrated = true }: { migrated?: boolean } = {}): { databasePath: string; blobDir: string } {
-  const root = mkdtempSync(join(tmpdir(), 'myco-selfhosted-'));
-  roots.push(root);
-  const databasePath = join(root, 'myco.sqlite');
-  const sqlite = new Database(databasePath);
+  const v = deploymentVolume({ migrated });
+  const sqlite = new Database(v.databasePath);
   if (migrated) {
     sqlite.exec('PRAGMA foreign_keys = ON');
-    for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
     sqlite.query(`INSERT INTO projects (project_id,name,created_at) VALUES ('proj_1','a',0)`).run();
     // A credential authenticates only for a live member, so the volume carries the member the test issues for.
     sqlite.query(`INSERT INTO members (id,label,created_at,revoked_at) VALUES ('mem_machine_1','machine_1',0,NULL)`).run();
   }
   sqlite.close();
-  return { databasePath, blobDir: join(root, 'blobs') };
+  return v;
 }
 
 describe('the self-hosted entry point', () => {
