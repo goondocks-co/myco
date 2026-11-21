@@ -125,20 +125,23 @@ describe('Needs you', () => {
     run('proj_2', 'run_m1', 'canopy-map', 'failed', NOW - 3 * HOUR);
     run('proj_2', 'run_m2', 'canopy-map', 'failed', NOW - 2 * HOUR);
     const { items } = await read();
+    // Nothing takes either again by itself: scheduling is off, and no learning session is eligible, so a person sees both.
     expect(items).toEqual([
       { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_1', outcome: 'learn', task: 'extract-curate', failures: 1, since: NOW - HOUR, latestAt: NOW - HOUR, runId: 'run_l2', retrying: false },
-      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_2', outcome: 'map', task: 'canopy-map', failures: 2, since: NOW - 3 * HOUR, latestAt: NOW - 2 * HOUR, runId: 'run_m2', retrying: true },
+      { kind: 'outcome_failed', tone: 'bad', projectId: 'proj_2', outcome: 'map', task: 'canopy-map', failures: 2, since: NOW - 3 * HOUR, latestAt: NOW - 2 * HOUR, runId: 'run_m2', retrying: false },
     ]);
-    // A session's learning that failed is taken again by itself, until its interruptions reach the bound.
     sqlite.run(`UPDATE agent_runs SET subject = 'session:s1' WHERE id = 'run_l2'`);
-    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_l2')).toMatchObject({ retrying: true });
-    sqlite.run(`UPDATE agent_runs SET error_code = 'run_interrupted_repeated' WHERE id = 'run_l2'`);
     expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_l2')).toMatchObject({ retrying: false });
-    sqlite.run(`UPDATE agent_runs SET subject = NULL, error_code = NULL WHERE id = 'run_l2'`);
+    sqlite.run(`UPDATE agent_runs SET subject = NULL WHERE id = 'run_l2'`);
+    // With scheduling on, the map's capability on and its Project active, a later wake takes the map again.
+    sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', ?, 'mem_1')`, [NOW]);
+    sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_2', 'canopy', 1, ?, 'mem_1')`, [NOW]);
+    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_2', 's2', 'm1', 'tok_1', ?, ?)`, [NOW, NOW]);
+    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_m2')).toMatchObject({ retrying: true });
     run('proj_1', 'run_l3', 'extract-curate', 'completed', NOW - 30 * MINUTE);
-    expect((await read()).items.map((i) => ('projectId' in i ? i.projectId : null))).toEqual(['proj_2']);
+    expect((await read()).items.flatMap((i) => (i.kind === 'outcome_failed' ? [i.projectId] : []))).toEqual(['proj_2']);
     // A failure older than the lookback is no longer news.
-    expect(await kinds(NOW + 8 * DAY)).toEqual([]);
+    expect((await kinds(NOW + 8 * DAY)).filter((kind) => kind === 'outcome_failed')).toEqual([]);
   });
 
   it('names stopped publications across parser versions and excludes ones waiting for bytes', async () => {

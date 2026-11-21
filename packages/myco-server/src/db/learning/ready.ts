@@ -73,6 +73,14 @@ export function learningEligible(kind: LearningStage, now: string): string {
     WHERE c.project_id=l.project_id AND c.session_id=l.session_id AND c.state='pending' AND c.due_at IS NOT NULL AND c.due_at<=${now}))` : ''}`;
 }
 
+/**
+ * Whether the stage takes the session `subject` names again by itself: the session is still at the stage and eligible
+ * under the same predicate its automatic claim reads. A session past its window, or with learning off, is not.
+ */
+export const learningSubjectRetries = (kind: LearningStage, project: string, subject: string, now: string): string =>
+  `EXISTS(SELECT 1 FROM learning_sessions l WHERE l.project_id=${project} AND l.session_id=substr(${subject},${subjectPrefix(kind).length + 1})
+    AND ${subject}='${subjectPrefix(kind)}'||l.session_id AND l.${stageColumn(kind)}='${kind}' AND ${learningEligible(kind, now)})`;
+
 /** The Project has a ready session with no run in flight. */
 export const learningDue = (kind: LearningStage, project: string, now: string): string =>
   `(EXISTS(SELECT 1 FROM learning_sessions l INDEXED BY ${readyIndex(kind)} WHERE l.project_id=${project} AND l.${stageColumn(kind)}='${kind}' AND ${learningEligible(kind, now)} AND ${learningNotInFlight(kind)})${kind === 'cards' ? ` OR EXISTS(SELECT 1 FROM ${manualCardSessionsSql(project)} WHERE ${learningEligible(kind, now)} AND ${learningNotInFlight(kind)})` : ''})`;

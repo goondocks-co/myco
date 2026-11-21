@@ -1,7 +1,7 @@
 import { cardLearningEnabledSql, learningRunAdmitted } from '../db/learning/admission.js';
 import { learningPolicies } from '../db/runs/pull-policy.js';
 import { learningWaiting } from '../db/learning/waiting.js';
-import { learningDue, learningHeadSession, learningReadyProjects, stageHead } from '../db/learning/ready.js';
+import { learningDue, learningHeadSession, learningReadyProjects, learningSubjectRetries, stageHead } from '../db/learning/ready.js';
 import { sessionQuiet } from '../db/learning/progress.js';
 import { knowledgeRepositoryInput } from './knowledge-repository.js';
 /**
@@ -105,6 +105,7 @@ function learningStage(level: number): PulledStage {
   return {
     level, task: EXTRACTION_TASK, policy:learningPolicies[1]!, switchedOn: learningEnabledSql(),
     due: (project, now) => ({ sql: learningDue('learning', project, String(Math.floor(now))), params: [] }),
+    retries: (project, subject, now) => learningSubjectRetries('learning', project, subject, now),
     candidates: learningReadyProjects('learning'),
     waiting: (db, scope) => learningWaiting(db, 'learning', scope),
     head: async (db, projectId, now) => {
@@ -120,6 +121,7 @@ function cardStage(level: number): PulledStage {
   return {
     level, task: CARD_TASK, policy:learningPolicies[0]!, switchedOn: cardLearningEnabledSql(),
     due: (project, now) => ({ sql: learningDue('cards', project, String(Math.floor(now))), params: [] }),
+    retries: (project, subject, now) => learningSubjectRetries('cards', project, subject, now),
     candidates: learningReadyProjects('cards'),
     waiting: (db, scope) => learningWaiting(db, 'cards', scope),
     head: async (db, projectId, now) => {

@@ -8,6 +8,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, notFound, resolveProjectScope, ok } from './scope.js';
 import { projectRepositoryNeeded } from '../read/repository-requirements.js';
+import { repositoryFailuresRetrying } from '../core/outcome-retry.js';
 import { readAttention, readRepositoryAttention } from '../core/attention.js';
 
 export async function handleAttention(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -19,7 +20,7 @@ export async function handleAttention(env: ServerEnv, ctx: OwnerContext): Promis
     const requirement = await projectRepositoryNeeded(env, scope);
     const streaks = await readRepositoryAttention(env, scope.projectId);
     return ok({ items: [...(requirement === null ? [] : [{ kind: 'repository_missing', tone: 'warn', ...requirement }]),
-      ...streaks.map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak, retrying: !streak.backoff }))], unavailable: [] });
+      ...(await repositoryFailuresRetrying(env, streaks, ctx.now)).map(streak => ({ kind: 'repository_preparation_failed', tone: 'warn', ...streak }))], unavailable: [] });
   }
   return ok(await readAttention(env, ctx.now));
 }
