@@ -1,64 +1,46 @@
 import { expect, test } from 'bun:test';
-import net from 'node:net';
-import { createRequire } from 'node:module';
+import http from 'node:http';
+import { installLocalProxyConnections } from './miniflare-stale-connection.js';
 
-const load = createRequire(import.meta.url);
-type BridgeWorker = {
-  once(event: 'message' | 'error', listener: (value: unknown) => void): void;
-  terminate(): Promise<number>;
-};
-type Threads = { Worker: new (script: string, options: { eval: true; workerData: unknown }) => BridgeWorker };
+const POOL_LIFETIME_MS = 10;
 
-/** Answers each request on a kept-alive connection, except the second, which `dropSecond` handles. */
-async function withKeepAliveServer(dropSecond: (socket: net.Socket) => void, run: (url: string, seen: { requests: number }) => Promise<void>): Promise<void> {
-  const seen = { requests: 0 };
-  const server = net.createServer((socket) => {
-    socket.on('data', (chunk) => {
-      if (!String(chunk).includes('\r\n\r\n')) return;
-      seen.requests += 1;
-      if (seen.requests === 2) dropSecond(socket);
-      else socket.write('HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok');
+/** Retires a connection after its response, injecting workerd's idle close on its next request. */
+async function withProxy(run: (url: string) => Promise<void>, options: { dropWrite?: boolean } = {}): Promise<number> {
+  const retired = new WeakSet<object>();
+  let value = 0;
+  const server = http.createServer((request, response) => {
+    if (retired.has(request.socket)) { request.socket.destroy(); return; }
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      if (body === 'write') value++;
+      if (options.dropWrite && body === 'write') { request.socket.destroy(); return; }
+      response.end(String(value), () => { if (body === 'park') retired.add(request.socket); });
     });
-    socket.on('error', () => {});
   });
-  await new Promise<void>((listening) => server.listen(0, '127.0.0.1', listening));
-  try { await run(`http://127.0.0.1:${(server.address() as net.AddressInfo).port}/`, seen); }
-  finally { server.close(); }
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try { await run(`http://127.0.0.1:${(server.address() as { port: number }).port}/cdn-cgi/local/platform-proxy`); }
+  finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  return value;
 }
 
-/** Two POSTs from an eval Worker that loads undici the way Miniflare's synchronous bridge does; reports the outcome. */
-const BRIDGE_SHAPED_SCRIPT = `
-const { createRequire } = require("module");
-const { parentPort, workerData } = require("worker_threads");
-const actualRequire = createRequire(workerData.filename);
-const { fetch } = actualRequire("undici");
-(async () => {
+test('async proxy reads and writes survive an idle connection close', async () => {
+  const restore = installLocalProxyConnections(POOL_LIFETIME_MS);
   try {
-    for (let i = 0; i < 2; i += 1) await (await fetch(workerData.url, { method: "POST", body: "x" })).text();
-    parentPort.postMessage("sent");
-  } catch (error) { parentPort.postMessage(String(error.message)); }
-})();
-`;
-
-async function bridgeOutcome(url: string): Promise<unknown> {
-  const { Worker } = load('node:worker_threads') as Threads;
-  const worker = new Worker(BRIDGE_SHAPED_SCRIPT, { eval: true, workerData: { url, filename: import.meta.path } });
-  try { return await new Promise((settled, failed) => { worker.once('message', settled); worker.once('error', failed); }); }
-  finally { await worker.terminate(); }
-}
-
-const CLOSED_MESSAGE = 'The socket connection was closed unexpectedly';
-
-test('a bridge request dropped by workerd closing its kept-alive connection is resent and answered', async () => {
-  await withKeepAliveServer((socket) => socket.destroy(), async (url, seen) => {
-    expect(await bridgeOutcome(url)).toBe('sent');
-    expect(seen.requests).toBe(3);
-  });
+    await withProxy(async url => {
+      const send = async (body: string) => (await require('undici').fetch(url, { method: 'POST', body })).text();
+      await send('park');
+      await new Promise(resolve => setTimeout(resolve, POOL_LIFETIME_MS * 2));
+      expect(await send('read')).toBe('0');
+      await send('write');
+      expect(await send('read')).toBe('1');
+    });
+  } finally { restore(); }
 });
 
-test('a connection closed after the request has had time to run fails the call instead of sending it twice', async () => {
-  await withKeepAliveServer((socket) => { setTimeout(() => socket.destroy(), 800); }, async (url, seen) => {
-    expect(String(await bridgeOutcome(url))).toContain(CLOSED_MESSAGE);
-    expect(seen.requests).toBe(2);
-  });
+test('a proxy write whose response is lost fails without applying it twice', async () => {
+  const value = await withProxy(async url => {
+    await expect(require('undici').fetch(url, { method: 'POST', body: 'write' })).rejects.toThrow('The socket connection was closed unexpectedly');
+  }, { dropWrite: true });
+  expect(value).toBe(1);
 });
