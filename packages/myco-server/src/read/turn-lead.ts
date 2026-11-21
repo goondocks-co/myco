@@ -47,5 +47,8 @@ export function turnLead(turn: LeadTurn, session: LeadSession): string | null {
   // An outer element is presentation: its inner text when the preview holds it whole, else the text after its opening tag.
   const cleaned = cleanSessionText(turn.preview, session.agent);
   const line = cleaned === null ? null : promptEnvelope(cleaned)?.text ?? cleaned.replace(/^<[A-Za-z][\w.-]*(?:\s[^<>]*)?>\s*/, '');
+  // Nested elements are structure, not words: such a turn is named by its outer element.
+  const element = line !== null && /<\/?[A-Za-z]/.test(line) ? /^\s*<([A-Za-z][\w.-]*)/.exec(turn.preview ?? '')?.[1] : undefined;
+  if (element !== undefined) return `${speaker(turn.origin)}: ${element.replace(/[-_.]+/g, ' ')}`;
   return line ? `${speaker(turn.origin)}: ${clipLine(line)}` : speaker(turn.origin);
 }
