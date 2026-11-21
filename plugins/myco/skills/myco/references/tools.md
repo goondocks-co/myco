@@ -25,7 +25,7 @@ The preview is for choosing. Fetch the hit in full with the tool that owns it.
 
 | Operation | Does |
 |---|---|
-| `list` (default) | recent spores, each saying whether it holds a vector, whether it was saved or curated and from how many spores, and for a retired one what replaced it |
+| `list` (default) | recent spores, each saying whether it holds a vector, whether it was saved or curated and from how many spores, and for a retired one what replaced it; `origin` (`curated` or `saved`) and `min_sources` list and count only those |
 | `get` | one spore in full, by id |
 | `save` | record a new observation |
 | `supersede` | replace an existing spore, keeping the lineage |

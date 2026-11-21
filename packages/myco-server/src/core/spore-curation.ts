@@ -263,7 +263,7 @@ export async function answerSporeCuration(input: Record<string, unknown>, ctx: {
       const checked = JSON.parse(stored.answer) as CheckedCuration;
       const repeated = checkCurationAnswer(input, group);
       if (typeof repeated !== 'string' && JSON.stringify(repeated) === JSON.stringify(checked.answer))
-        return { completed: true, applied: stored.applied === 1, notes: checked.notes.map(note => ({ id: note.id, observed: new Date(note.createdAt).toISOString() })) };
+        return { completed: true, applied: stored.applied === 1, notes: checked.notes.map(note => ({ id: note.id, observed: new Date(note.observedAt ?? note.createdAt).toISOString() })) };
       return refuse('an accepted answer already stands; this call cannot replace it', { terminal: true });
     }
     return refuse(`answer submissions have reached ${CURATION_ANSWER_ATTEMPTS} of ${CURATION_ANSWER_ATTEMPTS}; end this attempt and wait for the next offered group`, { terminal: true });
@@ -280,13 +280,13 @@ export async function answerSporeCuration(input: Record<string, unknown>, ctx: {
     return {
       id: `${note.observation_type}-${crypto.randomUUID()}`, agentId: ctx.agentId, sessionId: null, observationType: note.observation_type,
       content: note.content, agentLine: note.agent_line, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: ctx.runId,
-      createdAt: observed, observedAt: observed, updatedAt: ctx.now,
+      createdAt: ctx.now, observedAt: observed, updatedAt: ctx.now,
     };
   });
   try {
     await commitCurationAnswer(ctx.db, { project: ctx.projectId, run: ctx.runId, agent: ctx.agentId, work,
       checked: { group: assignment.key, members: assignment.members, answer, notes }, submission: submission.submissions, dryRun: run.dryRun === 1, now: ctx.now });
-    return { completed: true, applied: run.dryRun !== 1, notes: notes.map(note => ({ id: note.id, observed: new Date(note.createdAt).toISOString() })) };
+    return { completed: true, applied: run.dryRun !== 1, notes: notes.map(note => ({ id: note.id, observed: new Date(note.observedAt).toISOString() })) };
   } catch (error) {
     const changed = curationAnswerChanged(error);
     if (changed === null) throw error;

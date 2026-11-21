@@ -13,6 +13,8 @@ import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getSpore } from '@myco-server-worker/db/spores/records.js';
 import { listSporePage } from '@myco-server-worker/core/spores.js';
 import { SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
+import { NOTE_ORIGIN_STEPS } from '@myco-server-worker/db/schema-steps-note-origin.js';
+import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { listSupersedingSporeIds, listSupersededSporeIds } from '@myco-server-worker/db/spores/edges.js';
 import { readCurationAnswer, readCurationCoverage } from '@myco-server-worker/db/spores/curation-answer.js';
 import { CURATION_ANSWER_STEPS } from '@myco-server-worker/db/schema-steps-curation-answer.js';
@@ -96,9 +98,9 @@ test('one answer merges, splits, keeps and retires atomically with observed date
     expect(await f.call(claim.run.runToken,'myco_run_curation', answer)).toMatchObject({completed:true,applied:true});
     expect(await f.call(claim.run.runToken,'myco_run_curation', answer)).toMatchObject({completed:true,applied:true});
     const stored = await readCurationAnswer(f.db,'proj_1',claim.run.id);
-    const checked = JSON.parse(stored!.answer!) as { notes: {id:string;createdAt:number;updatedAt:number}[] };
+    const checked = JSON.parse(stored!.answer!) as { notes: {id:string;createdAt:number;observedAt:number;updatedAt:number}[] };
     expect(checked.notes.every(item=>item.updatedAt===f.now)).toBe(true);
-    expect(checked.notes.map(item=>item.createdAt)).toEqual([20,15,15]);
+    expect(checked.notes.map(item=>[item.observedAt,item.createdAt])).toEqual([[20,f.now],[15,f.now],[15,f.now]]);
     expect((await getSpore(f.db,scope,checked.notes[0]!.id))!.sourceCreatedAt).toBeNull();
     const listed=new Map((await listSporePage(f.db,scope,{limit:50}))!.rows.map(row=>[row.id,row]));
     expect(checked.notes.map(item=>[listed.get(item.id)?.origin,listed.get(item.id)?.sources])).toEqual([['curated',2],['curated',1],['curated',1]]);
@@ -119,19 +121,27 @@ test('one answer merges, splits, keeps and retires atomically with observed date
   } finally { f.sqlite.close(); }
 });
 
-test('a rewritten note keeps its source date, so a common word\'s newest window leaves it out until it carries its write time', async () => {
+test('a rewrite is dated by when it was written, so a common word\'s newest window finds it first; the upgrade dates an older rewrite so and moves no other note', async () => {
   const f = await fixture();
   try {
     await f.enable(); await f.add('decision-a', [1,0], 1); await f.add('gotcha-b'); await f.discover();
     const claim = await f.poll(); if (!claim.claimed) throw new Error('group not claimed');
     const id = (await f.call(claim.run.runToken, 'myco_run_curation', { ...keepAnswer(['gotcha-b']), notes: [note(['decision-a'])] }) as { notes: { id: string }[] }).notes[0]!.id;
-    // More than one window of newer notes holding the same words, all written before the rewrite.
+    // More than one window of notes holding the same words, written after its source was observed.
     const insert = f.sqlite.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at) VALUES('proj_1',?,'myco-agent',?,'gotcha',?,?)");
     f.sqlite.transaction(() => { for (let i = 0; i <= SEARCH_WINDOW; i++) insert.run(`gotcha-${i}`, `Seen ${i}.`, 'When delivery stalls, retain queued capture.', 2 + i); })();
-    const found = async () => (await searchDeployment(f.env, scope, { query: 'delivery stalls', type: 'spore', mode: 'fts' }, 'member:fixture')).hits.map(hit => hit.id);
-    expect([(await getSpore(f.db, scope, id))!.createdAt, (await found()).includes(id)]).toEqual([1, false]);
-    f.sqlite.run("UPDATE spores SET created_at=? WHERE project_id='proj_1' AND id=?", [f.now, id]);
-    expect((await found())[0]).toBe(id);
+    const found = async () => (await searchDeployment(f.env, scope, { query: 'delivery stalls', type: 'spore', mode: 'fts' }, 'member:fixture')).hits;
+    const rewrite = (await getSpore(f.db, scope, id))!;
+    expect([rewrite.createdAt, rewrite.observedAt, (await found())[0]?.id, (await found())[0]?.learned_at]).toEqual([f.now, 1, id, new Date(1).toISOString()]);
+    // A rewrite an earlier release dated by its source is dated by its write time again after the upgrade's catch-up, which moves no other note.
+    f.sqlite.run("UPDATE spores SET created_at=1 WHERE project_id='proj_1' AND id=?", [id]);
+    const dates = () => f.sqlite.query<{ id: string; created_at: number }, []>("SELECT id,created_at FROM spores WHERE project_id='proj_1' ORDER BY id").all();
+    const before = dates();
+    f.sqlite.run("DELETE FROM projection_catchup WHERE projection='spore_written_at'");
+    for (const statement of NOTE_ORIGIN_STEPS[0]!.statements) f.sqlite.exec(statement);
+    while ((await catchUpProjections(f.db)).more);
+    expect(dates().filter((row, i) => row.created_at !== before[i]!.created_at)).toEqual([{ id, created_at: f.now }]);
+    expect((await found())[0]?.id).toBe(id);
   } finally { f.sqlite.close(); }
 });
 

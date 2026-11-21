@@ -161,6 +161,10 @@ export const spores: ParityScenario = {
       expect([curated?.id, curated?.origin, curated?.sources]).toEqual([wisdom, 'curated', 2]);
       const replaced = (await owner<Listed>(`/api/projects/${target.projectId}/spores?status=consolidated&limit=2`)).body.spores;
       expect(replaced.map(s => [s.id, s.origin, s.supersededBy]).sort()).toEqual(merging.map(id => [id, 'saved', [wisdom]]).sort());
+      // The tool lists and counts spores by how they came to be, and names the call to make for a source count below one.
+      const merged = await mcp({ op: 'list', origin: 'curated', min_sources: 2 }) as { spores: { id: string }[]; total: number };
+      expect([merged.spores.map(s => s.id), merged.total]).toEqual([[wisdom], 1]);
+      expect((await mcp({ op: 'list', min_sources: 0 })).error).toBe('Not listed: min_sources is 0; it must be an integer of at least 1. Next call: myco_spores {"op":"list","min_sources":2}');
     }));
   },
 };

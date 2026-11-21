@@ -50,7 +50,8 @@ const noMatches = () => Response.json({ hits: [], mode: 'fts', provider_unavaila
 
 const ROWS = [
   spore(),
-  spore({ id: 'decision-2b3c4d5e', projectId: ATLAS, observationType: 'decision', agentLine: 'Validation messages name the field and the fix.', createdAt: NOW - 2 * HOUR }),
+  // Written today by curation from two spores observed months ago: listed under today, labelled with its observation.
+  spore({ id: 'decision-2b3c4d5e', projectId: ATLAS, observationType: 'decision', agentLine: 'Validation messages name the field and the fix.', createdAt: NOW - 2 * HOUR, observedAt: NOW - 90 * DAY, sources: 2 }),
   // Saved without its one line: headlined by its type and day, with the start of what it says beneath.
   spore({ id: 'bug_fix-3c4d5e6f', observationType: 'bug_fix', agentLine: null, content: '# Port race\n\nBind port 0.', createdAt: NOW - DAY - HOUR }),
 ];
@@ -129,6 +130,8 @@ describe('the spore stream', () => {
     expect(first!.textContent).toContain('Myco');
     expect(second!.textContent).toContain('Atlas web');
     expect(second!.textContent).toContain('Decision');
+    expect([second!.closest('section')?.querySelector('h2')?.textContent, second!.querySelector('[data-spore-origin]')?.textContent, second!.textContent?.includes('Observed')])
+      .toEqual(['Today', 'Merged from 2 spores', true]);
     // No one line: the type and the day head it, and the start of what it says follows.
     expect(within(third!).getByRole('link').textContent).toBe('Fix saved Sep 28');
     expect(third!.textContent).toContain('Port race');

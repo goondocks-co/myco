@@ -25,6 +25,7 @@ import { decodeCursor, encodeCursor, MAX_PAGE, type ProjectSet, type ReadScope }
 import { decodeProjectCursor, encodeProjectCursor } from '../read/project-cursor.js';
 import { readSporePage, type SporeBrowseFilters, type SporePageKey } from '../db/spores/browse.js';
 import { SPORE_DAY_MS, sporeTotal, sporeTotalAndFacets, utcDays, type SporeCountFilters, type SporeFacetCounts } from '../db/spores/counts.js';
+import { readOriginPage, type OriginFilter } from '../db/spores/origins.js';
 
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
@@ -209,6 +210,24 @@ export async function listSporePage(db: RelationalStore, scope: ReadScope, o: Li
   const hasMore = rows.length > limit;
   const last = shown.at(-1);
   return { rows: shown, cursor: hasMore && last !== undefined ? encodeCursor(last.createdAt, last.id) : null, hasMore, ...totalOf(total), ...windowField(o) };
+}
+
+/**
+ * One page of a Project's spores narrowed by how they came to be, newest first with the id breaking a tie, with the total
+ * the filter admits from the maintained origin counts; `building` while existing spores' origins are still being
+ * derived. Null for a cursor this list did not issue.
+ */
+export async function listSporeOriginPage(db: RelationalStore, scope: ReadScope, o: OriginFilter & { limit?: number; cursor?: string }):
+  Promise<SporeListPage<SporeRow> | { building: true } | null> {
+  const after: SporePageKey | null = o.cursor === undefined ? null : decodeCursor(o.cursor);
+  if (o.cursor !== undefined && after === null) return null;
+  const limit = limitOf(o.limit);
+  const page = await readOriginPage(db, { projectId: scope.projectId, filter: o, after, limit });
+  if (page.state === 'building') return { building: true };
+  const shown = page.rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => listedRow(row));
+  const hasMore = page.rows.length > limit;
+  const last = shown.at(-1);
+  return { rows: shown, cursor: hasMore && last !== undefined ? encodeCursor(last.createdAt, last.id) : null, hasMore, total: page.total };
 }
 
 /**

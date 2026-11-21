@@ -3,6 +3,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { binaryOrder, type ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
 import { eventSuccessorsSql } from './edges.js';
+import { sporeCuratedSql, sporeSourcesSql } from './origin-sql.js';
 import { SPORE_SUCCESSOR_LIMIT } from './lineage-limit.js';
 
 /**
@@ -35,27 +36,14 @@ const EMBEDDED = `EXISTS (SELECT 1 FROM embedding_versions v CROSS JOIN embeddin
       AND r.type=v.type AND r.record_id=v.record_id AND r.revision=v.revision AND r.ready=1
   WHERE v.project_id=spores.project_id AND v.type='spore' AND v.record_id=spores.id)`;
 
-/** The output membership of the editorial operation that wrote this spore, read through the unique output index. */
-const OUTPUT_OF = `spore_curation_unit_members o INDEXED BY idx_curation_unit_output`;
-const OUTPUT_IS_THIS = `o.project_id=spores.project_id AND o.spore_id=spores.id AND o.role='output'`;
-
-/**
- * How a spore came to be: `origin` is `curated` for a spore a curation or consolidation wrote and `saved` for one saved
- * as it is, and `sources` is how many spores that operation wrote it from: the operation's sources whose recorded
- * events name this spore. A spore linked to it later is not one it was written from. Read per row as one output-index
- * seek and the members of that one operation.
- */
-const ORIGIN = `(SELECT COUNT(*) FROM ${OUTPUT_OF}
-    CROSS JOIN spore_curation_unit_members m ON m.project_id=o.project_id AND m.unit_id=o.unit_id AND m.role='source'
-    WHERE ${OUTPUT_IS_THIS} AND EXISTS (SELECT 1 FROM json_each(m.event_ids) j
-      CROSS JOIN resolution_events e ON e.project_id=m.project_id AND e.id=j.value WHERE e.new_spore_id=spores.id)) AS sources,
-  CASE WHEN EXISTS (SELECT 1 FROM ${OUTPUT_OF} WHERE ${OUTPUT_IS_THIS}) THEN 'curated' ELSE 'saved' END AS origin`;
+/** How a spore came to be: `origin` is `curated` for a spore a curation or consolidation wrote, else `saved`, and `sources` how many spores that operation wrote it from. */
+const ORIGIN = `${sporeSourcesSql('spores')} AS sources, CASE WHEN ${sporeCuratedSql('spores')} THEN 'curated' ELSE 'saved' END AS origin`;
 
 /** A read's columns: the row, who its author is, whether its current revision holds a vector, and how it came to be. */
 export const SPORE_READ_COLUMNS = `${SPORE_COLUMNS}, ${AUTHOR_KIND} AS authorKind, ${EMBEDDED} AS embedded, ${ORIGIN}`;
 
 /** A listed spore no longer current names what replaced it, as a JSON array read from its own resolution events; a current one reads none. */
-const LISTED_SUCCESSORS = `CASE WHEN spores.status='active' THEN '[]'
+export const LISTED_SUCCESSORS = `CASE WHEN spores.status='active' THEN '[]'
   ELSE (SELECT json_group_array(id) FROM (${eventSuccessorsSql('spores.project_id', 'spores.id', String(SPORE_SUCCESSOR_LIMIT))})) END AS supersededBy`;
 
 /** The structured filters a spore list takes. Free text is not one: a text match is a search (`/api/search`, `myco_search`). */

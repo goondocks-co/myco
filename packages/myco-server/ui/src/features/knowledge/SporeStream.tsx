@@ -28,8 +28,8 @@ export interface SporeStreamProps {
 }
 
 /**
- * The spore stream: spores headlined by their one line, newest first, under
- * their observation or saved day. One filter bar holds the search, the status and the
+ * The spore stream: spores headlined by their one line, newest written first,
+ * under the day they were written. One filter bar holds the search, the status and the
  * period; beside the stream the type and project facets say how many each
  * value holds, and on a narrow screen the type moves into the bar. Every value
  * lives in the query string and the server does the filtering; "Show more"
@@ -120,11 +120,11 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
   );
 }
 
-/** The rows under their observation or saved day, in the order the server gave them. */
+/** The rows under the day they were written, in the order the server gave them; a row's own label names an observation older than its day. */
 function byDay(rows: readonly SporeStreamRow[], now: number): Array<{ key: string; label: string; rows: SporeStreamRow[] }> {
   const groups: Array<{ key: string; label: string; rows: SporeStreamRow[] }> = [];
   for (const row of rows) {
-    const label = dayLabel(sporeDate(row).at, now);
+    const label = dayLabel(row.createdAt, now);
     const last = groups[groups.length - 1];
     if (last !== undefined && last.label === label) last.rows.push(row);
     else groups.push({ key: String(groups.length), label, rows: [row] });
