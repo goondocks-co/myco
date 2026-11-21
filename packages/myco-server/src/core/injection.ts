@@ -304,8 +304,20 @@ export async function selectSporesForPrompt(
 /** Why a selected item was chosen: the Mutual Proximity and cosine similarity it ranked by. */
 export interface ItemScore { mp: number; similarity: number }
 
-/** What a prompt's text selects before anything is recorded: the gate that closed, or the items that fit and what they were chosen from. */
-type PromptChoice = { skipped: InjectionSkip; counts: InjectionCounts } | {
+/** How the spore selection judged its candidates: the scores and cuts, the spores it chose, and which of those were still current. */
+interface Judgement {
+  /** The spores the selection chose, before hydration and the budget. */
+  relevant: string[];
+  /** The chosen spores still current when read, which the budget then took from. */
+  current: Set<string>;
+  scoring: SporeScoring | null;
+}
+
+/**
+ * What a prompt's text selects before anything is recorded: the gate that closed, or the items that fit and what they
+ * were chosen from. A selection that scored candidates and kept none keeps how it judged them.
+ */
+type PromptChoice = { skipped: InjectionSkip; counts: InjectionCounts; judged?: Judgement } | ({
   skipped: null; counts: InjectionCounts;
   /** The items that fit the budget, in the order they render. */
   served: InjectionItem[];
@@ -314,12 +326,7 @@ type PromptChoice = { skipped: InjectionSkip; counts: InjectionCounts } | {
   planRows: PlanRow[];
   /** Each selected spore's and plan's score, by id. */
   scores: Map<string, ItemScore>;
-  /** The spores the selection chose, before hydration and the budget. */
-  relevant: string[];
-  /** The chosen spores still current when read, which the budget then took from. */
-  current: Set<string>;
-  scoring: SporeScoring | null;
-};
+} & Judgement);
 
 /**
  * The selection one prompt's text makes: the gates, the semantic candidates, the spore and plan selection, hydration and
@@ -418,11 +425,11 @@ async function choosePromptItems(
   const ordered = [...sporeItems.slice(0, leadingSpores), ...planItems, ...sporeItems.slice(leadingSpores)];
   const served = itemsWithinBudget(ordered);
   counts.budgetKept = served.length;
-  if (served.length === 0) return nothing('empty');
+  const judged: Judgement = { relevant: relevant.map((s) => s.id), current: new Set(bySpore.keys()), scoring };
+  if (served.length === 0) return { skipped: 'empty', counts, judged };
   const similarity = new Map([...sporeHits, ...planHits].map((h) => [h.record_id, h.score]));
   const scores = new Map([...relevant, ...planCandidates].map((s) => [s.id, { mp: s.mp, similarity: similarity.get(s.id) ?? 0 }]));
-  return { skipped: null, counts, served, more: ordered.length > served.length, planRows: livePlans, scores, relevant: relevant.map((s) => s.id),
-    current: new Set(bySpore.keys()), scoring };
+  return { skipped: null, counts, served, more: ordered.length > served.length, planRows: livePlans, scores, ...judged };
 }
 
 /** The most candidates a preview names as left out near the cut. */
@@ -456,24 +463,24 @@ export async function previewPromptItems(
   timings?: ContextTimings,
 ): Promise<PromptPreview> {
   const choice = await choosePromptItems(db, scope, leaves, capabilityOn, { ...input, sessionId: null }, resolveSemantic, timings);
-  if (choice.skipped !== null) return { skipped: choice.skipped, attached: [], leftOut: [], cut: null, context: '', counts: choice.counts };
-  const attachedIds = new Set(choice.served.map((item) => item.id));
-  const scoring = choice.scoring as SporeScoring | null;
-  const leftOut = (scoring?.scored ?? []).filter((s) => !attachedIds.has(s.id)).slice(0, PREVIEW_NEAR_CUT).map((s) => ({
-    id: s.id, mp: s.mp, similarity: s.similarity, reason: leftOutReason(s, choice, scoring!),
-  }));
+  const served = choice.skipped === null ? choice.served : [];
+  const judged = choice.skipped === null ? choice : choice.judged;
+  const scoring = judged?.scoring ?? null;
+  const attachedIds = new Set(served.map((item) => item.id));
+  const leftOut = judged === undefined || scoring === null ? [] : scoring.scored.filter((s) => !attachedIds.has(s.id)).slice(0, PREVIEW_NEAR_CUT)
+    .map((s) => ({ id: s.id, mp: s.mp, similarity: s.similarity, reason: leftOutReason(s, judged, scoring) }));
   return {
-    skipped: null,
-    attached: choice.served.map((item) => ({ ...item, score: choice.scores.get(item.id) ?? null })),
+    skipped: choice.skipped,
+    attached: choice.skipped === null ? served.map((item) => ({ ...item, score: choice.scores.get(item.id) ?? null })) : [],
     leftOut,
     cut: scoring === null ? null : { probability: scoring.probability, separation: Number.isFinite(scoring.separation) ? scoring.separation : null },
-    context: renderInjectionContext(choice.served, choice.more),
+    context: choice.skipped === null ? renderInjectionContext(served, choice.more) : '',
     counts: choice.counts,
   };
 }
 
 /** The rule a scored spore stopped at, in the order the selection applies them. */
-function leftOutReason(spore: SporeScoring['scored'][number], choice: { relevant: readonly string[]; current: ReadonlySet<string> }, scoring: SporeScoring): LeftOutReason {
+function leftOutReason(spore: SporeScoring['scored'][number], choice: Pick<Judgement, 'relevant' | 'current'>, scoring: SporeScoring): LeftOutReason {
   if (choice.relevant.includes(spore.id)) return choice.current.has(spore.id) ? 'over_budget' : 'not_current';
   if (!spore.corpusProbable) return 'close_to_everything';
   if (spore.mp < scoring.probability) return 'below_probability';

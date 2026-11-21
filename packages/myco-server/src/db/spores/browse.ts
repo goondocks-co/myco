@@ -2,9 +2,7 @@ import { USER_AGENT_ID } from '../../constants.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { binaryOrder, type ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
-import { eventSuccessorsSql } from './edges.js';
-import { sporeCuratedSql, sporeSourcesSql } from './origin-sql.js';
-import { SPORE_SUCCESSOR_LIMIT } from './lineage-limit.js';
+import { ACTIVE_MODELS_INDEX, sporeCuratedSql, sporeSourcesSql } from './origin-sql.js';
 
 /**
  * Who the author of a spore or of its lifecycle event (`row`) is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
@@ -28,10 +26,10 @@ export const SPORE_COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
 
 /**
  * 1 when the spore's current revision holds a ready vector receipt under an active embedding model of its Project, else
- * 0: the embedding store's own record, read per row as one version seek, the Project's active models and one receipt
- * seek per model.
+ * 0: the embedding store's own record, read per row as one version seek, the Project's active models through their
+ * own index (never the models it retains inactive) and one receipt seek per active model.
  */
-const EMBEDDED = `EXISTS (SELECT 1 FROM embedding_versions v CROSS JOIN embedding_models m ON m.project_id=v.project_id AND m.active=1
+const EMBEDDED = `EXISTS (SELECT 1 FROM embedding_versions v CROSS JOIN embedding_models m INDEXED BY ${ACTIVE_MODELS_INDEX} ON m.project_id=v.project_id AND m.active=1
     CROSS JOIN embedding_receipts r INDEXED BY idx_embedding_receipts_source ON r.project_id=v.project_id AND r.model_key=m.model_key
       AND r.type=v.type AND r.record_id=v.record_id AND r.revision=v.revision AND r.ready=1
   WHERE v.project_id=spores.project_id AND v.type='spore' AND v.record_id=spores.id)`;
@@ -41,10 +39,6 @@ const ORIGIN = `${sporeSourcesSql('spores')} AS sources, CASE WHEN ${sporeCurate
 
 /** A read's columns: the row, who its author is, whether its current revision holds a vector, and how it came to be. */
 export const SPORE_READ_COLUMNS = `${SPORE_COLUMNS}, ${AUTHOR_KIND} AS authorKind, ${EMBEDDED} AS embedded, ${ORIGIN}`;
-
-/** A listed spore no longer current names what replaced it, as a JSON array read from its own resolution events; a current one reads none. */
-export const LISTED_SUCCESSORS = `CASE WHEN spores.status='active' THEN '[]'
-  ELSE (SELECT json_group_array(id) FROM (${eventSuccessorsSql('spores.project_id', 'spores.id', String(SPORE_SUCCESSOR_LIMIT))})) END AS supersededBy`;
 
 /** The structured filters a spore list takes. Free text is not one: a text match is a search (`/api/search`, `myco_search`). */
 export interface SporeBrowseFilters {
@@ -112,7 +106,7 @@ function variant(scope: Scope, flags: ReadonlySet<Flag>): Variant {
   if (flags.has('after')) conditions.push(across
     ? 'created_at <= {at} AND (created_at < {at} OR (created_at = {at} AND (id < {afterId} OR (id = {afterId} AND project_id < {afterProject}))))'
     : 'created_at <= {at} AND (created_at < {at} OR (created_at = {at} AND id < {afterId}))');
-  const template = `SELECT project_id AS projectId, ${SPORE_READ_COLUMNS}, ${LISTED_SUCCESSORS} FROM spores INDEXED BY ${indexOf(scope, flags)}
+  const template = `SELECT project_id AS projectId, ${SPORE_READ_COLUMNS} FROM spores INDEXED BY ${indexOf(scope, flags)}
     WHERE ${conditions.join(' AND ')} ORDER BY created_at DESC, id DESC${across ? ', project_id DESC' : ''} LIMIT {limit}`;
   const slots: string[] = [];
   const sql = template.replace(/\{([a-z]+)\}/gi, (_, slot: string) => {

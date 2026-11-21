@@ -6,19 +6,22 @@ import type { CatchupFamily } from '../projections/family.js';
  * A spore a curation answer wrote is dated by when it was written: its `created_at` is the answer's own write time,
  * retained on the operation, while its sources' observation stays in `observed_at`. Answers record that time on every
  * spore they write; this re-dates, a page of operation outputs at a time, the ones an earlier release dated by their
- * sources. Each page reads its outputs' operations and spores alone, and moves a spore only when its date differs.
+ * sources. The page walks outputs alone, keyed by Project and spore as the unique output index holds them, so no
+ * operation without an output is passed over; it moves a spore only when its date differs.
  */
 const PROJECTION = 'spore_written_at';
 const PHASE = 'answerOutputs';
-const KEYS = jsonKeys(['project_id', 'unit_id', 'spore_id']);
-/** The page's operation `u`, an answer that recorded a write time. */
-const ANSWER_OF_KEY = `CROSS JOIN spore_curation_units u ON u.project_id=key.project_id AND u.id=key.unit_id
-  AND u.kind='answer' AND u.unavailable IS NULL AND u.created_at>0`;
+const KEYS = jsonKeys(['project_id', 'spore_id']);
+/** The operation `u` that wrote the page's output `key`, when it is an answer that recorded a write time. */
+const ANSWER_OF_KEY = `CROSS JOIN spore_curation_unit_members o INDEXED BY idx_curation_unit_output
+    ON o.project_id=key.project_id AND o.spore_id=key.spore_id AND o.role='output'
+  CROSS JOIN spore_curation_units u ON u.project_id=o.project_id AND u.id=o.unit_id
+    AND u.kind='answer' AND u.unavailable IS NULL AND u.created_at>0`;
 
 export const SPORE_WRITTEN_AT_CATCHUP = {
   projection: PROJECTION,
   phases: { [PHASE]: {
-    source: { table: 'spore_curation_unit_members', columns: ['project_id', 'unit_id', 'spore_id'], where: "role='output'", unique: true },
+    source: { table: 'spore_curation_unit_members', columns: ['project_id', 'spore_id'], where: "role='output'", unique: true },
     reconcile: [write<[string]>({ name: 'sporeWrittenAt.page', sql: `UPDATE spores SET created_at=(SELECT u.created_at FROM (${KEYS}) key ${ANSWER_OF_KEY}
         WHERE key.project_id=spores.project_id AND key.spore_id=spores.id)
       WHERE rowid IN (SELECT s.rowid FROM (${KEYS}) key ${ANSWER_OF_KEY}

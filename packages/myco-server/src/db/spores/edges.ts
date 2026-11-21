@@ -42,7 +42,7 @@ const predecessors = read<[project: string, target: string, limit: number], { id
     GROUP BY source_id ORDER BY MAX(last_event_at) DESC,MAX(last_event_id) DESC LIMIT ?3`,
 });
 /** The spores recorded as replacing `source` of `project`, read from its own resolution events, newest first, at most `limit`. */
-export const eventSuccessorsSql = (project: string, source: string, limit: string): string =>
+const eventSuccessorsSql = (project: string, source: string, limit: string): string =>
   `SELECT new_spore_id AS id FROM resolution_events INDEXED BY idx_resolution_events_spore WHERE project_id=${project} AND spore_id=${source} AND action IN ('supersede','consolidate') AND new_spore_id IS NOT NULL AND ${currentCurationEdgeSql('resolution_events.project_id','resolution_events.spore_id','resolution_events.id')}
     GROUP BY new_spore_id ORDER BY MAX(created_at) DESC,MAX(id) DESC LIMIT ${limit}`;
 const eventSuccessors = read<[project: string, source: string, limit: number], { id: string }>({
@@ -69,3 +69,27 @@ export const listSupersedingSporeIds = (db: RelationalStore, scope: ReadScope, s
 /** Every spore this one replaced, newest first: a supersede names one predecessor and a consolidate every source it merged. */
 export const listSupersededSporeIds = (db: RelationalStore, scope: ReadScope, sporeId: string, limit = 10): Promise<string[]> =>
   lineage(db, scope, sporeId, limit, predecessors, eventPredecessors);
+
+type ManySlots = [project: string, sources: string, limit: number];
+/** Each named spore's successors from the edges, newest first: per spore its own distinct successors, never its events. */
+const successorsOfMany = read<ManySlots, { source: string; ids: string }>({
+  name: 'sporeEdges.successorsOfMany',
+  sql: `SELECT j.value AS source,(SELECT json_group_array(id) FROM (SELECT target_id AS id FROM spore_resolution_edges INDEXED BY idx_spore_edges_successors
+      WHERE project_id=?1 AND source_id=j.value AND action IN ('supersede','consolidate')
+        AND ${currentCurationEdgeSql('spore_resolution_edges.project_id','spore_resolution_edges.source_id','spore_resolution_edges.last_event_id')}
+      GROUP BY target_id ORDER BY MAX(last_event_at) DESC,MAX(last_event_id) DESC LIMIT ?3)) AS ids FROM json_each(?2) j`,
+});
+/** The same read from the resolution events, while the edges are still being caught up. */
+const eventSuccessorsOfMany = read<ManySlots, { source: string; ids: string }>({
+  name: 'sporeEdges.eventSuccessorsOfMany',
+  sql: `SELECT j.value AS source,(SELECT json_group_array(id) FROM (${eventSuccessorsSql('?1', 'j.value', '?3')})) AS ids FROM json_each(?2) j`,
+});
+
+/** The spores recorded as replacing each of `sporeIds`, newest first, in one read for a page; a spore replaced by none maps to []. */
+export async function listSupersedingSporeIdsOf(db: RelationalStore, scope: ReadScope, sporeIds: readonly string[], limit = SPORE_SUCCESSOR_LIMIT): Promise<Map<string, string[]>> {
+  if (sporeIds.length === 0) return new Map();
+  const ids = JSON.stringify([...new Set(sporeIds)]);
+  const [ready, listed] = await readSet(db, edgesReady.bind(), successorsOfMany.bind(scope.projectId, ids, limit));
+  const found = ready[0]?.done === 1 ? listed : await rows(db, eventSuccessorsOfMany.bind(scope.projectId, ids, limit));
+  return new Map(found.map(row => [row.source, JSON.parse(row.ids) as string[]]));
+}

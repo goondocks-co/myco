@@ -164,7 +164,7 @@ export const spores: ParityScenario = {
       // The tool lists and counts spores by how they came to be, and names the call to make for a source count below one.
       const merged = await mcp({ op: 'list', origin: 'curated', min_sources: 2 }) as { spores: { id: string }[]; total: number };
       expect([merged.spores.map(s => s.id), merged.total]).toEqual([[wisdom], 1]);
-      expect((await mcp({ op: 'list', min_sources: 0 })).error).toBe('Not listed: min_sources is 0; it must be an integer of at least 1. Next call: myco_spores {"op":"list","min_sources":2}');
+      expect((await mcp({ op: 'list', min_sources: 0 })).error).toBe('Not listed: min_sources is 0; it must be 1 or 2 (2 lists spores written from more than one). Next call: myco_spores {"op":"list","min_sources":2}');
     }));
   },
 };

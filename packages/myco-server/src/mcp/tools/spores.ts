@@ -1,5 +1,6 @@
 import { latestSporeResolution } from '../../db/spores/resolutions.js';
 import { listSporeOriginPage, listSporePage, type SporeRow } from '../../core/spores.js';
+import { MAX_MIN_SOURCES } from '../../db/spores/origins.js';
 import { getSpore } from '../../db/spores/records.js';
 import { listSupersededSporeIds, listSupersedingSporeIds } from '../../db/spores/edges.js';
 import { writeSpore } from '../../core/spore-admission.js';
@@ -64,8 +65,8 @@ async function listByOrigin(input: ToolInput, ctx: ToolContext, scope: { project
   const call = (args: Record<string, unknown>) => `myco_spores ${JSON.stringify({ op: 'list', ...args })}`;
   const asked = { ...(origin === undefined ? {} : { origin }), ...(minSources === undefined ? {} : { min_sources: minSources }),
     ...(input.status === undefined ? {} : { status: input.status }), ...(observationType === undefined ? {} : { observation_type: observationType }) };
-  if (minSources !== undefined && (typeof minSources !== 'number' || !Number.isSafeInteger(minSources) || minSources < 1))
-    return failure(`Not listed: min_sources is ${JSON.stringify(minSources)}; it must be an integer of at least 1. Next call: ${call({ ...asked, min_sources: 2 })}`);
+  if (minSources !== undefined && (typeof minSources !== 'number' || !Number.isSafeInteger(minSources) || minSources < 1 || minSources > MAX_MIN_SOURCES))
+    return failure(`Not listed: min_sources is ${JSON.stringify(minSources)}; it must be 1 or ${MAX_MIN_SOURCES} (${MAX_MIN_SOURCES} lists spores written from more than one). Next call: ${call({ ...asked, min_sources: MAX_MIN_SOURCES })}`);
   if (origin === 'saved' && minSources !== undefined)
     return failure(`Not listed: origin "saved" names spores written from no others, so min_sources ${minSources} matches none. Next call: ${call({ ...asked, origin: 'curated' })}`);
   if (input.agent_id !== undefined)

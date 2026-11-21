@@ -2,6 +2,7 @@ import { TURN_PAGES } from '../content/session-pages.js';
 import { TURN_COLLECTIONS } from '../content/session-turns.js';
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '../core/spore-input-contract.js';
 import { DEFAULT_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT, SPORE_ORIGINS } from '../core/spores.js';
+import { MAX_MIN_SOURCES } from '../db/spores/origins.js';
 import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core/search-repair.js';
 /**
  * The MCP tool definitions this Deployment serves.
@@ -448,7 +449,7 @@ const definitions: readonly ServedToolDefinition[] = [
     },
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. origin (\"curated\" or \"saved\") and min_sources (an integer of at least 1) narrow it by how spores came to be, with status and type, and carry total: {\"op\":\"list\",\"origin\":\"curated\",\"min_sources\":2}. Each listed spore carries embedded (1 when its current text holds a vector search by meaning can find, else 0), origin (\"curated\" when a consolidation wrote it from other spores, else \"saved\"), sources (how many spores it was written from) and superseded_by (what replaced it; empty while it is current). To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters and carrying no code notation; its field says how to write one. ${AGENT_LINE_NOTATION_RULES} Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. origin (\"curated\" or \"saved\") and min_sources (1 or ${MAX_MIN_SOURCES}) narrow it by how spores came to be, with status and type, and carry total: {\"op\":\"list\",\"origin\":\"curated\",\"min_sources\":2}. Each listed spore carries embedded (1 when its current text holds a vector search by meaning can find, else 0), origin (\"curated\" when a consolidation wrote it from other spores, else \"saved\"), sources (how many spores it was written from) and superseded_by (what replaced it; empty while it is current). To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters and carrying no code notation; its field says how to write one. ${AGENT_LINE_NOTATION_RULES} Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -515,7 +516,8 @@ const definitions: readonly ServedToolDefinition[] = [
         "min_sources": {
           "type": "integer",
           "minimum": 1,
-          "description": "Filter op: \"list\" to spores written from at least this many spores, an integer of at least 1; implies origin \"curated\". Example: {\"op\":\"list\",\"min_sources\":2}"
+          "maximum": MAX_MIN_SOURCES,
+          "description": `Filter op: \"list\" to spores written from at least this many spores: 1 or ${MAX_MIN_SOURCES} (${MAX_MIN_SOURCES} lists spores merged from more than one); implies origin \"curated\". Example: {\"op\":\"list\",\"min_sources\":2}`
         },
         "limit": {
           "type": "number",

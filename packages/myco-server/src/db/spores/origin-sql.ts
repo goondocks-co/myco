@@ -4,6 +4,10 @@
  * facts the filtered list and its totals read are derived from the same two expressions.
  */
 
+/** A Project's active embedding models, apart from the inactive ones it retains. */
+export const ACTIVE_MODELS_INDEX = 'idx_embedding_models_active';
+export const ACTIVE_MODELS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS ${ACTIVE_MODELS_INDEX} ON embedding_models(project_id,model_key) WHERE active=1`;
+
 /** The members of one operation, by their primary key: seeking an operation's own members, never every output of its Project. */
 export const UNIT_MEMBERS = 'sqlite_autoindex_spore_curation_unit_members_1';
 

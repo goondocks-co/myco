@@ -12,7 +12,7 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import {
   AGENT_LINE_MAX_CHARS, CURATE_LINE, estimateTokens, INJECTION_BUDGET_TOKENS, INJECTION_MIN_ITEMS, INJECTION_TARGET_ITEMS,
   injectionLeaves,
-  itemsWithinBudget, MAX_LINE_TOKENS, MIN_PROMPT_CHARS, renderInjectionContext, selectSporesForPrompt,
+  itemsWithinBudget, MAX_LINE_TOKENS, MIN_PROMPT_CHARS, previewPromptItems, renderInjectionContext, selectSporesForPrompt,
   type InjectionItem, type InjectionLeaves,
 } from '@myco-server-worker/core/injection.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
@@ -112,6 +112,18 @@ describe('the gates, in order', () => {
     const { db } = store();
     const shut = await select(db, { capabilityOn: false, leaves: { enabled: false, maxPerPrompt: 0 }, prompt: 'hi' });
     expect([shut.skipped, shut.items, shut.context]).toEqual(['capability', [], '']);
+  });
+
+  it('scores candidates and keeps none: the hook answers `empty` with no record, and a preview names those nearest the cut and why', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('sp1', { agentLine: 'When the selector changes, recalibrate.' }));
+    const semantic = await semanticRecall(db, SCOPE)();
+    // Every candidate as distant from the prompt as from everything else: scored, and none admitted.
+    const weak = { ...semantic, vectors: { ...semantic.vectors, query: async (...args: Parameters<typeof semantic.vectors.query>) => (await semantic.vectors.query(...args)).map(hit => ({ ...hit, score: 0.1 })) } };
+    const hook = await selectSporesForPrompt(db, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'p1', promptHash: 'hash_1', prompt: PROMPT, now: NOW }, async () => weak);
+    expect([hook.skipped, hook.items, hook.context, hook.receiptId, rows(sqlite)]).toEqual(['empty', [], '', undefined, []]);
+    const preview = await previewPromptItems(db, SCOPE, ON, true, { prompt: PROMPT, now: NOW }, async () => weak);
+    expect([preview.skipped, preview.attached, preview.leftOut.length > 0, preview.leftOut.every(item => item.reason === 'close_to_everything'), preview.cut?.probability]).toEqual(['empty', [], true, true, 0.5]);
   });
 
   it('answers `empty` with no record when the Project holds no active spore', async () => {
