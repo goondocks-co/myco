@@ -189,6 +189,8 @@ export interface AutoJoinState {
   /** When this machine last reported the repository for "Needs you", and the hold it reported then. */
   reportedAt?: number;
   reportedHeld?: HeldState;
+  /** When the Deployment took this machine's word that the repository is never to be asked about (`state: quiet`). */
+  quietAt?: number;
   mcpReady?: string[];
 }
 
@@ -465,6 +467,16 @@ export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
     if (state !== null) byRoute.set(`${deploymentUrl(state.serverUrl)}\0${state.rootKey}`, state);
   }
   return [...byRoute.values()].sort((a, b) => b.attemptAt - a.attemptAt);
+}
+
+/**
+ * Repositories this machine reported for "Needs you", or found quiet without the Deployment taking it, that the
+ * settings it holds now place under a folder never asked about or dismissed: the Deployment is still to forget them.
+ */
+export function quietUntold(mycoHome: string): AutoJoinState[] {
+  return listAutoJoinStates(mycoHome).filter((state) => state.outcome !== 'joined'
+    && ((state.placement === 'outside_folders' && state.reportedAt !== undefined) || (state.placement === 'quiet' && state.quietAt === undefined))
+    && placeRepository(state, machineAutoJoinLeaves(state.serverUrl, mycoHome)) === 'quiet');
 }
 
 /** Whether a repository is due an attempt: never tried, or tried and not joined at least `AUTO_JOIN_RETRY_MS` ago. */

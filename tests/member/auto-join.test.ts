@@ -460,6 +460,25 @@ describe('myco member auto-join', () => {
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
   });
 
+  it('has the Deployment forget a repository under a folder never asked about, says when an older one refuses, and asks again', async () => {
+    const root = repository(path.join(base, 'scratch'), 'gadget', 'https://github.com/acme/gadget.git');
+    await join(['--root', root]);
+    expect(uncaptured().map((r) => r.label)).toEqual(['gadget']);
+    // The member adds the folder on the dashboard; this machine caches it at a session start anywhere, with no agent in the repository.
+    rig.env.sqlite.run(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by) VALUES (?, 'capture.quiet_roots', ?, 1, ?)`, [TEST_MACHINE_ID, JSON.stringify([path.join(base, 'scratch')]), `mem_${TEST_MACHINE_ID}`]);
+    cacheMachineSettings(SERVER_URL, { leaves: { 'capture.auto_join_roots': [path.join(base, 'Repos')], 'capture.connect_roots': {}, 'capture.quiet_roots': [path.join(base, 'scratch')] } }, mycoHome);
+    const older: typeof rig.fetch = async (input, init) => {
+      const req = new Request(input, init);
+      return (await req.clone().text()).includes('"quiet"') ? Response.json({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, full or expired' }) : rig.fetch(req);
+    };
+    await joinPass(mycoHome, { fetch: older })(Date.now() + 60_000, { force: false });
+    expect(uncaptured()).toHaveLength(1);
+    expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).toMatchObject({ placement: 'quiet', detail: expect.stringContaining('state must be') });
+    expect((await join(['--root', root]))[0]).toEqual({ root, result: 'outside_folders' });
+    expect(uncaptured()).toEqual([]);
+    expect(readAutoJoinState(rootKeyFor(root, mycoHome), mycoHome, SERVER_URL)).not.toHaveProperty('detail');
+  });
+
   it('holds a repository with no remote until it is connected from "Needs you", then joins and delivers what it held', async () => {
     const root = repository(path.join(base, 'Repos'), 'notes', null);
     await runHook('session-start', { session_id: 'sess-n', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-n'), cwd: root }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn });
