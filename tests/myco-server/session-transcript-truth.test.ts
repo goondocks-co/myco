@@ -172,7 +172,7 @@ test('each turn no person typed leads with what it was, from its own file read, 
       await publish(now + 700_000);
       const turns = (await get(`${session}/turns?origins=user,system,agent_dispatch,hook_injected,unknown`)).rows;
       expect(turns.map((turn: any) => turn.lead)).toEqual([parent === undefined ? null : 'Task from the launching agent: Fix the flaky test',
-        expect.stringMatching(/^Background command finished: Run focused tests 測+ \(exit 0\)$/), 'Harness: Plain note', `${parent === undefined ? 'Message' : 'From the launching agent'}: Stop after the first commit.`]);
+        expect.stringMatching(/^Background command finished: Run focused tests 測+ \(exit 0\)$/), 'System: Plain note', `${parent === undefined ? 'Message' : 'From the launching agent'}: Stop after the first commit.`]);
       expect((await get(`${session}/turns/${turns[0].promptId}`)).prompt.text).toBe(opening);
       const mcp = await worker.fetch(memberPost(issued.token, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_sessions', arguments: { project: 'proj_1', op: 'get', id: session } } }, '/mcp'), fixture.env);
       expect((await mcp.json() as any).result.structuredContent.result.turns.rows.map((turn: any) => turn.lead)).toEqual(turns.map((turn: any) => turn.lead));
@@ -184,9 +184,9 @@ test('each turn no person typed leads with what it was, from its own file read, 
       await captureDocumentTranscript(fixture.db, fixture.bucket, session, tx, JSON.stringify({ type: 'user', uuid: 'read-message-failed', timestamp: instant,
         message: { content: [{ type: 'tool_result', tool_use_id: 'read-message', is_error: true, content: 'Permission denied' }] } }) + '\n', now + 800_000, new TextEncoder().encode(lines).byteLength, 'claude-code', 'proj_1');
       await publish(now + 1_500_000);
-      expect((await get(`${session}/turns?origins=system`)).rows.at(-1).lead).toBe('Harness: Your message is in /work/message.md. Read that whole file now.');
+      expect((await get(`${session}/turns?origins=system`)).rows.at(-1).lead).toBe('System: Your message is in /work/message.md. Read that whole file now.');
     }
-    expect(turnLead({ promptId: 'p', origin: 'system', preview: '<task-notification> <task-id>b1</task-id> <tool-use-id>t', leadFacts: null }, { agent: null, launched: false, openingTurn: null })).toBe('Harness: task notification');
+    expect(turnLead({ promptId: 'p', origin: 'system', preview: '<task-notification> <task-id>b1</task-id> <tool-use-id>t', leadFacts: null }, { agent: null, launched: false, openingTurn: null })).toBe('System: task notification');
   } finally { fixture.sqlite.close(); }
 });
 

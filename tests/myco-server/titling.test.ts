@@ -637,9 +637,9 @@ describe('direct session titles', () => {
     const material = await singleTurnMaterial(h.env, 'proj_1', 'direct');
     expect(material.text).toContain('Human requirement 13');
     expect(material.text).toContain('\n[Agent closing reply] Completed requirement 13');
-    expect(material.text).toContain('\n[Middle turn; Harness] Recorded harness notice');
+    expect(material.text).toContain('\n[Middle turn; System] Recorded harness notice');
     expect(material.text).toContain('Build direct session titles');
-    expect(material.text).toContain('\n[Harness] Later harness message\n[Agent closing reply] Finished after the message');
+    expect(material.text).toContain('\n[System] Later harness message\n[Agent closing reply] Finished after the message');
     expect(material.text).not.toContain('DO NOT SEND UNRELATED OUTPUT');
     expect(material.text.length).toBeLessThanOrEqual(10000);
     h.sqlite.close();
