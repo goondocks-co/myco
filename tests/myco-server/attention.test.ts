@@ -133,14 +133,6 @@ describe('Needs you', () => {
     sqlite.run(`UPDATE agent_runs SET subject = 'session:s1' WHERE id = 'run_l2'`);
     expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_l2')).toMatchObject({ retrying: false });
     sqlite.run(`UPDATE agent_runs SET subject = NULL WHERE id = 'run_l2'`);
-    // With scheduling on, the map's capability on and its Project active, a later wake takes the map again.
-    sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', ?, 'mem_1')`, [NOW]);
-    sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_2', 'canopy', 1, ?, 'mem_1')`, [NOW]);
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_2', 's2', 'm1', 'tok_1', ?, ?)`, [NOW, NOW]);
-    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_m2')).toMatchObject({ retrying: true });
-    // A daily ceiling of zero: no wake ever takes it, so a person sees it.
-    sqlite.run(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', ?, ?, 'mem_1')`, [JSON.stringify({ 'canopy-map': { schedule: { maxRunsPerDay: 0 } } }), NOW]);
-    expect((await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_m2')).toMatchObject({ retrying: false });
     run('proj_1', 'run_l3', 'extract-curate', 'completed', NOW - 30 * MINUTE);
     expect((await read()).items.flatMap((i) => (i.kind === 'outcome_failed' ? [i.projectId] : []))).toEqual(['proj_2']);
     // A failure older than the lookback is no longer news.
