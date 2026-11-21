@@ -10,6 +10,7 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { cardWorker, fakeCard, DAY, HOUR } from './helpers/learning-stages.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import worker from '@myco-server-worker/index.js';
+import { turnLead } from '@myco-server-worker/read/turn-lead.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memberPost, sqliteEnv, memoryBlobStore } from './helpers/fixtures.js';
@@ -181,6 +182,7 @@ test('each turn no person typed leads with what it was, from its own file read, 
       await publish(now + 1_500_000);
       expect((await get(`${session}/turns?origins=system`)).rows.at(-1).lead).toBe('Harness: Your message is in /work/message.md. Read that whole file now.');
     }
+    expect(turnLead({ promptId: 'p', origin: 'system', preview: '<task-notification> <task-id>b1</task-id> <tool-use-id>t', leadFacts: null }, { agent: null, launched: false, openingTurn: null })).toBe('Harness: task notification');
   } finally { fixture.sqlite.close(); }
 });
 
