@@ -28,8 +28,9 @@ import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 let calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string }[] = [];
 const runner = (result: Partial<CommandResult> = {}): CommandRunner => ({
   async run(command, args, options) {
+    if (command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
     calls.push({ command, args: [...args], env: options?.env, cwd: options?.cwd });
-    return { code: 0, stdout: '', stderr: '', ...result };
+    return args.includes('--version') ? { code: 0, stdout: '4.124.0', stderr: '' } : { code: 0, stdout: '', stderr: '', ...result };
   },
 });
 beforeEach(() => { calls = []; });
@@ -105,7 +106,7 @@ describe('account selection', () => {
     // GATE: this one runs before any record exists, and it runs where every
     // other command here does — the binary's own directory, holding no wrangler
     // configuration for wrangler to walk up into.
-    expect(calls.map((c) => c.cwd)).toEqual([dirname(deploymentRecordPath(home))]);
+    expect(calls.every(c => c.cwd === dirname(deploymentRecordPath(home)))).toBe(true);
   });
 });
 

@@ -5,7 +5,7 @@
  * stderr alone.
  */
 import { describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "../support/fenced-fs.mjs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readTestProcessGroupId } from '../../scripts/test-process-tree.mjs';
@@ -331,4 +331,19 @@ describe('a withdrawn command', () => {
       expect(existsSync(marker)).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+});
+
+
+it.skipIf(process.platform !== 'win32')('runs npm.cmd through its Node entry with literal arguments and closed stdin', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'myco-npm-runner-'));
+  try {
+    const bin = join(root, 'node_modules', 'npm', 'bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(root, 'npm.cmd'), 'fixture launcher');
+    writeFileSync(join(bin, 'npm-cli.js'), "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));");
+    const args = ['--prefix', join(root, 'folder with spaces & punctuation')];
+    const result = await systemRunner().run('npm.cmd', args, { env: { ...process.env, PATH: `${root};${process.env.PATH}` }, timeoutMs: 5000 });
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(args);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -19,7 +19,7 @@ import { legacyCaptureGuidance } from '@myco/cli/legacy-capture.js';
 import { observeLegacyStrayHistory } from '@myco/member/legacy-strays.js';
 import type { SetupAnswers } from '@myco/setup/answers.js';
 import { inspectLocal, type LocalLifecycleDeps } from '@myco/server/local-lifecycle.js';
-import { peekDeploymentRecord } from '@myco/server/cloudflare.js';
+import { peekDeploymentRecord, resolveWrangler, wranglerToolLine, WranglerNotReady } from '@myco/server/cloudflare.js';
 import { cloudflareOwnerLinked, type CloudflareOwnerOptions } from '@myco/server/cloudflare-owner.js';
 import { peekLocalPaths, readLocalRecord } from '@myco/server/local.js';
 
@@ -77,7 +77,7 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   const read = async (id: string, fn: () => void | Promise<void>, informational = false): Promise<void> => {
     try { await fn(); }
     catch (error) {
-      const fact = add(id, error instanceof UnreadableProvisionRecordError ? 'incomplete' : 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational);
+      const fact = add(id, error instanceof UnreadableProvisionRecordError || error instanceof WranglerNotReady ? 'incomplete' : 'unavailable', error instanceof Error ? error.message : String(error), observedUrl ?? home, informational);
       if (error instanceof UnreadableProvisionRecordError) fact.agentHealth = true;
     }
   };
@@ -112,6 +112,10 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
         add(id, state(value, complete), typeof value === 'object' ? JSON.stringify(value) : value, home);
       }
       add('deployment.serving', local.serving.mode !== 'stopped' && (!deps.checkRemote || local.serving.healthy) ? 'complete' : 'incomplete', local.serving.mode, home);
+    });
+    if (answers.target === 'cloudflare' && deps.status) await read('cloudflare.tools', async () => {
+      const tool = await resolveWrangler({ mycoHome: home, runner: deps.cloudflare?.runner });
+      add('cloudflare.tools', 'complete', wranglerToolLine(tool), home, true);
     });
     if (answers.target === 'cloudflare') await read('deployment.create', async () => {
       const record = peekDeploymentRecord(home);

@@ -12,7 +12,7 @@ import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { harnessDirectories, workerServiceStatus, workerServiceUnit, workerServiceSpec } from '@myco/runner/service.js';
 import { servicePaths } from '@myco/server/service.js';
 import { openBrowser } from '@goondocks/myco-shared';
-import { assertWranglerReady, missingDeploymentRecordMessage, ensureCommandDir, peekCommandDir, operatorLogin, listAccounts, peekDeploymentRecord, WranglerNotSignedIn, type OperatorLogin } from '@myco/server/cloudflare.js';
+import { assertWranglerReady, assertWranglerPresent, installWrangler, WranglerAbsent, missingDeploymentRecordMessage, ensureCommandDir, peekCommandDir, operatorLogin, listAccounts, peekDeploymentRecord, WranglerNotSignedIn, type OperatorLogin } from '@myco/server/cloudflare.js';
 import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { cloudflareOwnerLinked, setupCloudflareOwner } from '@myco/server/cloudflare-owner.js';
 import { registerGitHubApp, defaultAppName, hasPendingSignIn, type RegisterOptions, type SignInTarget } from '@myco/server/github-app.js';
@@ -278,12 +278,19 @@ const CREATE_STEPS: readonly SetupStep[] = [
     act: async ctx => {
       const cwd = ensureCommandDir(ctx.home);
       const runner = ctx.deps.cloudflare?.runner ?? systemRunner();
-      const readiness = { runner, cwd, report: ctx.out };
+      const readiness = { runner, cwd, mycoHome: ctx.home, report: ctx.out, signal: ctx.deps.signal };
+      try { await assertWranglerPresent(runner, cwd, ctx.home); }
+      catch (error) {
+        if (!(error instanceof WranglerAbsent)) throw error;
+        await consentToOccurrence(ctx, 'Install Myco’s pinned Wrangler in its own tools folder (no root or global npm install)?');
+        await installWrangler(readiness);
+      }
       try { await assertWranglerReady(readiness); }
       catch (error) {
         if (!(error instanceof WranglerNotSignedIn)) throw error;
         await consentToOccurrence(ctx, 'Sign in to Cloudflare (opens your browser, runs wrangler login)?');
-        await runOrThrow(runner, 'npx', ['--no-install', 'wrangler', 'login'], { cwd, stdio: 'inherit', signal: ctx.deps.signal });
+        const selected = await assertWranglerPresent(runner, cwd, ctx.home);
+        await runOrThrow(selected, 'npx', ['--no-install', 'wrangler', 'login'], { cwd, stdio: 'inherit', signal: ctx.deps.signal });
         await assertWranglerReady(readiness);
       }
       const answers = ctx.file.answers;

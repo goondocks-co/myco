@@ -87,6 +87,7 @@ const wrangler = (installed = true): { runner: CommandRunner; ran: string[] } =>
     ran,
     runner: {
       async run(_command, args) {
+        if (_command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
         const flat = args.join(' ');
         ran.push(flat);
         if (!installed) return { code: 1, stdout: '', stderr: 'npx: command not found: wrangler' };

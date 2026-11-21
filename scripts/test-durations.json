@@ -824,6 +824,7 @@
     "tests/server/cloudflare-backup-streaming.test.ts": 89118,
     "tests/server/cloudflare-backup.test.ts": 48734,
     "tests/server/cloudflare-command-dir.test.ts": 176,
+    "tests/server/cloudflare-tools.test.ts": 1500,
     "tests/server/cloudflare-d1-export.test.ts": 3461,
     "tests/server/cloudflare-deployment.test.ts": 2959,
     "tests/server/cloudflare-lifecycle.test.ts": 46136,

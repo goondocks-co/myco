@@ -58,13 +58,14 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     return { stdout, code, stderr };
   };
   const runner: CommandRunner = { async run(command, args, options) {
+    if (command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
     expect(command).toBe('npx');
     expect(args.slice(0, 2)).toEqual(['--no-install', 'wrangler']);
     const flat = args.slice(2).join(' ');
     commands.push(flat);
     if (flat === '--version') return answer('4.99.0');
     if (flat === 'login') { expect(options?.stdio).toBe('inherit'); signedIn = true; return answer(); }
-    if (flat === 'whoami') return signedIn ? answer(`│ Setup │ ${ACCOUNT} │`) : answer('', 1);
+    if (flat === 'whoami --json') return signedIn ? answer(`│ Setup │ ${ACCOUNT} │`) : answer('', 1);
     if (flat === 'auth token --json') return answer(JSON.stringify({ type: 'api_token', token: 'fixture-operator' }));
     if (flat === 'vectorize list --json') return answer(JSON.stringify(vectorCreated ? [{ name: 'myco-server-memory' }] : []));
     if (flat.startsWith('vectorize create ')) { vectorCreated = true; return answer(); }

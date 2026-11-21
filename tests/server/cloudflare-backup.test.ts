@@ -77,6 +77,9 @@ function fixture() {
   const leftovers: string[] = [];
   const statements: Array<{ sql: string; timeoutMs?: number }> = [];
   const runner: CommandRunner = { async run(command, args, options) {
+    if (command === 'node') return { code: 0, stdout: 'v26.0.0', stderr: '' };
+    if (args.includes('--version')) return { code: 0, stdout: '4.124.0', stderr: '' };
+    if (args.includes('whoami')) return { code: 0, stdout: '{"loggedIn":true}', stderr: '' };
     calls.push([...args]);
     expect(command).toBe('npx');
     expect(args.slice(0, 2)).toEqual(['--no-install', 'wrangler']);

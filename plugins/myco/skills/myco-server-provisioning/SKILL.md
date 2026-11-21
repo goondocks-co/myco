@@ -26,7 +26,7 @@ Lead with `myco setup` for a new owner. On a fresh machine, choose **Start a new
 myco setup --create cloudflare
 ```
 
-Node and Wrangler are prerequisites on the operator's machine. Setup asks for the Cloudflare account and address before creating resources, guides GitHub sign-in registration, prints a private owner link and waits for linking before signing this machine in. Choose the address before registering sign-in.
+A supported Node.js is required on the operator's machine. Setup checks the engine requirement declared by the Wrangler used to build this binary; missing or unsupported Node names the required version and https://nodejs.org/en/download as the next step. With consent, setup installs the binary's pinned Wrangler privately under `<MYCO_HOME>/server/tools/`, without root or a global npm prefix. It offers Cloudflare sign-in when needed. Setup asks for the Cloudflare account and address before creating resources, guides GitHub sign-in registration, prints a private owner link and waits for linking before signing this machine in. Choose the address before registering sign-in.
 
 Rerun `myco setup` after interruption; it continues from observed state. Existing machine connections can select a joining journey, so use `--create cloudflare` explicitly when creating is intended. Use `myco setup --status` for read-only progress, with `--check-remote` for remote checks.
 
@@ -41,9 +41,7 @@ To leave a wrong Deployment, use `myco logout <address>`. It preserves capture a
 Node and Wrangler are needed here, not on machines merely capturing sessions or running tasks. Server commands select the sole existing Deployment, or local on a fresh home. If both Deployments exist, or an old Compose installation is retained, name the supported target explicitly.
 
 ```bash
-npm install -g wrangler
-wrangler login
-wrangler whoami
+myco setup --create cloudflare
 myco server create --target cloudflare --account-id <id> [--url https://myco.example.com]
 myco server github-app --target cloudflare --url <chosen-address>
 myco server setup-owner --target cloudflare
@@ -59,9 +57,9 @@ Sign this machine in with `myco setup --join <address>`, then follow the dashboa
 
 `create` is idempotent: every resource is ensured, an existing record keeps its ids, and a re-run converges. That also makes it the adopt path for resources created by hand. `destroy` removes the Worker only — the database, bucket, store and record all stand, because the Worker is re-creatable from the binary and the data is not.
 
-Every verb checks those prerequisites before it runs anything: wrangler resolvable without a fetch (`npx --no-install`), and a Cloudflare identity — an interactive `wrangler login`, or `CLOUDFLARE_API_TOKEN` in a shell that cannot open a browser, which is taken on trust rather than verified, so a stale or wrong-scope token fails in the first command's own words. Each missing one is refused by name in one line, so the first thing an operator reads is Myco's instruction rather than wrangler's.
+Every verb checks supported Node and selects one Wrangler before running provider commands: an operator installation resolved without a fetch (`npx --no-install`) is preferred only when its major matches the bundled Wrangler; otherwise the private pinned copy is used. Commands never install packages. A missing compatible tool names `myco setup --create cloudflare` as the next action; only setup offers the consented installation. `myco doctor` and `myco setup --status` report the selected source and version. Readiness also requires a Cloudflare identity — setup's consented browser sign-in, or `CLOUDFLARE_API_TOKEN` in a shell that cannot open a browser, which is taken on trust rather than verified, so a stale or wrong-scope token fails in the first command's own words. Each missing one is refused by name in one line, so the first thing an operator reads is Myco's instruction rather than wrangler's.
 
-Creating resources requires `--account-id`; subsequent commands can use the recorded account. A login reaching several accounts must not silently choose where new resources go. `wrangler whoami` lists the accounts.
+Creating resources requires `--account-id`; subsequent commands can use the recorded account. A login reaching several accounts must not silently choose where new resources go. `myco setup --create cloudflare` lists the accounts and asks which to use.
 
 `--dir` and `--no-drain` are refused **by name**. Neither applies: there is no checkout to point at, and a deploy replaces no runtime so it waits for nothing.
 

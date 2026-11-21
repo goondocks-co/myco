@@ -10,7 +10,7 @@ On macOS or Linux:
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Myco is a native binary; no Node runtime is needed. On Windows (x64 or ARM64):
+Myco is a native binary; joining and capture need no Node runtime. Creating a Cloudflare Myco needs a supported Node.js on the operator's machine: `myco setup --create cloudflare` checks the requirement carried by this binary and offers to install its pinned Wrangler privately, with consent and no root access. See [Cloudflare setup](self-hosting.md#on-cloudflare). On Windows (x64 or ARM64):
 
 ```powershell
 irm https://myco.sh/install.ps1 | iex

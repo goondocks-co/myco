@@ -1,5 +1,8 @@
+import { withWranglerPrerequisites } from './helpers/wrangler.js';
 import { describe, expect, it, spyOn } from 'bun:test';
-import { cloudflareBlobReader, cloudflareObjectStore, type CloudflareFetch, OPERATOR_NETWORK_RETRY_BUDGET_MS } from '@myco/server/cloudflare.js';
+import { cloudflareBlobReader as createBlobReader, cloudflareObjectStore as createObjectStore, type CloudflareFetch, OPERATOR_NETWORK_RETRY_BUDGET_MS } from '@myco/server/cloudflare.js';
+const cloudflareBlobReader = (options: Parameters<typeof createBlobReader>[0]) => createBlobReader({ ...options, ...(options.runner ? { runner: withWranglerPrerequisites(options.runner) } : {}) });
+const cloudflareObjectStore = (options: Parameters<typeof createObjectStore>[0]) => createObjectStore({ ...options, ...(options.runner ? { runner: withWranglerPrerequisites(options.runner) } : {}) });
 import { refusedAccountCode, transientReadFailure } from '@myco/server/object-read.js';
 import { CommandFailed, CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { brotliCompressSync, deflateSync, gzipSync, zstdCompressSync, constants } from 'node:zlib';

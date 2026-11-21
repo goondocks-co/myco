@@ -54,7 +54,7 @@ import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
 import { schemaStopLines, SchemaUpdateStopped, workerSchemaEvidence, type OverloadRetry, type SchemaStop, type WorkerLeft } from './cloudflare-migration-pacing.js';
 import { getPluginVersion } from '../version.js';
-import { systemRunner } from './runner.js';
+import { systemRunner, type CommandRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
 
@@ -122,9 +122,9 @@ function bareCommand(options: LifecycleOptions): CloudflareOptions {
  * what they get.
  */
 async function preflight(options: LifecycleOptions): Promise<void> {
-  await assertWranglerReady({
+  options.runner = await assertWranglerReady({
     ...(options.runner === undefined ? {} : { runner: options.runner }),
-    cwd: ensureCommandDir(options.mycoHome),
+    cwd: ensureCommandDir(options.mycoHome), mycoHome: options.mycoHome,
     ...(options.report === undefined ? {} : { report: options.report }),
   });
 }
@@ -153,11 +153,12 @@ export interface CreatePlan {
  * the configuration is rendered on this machine alone.
  */
 export async function planCloudflareDeployment(options: LifecycleOptions & { url?: string }): Promise<CreatePlan> {
+  options = { ...options };
   // Wrangler runs in a directory of its own outside the home, removed afterwards, so a plan leaves the home as it found it.
   const configDir = mkdtempSync(path.join(tmpdir(), 'myco-cloudflare-plan-'));
   try {
-    await assertWranglerReady({
-      ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir,
+    options.runner = await assertWranglerReady({
+      ...(options.runner === undefined ? {} : { runner: options.runner }), cwd: configDir, mycoHome: options.mycoHome,
       ...(options.report === undefined ? {} : { report: options.report }),
     });
     return await planIn(options, configDir);
@@ -386,8 +387,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
     schema: 'not attempted', worker: 'not attempted', upload: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
   };
-  const runner = options.runner ?? systemRunner();
-  options = { ...options, runner: {
+  const observeRunner = (runner: CommandRunner): CommandRunner => ({
     async run(command, args, runOptions) {
       const [product, action] = args.slice(2);
       const operation = product === 'r2' && args[4] === 'create' ? `r2 bucket ${args[5]}`
@@ -405,13 +405,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
       }
       return result;
     },
-  } };
+  });
   try {
     let record = held;
     if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} \`myco server create --target cloudflare --account-id <id>\` provisions one.`);
     summary.releaseBefore = record.release;
     summary.workerSchemaBefore = workerSchemaEvidence(record)?.schema;
     await preflight(options);
+    options.runner = observeRunner(options.runner!);
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
