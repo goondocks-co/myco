@@ -144,6 +144,18 @@ describe('Needs you', () => {
     expect((await kinds(NOW + 8 * DAY)).filter((kind) => kind === 'outcome_failed')).toEqual([]);
   });
 
+  it('counts a failed curation group as retrying while its claim has an attempt left, and not once it has none', async () => {
+    const { run, read, sqlite } = harness();
+    run('proj_1', 'run_c1', 'curate-spores', 'failed', NOW - HOUR);
+    sqlite.run(`UPDATE agent_runs SET subject = 'curation:proj_1:k1' WHERE id = 'run_c1'`);
+    sqlite.run(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'spore_curation', 1, ?, 'mem_1')`, [NOW]);
+    sqlite.run(`INSERT INTO spore_curation_work (project_id, cluster_key, members, due_at, failures) VALUES ('proj_1', 'k1', '[]', ?, 1)`, [NOW + 5 * HOUR]);
+    const curation = async () => (await read()).items.find((i) => i.kind === 'outcome_failed' && i.runId === 'run_c1');
+    expect(await curation()).toMatchObject({ task: 'curate-spores', outcome: 'learn', retrying: true });
+    sqlite.run(`UPDATE spore_curation_work SET failures = 3 WHERE cluster_key = 'k1'`);
+    expect(await curation()).toMatchObject({ retrying: false });
+  });
+
   it('names stopped publications across parser versions and excludes ones waiting for bytes', async () => {
     const { sqlite, read, publication } = harness();
     const transcript = (id: string, error: string, version: number) =>
