@@ -3,9 +3,10 @@ import { publishFixture } from './helpers/fixtures.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 /**
  * `POST /mcp` through the deployed entry: the member tool surface as a client
- * meets it. JSON-RPC in, JSON-RPC out; every refusal an error envelope whose
- * `data.code` the member-side CLI classifies; every result the shape the
- * member-side tool answers.
+ * meets it. JSON-RPC in, JSON-RPC out; a tool the caller may not call an error
+ * envelope whose `data.code` the member-side CLI classifies; every other
+ * refusal a result flagged `isError`; every result the shape the member-side
+ * tool answers.
  */
 import { jsonBody } from '../helpers/json-body.js';
 import type { Database } from 'bun:sqlite';
@@ -104,7 +105,7 @@ describe('POST /mcp', () => {
     await call(t1.token, 'myco_spores', { op: 'list' });
     for (const args of [{ op: 'list' }, { op: 'list', project: 'unknown_project' }]) {
       const response = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_spores', arguments: args }), { [PROJECT_HEADER]: '' }), env);
-      expect((await response.json() as any).error.data.code).toBe('invalid_input');
+      expect((await response.json() as any).result.structuredContent.result.code).toBe('invalid_input');
     }
     const response = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_spores', arguments: { op: 'list', project: FIXTURE_PROJECT } }), { [PROJECT_HEADER]: '' }), env);
     expect((await response.json() as any).result.structuredContent.result.total).toBe(0);
@@ -137,23 +138,24 @@ describe('POST /mcp', () => {
     }));
   });
 
-  it('answers an unknown tool, bad arguments, an undeclared op and a not-yet-served op as JSON-RPC errors named in data.code', async () => {
+  it('answers an unknown tool as a JSON-RPC error, and bad arguments, an undeclared op, and a not-yet-served op as refused results naming their code', async () => {
     const { call, t1 } = await setup();
     expect((await call(t1.token, 'myco_nope')).error.data.code).toBe('unknown_tool');
-    expect((await call(t1.token, 'myco_search')).error.data.code).toBe('invalid_input');
-    expect((await call(t1.token, 'myco_sessions', { op: 'purge' })).error.data.code).toBe('invalid_input');
+    const missing = await call(t1.token, 'myco_search');
+    expect({ isError: missing.body.result.isError, text: JSON.parse(missing.body.result.content[0].text), code: missing.result.code }).toEqual({ isError: true, text: missing.result, code: 'invalid_input' });
+    expect((await call(t1.token, 'myco_sessions', { op: 'purge' })).result.code).toBe('invalid_input');
     expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ hits: [], mode: 'fts', provider_unavailable: true });
     for (const args of [{ query: 'a\u0000b' }, { query: 'a\u0000b', limit: 5 }]) {
       const refused = await call(t1.token, 'myco_search', args);
-      expect({ args, code: refused.error?.data?.code, says: /control characters/.test(String(refused.error?.message)) }).toEqual({ args, code: 'invalid_input', says: true });
+      expect({ args, code: refused.result?.code, says: /control characters/.test(String(refused.result?.error)) }).toEqual({ args, code: 'invalid_input', says: true });
     }
     const never = await call(t1.token, 'myco_plans', { op: 'delete', id: 'x' });
-    expect({ code: never.error.data.code, offered: /not offered/.test(never.error.message) }).toEqual({ code: 'not_served', offered: true });
-    expect((await call(t1.token, 'myco_cortex', { op: 'notifications' })).error.data.code).toBe('not_served');
+    expect({ code: never.result.code, offered: /not offered/.test(never.result.error) }).toEqual({ code: 'not_served', offered: true });
+    expect((await call(t1.token, 'myco_cortex', { op: 'notifications' })).result.code).toBe('not_served');
     const digest = await call(t1.token, 'myco_cortex', { op: 'digest' });
     expect(UNSERVED_OPS.myco_cortex?.digest).toBe('never');
-    expect({ code: digest.error.data.code, retired: /not offered/.test(digest.error.message) }).toEqual({ code: 'not_served', retired: true });
-    expect((await call(t1.token, 'myco_search', { query: 'q', type: 'skill' })).error.data.code).toBe('invalid_input');
+    expect({ code: digest.result.code, retired: /not offered/.test(digest.result.error) }).toEqual({ code: 'not_served', retired: true });
+    expect((await call(t1.token, 'myco_search', { query: 'q', type: 'skill' })).result.code).toBe('invalid_input');
   });
 
   it('records, reads, lists, supersedes and consolidates spores under the built-in user agent', async () => {
@@ -180,11 +182,11 @@ describe('POST /mcp', () => {
       .toEqual({ first: [second.id], next: [saved.id], more: [true, false] });
     // A text match is a search, and offsets are retired: each is refused with the call to make instead.
     const searched = await call(t1.token, 'myco_spores', { op: 'list', search: 'second' });
-    expect({ code: searched.error?.data?.code, message: searched.error?.message })
+    expect({ code: searched.result?.code, message: searched.result?.error })
       .toEqual({ code: 'invalid_input', message: expect.stringMatching(/^Not read: myco_spores list; search is not a list filter.*Next call: myco_search \{"query":"second","type":"spore","mode":"fts"\}\.$/) });
-    expect((await call(t1.token, 'myco_spores', { op: 'list', search: 'second', status: 'active', observation_type: 'decision' })).error?.message)
+    expect((await call(t1.token, 'myco_spores', { op: 'list', search: 'second', status: 'active', observation_type: 'decision' })).result?.error)
       .toMatch(/Next call: myco_search \{"query":"second","type":"spore","mode":"fts","status":"active","observation_type":"decision"\}\.$/);
-    expect((await call(t1.token, 'myco_spores', { op: 'list', offset: 1 })).error?.message).toMatch(/Next call: myco_spores \{"op":"list","cursor":/);
+    expect((await call(t1.token, 'myco_spores', { op: 'list', offset: 1 })).result?.error).toMatch(/Next call: myco_spores \{"op":"list","cursor":/);
     expect((await call(t1.token, 'myco_spores', { op: 'list', cursor: 'nope' })).result.error).toMatch(/^Not read: cursor "nope".*Next call: myco_spores/);
 
     const consolidated = (await call(t1.token, 'myco_spores', { op: 'consolidate', source_spore_ids: [second.id], consolidated_content: 'wisdom', observation_type: 'wisdom' })).result;
@@ -326,15 +328,17 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_agent', { project: 'proj_unknown' })).result).toEqual({ ok: false, op: 'runs', error: 'Project not found' });
     expect((await call(t1.token, 'myco_agent', {})).result).toEqual({ ok: true, op: 'runs', data: { runs: [], cursor: null } });
     const refused = await call(t1.token, 'myco_plans', { limit: 5, purge: true });
-    expect({ code: refused.error?.data?.code, names: String(refused.error?.message).includes("'purge'") }).toEqual({ code: 'invalid_input', names: true });
+    expect({ code: refused.result?.code, names: String(refused.result?.error).includes("'purge'") }).toEqual({ code: 'invalid_input', names: true });
   });
 
   it('caps a spore body, and consolidates all sources or none: a source retired meanwhile refuses the call by name and saves nothing', async () => {
     const { call, sqlite, t1 } = await setup();
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x'.repeat(MAX_SPORE_CONTENT_BYTES + 1) })).result).toEqual({ ok: false, error: expect.stringContaining(`content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`) });
     const lined = async (agent_line: string) => (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'upload stall', agent_line })).result;
-    expect(await lined('When the upload stalls, read core/upload.ts first.')).toEqual({ ok: false, repairCall: { tool: 'myco_spores', op: 'save' },
-      error: 'agent_line contains code notation "core/upload.ts"; nothing was saved. Say the situation and guidance in plain words, keep the path, flag or symbol in the body, and call myco_spores op "save" again.' });
+    // A refused save is flagged as the tool's error; the text an agent reads is the refusal, its repair call included.
+    const pathed = await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'upload stall', agent_line: 'When the upload stalls, read core/upload.ts first.' });
+    expect({ isError: pathed.body.result.isError, text: JSON.parse(pathed.body.result.content[0].text), result: pathed.result }).toEqual({ isError: true, text: pathed.result, result: { ok: false, repairCall: { tool: 'myco_spores', op: 'save' },
+      error: 'agent_line contains code notation "core/upload.ts"; nothing was saved. Say the situation and guidance in plain words, keep the path, flag or symbol in the body, and call myco_spores op "save" again.' } });
     const notation = { 'Inspect (--force) first.': '--force', 'Inspect (./scripts/build).': './scripts/build', 'Check "~/repo" first.': '~/repo', 'Open (C:\\Users) first.': 'C:\\Users',
       'Read https://docs.example.com/guide.html first.': 'docs.example.com/guide.html', 'Call retry() on the queue.': 'retry()', 'Run fn(a, b) first.': 'fn(a, b)',
       'When MYCO_HOME is unset, set it.': 'MYCO_HOME', 'Use capture_spool to retain data.': 'capture_spool', 'Look at worker-steps.test.ts first.': 'worker-steps.test.ts' };
@@ -639,7 +643,7 @@ describe('POST /mcp over an External Agent grant', () => {
     ];
     for (const [name, args] of reads) {
       const res = await callAs(grant.key, name, args);
-      expect({ name, args, answered: res.error === undefined || res.error.data?.code === 'not_served' }).toEqual({ name, args, answered: true });
+      expect({ name, args, answered: res.error === undefined && (res.body.result?.isError !== true || res.result?.code === 'not_served') }).toEqual({ name, args, answered: true });
     }
     expect(lastUsed()).toBe(first);
     expect(executed.slice(from).filter((sql) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)).every((sql) => /UPDATE external_grants/.test(sql))).toBe(true);
@@ -699,7 +703,7 @@ describe('POST /mcp over an External Agent grant', () => {
     }
   });
 
-  it('names a served tool or the literal unknown in telemetry, never the caller\'s text, and the member backstop refuses a grant as a tool that does not exist', async () => {
+  it('names a served tool or the literal unknown in telemetry, never the caller\'s text, counts a refusal by its code, and the member backstop refuses a grant as a tool that does not exist', async () => {
     const { serverEnv, grant, callAs } = await grantSetup();
     const lines: string[] = [];
     const original = console.log;
@@ -708,6 +712,7 @@ describe('POST /mcp over an External Agent grant', () => {
       await callAs(grant.key, 'myco_<script>', {});
       await callAs(grant.key, 'myco_spores', { op: 'consolidate' });
       await callAs(grant.key, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha' });
+      await callAs(grant.key, 'myco_spores', { op: 'save', content: 'x', type: 'gotcha', session_id: 'sess_any' });
     } finally {
       console.log = original;
     }
@@ -716,6 +721,7 @@ describe('POST /mcp over an External Agent grant', () => {
       { tool: 'unknown', status: 'unknown_tool', grantId: grant.id },
       { tool: 'myco_spores', status: 'unknown_tool', grantId: grant.id },
       { tool: 'myco_spores', status: 'ok', grantId: grant.id },
+      { tool: 'myco_spores', status: 'tool_failure', grantId: grant.id },
     ]);
     expect(() => memberOf(grantToolContext(serverEnv, { projectId: 'proj_1', grantId: grant.id, body: '', now: 0 }), 'myco_plans')).toThrow('Unknown tool: myco_plans');
   });
@@ -1190,8 +1196,8 @@ describe('POST /mcp over a run credential', () => {
 
 describe('POST /mcp refuses an argument the schema does not declare', () => {
   const STRAY = 'no_such_argument';
-  const expectRefusedByName = (tool: string, answered: { status: number; error?: any }) => {
-    expect({ tool, status: answered.status, code: answered.error?.data?.code, names: String(answered.error?.message).includes(`'${STRAY}'`) })
+  const expectRefusedByName = (tool: string, answered: { status: number; result?: any }) => {
+    expect({ tool, status: answered.status, code: answered.result?.code, names: String(answered.result?.error).includes(`'${STRAY}'`) })
       .toEqual({ tool, status: 200, code: 'invalid_input', names: true });
   };
 
@@ -1200,7 +1206,7 @@ describe('POST /mcp refuses an argument the schema does not declare', () => {
     for (const d of TOOL_DEFINITIONS) {
       const answered = await call(t1.token, d.name, { ...(d.name === 'myco_search' ? { query: 'anything' } : {}), [STRAY]: 'x' });
       expectRefusedByName(d.name, answered);
-      expect(answered.error.message).toContain(Object.keys(d.inputSchema.properties).join(', '));
+      expect(answered.result.error).toContain(Object.keys(d.inputSchema.properties).join(', '));
     }
   });
 
@@ -1208,7 +1214,7 @@ describe('POST /mcp refuses an argument the schema does not declare', () => {
     const { t1, call } = await setup();
     for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
       const answered = await call(t1.token, 'myco_plans', JSON.parse(`{"op":"list","${key}":"x"}`));
-      expect({ key, code: answered.error?.data?.code, names: String(answered.error?.message).includes(`'${key}'`) }).toEqual({ key, code: 'invalid_input', names: true });
+      expect({ key, code: answered.result?.code, names: String(answered.result?.error).includes(`'${key}'`) }).toEqual({ key, code: 'invalid_input', names: true });
     }
     // The protocol transport's own parse turns an own `__proto__` key into a prototype before the validator sees it; the validator refuses it when handed the parsed body directly.
     const definition = TOOL_DEFINITIONS.find((d) => d.name === 'myco_plans')!;
@@ -1218,13 +1224,13 @@ describe('POST /mcp refuses an argument the schema does not declare', () => {
   it('for a member write that mis-spells the tenancy key, naming the mis-spelling rather than the missing one', async () => {
     const { t1, call } = await setup();
     const answered = await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', project_id: FIXTURE_PROJECT });
-    expect({ code: answered.error?.data?.code, names: String(answered.error?.message).includes("'project_id'") }).toEqual({ code: 'invalid_input', names: true });
+    expect({ code: answered.result?.code, names: String(answered.result?.error).includes("'project_id'") }).toEqual({ code: 'invalid_input', names: true });
   });
 
   it('for a member spelling the tenancy key the retired way, so a read cannot silently land on the header Project', async () => {
     const { t1, call } = await setup();
     const answered = await call(t1.token, 'myco_sessions', { op: 'list', project_id: 'proj_1' });
-    expect({ code: answered.error?.data?.code, names: String(answered.error?.message).includes("'project_id'") }).toEqual({ code: 'invalid_input', names: true });
+    expect({ code: answered.result?.code, names: String(answered.result?.error).includes("'project_id'") }).toEqual({ code: 'invalid_input', names: true });
   });
 
   it('for a run and for a grant, on a tool on their surface, with the same shape', async () => {

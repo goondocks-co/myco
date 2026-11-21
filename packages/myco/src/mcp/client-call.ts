@@ -10,8 +10,8 @@
  *
  * The standard `content: [{type:'text'}]` reply is lossy, so the full result
  * is read back from `structuredContent.result`, which the served tools set on
- * every successful call. A thrown tool error's string `code` travels in the
- * JSON-RPC error's `data`.
+ * every call. A refusal is that result flagged `isError`, with its `code`; a
+ * name the caller may not call is a JSON-RPC error whose `data` carries it.
  */
 import { Client, ProtocolError, SdkHttpError, type RequestOptions, type StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { getPluginVersion } from '../version.js';
@@ -20,6 +20,8 @@ export interface ToolCallError {
   code: string;
   message: string;
   retryable?: boolean;
+  /** A tool's refusal as it answered it, its repair call and reason included; set only for a refused call. */
+  result?: unknown;
 }
 
 export type ToolCallOutcome<T> = { ok: true; value: T } | { ok: false; error: ToolCallError };
@@ -60,18 +62,26 @@ class ToolResultRefused extends Error {
   constructor(readonly detail: ToolCallError) { super(detail.message); }
 }
 
-/** A command result; a refusal throws its code and message for the CLI failure envelope. */
+/** The code a refusal that names none of its own is reported under, as the Deployment counts and records it. */
+const TOOL_REFUSED = 'tool_failure';
+
+/**
+ * A command result. A refused call is a result flagged `isError`, or a result
+ * whose object answers `ok: false` without the flag, as a Deployment one
+ * release older answers its refusals. It says its `error` and names its `code`
+ * where the tool names one; this throws those, and the refusal whole, for the
+ * CLI failure envelope, whatever the tool.
+ */
 export function requireToolResult(response: ToolCallResult): unknown {
   const result = extractStructuredResult(response);
-  const refused = result !== null && typeof result === 'object' && 'ok' in result && result.ok === false;
-  if (response.isError || refused) {
-    const detail = result !== null && typeof result === 'object' ? result as Record<string, unknown> : {};
-    const error = detail.error !== null && typeof detail.error === 'object' ? detail.error as Record<string, unknown> : {};
-    const code = typeof detail.code === 'string' ? detail.code : typeof error.code === 'string' ? error.code : typeof detail.error === 'string' && typeof detail.message === 'string' ? detail.error : 'tool_call_failed';
-    const message = typeof detail.message === 'string' ? detail.message : typeof error.message === 'string' ? error.message : typeof detail.reason === 'string' ? detail.reason : typeof detail.error === 'string' ? detail.error : typeof result === 'string' ? result : JSON.stringify(result);
-    throw new ToolResultRefused({ code, message: message ?? 'Tool call failed', ...(typeof detail.retryable === 'boolean' ? { retryable: detail.retryable } : {}) });
-  }
-  return result;
+  const detail = result !== null && typeof result === 'object' ? result as Record<string, unknown> : {};
+  if (response.isError !== true && detail.ok !== false) return result;
+  throw new ToolResultRefused({
+    code: typeof detail.code === 'string' ? detail.code : TOOL_REFUSED,
+    message: typeof detail.error === 'string' ? detail.error : typeof result === 'string' ? result : JSON.stringify(result) ?? 'Tool call failed',
+    ...(typeof detail.retryable === 'boolean' ? { retryable: detail.retryable } : {}),
+    result,
+  });
 }
 
 /**
@@ -111,7 +121,7 @@ const HOST_REFUSAL_HINTS: Record<string, string> = {
  * Three shapes reach here:
  *
  *   - `ProtocolError` — a JSON-RPC error response from a dispatched tool call
- *     (unknown tool, invalid input, a tool's own failure), OR a member-side
+ *     (a tool this caller may not call), OR a member-side
  *     Team Host refusal (`host_unreachable` / `host_auth_rejected` /
  *     `host_protocol_mismatch`). `.data.code` carries the original code (see
  *     `tools/error.ts` and `daemon/host-proxy.ts` `mcpSoftFail`).

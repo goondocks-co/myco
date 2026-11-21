@@ -359,7 +359,7 @@ describe('a run reports whatever its task declares', () => {
     const { harness, dispatch, call } = await setup();
     await dispatch('run_1', SWEEP);
     const answered = await call(harness.token, 'myco_run', { op: 'report', audit: RUN_AUDIT, action: 'x', summary: 's', agentId: 'someone-else' });
-    expect(answered.error.data.code).toBe('invalid_input');
+    expect(answered.result.code).toBe('invalid_input');
   });
 
   it('keeps report on a dry run, which writes nothing else', async () => {
@@ -383,7 +383,7 @@ describe('the read window binds on the MCP path', () => {
     expect(Object.keys(answered.result.spores[0]).sort()).toEqual(['created_at', 'id', 'importance', 'observation_type', 'preview', 'revision']);
     expect({ hasMore: answered.result.has_more, cursor: answered.result.cursor }).toEqual({ hasMore: false, cursor: null });
     const searched = await call(harness.token, 'myco_run_spores', { op: 'list', search: 'x' }) as any;
-    expect(searched.error?.message).toMatch(/^Not read: myco_run_spores list; search is not a list filter.*Next call: myco_search \{"query":"x","type":"spore","mode":"fts","status":"active"\}\.$/);
+    expect(searched.result?.error).toMatch(/^Not read: myco_run_spores list; search is not a list filter.*Next call: myco_search \{"query":"x","type":"spore","mode":"fts","status":"active"\}\.$/);
     // The call it names is one this run may make.
     const followed = await call(harness.token, 'myco_search', { query: 'x', type: 'spore', mode: 'fts' }) as any;
     expect({ error: followed.error, nextCursor: followed.result?.nextCursor }).toEqual({ error: undefined, nextCursor: null });
@@ -540,8 +540,8 @@ describe('a titling run reads and writes its own session', () => {
       await dispatch('run_t', TITLING, { mode });
       sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset, fidelity)
         VALUES ('proj_1', 'tx_pending', 'sess_1', 'm1', ?, ?, 'tok_1', 200, 100, 'no_tool_results')`, [NOW, NOW]);
-      expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).error?.message).toContain('Session capture is incomplete');
-      expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Premature', summary: 'First turn only' })).error?.message).toContain('Session capture is incomplete');
+      expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result?.error).toContain('Session capture is incomplete');
+      expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Premature', summary: 'First turn only' })).result?.error).toContain('Session capture is incomplete');
       expect(sqlite.query(`SELECT title FROM sessions WHERE session_id = 'sess_1'`).get()).toEqual({ title: null });
       expect(sqlite.query(`SELECT count(*) AS n FROM agent_run_events WHERE event_type = 'run_write'`).get()).toEqual({ n: 0 });
       prompt('second');
@@ -616,7 +616,7 @@ describe('a titling run reads and writes its own session', () => {
     await dispatch('run_t', TITLING, { mode: 'claim' });
     sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, first_received_at, last_received_at, token_id, size, parsed_offset, fidelity)
       VALUES ('proj_1', 'tx_pending', 'sess_1', 'm1', ?, ?, 'tok_1', 200, 100, 'full')`, [NOW, NOW]);
-    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).error?.message).toContain('Session capture is incomplete');
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result?.error).toContain('Session capture is incomplete');
     expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: '', summary: 'x' })).result.ok).toBe(false);
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'off the surface' })).error?.message).toContain('Unknown tool');
     sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);

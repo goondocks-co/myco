@@ -58,7 +58,7 @@ for (const mode of ['not-live', 'recovered-before-write', 'changed-after-read'])
     const answer = await run.harness.request(run.claimed.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] });
     if (mode === 'recovered-before-write') {
       expect(await answer.json()).toMatchObject({ result: { structuredContent: { result: { written: 0, changed_since_served: [] } } } });
-    } else expect(await answer.json()).toMatchObject({ error: { code: -32000, data: { code: 'tool_call_failed' } } });
+    } else expect(await answer.json()).toMatchObject({ result: { isError: true, structuredContent: { result: { code: 'tool_call_failed' } } } });
     expect((await db.prepare("SELECT turn_key,state,changes FROM turn_cards ORDER BY turn_key").all()).results).toEqual(before);
     await run.harness.call(run.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'document not live', audit: RUN_AUDIT });
     expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 }, {
@@ -102,7 +102,7 @@ for (const atBatch of [false, true]) it(`refuses card writes retryably if the do
     else await convert();
     const response = await run.harness.request(run.claimed.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
       cards: turns.map(turn => ({ turns: [turn.id], signal: 'high', card: EMPTY_CARD })) });
-    expect(await response.json()).toMatchObject({ error: { code: -32000, data: { code: 'tool_call_failed' } } });
+    expect(await response.json()).toMatchObject({ result: { isError: true, structuredContent: { result: { code: 'tool_call_failed' } } } });
     expect(atWrite.landed()).toBe(atBatch);
     const held = await db.prepare("SELECT changes FROM turn_cards WHERE session_id='long' AND turn_key=?").bind(turns[0]!.id).first<{ changes: number }>();
     await commit(db, cardWriteStatement('project', 'long', { turnKey: turns[0]!.id, changes: held!.changes }, {

@@ -187,9 +187,16 @@ export function noteRunReads(ctx: ToolContext, sessionIds: readonly string[]): v
   }
 }
 
-/** Whether a tool's answer is the failure it returned rather than threw. */
-export const isToolFailure = (result: unknown): result is ToolFailure =>
-  typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === false && typeof (result as { error?: unknown }).error === 'string';
+/** The code a refusal that names none of its own is answered, counted and recorded under. */
+export const TOOL_REFUSED = 'tool_failure';
+
+/** A tool's refusal — the `{ ok: false, error }` it answered — as its code and message; null for any other answer. */
+export function refusalOf(result: unknown): RunCallFailure | null {
+  if (typeof result !== 'object' || result === null) return null;
+  const { ok, error, code } = result as { ok?: unknown; error?: unknown; code?: unknown };
+  if (ok !== false || typeof error !== 'string') return null;
+  return { code: typeof code === 'string' && code.length > 0 ? code : TOOL_REFUSED, message: error };
+}
 
 /** The identifiers telemetry names the principal by. */
 export function principalFields(ctx: Pick<ToolContext, 'principal'>): Record<string, string> {

@@ -1,4 +1,4 @@
-import { mcp, owner } from '../clients/requests.ts';
+import { mcp, mcpRefusal, owner } from '../clients/requests.ts';
 import { seedCuration } from './curation.ts';
 import { observeKnowledge, seedKnowledge, type KnowledgeSeed } from './knowledge.ts';
 import { seedLearning } from './learning.ts';
@@ -56,7 +56,7 @@ export async function observe(target: RouteTarget, seeded: Seeded): Promise<Reco
     machines: await observeMachines(target, seeded.machines),
     runs: await observeRuns(target, seeded.runs),
     release: await observeRelease(target, seeded.release),
-    unknownSession: await mcp(target, 'myco_spores', { op: 'save', type: 'decision', content: 'nowhere', agent_line: 'When citing evidence, name the session that holds it.', session_id: 'upgrade-no-such-session', project: target.projectId }),
+    unknownSession: await mcpRefusal(target, 'myco_spores', { op: 'save', type: 'decision', content: 'nowhere', agent_line: 'When citing evidence, name the session that holds it.', session_id: 'upgrade-no-such-session', project: target.projectId }),
   };
 }
 

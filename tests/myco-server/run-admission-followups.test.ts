@@ -47,8 +47,8 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: MCP
         const landing = changingAtStatement(f.db, name, lose);
         const response = await pipeline.handleRequest(request(), envFor(landing.store));
         expect(landing.landed()).toBe(true);
-        const body = await response.json() as { error?: { message: string; data: { code: string } } };
-        expect(body.error).toMatchObject({ message: expect.stringContaining('credential holds no live run'), data: { code: 'tool_call_failed' } });
+        const body = await response.json() as { result?: { isError?: boolean; structuredContent: { result: unknown } } };
+        expect(body.result).toMatchObject({ isError: true, structuredContent: { result: { error: expect.stringContaining('credential holds no live run'), code: 'tool_call_failed' } } });
         expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_state').get()).toEqual({ n: 0 });
         expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_reports').get()).toEqual({ n: 0 });
       } finally { f.sqlite.close(); }
