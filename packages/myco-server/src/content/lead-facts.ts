@@ -33,13 +33,16 @@ function openingLine(text: string): string | null {
   return null;
 }
 
-/** A settled turn's lead facts as stored, or null when it has none: what its prompt's file read opens with, and its notice. */
-export function leadFacts(prompt: DocRecord, records: readonly DocRecord[]): string | null {
+/**
+ * What a settle writes of a turn's lead facts: what its prompt's file read opens with, and its notice. With every page of
+ * the turn held they are set, and finding none clears them; with part of a wide turn held only the facts found are merged
+ * over those stored, since a read on a page not held is no evidence of none.
+ */
+export function leadFactsChange(prompt: DocRecord, records: readonly DocRecord[], complete: boolean): { lead_facts: string | null } | { lead_merge: string } | Record<string, never> {
   const read = typeof prompt.text === 'string' ? openingRead(records, prompt.text) : null;
   const line = read === null ? null : openingLine(read);
   const notice = isPromptNotice(prompt.notice) ? prompt.notice : null;
-  if (line === null && notice === null) return null;
-  const facts: LeadFacts = { ...(line === null ? {} : { read: line }), ...(notice === null ? {} : { notice }) };
-  return JSON.stringify(facts);
+  const facts: LeadFacts | null = line === null && notice === null ? null : { ...(line === null ? {} : { read: line }), ...(notice === null ? {} : { notice }) };
+  if (complete) return { lead_facts: facts === null ? null : JSON.stringify(facts) };
+  return facts === null ? {} : { lead_merge: JSON.stringify(facts) };
 }
-

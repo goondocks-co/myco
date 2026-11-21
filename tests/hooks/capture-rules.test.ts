@@ -6,6 +6,8 @@ import {
   type UserPromptRuleContext,
 } from '@myco/hooks/capture-rules.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
+import { promptNotice } from '@goondocks/myco-shared/capture-rules';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 
 /**
  * Minimal manifest factory — only the fields the evaluator actually reads.
@@ -820,4 +822,11 @@ describe('resolveSubagentThread', () => {
 it('person-initiated shell wrappers have explicit speaker rules', () => {
   expect(evaluateUserPromptRules('claude-code', { prompt: '<bash-input>pwd</bash-input>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human', opensTurn: false });
   expect(evaluateUserPromptRules('codex', { prompt: '<user_shell_command>pwd</user_shell_command>', transcriptPath: '/repo/session.jsonl' })).toMatchObject({ origin: 'human', opensTurn: false });
+});
+
+it('reads a notice only from the line inside its closed declared envelope; anything else records none', () => {
+  const line = '<summary>Background command "Run tests" completed (exit code 2)</summary>';
+  const notice = (text: string) => promptNotice(CAPTURE_RULE_BUNDLES, 'claude-code', text);
+  expect(notice(`<task-notification>${line}</task-notification>`)).toEqual({ kind: 'background_command', description: 'Run tests', exitCode: 2 });
+  for (const text of [`<task-notification></task-notification>${line}`, `<task-notification>${line}`, `<task-notification>${'<summary>'.repeat(30_000)}</task-notification>`]) expect(notice(text)).toBeNull();
 });

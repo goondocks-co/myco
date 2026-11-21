@@ -49,21 +49,48 @@ export interface NotificationNoticeDeclaration { envelope: string; line: string;
 export interface PromptNotice { kind: 'background_command'; description: string; exitCode: number | null }
 /** Characters a notice's description keeps. */
 export const NOTICE_DESCRIPTION_CHARS = 160;
+/** UTF-8 bytes a notice's JSON may take, escaping and fixed fields included: the producer clips to it and admission checks it. */
+export const NOTICE_JSON_BYTES = 512;
+/** Characters of a declared line element a notice reads; a longer line records no notice. */
+const NOTICE_LINE_CHARS = 2_048;
+
+/** The text of `<line>…</line>` inside the closed `<envelope …>…</envelope>` the prompt opens with, by one forward scan; null when malformed. */
+function noticeLine(text: string, envelope: string, line: string): string | null {
+  const body = text.trimStart();
+  if (!envelopeTagAtStart(body, [envelope])) return null;
+  const opened = body.indexOf('>') + 1;
+  if (opened === 0 || body[opened - 2] === '/') return null;
+  const closed = body.indexOf(`</${envelope}>`, opened);
+  if (closed < 0) return null;
+  const start = body.indexOf(`<${line}>`, opened);
+  if (start < 0 || start >= closed) return null;
+  const from = start + line.length + 2;
+  const end = body.indexOf(`</${line}>`, from);
+  if (end < 0 || end > closed || end - from > NOTICE_LINE_CHARS) return null;
+  return body.slice(from, end).replace(/\s+/g, ' ').trim();
+}
+
+const noticeBytes = (notice: PromptNotice): number => new TextEncoder().encode(JSON.stringify(notice)).byteLength;
 
 /**
- * The notice a prompt carries: the first declaration of `agent` whose envelope the prompt opens with and whose line
- * element's text its pattern matches. Null for any other prompt.
+ * The notice a prompt carries: the first declaration of `agent` whose closed envelope the prompt opens with and whose
+ * line element inside it its pattern matches. The description is clipped at a code point boundary until the notice's
+ * JSON fits `NOTICE_JSON_BYTES`; null for any other prompt, or when no description fits.
  */
 export function promptNotice(bundles: readonly CaptureRuleBundle[], agent: string | null, text: string): PromptNotice | null {
   const declared = bundles.find((bundle) => bundle.name === agent)?.notificationNotices ?? [];
-  for (const notice of declared) {
-    if (!envelopeTagAtStart(text, [notice.envelope])) continue;
-    const line = new RegExp(`<${notice.line}>([\\s\\S]*?)</${notice.line}>`).exec(text)?.[1]?.replace(/\s+/g, ' ').trim();
-    const groups = line === undefined ? undefined : new RegExp(notice.pattern).exec(line)?.groups;
-    const description = groups?.description?.trim();
-    if (description === undefined || description === '') continue;
+  for (const declaration of declared) {
+    const line = noticeLine(text, declaration.envelope, declaration.line);
+    const groups = line === null ? undefined : new RegExp(declaration.pattern).exec(line)?.groups;
+    const points = Array.from(groups?.description?.trim() ?? '');
     const exitCode = groups?.exitCode === undefined ? null : Number(groups.exitCode);
-    return { kind: notice.kind, description: description.slice(0, NOTICE_DESCRIPTION_CHARS), exitCode: Number.isSafeInteger(exitCode) ? exitCode : null };
+    const notice: PromptNotice = { kind: declaration.kind, description: '', exitCode: Number.isSafeInteger(exitCode) ? exitCode : null };
+    let kept = 0;
+    for (let length = 0; kept < points.length && length + points[kept]!.length <= NOTICE_DESCRIPTION_CHARS; kept++) length += points[kept]!.length;
+    for (; kept > 0; kept--) {
+      notice.description = points.slice(0, kept).join('').trimEnd();
+      if (notice.description !== '' && noticeBytes(notice) <= NOTICE_JSON_BYTES) return notice;
+    }
   }
   return null;
 }

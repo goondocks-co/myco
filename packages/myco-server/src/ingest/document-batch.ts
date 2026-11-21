@@ -19,7 +19,7 @@ import { releaseBlobs } from '../core/object-release.js';
 import { trimTurn } from '../core/turn-card-rules.js';
 import { TURN_QUIET_MS } from '../db/schema-v110.js';
 import { turnInput } from '../content/turn-material.js';
-import { leadFacts } from '../content/lead-facts.js';
+import { leadFactsChange } from '../content/lead-facts.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, type DocRecord, type Page } from '../content/document.js';
@@ -539,7 +539,7 @@ export class DocumentBatch {
       const prompt = records.find((record) => record.k === 'prompt' && record.id === owner)!;
       settled.push({
         ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
-        preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0, lead_facts: leadFacts(prompt, records),
+        preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0, ...leadFactsChange(prompt, records, complete),
         ...(complete ? { tools: input.tools.filter(tool => tool.nested !== true).length, replies: input.replies.length, children: records.filter(record => record.k === 'prompt' && record.id !== owner).length, plans: input.plans.length } : { added }),
         input_hash: hash, source_bytes: complete || fingerprint?.bytes != null ? bytes : null, input_chars: trimmed.text.length,
       });
