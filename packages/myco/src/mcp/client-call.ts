@@ -66,14 +66,16 @@ class ToolResultRefused extends Error {
 const TOOL_REFUSED = 'tool_failure';
 
 /**
- * A command result. A refused call is a result flagged `isError` that says its
- * `error` and names its `code` where the tool names one; it throws those, and
- * the refusal whole, for the CLI failure envelope, whatever the tool.
+ * A command result. A refused call is a result flagged `isError`, or a result
+ * whose object answers `ok: false` without the flag, as a Deployment one
+ * release older answers its refusals. It says its `error` and names its `code`
+ * where the tool names one; this throws those, and the refusal whole, for the
+ * CLI failure envelope, whatever the tool.
  */
 export function requireToolResult(response: ToolCallResult): unknown {
   const result = extractStructuredResult(response);
-  if (response.isError !== true) return result;
   const detail = result !== null && typeof result === 'object' ? result as Record<string, unknown> : {};
+  if (response.isError !== true && detail.ok !== false) return result;
   throw new ToolResultRefused({
     code: typeof detail.code === 'string' ? detail.code : TOOL_REFUSED,
     message: typeof detail.error === 'string' ? detail.error : typeof result === 'string' ? result : JSON.stringify(result) ?? 'Tool call failed',
