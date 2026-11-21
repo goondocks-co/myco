@@ -11,6 +11,11 @@ export class ContextTimings {
     this.durations[stage] = (this.durations[stage] ?? 0) + milliseconds;
   }
 
+  /** Each stage's total milliseconds so far, for the stages that ran. */
+  stages(): Partial<Record<ContextTimingStage, number>> {
+    return { ...this.durations };
+  }
+
   header(): string {
     return STAGES.flatMap((stage) => {
       const milliseconds = this.durations[stage];

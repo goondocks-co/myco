@@ -11,7 +11,7 @@ Project instructions arrive at session start. Relevant spores and plans return w
 | Tool | Operations | What it is for |
 |---|---|---|
 | `myco_search` | Search | Find sessions, spores, plans, skills, prompts and responses. Results carry stable IDs and retrieval hints. |
-| `myco_cortex` | `instructions`, `canopy_map`, `projects_activity` | Read standing guidance and the project ID, read the repository's code map, or see project activity. |
+| `myco_cortex` | `instructions`, `canopy_map`, `projects_activity`, `prompt_preview` | Read standing guidance and the project ID, read the repository's code map, see project activity, or preview what memory a prompt would attach and why. |
 | `myco_plans` | `list`, `get`, `save` | Read and maintain plans. |
 | `myco_sessions` | `list`, `get` | Revisit captured sessions. |
 | `myco_skills` | `list`, `get` | Find the skills shipped with Myco and where their bodies are installed. |

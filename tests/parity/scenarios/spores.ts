@@ -13,7 +13,8 @@ import { expectPersisted, type ParityScenario, type ParityTarget } from '../harn
  * what a prompt was served reaches the session explorer under the prompt that
  * carried it, a session's spores page by cursor past writes between pages, and
  * a person retires and restores a spore through the owner routes at the revision
- * the page read.
+ * the page read. A listed spore says whether it holds a vector and how it came
+ * to be, and a prompt preview answers what the hook then serves.
  */
 export const spores: ParityScenario = {
   name: 'spores: session citation on a save, lineage both ways, the injection under its turn',
@@ -79,8 +80,15 @@ export const spores: ParityScenario = {
 
       // The record of what a prompt's text selected reaches the turn body under the prompt that carried it.
       await target.primeEmbedding!(target.projectId);
+      // A listed spore says whether its current revision holds a vector: the current one does, the replaced one does not.
+      const vectors = await owner<{ spores: { id: string; embedded: number }[] }>(`/api/projects/${target.projectId}/spores?session=${session}`);
+      expect([newId, oldId].map(id => vectors.body.spores.find(s => s.id === id)?.embedded)).toEqual([1, 0]);
+      // A preview makes the hook's selection for the same text and records nothing: the hook then serves the same block.
+      const preview = await tool(target, 'myco_cortex', { op: 'prompt_preview', prompt: `recency with a cap ${stamp}` }) as { recorded: boolean; skipped: unknown; attached: { id: string }[]; context: string };
+      expect([preview.recorded, preview.skipped, preview.attached.map(item => item.id)]).toEqual([false, null, [newId]]);
       const answer = await promptContext(target, session, p1, `recency with a cap ${stamp}`);
       expect(answer.receiptId).toEqual(expect.any(String));
+      expect(answer.context).toBe(preview.context);
       await deliver(target, session, { receiptId: answer.receiptId, answerId: answer.answerId }, { renderedIn: p2 });
 
       interface Turn { injection: { sporeIds: string[]; createdAt: number; spores: { id: string; observationType: string; preview: string }[] } | null }
@@ -143,6 +151,16 @@ export const spores: ParityScenario = {
         .toEqual(['spore_changed', 'spore_replaced']);
       const restored = await change(newId, 'restore', { revision: retired.body.spore.revision });
       expect([restored.status, restored.body.spore.status, restored.body.resolution?.action]).toEqual([200, 'active', 'restore']);
+
+      // A spore a consolidation wrote lists as curated with its source count, and each source lists what replaced it.
+      const merging = [String((await mcp({ op: 'save', type: 'gotcha', content: `merge a ${stamp}`, agent_line: 'When retries stall, drain the queue.', project: target.projectId })).id),
+        String((await mcp({ op: 'save', type: 'gotcha', content: `merge b ${stamp}`, agent_line: 'When retries stall, check the lease.', project: target.projectId })).id)];
+      const wisdom = String((await mcp({ op: 'consolidate', source_spore_ids: merging, consolidated_content: `merged ${stamp}`, observation_type: 'wisdom', agent_line: 'When retries stall, check the lease, then drain the queue.', project: target.projectId })).new_spore_id);
+      type Listed = { spores: { id: string; origin: string; sources: number; supersededBy: string[] }[] };
+      const curated = (await owner<Listed>(`/api/projects/${target.projectId}/spores?type=wisdom&limit=1`)).body.spores[0];
+      expect([curated?.id, curated?.origin, curated?.sources]).toEqual([wisdom, 'curated', 2]);
+      const replaced = (await owner<Listed>(`/api/projects/${target.projectId}/spores?status=consolidated&limit=2`)).body.spores;
+      expect(replaced.map(s => [s.id, s.origin, s.supersededBy]).sort()).toEqual(merging.map(id => [id, 'saved', [wisdom]]).sort());
     }));
   },
 };

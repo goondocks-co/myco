@@ -58,6 +58,26 @@ export interface SelectOptions {
   /** Semantic background from the same record kind and embedding model. */
   referenceCandidates?: SporeCandidate[];
   observe?: (counts: { calibrated: number; scored: number; probable: number; separated: number }) => void;
+  /** Receives every scored candidate and the two cuts it was held to; not called when nothing could be scored. */
+  explain?: (scoring: SporeScoring) => void;
+}
+
+/** One candidate as the spore selection scored it. */
+export interface ScoredSpore {
+  id: string;
+  /** Mutual Proximity, in [0, 1]. */
+  mp: number;
+  similarity: number;
+  /** Closer to the query than this spore usually is to the rest of the corpus. */
+  corpusProbable: boolean;
+  separation: number;
+}
+
+/** Every scored candidate, strongest first, with the probability and separation a candidate had to reach. */
+export interface SporeScoring {
+  scored: ScoredSpore[];
+  probability: number;
+  separation: number;
 }
 
 export interface SelectedSpore {
@@ -215,6 +235,8 @@ export function selectRelevantSpores(
   const separationCutoff = Math.max(...probable.map((s) => s.separation)) * relativeBand;
   const separated = probable.filter((s) => s.separation >= separationCutoff);
   observe(scored.length, probable.length, separated.length);
+  opts.explain?.({ scored: scored.map(({ id, mp, similarity, corpusProbable, separation }) => ({ id, mp, similarity, corpusProbable, separation })),
+    probability: cutoff, separation: separationCutoff });
   return separated.slice(0, opts.maxResults).map(({ id, mp }) => ({ id, mp }));
 }
 

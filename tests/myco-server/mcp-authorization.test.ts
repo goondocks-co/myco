@@ -67,7 +67,7 @@ describe('MCP authorization declarations', () => {
     const { ctx } = await setup();
     const definitions = await authorizedDefinitionsFor(ctx);
     expect(definitions.find((definition) => definition.name === 'myco_plans')?.inputSchema.properties.op?.enum).toEqual(['list', 'get', 'save']);
-    expect(definitions.find((definition) => definition.name === 'myco_cortex')?.inputSchema.properties.op?.enum).toEqual(['instructions', 'canopy_map', 'projects_activity']);
+    expect(definitions.find((definition) => definition.name === 'myco_cortex')?.inputSchema.properties.op?.enum).toEqual(['instructions', 'canopy_map', 'projects_activity', 'prompt_preview']);
     await expect(callTool(ctx, 'myco_plans', { op: 'delete', id: 'nope' })).rejects.toMatchObject({ code: 'not_served' });
   });
 

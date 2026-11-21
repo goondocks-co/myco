@@ -110,8 +110,18 @@ export interface SporeRow {
   createdAt: number;
   observedAt?: number | null;
   updatedAt: number | null;
-  embedded: number;
+  /** 1 when its current revision holds a ready vector under an active embedding model, else 0. Served on reads. */
+  embedded?: number;
+  /** How many spores the curation or consolidation that wrote it wrote it from; 0 for a saved spore. Served on reads. */
+  sources?: number;
+  /** `curated` when a curation or consolidation wrote it, `saved` otherwise. Served on reads. */
+  origin?: SporeOrigin;
+  /** The spores recorded as replacing it, newest first; empty for a current spore. Served on list pages. */
+  supersededBy?: string[];
 }
+
+export const SPORE_ORIGINS = ['saved', 'curated'] as const;
+export type SporeOrigin = (typeof SPORE_ORIGINS)[number];
 
 /**
  * A spore list's structured filters, its page size and the cursor the previous page answered. A time bound is widened to
@@ -174,6 +184,10 @@ const totalOf = (answer: { state: 'ready'; value: number } | { state: 'building'
   answer === null ? {} : answer.state === 'ready' ? { total: answer.value } : { counting: 'building' };
 const windowField = (o: ListSporesOptions) => { const { window } = windowOf(o); return window === undefined ? {} : { window }; };
 
+/** A listed row with its successors read off the JSON array the page carries them as. */
+const listedRow = (row: Record<string, unknown>): SporeRow =>
+  ({ ...row, supersededBy: JSON.parse(String(row.supersededBy ?? '[]')) as string[] }) as unknown as SporeRow;
+
 /** The window a list's time bounds widen to, in ms (from inclusive, to exclusive), as its page and total read it. */
 export const sporeListWindow = (o: Pick<ListSporesOptions, 'since' | 'createdFrom' | 'createdTo'>): { from?: number; to?: number } => windowOf(o).window ?? {};
 
@@ -191,7 +205,7 @@ export async function listSporePage(db: RelationalStore, scope: ReadScope, o: Li
     readSporePage(db, { scope, filters: filtersOf(o), after, limit }),
     count === null ? null : sporeTotal(db, scope, count),
   ]);
-  const shown = rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => row as unknown as SporeRow);
+  const shown = rows.slice(0, limit).map(({ projectId: _projectId, ...row }) => listedRow(row));
   const hasMore = rows.length > limit;
   const last = shown.at(-1);
   return { rows: shown, cursor: hasMore && last !== undefined ? encodeCursor(last.createdAt, last.id) : null, hasMore, ...totalOf(total), ...windowField(o) };
@@ -214,7 +228,7 @@ export async function listSporePageAcross(db: RelationalStore, set: ProjectSet, 
     count === null || after !== null ? null : sporeTotalAndFacets(db, set, count),
     count === null || after === null ? null : sporeTotal(db, set, count),
   ]);
-  const shown = rows.slice(0, limit) as unknown as SporeAcrossRow[];
+  const shown = rows.slice(0, limit).map(row => listedRow(row) as SporeAcrossRow);
   const hasMore = rows.length > limit;
   const last = shown.at(-1);
   const totals = first === null ? totalOf(later) : first.state === 'building' ? { counting: 'building' as const }

@@ -41,10 +41,12 @@ const predecessors = read<[project: string, target: string, limit: number], { id
   sql: `SELECT source_id AS id FROM spore_resolution_edges INDEXED BY idx_spore_edges_predecessors WHERE project_id=?1 AND target_id=?2 AND action IN ('supersede','consolidate')
     GROUP BY source_id ORDER BY MAX(last_event_at) DESC,MAX(last_event_id) DESC LIMIT ?3`,
 });
+/** The spores recorded as replacing `source` of `project`, read from its own resolution events, newest first, at most `limit`. */
+export const eventSuccessorsSql = (project: string, source: string, limit: string): string =>
+  `SELECT new_spore_id AS id FROM resolution_events INDEXED BY idx_resolution_events_spore WHERE project_id=${project} AND spore_id=${source} AND action IN ('supersede','consolidate') AND new_spore_id IS NOT NULL AND ${currentCurationEdgeSql('resolution_events.project_id','resolution_events.spore_id','resolution_events.id')}
+    GROUP BY new_spore_id ORDER BY MAX(created_at) DESC,MAX(id) DESC LIMIT ${limit}`;
 const eventSuccessors = read<[project: string, source: string, limit: number], { id: string }>({
-  name: 'sporeEdges.eventSuccessors',
-  sql: `SELECT new_spore_id AS id FROM resolution_events WHERE project_id=?1 AND spore_id=?2 AND action IN ('supersede','consolidate') AND new_spore_id IS NOT NULL AND ${currentCurationEdgeSql('resolution_events.project_id','resolution_events.spore_id','resolution_events.id')}
-    GROUP BY new_spore_id ORDER BY MAX(created_at) DESC,MAX(id) DESC LIMIT ?3`,
+  name: 'sporeEdges.eventSuccessors', sql: eventSuccessorsSql('?1', '?2', '?3'),
 });
 const eventPredecessors = read<[project: string, target: string, limit: number], { id: string }>({
   name: 'sporeEdges.eventPredecessors',

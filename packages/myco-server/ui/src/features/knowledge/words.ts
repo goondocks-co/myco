@@ -99,6 +99,13 @@ export function typeFacetRows(facets: Readonly<Record<string, number>> | undefin
   return [...known, ...extra].map((type) => ({ type, n: facets === undefined ? undefined : facets[type] ?? 0 }));
 }
 
+/** How a spore came to be, when it was written from others: "Rewritten from 1 spore", "Merged from 3 spores"; null for one saved as it is. */
+export function sporeOriginWords(spore: { sources?: number }): string | null {
+  const sources = spore.sources ?? 0;
+  if (sources === 0) return null;
+  return `${sources === 1 ? 'Rewritten' : 'Merged'} from ${count(sources, 'spore')}`;
+}
+
 /** A retained observation date, or the saved date when no observation is stored. */
 export function sporeDate(spore: { createdAt: number; observedAt?: number | null }): { label: 'Saved' | 'Observed'; at: number } {
   return spore.observedAt == null ? { label: 'Saved', at: spore.createdAt } : { label: 'Observed', at: spore.observedAt };

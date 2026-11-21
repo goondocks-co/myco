@@ -11,6 +11,8 @@ import { runCloseRefusal } from '@myco-server-worker/core/run-postconditions.js'
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getSpore } from '@myco-server-worker/db/spores/records.js';
+import { listSporePage } from '@myco-server-worker/core/spores.js';
+import { SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
 import { listSupersedingSporeIds, listSupersededSporeIds } from '@myco-server-worker/db/spores/edges.js';
 import { readCurationAnswer, readCurationCoverage } from '@myco-server-worker/db/spores/curation-answer.js';
 import { CURATION_ANSWER_STEPS } from '@myco-server-worker/db/schema-steps-curation-answer.js';
@@ -98,6 +100,9 @@ test('one answer merges, splits, keeps and retires atomically with observed date
     expect(checked.notes.every(item=>item.updatedAt===f.now)).toBe(true);
     expect(checked.notes.map(item=>item.createdAt)).toEqual([20,15,15]);
     expect((await getSpore(f.db,scope,checked.notes[0]!.id))!.sourceCreatedAt).toBeNull();
+    const listed=new Map((await listSporePage(f.db,scope,{limit:50}))!.rows.map(row=>[row.id,row]));
+    expect(checked.notes.map(item=>[listed.get(item.id)?.origin,listed.get(item.id)?.sources])).toEqual([['curated',2],['curated',1],['curated',1]]);
+    expect([listed.get('gotcha-d')?.origin,listed.get('wisdom-c')?.supersededBy?.sort()]).toEqual(['saved',checked.notes.slice(1).map(item=>item.id).sort()]);
     expect(await getSpore(f.db,scope,'gotcha-d')).toEqual(before);
     expect((await getSpore(f.db,scope,'gotcha-e'))!.status).toBe('obsolete');
     expect((await getSpore(f.db,scope,'wisdom-c'))!.status).toBe('consolidated');
@@ -111,6 +116,22 @@ test('one answer merges, splits, keeps and retires atomically with observed date
     expect(await runCloseRefusal(f.db,scope,(await getRun(f.db,scope,claim.run.id))!)).toBeNull();
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'});
     await f.discover(); expect(await f.poll()).toMatchObject({claimed:false});
+  } finally { f.sqlite.close(); }
+});
+
+test('a rewritten note keeps its source date, so a common word\'s newest window leaves it out until it carries its write time', async () => {
+  const f = await fixture();
+  try {
+    await f.enable(); await f.add('decision-a', [1,0], 1); await f.add('gotcha-b'); await f.discover();
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('group not claimed');
+    const id = (await f.call(claim.run.runToken, 'myco_run_curation', { ...keepAnswer(['gotcha-b']), notes: [note(['decision-a'])] }) as { notes: { id: string }[] }).notes[0]!.id;
+    // More than one window of newer notes holding the same words, all written before the rewrite.
+    const insert = f.sqlite.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at) VALUES('proj_1',?,'myco-agent',?,'gotcha',?,?)");
+    f.sqlite.transaction(() => { for (let i = 0; i <= SEARCH_WINDOW; i++) insert.run(`gotcha-${i}`, `Seen ${i}.`, 'When delivery stalls, retain queued capture.', 2 + i); })();
+    const found = async () => (await searchDeployment(f.env, scope, { query: 'delivery stalls', type: 'spore', mode: 'fts' }, 'member:fixture')).hits.map(hit => hit.id);
+    expect([(await getSpore(f.db, scope, id))!.createdAt, (await found()).includes(id)]).toEqual([1, false]);
+    f.sqlite.run("UPDATE spores SET created_at=? WHERE project_id='proj_1' AND id=?", [f.now, id]);
+    expect((await found())[0]).toBe(id);
   } finally { f.sqlite.close(); }
 });
 
