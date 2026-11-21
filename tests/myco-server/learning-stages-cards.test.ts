@@ -69,7 +69,7 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
     const manifest = await assignedCards(db, 'project', 'session', assignment);
     expect(manifest.map(c => c.card)).toEqual([text(uuid(1)), text(uuid(2)), text(uuid(3)), text(uuid(4))]);
     expect(manifest[3]!.promptIds).toEqual([uuid(4), uuid(5)]);
-    expect((await documentTurnDetail({ db, blobs }, { projectId: 'project' }, 'session', uuid(1)))?.cardCoverage).toMatchObject({ current: true, sourceRevision: expect.any(String) });
+    expect((await documentTurnDetail({ db, blobs }, { projectId: 'project' }, 'session', uuid(1)))?.cardCoverage).toMatchObject({ current: true, sourceHash: expect.any(String) });
     const raw = await documentTurnInput({ db, blobs }, 'project', 'session', uuid(1));
     expect(raw!.tools[0]!.output).toContain('ok line');
 
@@ -89,7 +89,7 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
     await capture(db, 'session', [{ id: uuid(1), text: 'Run the server tests', at: NOW - DAY + 10, tools: [{ name: 'Bash', input: { command: 'myco server repair --keep-capture' }, ok: false, error: 'EXACT_LATE_GOTCHA: capture lease refused' }] }]);
     await publish(db, due + HOUR, blobs);
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
-    expect((await documentTurnDetail({ db, blobs }, { projectId: 'project' }, 'session', uuid(1)))?.cardCoverage).toMatchObject({ current: false, sourceRevision: expect.any(String) });
+    expect((await documentTurnDetail({ db, blobs }, { projectId: 'project' }, 'session', uuid(1)))?.cardCoverage).toMatchObject({ current: false, sourceHash: expect.any(String) });
     const again = (await buildCardInput({ db }, 'project', 'session', due + HOUR))!;
     expect((again.context as { assignment: { turns: { turnKey: string }[] } }).assignment.turns.map(t => t.turnKey)).toEqual([uuid(1)]);
     expect(trimTurn((await documentTurnInput({ db, blobs }, 'project', 'session', uuid(1)))!).text).toContain('EXACT_LATE_GOTCHA: capture lease refused');

@@ -90,7 +90,7 @@ export async function handleRunSessions(input: ToolInput, ctx: ToolContext): Pro
       through_turn_revision: material.snapshot.throughTurnRevision,
       through_turn_key: material.snapshot.throughTurnKey,
       through_turn_count: material.snapshot.turnCount,
-      batches: [{ prompt_number: 1, user_prompt: material.text, response_excerpt: null }],
+      material: material.text,
     };
     return answer;
   }

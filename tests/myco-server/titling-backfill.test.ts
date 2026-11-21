@@ -27,7 +27,7 @@ import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie, settingsRevisionHeaders } from './helpers/owner.js';
 import { overwriteTitle, writeTitle } from '@myco-server-worker/db/session-titles.js';
 import { takeTitleCandidates as listTitleCandidates, untitledReason, type TitleWindow } from '@myco-server-worker/db/sessions/title-work.js';
-import { count, withHarness } from './helpers/fixtures.js';
+import { count, withHarness, publishFixture } from './helpers/fixtures.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 
 const NOW = 1_800_000_000_000;
@@ -181,6 +181,8 @@ describe('the imported-session backfill', () => {
       return id;
     };
     claim('owner');
+    expect(attempts()).toBe(0);
+    claim('refresh');
     expect(attempts()).toBe(0);
     const lapsed = claim('claim', { lapses: 3 });
     expect(attempts()).toBe(1);
@@ -748,15 +750,22 @@ describe('sessions that never end', () => {
       expect(crowded.runs().every((run) => run.sessionId.startsWith('fresh'))).toBe(true);
     });
 
-    it('holds a third of the ceiling for fresh work, so a session ending after the backlog drained the rest is still titled the same day', async () => {
+    it('keeps the fresh-title reserve after runner refreshes fill the backlog share', async () => {
       const r = rig();
       settle(r, 6);
-      for (let i = 0; i < 12; i += 1) backlog(r, `old${i}`, i * 1000);
+      for (let i = 0; i < 12; i += 1) {
+        const id = `old${i}`, at = NOW - 60_000 - i;
+        r.session(id, { imported: false, endedAt: at, title: 'Standing', transcript: false });
+        r.sqlite.run('UPDATE sessions SET titled_at=? WHERE session_id=?', [at - HOUR, id]);
+        r.sqlite.run(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
+          VALUES('proj_1',?,?,'tok_1','prompt','cli',json_object('promptId',?,'text','Continued work','origin','agent_dispatch'),'h',?,?)`, [id,id,id,at,at]);
+      }
+      await publishFixture({ sqlite: r.sqlite, serverEnv: r.env }, NOW);
       expect(freshReserve(6)).toBe(2);
       // Backlog alone may use four of the six runs.
       expect(await backfillTitles(r.env, NOW, 'idle')).toBe(4);
       expect(await backfillTitles(r.env, NOW + 1000, 'idle')).toBe(0);
-      expect(r.runs()).toHaveLength(4);
+      expect(r.runs().map(run => run.mode)).toEqual(['refresh', 'refresh', 'refresh', 'refresh']);
       // New work, an ended session and a quiet open one, takes the two held runs.
       r.session('ended-later', { imported: false, endedAt: NOW + 2000 });
       open(r, 'went-quiet', { quietFor: -3000 + 3 * HOUR });

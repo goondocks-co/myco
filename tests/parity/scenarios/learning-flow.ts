@@ -94,7 +94,7 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   } }] })).toMatchObject({ written: 1 });
   await settle(cards.run, 'carded');
   const cardRead = await post<any>('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_sessions', arguments: { project: target.projectId, op: 'get', id: session, prompt_id: prompt } } });
-  expect(cardRead.result.structuredContent.result.cardCoverage).toMatchObject({ current: true, sourceRevision: expect.any(String), writtenAt: expect.any(Number) });
+  expect(cardRead.result.structuredContent.result.cardCoverage).toMatchObject({ current: true, sourceHash: expect.any(String), writtenAt: expect.any(Number) });
   if (options.followups) {
     for (let i = 1; i < 7; i += 1) {
       const followup = crypto.randomUUID();

@@ -16,6 +16,7 @@ import {
   takeTitleRequests,
   titleWorkOwed,
   TITLING_RUN_TIMEOUT_SECONDS,
+  TITLING_REFRESH_RETRY_MS,
   type TitleCandidate,
   type TitleWindow,
 } from '../db/sessions/title-work.js';
@@ -126,7 +127,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     const claim = mode === 'owner'
       ? await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS)
       : mode === 'refresh'
-        ? await claimRefreshTitling(env.db, { projectId, sessionId, nowMs: now, retryBefore: now - OWNER_TITLING_WINDOW_MS, idleBefore: opts.idleBefore ?? await sessionQuietBefore(env, now) })
+        ? await claimRefreshTitling(env.db, { projectId, sessionId, nowMs: now, retryBefore: now - TITLING_REFRESH_RETRY_MS, idleBefore: opts.idleBefore ?? await sessionQuietBefore(env, now) })
         : await claimTitling(env.db, projectId, sessionId, now, opts.retry === true ? now - OWNER_TITLING_WINDOW_MS : null, opts.idleBefore ?? null);
     if (!claim.claimed) {
       await assertSessionMaterialReady(env.db, projectId, sessionId);

@@ -1,3 +1,4 @@
+import { instructionOriginSql } from '../document-tables.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { first, read, rows } from '../index.js';
 import { titleTurnRevisionSql } from '../sessions/title-coverage.js';
@@ -14,12 +15,12 @@ const snapshot = read<[project: string, session: string], TitleSnapshot>({ name:
     (SELECT MAX(ord) FROM session_prompts p WHERE p.project_id=d.project_id AND p.session_id=d.session_id AND p.generation=d.generation AND p.turn_key=p.prompt_id) AS last
   FROM session_documents d JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id
   WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live'` });
-const selection = (direction: 'ASC' | 'DESC') => read<[project: string, session: string, generation: number, from: number, to: number, limit: number], { promptId: string; ord: number; preview: string; origin: string }>({
-  name: `titleMaterial.${direction}`, sql: `SELECT prompt_id AS promptId,ord,preview,${turnOriginSql('session_prompts')} AS origin FROM session_prompts INDEXED BY idx_session_prompts_turns
-    WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND turn_key=prompt_id AND ord>=?4 AND ord<=?5
+const selection = (direction: 'ASC' | 'DESC', origins: 'instruction' | 'all') => read<[project: string, session: string, generation: number, from: number, to: number, limit: number], { promptId: string; ord: number; preview: string; origin: string }>({
+  name: `titleMaterial.${direction}.${origins}`, sql: `SELECT prompt_id AS promptId,ord,preview,${turnOriginSql('session_prompts')} AS origin FROM session_prompts INDEXED BY idx_session_prompts_turns
+    WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND turn_key=prompt_id AND ord>=?4 AND ord<=?5 ${origins === 'instruction' ? `AND ${instructionOriginSql('session_prompts.origin')}` : ''}
     ORDER BY ord ${direction},prompt_id ${direction} LIMIT ?6`,
 });
-const ascending = selection('ASC'), descending = selection('DESC');
+const ascending = selection('ASC', 'instruction'), descending = selection('DESC', 'instruction'), middle = selection('ASC', 'all');
 export const titleMaterialSnapshot = (db: RelationalStore, project: string, session: string) => first(db, snapshot.bind(project, session));
 
 /** Head, tail and evenly spaced middle seeks are bounded independently of session length. */
@@ -31,7 +32,7 @@ export async function titleMaterialTurns(db: RelationalStore, project: string, s
   const from = head.at(-1)?.ord, to = tail.at(-1)?.ord;
   if (from !== undefined && to !== undefined && to > from) {
     for (let i = 1; i <= TITLE_MIDDLE_TURNS; i++) {
-      const row = (await rows(db, ascending.bind(project, session, held.generation, from + (to - from) * i / (TITLE_MIDDLE_TURNS + 1), to - 1, 1)))[0];
+      const row = (await rows(db, middle.bind(project, session, held.generation, from + (to - from) * i / (TITLE_MIDDLE_TURNS + 1), to - 1, 1)))[0];
       if (row !== undefined) selected.set(row.promptId, row);
     }
   }

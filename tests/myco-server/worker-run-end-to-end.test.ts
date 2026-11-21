@@ -135,7 +135,7 @@ describe('a titling run a worker claimed', () => {
     // mode on the run's context make possible.
     const material = await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material', project: 'proj_1' });
     expect(material.session_id).toBe('s1');
-    expect((material.batches as Array<{ user_prompt: string }>)[0]?.user_prompt).toContain('add a retry to the runner');
+    expect(material.material).toContain('add a retry to the runner');
 
     const written = await r.asRun(run.runToken, 'myco_run_sessions', { op: 'title', project: 'proj_1', title: 'Add a retry to the runner', summary: 'The runner gained a retry around its one flaky call.' });
     expect(written).toEqual({ session_id: 's1', written: true });

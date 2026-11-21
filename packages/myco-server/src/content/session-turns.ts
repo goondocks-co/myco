@@ -73,7 +73,7 @@ interface PromptAnswer {
 }
 export interface DocumentTurnDetail {
   cardPartial?: boolean;
-  cardCoverage?: { sourceRevision: string | null; current: boolean; writtenAt: number | null };
+  cardCoverage?: { sourceHash: string | null; current: boolean; writtenAt: number | null };
   card: string | null;
   prompt: PromptWireRow;
   responses: ResponseWireRow[];
@@ -296,7 +296,7 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
     const state = catalog?.tool_state == null ? null : parseToolState(catalog.tool_state);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
-    if (catalog !== null) body.cardCoverage = { sourceRevision: catalog.card_input_hash, current: catalog.card_state === 'carded' && catalog.card_input_hash !== null && catalog.card_input_hash === catalog.live_input_hash, writtenAt: catalog.carded_at };
+    if (catalog !== null) body.cardCoverage = { sourceHash: catalog.card_input_hash, current: catalog.card_state === 'carded' && catalog.card_input_hash !== null && catalog.card_input_hash === catalog.live_input_hash, writtenAt: catalog.carded_at };
     if (catalog?.partial_reason != null) body.cardPartial = true;
     body.card = catalog?.fields ?? catalog?.card ?? null;
     body.tools = rollup === null ? shown : { ...shown, evidenceReady: state?.evidenceReady ?? shown.evidenceReady, nested: state?.nested ?? shown.nested, reportedErrors: state?.reportedErrors ?? shown.reportedErrors, total: catalog!.tools, failed: catalog!.failed_tools,

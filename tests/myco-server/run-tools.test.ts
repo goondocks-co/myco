@@ -548,7 +548,7 @@ describe('a titling run reads and writes its own session', () => {
       sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
       await publishFixture({ sqlite, serverEnv });
       const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' })).result;
-      expect(material.batches[0].user_prompt).toContain('body of second');
+      expect(material.material).toContain('body of second');
       expect(material).toMatchObject({ prompt_count: 2, turnCount: 2 });
       expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'Both turns', summary: 'Complete material' })).result.written).toBe(true);
     }
@@ -590,7 +590,7 @@ describe('a titling run reads and writes its own session', () => {
 
     const material = (await call(harness.token, 'myco_run_sessions', { op: 'material' })).result;
     expect(material).toMatchObject({ status: 'active', current_title: 'Old title', current_summary: 'Old summary' });
-    expect(material.batches[0].user_prompt).toContain('body of first');
+    expect(material.material).toContain('body of first');
 
     expect((await call(harness.token, 'myco_run_sessions', { op: 'title', title: 'New title', summary: 'New summary covering the whole session' })).result)
       .toEqual({ session_id: 'sess_1', written: true });
@@ -626,7 +626,7 @@ describe('a titling run reads and writes its own session', () => {
     expect((await call(harness.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'off the surface' })).error?.message).toContain('Unknown tool');
     sqlite.run(`UPDATE transcripts SET parsed_offset = size WHERE transcript_id = 'tx_pending'`);
       await publishFixture({ sqlite, serverEnv });
-    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.batches).toHaveLength(1);
+    expect((await call(harness.token, 'myco_run_sessions', { op: 'material' })).result.material).toContain('body of first');
     const calls = (await runToolCalls(db, { projectId: 'proj_1' }, 'run_t')).map(({ tool, op, failure }) => ({ tool, op, failure }));
     expect(calls).toEqual([
       { tool: 'myco_run_sessions', op: 'material', failure: { code: 'tool_call_failed', message: 'Session capture is incomplete or has errors; retry after its transcripts are fully published.' } },
@@ -641,7 +641,9 @@ describe('a titling run reads and writes its own session', () => {
     await publishFixture({ sqlite, serverEnv });
     await dispatch('run_t', TITLING, { mode: 'claim' });
     const { result } = await call(harness.token, 'myco_run_sessions', { op: 'material' });
-    expect(result.batches[0].user_prompt).toContain('The session has 12 turns.');
+    expect(result.material).toContain('The session has 12 turns.');
+    expect(result.material).toContain('\n[Person] ');
+    expect(result).not.toHaveProperty('batches');
     expect(new TextEncoder().encode(JSON.stringify({ result })).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
   });
 

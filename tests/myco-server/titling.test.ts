@@ -21,7 +21,7 @@ import {
   titleSession,
   titleReadySessions,
 } from '@myco-server-worker/core/titling.js';
-import { OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/db/sessions/title-work.js';
+import { OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, TITLING_REFRESH_RETRY_MS } from '@myco-server-worker/db/sessions/title-work.js';
 import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/run-deadline.js';
 import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { titlingParamsOf } from '@myco-server-worker/core/titling-params.js';
@@ -568,6 +568,28 @@ describe('direct session titles', () => {
     h.sqlite.close();
   });
 
+  it('waits four hours after a failed refresh of the same revision and admits new work immediately', async () => {
+    let valid = true;
+    const h = direct(async () => ({ text: valid ? JSON.stringify(answer) : '{}', usage: null }));
+    await h.title('direct'); await h.settle();
+    h.prompt('direct', 'continued', 'Continue the work', NOW + 1);
+    h.sqlite.run("UPDATE sessions SET last_received_at=? WHERE session_id='direct'", [NOW + 2]);
+    await h.convert(); valid = false;
+    const quiet = NOW + 3 * 3_600_000;
+    expect(await backfillTitles(h.env, quiet, 'idle')).toBe(1); await h.settle();
+    expect(h.runRows().at(-1)?.status).toBe('failed');
+    expect(await backfillTitles(h.env, quiet + TITLING_REFRESH_RETRY_MS - 1, 'idle')).toBe(0);
+    expect(await backfillTitles(h.env, quiet + TITLING_REFRESH_RETRY_MS + 1, 'idle')).toBe(1); await h.settle();
+    const moved = quiet + TITLING_REFRESH_RETRY_MS + 2000;
+    h.prompt('direct', 'new-work', 'Finish the new work', moved);
+    await h.convert();
+    h.sqlite.run("UPDATE sessions SET ended_at=?,last_received_at=? WHERE session_id='direct'", [moved, moved]);
+    valid = true;
+    expect(await backfillTitles(h.env, moved + SESSION_END_SETTLE_MS + 1, 'idle')).toBe(1); await h.settle();
+    expect(h.runRows().at(-1)?.status).toBe('completed');
+    h.sqlite.close();
+  });
+
   it('does not send archived project material to a provider', async () => {
     let calls = 0;
     const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
@@ -605,14 +627,16 @@ describe('direct session titles', () => {
       h.prompt('direct', 'turn-' + i, 'Human requirement ' + i, NOW - 7000 + i * 10);
       h.response('direct', 'turn-' + i, 'early-' + i, 'I will investigate.', NOW - 6999 + i * 10);
       h.response('direct', 'turn-' + i, 'closing-' + i, 'Completed requirement ' + i, NOW - 6998 + i * 10);
+      if (i === 7) h.prompt('direct', 'middle-notice', 'Recorded harness notice', NOW - 6997 + i * 10, 'system');
     }
     h.prompt('direct', 'notice', 'DO NOT TREAT AS HUMAN', NOW - 1, 'system');
     await h.convert();
     const material = await singleTurnMaterial(h.env, 'proj_1', 'direct');
     expect(material.text).toContain('Human requirement 13');
-    expect(material.text).toContain('Completed requirement 13');
+    expect(material.text).toContain('\n[Agent closing reply] Completed requirement 13');
+    expect(material.text).toContain('\n[Middle turn; Harness] Recorded harness notice');
     expect(material.text).toContain('Build direct session titles');
-    expect(material.text).toContain('[Harness] DO NOT TREAT AS HUMAN');
+    expect(material.text).not.toContain('DO NOT TREAT AS HUMAN');
     expect(material.text).not.toContain('DO NOT SEND UNRELATED OUTPUT');
     expect(material.text.length).toBeLessThanOrEqual(10000);
     h.sqlite.close();

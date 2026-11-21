@@ -28,6 +28,8 @@ const TITLE_WORK_PHASE = 'titleWork';
 export const TITLE_WORK_PROMOTE_PAGE = 100;
 /** The first wait of a row whose material or run is not settled; doubles with each look, up to 16 of these. */
 export const TITLE_WORK_RECHECK_MS = 300_000;
+/** A refresh that failed on the same last-turn revision waits this long before it is tried again; new work admits one at once. */
+export const TITLING_REFRESH_RETRY_MS = 4 * 3_600_000;
 
 type ModeName = 'claim' | 'refresh';
 
@@ -55,7 +57,7 @@ const reason = (now: string, idleBefore: string) => `CASE WHEN ${WORK_GONE} THEN
   ELSE CASE
     WHEN s.ended_at IS NULL AND s.last_received_at>${idleBefore} THEN 'quiet'
     WHEN s.last_received_at>${now}-${SESSION_END_SETTLE_MS} THEN 'settling'
-    WHEN ${titleAttemptedSql('s', 'd')} AND s.titled_at>=${now}-${OWNER_TITLING_WINDOW_MS} THEN 'retry'
+    WHEN ${titleAttemptedSql('s', 'd')} AND s.titled_at>=${now}-${TITLING_REFRESH_RETRY_MS} THEN 'retry'
     WHEN NOT ${sessionMaterialReadySql('s')} THEN 'pending'
     WHEN ${titleRunInFlightSql('s')} THEN 'inflight'
     ELSE 'ready' END END`;
@@ -78,7 +80,7 @@ const upsertSql = (keys: string, now: string, idleBefore: string) => `INSERT INT
   SELECT project_id,session_id,mode,why='ready',
     CASE why WHEN 'quiet' THEN 'quiet' WHEN 'material' THEN 'material' ELSE 'timer' END,
     CASE why WHEN 'quiet' THEN last_received_at WHEN 'material' THEN 0 WHEN 'settling' THEN last_received_at+${SESSION_END_SETTLE_MS}
-      WHEN 'retry' THEN titled_at+${OWNER_TITLING_WINDOW_MS}+1
+      WHEN 'retry' THEN titled_at+CASE mode WHEN 'refresh' THEN ${TITLING_REFRESH_RETRY_MS} ELSE ${OWNER_TITLING_WINDOW_MS} END+1
       WHEN 'ready' THEN 0 ELSE ${recheckAfter(now, 'checks')} END,
     rank_at,cohort,CASE WHEN why IN ('pending','inflight','caught_up') THEN checks+1 ELSE 0 END
   FROM (SELECT k.project_id,k.session_id,k.mode,${reason(now, idleBefore)} AS why,s.last_received_at,s.titled_at,COALESCE(w.checks,0) AS checks,

@@ -73,7 +73,9 @@ CREATE TRIGGER IF NOT EXISTS session_documents_title_work_update AFTER UPDATE OF
 
 CREATE TRIGGER IF NOT EXISTS session_title_tracking AFTER UPDATE OF last_received_at,ended_at ON sessions
       WHEN NEW.last_received_at IS NOT OLD.last_received_at OR NEW.ended_at IS NOT OLD.ended_at BEGIN
-      UPDATE session_documents SET title_tracking=1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;
+      UPDATE session_documents SET title_tracking=1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND title_tracking=0;
+      UPDATE session_title_work SET ready=0,waits=CASE WHEN NEW.ended_at IS NULL THEN 'quiet' ELSE 'timer' END,
+        due_at=CASE WHEN NEW.ended_at IS NULL THEN NEW.last_received_at ELSE 0 END,checks=0 WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND mode='refresh'; END;
 
 CREATE TRIGGER IF NOT EXISTS document_title_tracking AFTER UPDATE OF open_turn_key ON session_documents WHEN NEW.title_tracking=0 BEGIN
       UPDATE session_documents SET title_tracking=1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;

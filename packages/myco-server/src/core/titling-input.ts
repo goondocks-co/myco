@@ -19,9 +19,9 @@ import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsFrom, type TitlingMode
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
 
 const MODE_NOTE: Readonly<Record<TitlingMode, string>> = {
-  claim: 'The session has ended or gone quiet. Its bounded material spans the session, including the last turn and its closing reply. A title already standing is kept: your write is refused, and you close with the skip action instead.',
-  owner: 'A person asked for a fresh title from the dashboard. Its bounded material spans the opening and closing turns with sampled middle previews. Write over whatever title stands.',
-  refresh: 'The session has gone quiet or ended after continuing beyond its recorded title coverage. Its bounded material spans the opening and closing turns with sampled middle previews. Write a title and summary for the whole session so far, over the ones standing.',
+  claim: 'The session has ended or gone quiet. Its bounded material spans the session, including the last instruction turn and its closing reply. A title already standing is kept: your write is refused, and you close with the skip action instead.',
+  owner: 'A person asked for a fresh title from the dashboard. Its bounded material spans the opening and closing instruction turns with sampled middle previews. Write over whatever title stands.',
+  refresh: 'The session has gone quiet or ended after continuing beyond its recorded title coverage. Its bounded material spans the opening and closing instruction turns with sampled middle previews. Write a title and summary for the whole session so far, over the ones standing.',
 };
 
 /** The instruction for the run these parameters describe, or null when they name no session. */
@@ -42,7 +42,7 @@ export function titlingPrompt(sessionId: string, mode: TitlingMode): string {
     '',
     '## Steps',
     '',
-    '1. Call `myco_run_sessions` op "material": the session\'s current title and summary, if any, and its prompt batches in order, each an instruction with an excerpt of the response. Read the whole arc before writing.',
+    '1. Call `myco_run_sessions` op "material": the session\'s current title and summary, if any, and one labelled, bounded excerpt in the `material` field: opening and closing instruction turns with their closing replies, and sampled middle turns. Read the whole arc before writing.',
     '2. Call `myco_run_sessions` op "title" with BOTH `title` and `summary`. The run may write only this session, so no session argument is needed.',
     `3. Close by calling \`myco_run\` op "report": after a write that took, action "${TITLING_REPORT_ACTION}" with a one-line \`summary\` of what you wrote and \`details\` as a serialized JSON object string such as "{\\"updated\\":1}"; when the write was refused, action "${RUN_SKIP_ACTION}" with the refusal in \`summary\`. ${RUN_AUDIT_INSTRUCTION}`,
     '',
