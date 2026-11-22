@@ -96,9 +96,11 @@ To build it by hand: `npx tsx packages/myco/scripts/gen-worker-bundle.ts`. It bu
 
 ## The free-tier rule
 
-The Deployment uses only Cloudflare surfaces that need no paid add-on. Myco makes no claim about which Workers plan a Deployment fits: its usage decides that. **Containers are a paid surface** (`Free: N/A` in Cloudflare's pricing), which is why the harness container was removed. Durable Objects are on the free plan only with the **SQLite** backend, which is what `new_sqlite_classes` gives.
+The Deployment can deploy on Workers Free and uses no required paid add-on. Its usage decides which plan fits. Workers Free allows **10 ms of CPU per HTTP request**; heavy work such as transcript import or large reads may be cut short. Workers Paid removes that 10 ms restriction and permits a configurable CPU limit. See [Cloudflare CPU limits](https://developers.cloudflare.com/workers/platform/limits/#cpu-time). Durable Objects use the free plan's **SQLite** backend (`new_sqlite_classes`); Containers require a paid plan and are absent.
 
-Before adding any table to `wrangler.toml`, add it to `FREE_TIER_SURFACES` (`packages/myco/src/server/deploy-config.ts`). The gate holds in both directions over the committed base and the rendered config, so an unlisted surface fails by name rather than at an operator's first bill, and a retired one cannot sit in the list granting silent permission to a future one.
+`[limits]` is a paid-plan table. If `wrangler deploy` or `wrangler versions upload` refuses with numeric code **100328**, Myco saves `cpuLimitRefusedRelease` in the deployment record, renders without that table and retries that step once. It prints the CPU restriction once on that refusal. Later creates and updates with the same binary release omit the table from the start. Rollback activates an existing version without uploading configuration and preserves the fact. A different binary release tries the limit again, so after upgrading the account to Workers Paid, update the member binary to a different release and run `myco server update --target cloudflare`. No billing or subscription API is queried.
+
+Before adding any table to `wrangler.toml`, admit it in `FREE_TIER_SURFACES` (`packages/myco/src/server/deploy-config.ts`), or explicitly handle a conditional paid table in `PAID_PLAN_SURFACES` and the renderer. The gate checks the committed base and both rendered variants in both directions: every table must be admitted, every admitted table must ship, and the refusing-account config must contain exactly the free surfaces.
 
 ## Durable Object class lifecycle
 

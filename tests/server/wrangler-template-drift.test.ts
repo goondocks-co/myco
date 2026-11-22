@@ -8,7 +8,8 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { WRANGLER_TEMPLATE } from '@myco/server/wrangler-template.js';
-import { DeployConfigIncomplete, FREE_TIER_SURFACES, migrationLedger, parityWranglerConfig, renderDeployConfig, undeletableClasses } from '@myco/server/deploy-config.js';
+import { DeployConfigIncomplete, FREE_TIER_SURFACES, PAID_PLAN_SURFACES, migrationLedger, parityWranglerConfig, renderDeployConfig, undeletableClasses } from '@myco/server/deploy-config.js';
+import { getPluginVersion } from '@myco/version.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 
 const RECORD_FILE = '/fixture/server/cloudflare/record.json';
@@ -30,7 +31,7 @@ describe('wrangler template', () => {
     expect(WRANGLER_TEMPLATE).toBe(readFileSync(SHIPPED, 'utf8'));
   });
 
-  it('declares only surfaces the free plan serves, and retires the class it no longer exports', () => {
+  it('declares only admitted surfaces, dropping the paid CPU limit for a refusing account', () => {
     // Containers are a paid-plan surface, and the Deployment is meant to run on
     // the free one. A class this Worker no longer exports keeps its lifecycle
     // entry so the platform is told the namespace is gone, once.
@@ -40,17 +41,21 @@ describe('wrangler template', () => {
     // template alone misses the vector bindings and the store block the
     // renderer appends.
     const rendered = renderDeployConfig(record({ databaseId: 'd1-uuid', storeId: 'store-1', url: 'https://myco.example.com' }), RECORD_FILE);
+    const free = renderDeployConfig(record({ databaseId: 'd1-uuid', storeId: 'store-1', url: 'https://myco.example.com', cpuLimitRefusedRelease: getPluginVersion() }), RECORD_FILE);
+    expect(Bun.TOML.parse(free)).not.toHaveProperty('limits');
+    expect(Bun.TOML.parse(rendered)).toHaveProperty('limits.cpu_ms');
     const headers = (text: string) => [...text.matchAll(/^(\[\[?[a-z0-9_.]+\]?\])$/gm)].map((m) => m[1]!);
     // Nothing ships that is not on the list, in the committed base or in what
     // a deploy actually reads.
-    expect(headers(WRANGLER_TEMPLATE).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
-    expect(headers(rendered).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
+    const admitted = [...FREE_TIER_SURFACES, ...PAID_PLAN_SURFACES];
+    expect(headers(WRANGLER_TEMPLATE).filter((table) => !admitted.includes(table as never))).toEqual([]);
+    expect(headers(rendered).filter((table) => !admitted.includes(table as never))).toEqual([]);
+    expect(headers(free).filter((table) => !FREE_TIER_SURFACES.includes(table as never))).toEqual([]);
     // And nothing is on the list that no longer ships, so a retired surface
     // cannot sit here granting silent permission to a future one.
     const shipped = new Set([...headers(WRANGLER_TEMPLATE), ...headers(rendered)]);
-    expect(FREE_TIER_SURFACES.filter((table) => !shipped.has(table))).toEqual([]);
-    expect(WRANGLER_TEMPLATE).toContain('deleted_classes = [ "HarnessContainer" ]');
-    expect(WRANGLER_TEMPLATE.match(/deleted_classes/g)).toHaveLength(1);
+    expect(admitted.filter((table) => !shipped.has(table))).toEqual([]);
+    expect(FREE_TIER_SURFACES.filter(table => !headers(free).includes(table))).toEqual([]);
   });
 
   it('carries the placeholder the renderer substitutes, exactly once', () => {

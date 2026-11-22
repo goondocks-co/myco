@@ -67,6 +67,10 @@ The address is `http://127.0.0.1:8787`. If that port is taken, pass `--port <num
 
 ### On Cloudflare
 
+Workers Free can host a Deployment, but allows [10 ms of CPU per HTTP request](https://developers.cloudflare.com/workers/platform/limits/#cpu-time). Heavy work such as transcript import or large reads may be cut short. Workers Paid removes that 10 ms restriction and permits a configurable CPU limit.
+
+Myco first tries the configured CPU limit. If Cloudflare refuses it with code 100328, Myco records that fact in `server/cloudflare/record.json` as `cpuLimitRefusedRelease`, omits the paid `[limits]` table and retries the deploy or version upload once. Later creates and updates with that binary release omit it immediately; rollback activates an existing version and preserves the fact. A different binary release tries the limit again. After upgrading the account to Workers Paid, update the member binary to a different release and run `myco server update --target cloudflare` to restore the configured limit. Myco does not query billing or subscription APIs.
+
 Install Node.js from [nodejs.org](https://nodejs.org/en/download) on the machine you deploy from, then run:
 
 ```bash

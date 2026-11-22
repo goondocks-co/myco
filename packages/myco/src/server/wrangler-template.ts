@@ -17,10 +17,9 @@ enabled = true
 [observability.logs]
 invocation_logs = false
 
-# A tick drains a transcript backlog in passes of at most 15 s of wall time
-# (CLOUDFLARE_JOB_BUDGET in src/platform/cloudflare/env.ts), and reading a
-# transcript is CPU work. The CPU one invocation may spend, with headroom over a
-# pass and the rest of its tick; the default is 30 s.
+# Workers Paid CPU allowance, with headroom over a 15 s transcript pass and
+# the rest of its tick. The deploy renderer omits this table after the account
+# refuses code 100328. Workers Free allows 10 ms of CPU per HTTP request.
 [limits]
 cpu_ms = 60_000
 

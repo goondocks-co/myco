@@ -322,14 +322,22 @@ export function commandOutputTail(text: string): string {
  * A `--json` command writes its error document to stdout and its
  * configuration warnings to stderr, so a message built from stderr alone names
  * the warning and not the failure. The JSON document answers first, then both
- * streams with the wrapper noise dropped. Nothing survives the filters only
+ * streams with the wrapper noise dropped and explicit error lines first. Nothing survives the filters only
  * when the whole output was noise, and then the raw output is better than
  * silence.
  */
 export function commandFailureDetail(result: CommandResult): string {
   const named = jsonFailure(result.stdout);
   if (named !== null) return named;
-  const spoken = [commandOutputTail(result.stdout), commandOutputTail(result.stderr)].filter((part) => part !== '');
+  const errors = [result.stderr, result.stdout].flatMap(output => {
+    const clean = output.replace(ANSI, '');
+    const at = clean.indexOf('[ERROR]');
+    const leading = clean.slice(at).split('\n').filter(line => line.trim() !== '').slice(0, FAILURE_LINES).join('\n');
+    return at < 0 ? [] : [commandOutputTail(leading.slice(0, FAILURE_CHARS))];
+  });
+  const spoken = [...errors, ...[result.stdout, result.stderr]
+    .filter(output => !output.replace(ANSI, '').includes('[ERROR]'))
+    .map(commandOutputTail)].filter((part) => part !== '');
   if (spoken.length > 0) return spoken.join('\n');
   return result.stderr.trim() || result.stdout.trim();
 }

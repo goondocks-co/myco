@@ -48,7 +48,7 @@ import {
   type DeploymentRecord,
 } from './cloudflare.js';
 import { stageCloudflareDeploy } from './cloudflare-stage.js';
-import { renderDeployConfig } from './deploy-config.js';
+import { cpuLimitRefusedForThisRelease, renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
@@ -57,6 +57,7 @@ import { getPluginVersion } from '../version.js';
 import type { CommandRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
+import { cloudflareErrorCodes } from './object-read.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
@@ -97,6 +98,22 @@ function lifecycleOperation<Options extends LifecycleOptions, Result>(
 function staged(record: DeploymentRecord, options: LifecycleOptions): CloudflareOptions {
   const stage = stageCloudflareDeploy(record, options.mycoHome);
   return { ...options, configDir: stage.dir, configFile: stage.configFile };
+}
+
+const CPU_LIMIT_UNSUPPORTED_CODE = '100328';
+
+/** Persist an account's CPU-limit refusal before retrying only its upload step. */
+async function uploadWithCpuLimit<T>(record: DeploymentRecord, options: LifecycleOptions, upload: () => Promise<T>): Promise<{ record: DeploymentRecord; result: T }> {
+  try {
+    return { record, result: await upload() };
+  } catch (error) {
+    if (cpuLimitRefusedForThisRelease(record) || !cloudflareErrorCodes(error).includes(CPU_LIMIT_UNSUPPORTED_CODE)) throw error;
+    record = { ...record, cpuLimitRefusedRelease: getPluginVersion() };
+    writeDeploymentRecord(record, options.mycoHome);
+    staged(record, options);
+    options.report?.('Cloudflare refused a custom CPU limit. Retrying without it. Workers Free allows 10 ms of CPU per request; heavy work such as transcript import or large reads may be cut short. Workers Paid removes that 10 ms restriction. https://developers.cloudflare.com/workers/platform/limits/#cpu-time');
+    return { record, result: await upload() };
+  }
 }
 
 /**
@@ -243,6 +260,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     previousVersionId: null,
     versionId: existing?.versionId ?? null, deployedAt: existing?.deployedAt ?? new Date().toISOString(),
     ...(existing?.release === undefined ? {} : { release: existing.release }),
+    ...(existing?.cpuLimitRefusedRelease === undefined ? {} : { cpuLimitRefusedRelease: existing.cpuLimitRefusedRelease }),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
     ...(url === undefined ? {} : { url }), databaseId: database.databaseId,
     ...(existing?.storeId === undefined ? {} : { storeId: existing.storeId }),
@@ -280,7 +298,9 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
       return prepared;
     },
   });
-  let deployed = await deployWorker(withConfig);
+  let deployment = await uploadWithCpuLimit(record, options, () => deployWorker(withConfig));
+  record = deployment.record;
+  let deployed = deployment.result;
 
   // After the deploy: a secret lands on the live Worker; putting one ahead of a Worker that is not there yet is
   // version-dependent behavior. It is put wherever the Worker lacks it, so a first create that stopped after writing its
@@ -294,7 +314,10 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     if (deployed.url === null) throw new Error('Cloudflare create incomplete: the Worker did not report its origin. Run myco server create --target cloudflare --url <https://worker.account.workers.dev> to finish origin activation.');
     record = { ...record, url: new URL(deployed.url).origin };
     writeDeploymentRecord(record, options.mycoHome);
-    deployed = await deployWorker(staged(record, options));
+    const originConfig = staged(record, options);
+    deployment = await uploadWithCpuLimit(record, options, () => deployWorker(originConfig));
+    record = deployment.record;
+    deployed = deployment.result;
   }
 
   record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString() };
@@ -440,12 +463,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
         } catch (error) {
           summary.servingBefore.error = error instanceof Error ? error.message : String(error);
         }
-        const prepared = { ...admitted, previousVersionId };
+        let prepared: DeploymentRecord = { ...admitted, previousVersionId };
         writeDeploymentRecord(prepared, options.mycoHome);
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
         summary.upload = 'attempted; outcome unknown';
-        uploadedVersion = await uploader.upload();
+        const upload = await uploadWithCpuLimit(prepared, options, () => uploader.upload());
+        prepared = upload.record;
+        uploadedVersion = upload.result;
         summary.upload = { versionId: uploadedVersion };
         return prepared;
       },
