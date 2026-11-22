@@ -20,7 +20,7 @@ import { ensureServerLayout } from './layout.js';
 import { CommandFailed, CommandTimedOut, jsonDocument, runOrThrow, type CommandRunner, type CommandResult, type RunOptions } from './runner.js';
 import { CLOUDFLARE_SETUP_COMMAND, TOOL_CHECK_TIMEOUT_MS, readWranglerVersion as toolVersion, wranglerVersionDiagnostic as versionDiagnostic } from './cloudflare-tool-version.js';
 import { CloudflareToolFiles } from './cloudflare-tool-files.js';
-import { cloudflareRunner, operatorWranglerEntry } from './cloudflare-runner.js';
+import { cloudflareRunner, operatorWranglerEntry, OPERATOR_WRANGLER_ABSENT } from './cloudflare-runner.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER, BUNDLED_WORKER_NODE } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
@@ -1076,19 +1076,21 @@ async function selectWrangler(readiness: WranglerReadiness & { runner: CommandRu
   const nodeVersion = valid(node.stdout.trim());
   if (node.code !== 0 || nodeVersion === null) throw new WranglerNotReady(`Node.js version check failed: ${versionDiagnostic(node)}`);
   if (!satisfies(nodeVersion, BUNDLED_WORKER_NODE, { includePrerelease: true })) throw new NodeTooOld(nodeVersion);
-  let operator: string;
+  // Null when the operator has no Wrangler at all: nothing failed, so nothing is said about it.
+  let operator: string | null;
   try {
     const result = await sourceRunner.run(npmCommand('npx'), wrangler('--version'), where);
+    if (result.code !== 0 && result.stderr === OPERATOR_WRANGLER_ABSENT) throw null;
     const version = toolVersion(result);
     if (version.split('.')[0] === BUNDLED_WORKER_WRANGLER.split('.')[0]) return choose(version, `operator installation${operatorWranglerEntry(sourceRunner) ? ` at ${operatorWranglerEntry(sourceRunner)}` : ' (local/global lookup)'}`);
     operator = `Operator Wrangler ${version} has a different major from ${BUNDLED_WORKER_WRANGLER}`;
-  } catch (error) { operator = `Operator Wrangler unavailable: ${error instanceof Error ? error.message : String(error)}`; }
+  } catch (error) { operator = error === null ? null : `Operator Wrangler unavailable: ${error instanceof Error ? error.message : String(error)}`; }
   const files = toolFiles(readiness.mycoHome);
   let owned: string;
   if (existsSync(files.entry())) {
     try {
       const version = toolVersion(await sourceRunner.run('node', [files.entry(), '--version'], where));
-      if (version === BUNDLED_WORKER_WRANGLER) return choose(version, files.entry(), files.entry(), `${operator}; using Myco's pinned tool.`);
+      if (version === BUNDLED_WORKER_WRANGLER) return choose(version, files.entry(), files.entry(), operator === null ? undefined : `${operator}; using Myco's pinned tool.`);
       owned = `Myco's Wrangler at ${files.directory} reports ${version}; required ${BUNDLED_WORKER_WRANGLER}`;
     } catch (error) { owned = `Myco's Wrangler at ${files.directory} is unusable: ${error instanceof Error ? error.message : String(error)}`; }
   } else if (existsSync(files.directory)) owned = `Myco's Wrangler at ${files.directory} has no executable`;
@@ -1097,7 +1099,7 @@ async function selectWrangler(readiness: WranglerReadiness & { runner: CommandRu
     owned = older.length ? `Myco-owned ${older.join(', ')} at ${files.root} does not provide pinned Wrangler ${BUNDLED_WORKER_WRANGLER}` : `Myco's pinned Wrangler ${BUNDLED_WORKER_WRANGLER} is not installed`;
   }
   const unfinished = files.unfinished();
-  throw new WranglerAbsent(`${operator}. ${owned}${unfinished.length ? `. Unfinished installations at ${files.root}: ${unfinished.join(', ')}` : ''}`);
+  throw new WranglerAbsent(`${operator ?? 'No Wrangler is installed'}. ${owned}${unfinished.length ? `. Unfinished installations at ${files.root}: ${unfinished.join(', ')}` : ''}`);
 }
 
 /** The sole writer of Myco's versioned tools directories; callers obtain consent first. */

@@ -1,3 +1,4 @@
+import { OPERATOR_WRANGLER_ABSENT } from '@myco/server/cloudflare-runner.js';
 import { cloudflareRunner } from '@myco/server/cloudflare-runner.js';
 import { afterEach, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
@@ -96,6 +97,8 @@ it('installs only with setup consent and uses the pinned private tool for accoun
   expect(put.command).toBe('node');
   expect(put.options?.input).toBe('private-backup');
   expect(put.args).not.toContain('private-backup');
+  h.state.external = answer('', 1, OPERATOR_WRANGLER_ABSENT);
+  expect((await resolveWrangler(h.readiness)).note).toBeUndefined();
   h.state.external = answer('', 1, 'Wrangler requires at least Node.js v22.12.0. You are using v22.5.0.\nConsider using a Node.js version manager');
   const fallback = await resolveWrangler(h.readiness);
   expect(fallback.source).toBe(tool.source);

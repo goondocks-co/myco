@@ -293,7 +293,8 @@ const CREATE_STEPS: readonly SetupStep[] = [
       catch (error) {
         if (!(error instanceof WranglerNotSignedIn)) throw error;
         await consentToOccurrence(ctx, 'Sign in to Cloudflare (opens your browser, runs wrangler login)?');
-        await runOrThrow(selected, 'npx', ['--no-install', 'wrangler', 'login'], { cwd, stdio: 'inherit', signal: ctx.deps.signal });
+        const login = await selected.run('npx', ['--no-install', 'wrangler', 'login'], { cwd, stdio: 'inherit', signal: ctx.deps.signal });
+        if (login.code !== 0) throw new Error('Cloudflare sign-in did not finish; Wrangler said why above. Run `myco setup --create cloudflare` to try again.');
         await assertWranglerReady(readiness);
       }
       ctx.deps.cloudflare = { ...ctx.deps.cloudflare, runner: selected };

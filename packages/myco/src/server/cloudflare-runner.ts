@@ -3,6 +3,9 @@ import path from 'node:path';
 import { systemRunner, type CommandRunner } from './runner.js';
 import { OPERATOR_WRANGLER_PROBE } from './cloudflare-operator-probe.js';
 
+/** What discovery answers when the operator has no Wrangler in local or global packages. */
+export const OPERATOR_WRANGLER_ABSENT = 'Wrangler is not installed in local or global npm packages';
+
 const operatorEntries = new WeakMap<CommandRunner, () => string | null | undefined>();
 export function operatorWranglerEntry(runner: CommandRunner): string | undefined { return operatorEntries.get(runner)?.() ?? undefined; }
 
@@ -43,7 +46,7 @@ export function cloudflareRunner(options: { platform?: NodeJS.Platform; runner?:
         if (parsed === null || typeof parsed !== 'object' || !('entry' in parsed) || (parsed.entry !== null && typeof parsed.entry !== 'string')) throw new Error('Operator Wrangler discovery returned no executable fact');
         operator = parsed.entry;
       }
-      return operator === null ? { code: 1, stdout: '', stderr: 'Wrangler is not installed in local or global npm packages' }
+      return operator === null ? { code: 1, stdout: '', stderr: OPERATOR_WRANGLER_ABSENT }
         : runner.run('node', [operator, ...args.slice(2)], runOptions);
     }
     if (platform === 'win32' && (command === 'npm.cmd' || command === 'npx.cmd')) {
