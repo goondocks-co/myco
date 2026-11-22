@@ -298,7 +298,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
       })).toBe(true);
     }
     expect(errors).toEqual([]);
-    expect(lines).toContain('Capture is set up for Claude Code, Codex.');
+    expect(lines.map(line => line.trim())).toContain('Capture is set up for Claude Code, Codex.');
     expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   } finally {
     holder.stopWatching();
