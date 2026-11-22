@@ -96,4 +96,12 @@ export function canonicalPlan(plan: SetupPlan): string {
   return JSON.stringify(canonical(plan));
 }
 
+/** A plan as a person reads it: one line per fact, and one line per item of a list. The fingerprint still comes from `canonicalPlan`. */
+export function readablePlan(plan: SetupPlan): string {
+  const words = (key: string): string => key.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  const item = (value: unknown): string => value !== null && typeof value === 'object' ? Object.values(value).join(' ') : String(value);
+  return Object.entries(plan).flatMap(([key, value]) => Array.isArray(value)
+    ? [`  ${words(key)}:`, ...value.map(entry => `    ${item(entry)}`)]
+    : [`  ${words(key)}: ${item(value)}`]).join('\n');
+}
 export const planFingerprint = (plan: SetupPlan): string => crypto.createHash('sha256').update(canonicalPlan(plan)).digest('hex');

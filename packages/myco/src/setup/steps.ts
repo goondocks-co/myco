@@ -26,7 +26,7 @@ import { runOrThrow } from '@myco/server/runner.js';
 import { readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult } from '@myco/member/registry.js';
-import { canonicalPlan, hasObservedSetupJourney, planFingerprint, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
+import { hasObservedSetupJourney, planFingerprint, readablePlan, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
 import { observeSetup, type Observation, type ObserveDeps } from '@myco/setup/observe.js';
 import { askOnTerminal, askRequired, confirm, type Ask } from '@myco/setup/prompt.js';
 import { planCutover, runCutover, cutoverSourcePlan, cutoverReconciliation, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
@@ -114,7 +114,7 @@ export async function consentToPlan(input: {
   const fingerprint = planFingerprint(input.plan);
   const previous = input.file.consented[input.id];
   if (previous === fingerprint) return;
-  input.out(`${input.question}\n${canonicalPlan(input.plan)}`);
+  input.out(`${input.question}\n${readablePlan(input.plan)}`);
   if (previous !== undefined) input.out('This plan changed; its previous consent no longer applies.');
   if (!(previous === undefined && input.yes)
     && !await confirm(input.ask, 'Approve this plan?', previous === undefined ? '--yes or an interactive terminal' : 'an interactive terminal (changed plans require fresh consent)')) {

@@ -403,7 +403,7 @@ export async function ensureVectorIndexFilters(options: CloudflareOptions & { ve
     const result = await runner.run('npx', wrangler('vectorize', 'create-metadata-index', vectorIndexName, '--propertyName', field, '--type', type), { cwd: options.configDir, env });
     if (result.code !== 0 && !/metadata index already exists for this name/.test(result.stderr + result.stdout)) throw new Error(`vector metadata creation failed: ${(result.stderr || result.stdout).slice(-500)}`);
   }
-  const attempts = 30;
+  const attempts = 90;
   const waitMs = 2000;
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (VECTOR_METADATA_FIELDS.every(compatible)) return;
@@ -411,7 +411,7 @@ export async function ensureVectorIndexFilters(options: CloudflareOptions & { ve
     indexed = await metadata();
   }
   if (VECTOR_METADATA_FIELDS.every(compatible)) return;
-  throw new Error('memory vector filters are still becoming visible; retry the deployment');
+  throw new Error('Cloudflare is still preparing the memory search filters after 3 minutes. Nothing was lost: run the same command again to continue.');
 }
 
 /**
