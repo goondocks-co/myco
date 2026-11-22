@@ -917,6 +917,8 @@ export interface DeploymentRecord {
   deployedAt: string;
   /** Binary release recorded after a successful Worker deployment; absent on older records. */
   release?: string;
+  /** Binary release whose upload Cloudflare refused with CPU-limit code 100328. */
+  cpuLimitRefusedRelease?: string;
   /** The Deployment's public URL — the custom domain or the workers.dev host — once an operator has named it. */
   url?: string;
   /** The D1 database UUID; the deploy config carries it where the committed file holds a placeholder. */

@@ -3,7 +3,7 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { cloudflareBlobReader as createBlobReader, cloudflareObjectStore as createObjectStore, type CloudflareFetch, OPERATOR_NETWORK_RETRY_BUDGET_MS } from '@myco/server/cloudflare.js';
 const cloudflareBlobReader = (options: Parameters<typeof createBlobReader>[0]) => createBlobReader({ ...options, ...(options.runner ? { runner: withWranglerPrerequisites(options.runner) } : {}) });
 const cloudflareObjectStore = (options: Parameters<typeof createObjectStore>[0]) => createObjectStore({ ...options, ...(options.runner ? { runner: withWranglerPrerequisites(options.runner) } : {}) });
-import { refusedAccountCode, transientReadFailure } from '@myco/server/object-read.js';
+import { cloudflareErrorCodes, refusedAccountCode, transientReadFailure } from '@myco/server/object-read.js';
 import { CommandFailed, CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { brotliCompressSync, deflateSync, gzipSync, zstdCompressSync, constants } from 'node:zlib';
 import fs from 'node:fs';
@@ -342,6 +342,7 @@ describe('the provider command failures a read may try again', () => {
       apiError('The given account is not valid or is not authorized to access this service [code: 7403]'),
       apiError('Internal error [code: 10001]'),
       apiError('D1_ERROR: Network connection lost.'),
+      apiError('The API returned a "Retry-After" header'),
       new CommandTimedOut('npx', ['wrangler'], 60_000, 'ended'),
     ]) expect(transientReadFailure(failure)).toBe(true);
   });
@@ -353,10 +354,12 @@ describe('the provider command failures a read may try again', () => {
       failed('', '✘ [ERROR] Couldn\'t find a D1 DB with the name or binding \'myco-server\'\n'),
       // Only Wrangler's own failure line and its notes are judged, not the progress it printed before them.
       failed('Downloading SQL to /backups/after fetch failed [code: 10001]/d1.sql\n', '✘ [ERROR] ENOSPC: no space left on device, write\n'),
+      failed('Uploading... {"code":10001}', 'Something broke'),
     ]) expect(transientReadFailure(failure)).toBe(false);
   });
 
   it('names the code a refusal of the account carries, whether it is retried or not', () => {
+    expect(cloudflareErrorCodes(failed('Progress [code: 100328]', 'Something broke'))).toEqual([]);
     expect(refusedAccountCode(apiError('The given account is not valid or is not authorized to access this service [code: 7403]'))).toBe('7403');
     expect(refusedAccountCode(new Error('wrapped', { cause: apiError('Authentication error [code: 10000]') }))).toBe('10000');
     expect(refusedAccountCode(apiError('Internal error [code: 10001]'))).toBeNull();

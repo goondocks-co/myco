@@ -8,19 +8,16 @@ import type { DeploymentRecord } from './cloudflare.js';
 import { WRANGLER_TEMPLATE } from './wrangler-template.js';
 import { VECTOR_BINDINGS } from './vector-config.js';
 import { cloudflareResources, recoveryConfigurationOf } from './cloudflare-resources.js';
+import { getPluginVersion } from '../version.js';
 
 /**
- * Every configuration table a rendered deploy config may declare.
+ * Configuration tables the free plan serves unconditionally.
  *
- * Each is a surface the free plan serves. Containers are a paid surface, and a
- * table added without a decision moves every operator onto a plan they did not
- * choose, so a new one has to be named here before it can ship.
+ * The paid CPU limit is admitted separately and omitted after account refusal.
  */
 export const FREE_TIER_SURFACES = [
   '[observability]',
   '[observability.logs]',
-  // The CPU an invocation may spend. A paid plan honours it; the free plan keeps its own allowance.
-  '[limits]',
   '[[d1_databases]]',
   '[[r2_buckets]]',
   '[[ratelimits]]',
@@ -33,6 +30,14 @@ export const FREE_TIER_SURFACES = [
   '[[vectorize]]',
   '[vars]',
 ] as const;
+
+/** Paid-plan tables the renderer conditionally includes. */
+export const PAID_PLAN_SURFACES = ['[limits]'] as const;
+
+/** Whether this release has provider evidence that its CPU limit is refused. */
+export function cpuLimitRefusedForThisRelease(record: DeploymentRecord): boolean {
+  return record.cpuLimitRefusedRelease === getPluginVersion();
+}
 
 const DATABASE_ID_PLACEHOLDER = '<YOUR_D1_DATABASE_ID>';
 const SOURCE_ENTRY_LINE = 'main = "src/index.ts"';
@@ -100,6 +105,9 @@ export function renderDeployConfig(record: DeploymentRecord, recordPath: string)
   let body = WRANGLER_TEMPLATE
     .replace(SOURCE_ENTRY_LINE, STAGED_ENTRY_LINES)
     .replace(DATABASE_ID_PLACEHOLDER, record.databaseId!) + VECTOR_BINDINGS;
+  if (cpuLimitRefusedForThisRelease(record)) {
+    body = body.replace(/^\[limits\][\s\S]*?(?=^\[|(?![\s\S]))/m, '');
+  }
   for (const [key, field] of RESOURCE_FIELDS) {
     const declaration = new RegExp(`^${key} = "${defaults[field]}"$`, 'gm');
     if ([...body.matchAll(declaration)].length !== 1) throw new Error(`the template must declare exactly one default ${key} for ${field}`);

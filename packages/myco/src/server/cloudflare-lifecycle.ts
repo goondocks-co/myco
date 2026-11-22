@@ -57,11 +57,14 @@ import { getPluginVersion } from '../version.js';
 import type { CommandRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
+import { CloudflareUploads } from './cloudflare-upload.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
 export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' | 'configDir'> {
   mycoHome?: string;
+  /** Probe the configured CPU allowance once, even after a recorded refusal. */
+  cpuLimit?: boolean;
   /** Where the lifecycle says where it is, as it gets there. */
   report?: (line: string) => void;
   /** How an overloaded D1 is waited out between migration attempts. */
@@ -227,6 +230,7 @@ async function refuseUnclaimedBucket(options: LifecycleOptions, bare: Cloudflare
  */
 export const createCloudflareDeployment = lifecycleOperation('create', async (options: LifecycleOptions & { url?: string; adoptBucket?: boolean }, existing): Promise<CreateResult> => {
   await preflight(options);
+  const uploads = new CloudflareUploads(options);
   const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
   const bare = bareCommand(options);
@@ -243,6 +247,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     previousVersionId: null,
     versionId: existing?.versionId ?? null, deployedAt: existing?.deployedAt ?? new Date().toISOString(),
     ...(existing?.release === undefined ? {} : { release: existing.release }),
+    ...(existing?.cpuLimitRefusedRelease === undefined ? {} : { cpuLimitRefusedRelease: existing.cpuLimitRefusedRelease }),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
     ...(url === undefined ? {} : { url }), databaseId: database.databaseId,
     ...(existing?.storeId === undefined ? {} : { storeId: existing.storeId }),
@@ -280,7 +285,9 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
       return prepared;
     },
   });
-  let deployed = await deployWorker(withConfig);
+  let deployment = await uploads.upload(record, () => deployWorker(withConfig));
+  record = deployment.record;
+  let deployed = deployment.result;
 
   // After the deploy: a secret lands on the live Worker; putting one ahead of a Worker that is not there yet is
   // version-dependent behavior. It is put wherever the Worker lacks it, so a first create that stopped after writing its
@@ -294,7 +301,10 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     if (deployed.url === null) throw new Error('Cloudflare create incomplete: the Worker did not report its origin. Run myco server create --target cloudflare --url <https://worker.account.workers.dev> to finish origin activation.');
     record = { ...record, url: new URL(deployed.url).origin };
     writeDeploymentRecord(record, options.mycoHome);
-    deployed = await deployWorker(staged(record, options));
+    const originConfig = staged(record, options);
+    deployment = await uploads.upload(record, () => deployWorker(originConfig));
+    record = deployment.record;
+    deployed = deployment.result;
   }
 
   record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString() };
@@ -416,6 +426,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
+    const uploads = new CloudflareUploads(options);
     let previousVersionId: string | null = null;
     const uploader = new CloudflareWorkerUpdate(workerOptions);
     let uploadedVersion: string | undefined;
@@ -440,12 +451,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
         } catch (error) {
           summary.servingBefore.error = error instanceof Error ? error.message : String(error);
         }
-        const prepared = { ...admitted, previousVersionId };
+        let prepared: DeploymentRecord = { ...admitted, previousVersionId };
         writeDeploymentRecord(prepared, options.mycoHome);
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
         summary.upload = 'attempted; outcome unknown';
-        uploadedVersion = await uploader.upload();
+        const upload = await uploads.upload(prepared, () => uploader.upload());
+        prepared = upload.record;
+        uploadedVersion = upload.result;
         summary.upload = { versionId: uploadedVersion };
         return prepared;
       },

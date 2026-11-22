@@ -30,6 +30,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
 import { systemRunner, CommandTimedOut } from '@myco/server/runner.js';
 import { WORKER_UPDATE_RETRY_MS, WorkerUpdateStopped } from '@myco/server/cloudflare-worker-update.js';
+import { getPluginVersion } from '@myco/version.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const DB_ID = '11111111-2222-4333-8444-555555555555';
@@ -174,6 +175,70 @@ const EVERY_VERB: ReadonlyArray<{ verb: string; run: (options: { accountId: stri
 const recordFor = (home: string): void => {
   writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: 'old-version', deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
 };
+
+it('resumes create after a CPU refusal and carries the account fact through create, update and rollback', async () => {
+  const { home, options } = setup();
+  recordFor(home);
+  writeDeploymentRecord({ ...readDeploymentRecord(home)!, versionId: null }, home);
+  const said: string[] = [], limits: boolean[] = [];
+  let paid = false;
+  const fake = runner({ 'd1 execute': { stdout: JSON.stringify([{ results: [{ value: String(SERVER_SCHEMA_VERSION) }], success: true }]) } });
+  const provider: CommandRunner = { async run(command, args, runOptions) {
+    if (args[2] === 'deploy' || (args[2] === 'versions' && args[3] === 'upload')) {
+      const hasLimit = 'limits' in Bun.TOML.parse(readFileSync(join(runOptions!.cwd!, DEPLOY_CONFIG_NAME), 'utf8'));
+      limits.push(hasLimit);
+      if (hasLimit && !paid) return { code: 1, stdout: 'Bindings table', stderr: '✘ [ERROR] Account refused [code: 100328]' };
+    }
+    return fake.run(command, args, runOptions);
+  } };
+  const selected = { ...options, runner: provider, report: (line: string) => said.push(line) };
+  await createCloudflareDeployment(selected);
+  await createCloudflareDeployment(selected);
+  await updateCloudflareDeployment(selected);
+  await rollbackCloudflareDeployment({ ...selected, versionId: 'earlier-version' });
+  expect(readDeploymentRecord(home)?.cpuLimitRefusedRelease).toBe(getPluginVersion());
+  writeDeploymentRecord({ ...readDeploymentRecord(home)!, cpuLimitRefusedRelease: 'earlier-release' }, home);
+  await updateCloudflareDeployment(selected);
+  expect(said.filter(line => line.includes('still refuses'))).toHaveLength(1);
+  const previousHome = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = home;
+  try {
+    const retry = await drive(['create', '--target', 'cloudflare', '--cpu-limit'], provider);
+    expect(retry.exited).toBe(false);
+    expect(retry.printed).toContain('still refuses');
+    paid = true;
+    expect((await drive(['update', '--target', 'cloudflare', '--cpu-limit'], provider)).exited).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+  }
+  expect(readDeploymentRecord(home)?.cpuLimitRefusedRelease).toBeUndefined();
+  expect(limits).toEqual([true, false, false, false, false, true, false, true, false, true]);
+  expect(said.filter(line => line.includes('10 ms'))).toEqual([expect.stringContaining('Workers Paid')]);
+});
+
+it('negotiates version uploads once by numeric code and keeps other deploy diagnostics first', async () => {
+  const { home, options } = setup();
+  recordFor(home);
+  let attempts = 0;
+  const fake = runner();
+  const provider: CommandRunner = { async run(command, args, runOptions) {
+    if (args[2] === 'versions' && args[3] === 'upload') {
+      attempts++;
+      if (attempts > 1) expect(Bun.TOML.parse(readFileSync(join(runOptions!.cwd!, DEPLOY_CONFIG_NAME), 'utf8'))).not.toHaveProperty('limits');
+      return { code: 1, stdout: '{"errors":[{"code":100328,"message":"Refused"}]}', stderr: '' };
+    }
+    return fake.run(command, args, runOptions);
+  } };
+  await expect(updateCloudflareDeployment({ ...options, runner: provider })).rejects.toThrow('stopped: Worker refused');
+  expect(attempts).toBe(2);
+  expect(readDeploymentRecord(home)?.cpuLimitRefusedRelease).toBe(getPluginVersion());
+  expect(calls.some(call => call.args[2] === 'd1' && call.args[3] === 'migrations')).toBe(false);
+  writeDeploymentRecord({ ...readDeploymentRecord(home)!, cpuLimitRefusedRelease: 'earlier-release' }, home);
+  const refusal = { code: 1, stdout: 'Bindings table\nProgress [code: 100328]', stderr: '✘ [ERROR] CPU limits are not supported [code: 10021]' };
+  await expect(createCloudflareDeployment({ ...options, runner: runner({ 'deploy -c wrangler.deploy.toml': refusal }) }))
+    .rejects.toThrow('exited 1: [ERROR] CPU limits are not supported [code: 10021]');
+  expect(readDeploymentRecord(home)?.cpuLimitRefusedRelease).toBe('earlier-release');
+});
 
 describe('a new database and a bucket that already exists', () => {
   const heldBucket = (name = 'myco-server-blobs') => ({ 'r2 bucket list': { stdout: `name: ${name}\ncreation_date: 2026-01-01\n` } });

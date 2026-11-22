@@ -65,7 +65,7 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   install --target local                  Run it whenever you log in, restarting it if it stops.
   uninstall --target local                Stop it and remove the service. Its data is kept.
 
-  create --target cloudflare --account-id <id> [--url <https://…>] [--dry-run]
+  create --target cloudflare --account-id <id> [--url <https://…>] [--dry-run] [--cpu-limit]
                                           --adopt-bucket puts a new database on an R2 bucket that
                                           already exists; without it, create refuses.
                                           Provision D1/R2/Vectorize/secrets store, install generated
@@ -75,14 +75,16 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           travel in this binary. --url puts it on a domain you own.
                                           --dry-run lists what it would create, keep and bind, and
                                           changes nothing. Then: github-app, then setup-owner.
+                                          --cpu-limit retries the configured CPU allowance now.
   status [--target local|cloudflare]       Report what is provisioned and running.
                                           With --target cloudflare: the record and the deployed version.
                                           Inspect one page of rebuild metadata.
                                           --account-id selects the hosted account.
   update --target local                   Apply the schema carried by this binary to the stopped volume.
-  update --target cloudflare              Move the Worker to the version this binary carries. It
+  update --target cloudflare [--cpu-limit] Move the Worker to the version this binary carries. It
                                           preserves attached workers. Bounded embedding work uses
                                           persisted progress to recover from interruption.
+                                          --cpu-limit retries the configured CPU allowance now.
   rollback --target cloudflare [--version <id>] [--message <text>]
                                           Return the Worker to an earlier version. Defaults to the
                                           version observed serving before the latest admitted update attempt.
@@ -284,7 +286,8 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
     const accountId = flags.get('account-id') ?? record?.accountId;
     if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (`myco setup --create cloudflare` lists accounts and guides selection).');
     for (const line of credentialLines) report(line);
-    return { accountId, readRetry: deps.readRetry, runner: operatorRunner ??= operationWranglerRunner(deps.runner), report };
+    return { accountId, readRetry: deps.readRetry, runner: operatorRunner ??= operationWranglerRunner(deps.runner), report,
+      ...((command === 'create' || command === 'update') && flags.has('cpu-limit') ? { cpuLimit: true } : {}) };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */

@@ -29,6 +29,7 @@ import {
   cloudflareSchemaUpdateSchema, type CloudflareFetch, type DeploymentRecord,
 } from './cloudflare.js';
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
+import { CloudflareUploads } from './cloudflare-upload.js';
 
 const journalSchema = z.object({
   format: z.literal('myco-hosted-recovery/1'), accountId: z.string().min(1),
@@ -40,6 +41,7 @@ const journalSchema = z.object({
   wrapKeyInstalled: z.boolean().default(false), url: z.string().url().optional(),
   pending: z.string().optional(),
   versionId: z.string().optional(), deployedAt: z.string().datetime().optional(),
+  cpuLimitRefusedRelease: z.string().optional(),
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   newSignIn: z.boolean().default(false),
   newCredentials: z.boolean().default(false), discardedCredentials: z.array(z.union([z.string(), z.object({ name: z.string() })])).default([]),
@@ -136,6 +138,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     ...(held().url === undefined ? {} : { url: held().url! }),
     ...(fleet === undefined ? {} : { fleet }),
     ...(held().schemaUpdates === undefined ? {} : { schemaUpdates: held().schemaUpdates! }),
+    ...(held().cpuLimitRefusedRelease === undefined ? {} : { cpuLimitRefusedRelease: held().cpuLimitRefusedRelease! }),
     versionId: held().versionId ?? null, deployedAt: held().deployedAt ?? new Date().toISOString(),
   });
   if (held().versionId !== undefined) {
@@ -226,7 +229,8 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     }, { GITHUB_CLIENT_ID: secrets.GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET: secrets.GITHUB_CLIENT_SECRET });
   }
   const final = stageCloudflareDeploy(record, options.mycoHome);
-  await resource(`publication of Worker ${name}`, () => deployWorker({ ...bare, configDir: final.dir, configFile: final.configFile }), (deployed) => {
+  const uploads = new CloudflareUploads({ ...options, persist: next => write({ ...held(), cpuLimitRefusedRelease: next.cpuLimitRefusedRelease }) });
+  await resource(`publication of Worker ${name}`, () => uploads.upload(record, () => deployWorker({ ...bare, configDir: final.dir, configFile: final.configFile })), ({ result: deployed }) => {
     if (deployed.versionId === null) throw new Error('recovery deployment returned no Worker version; the operator record was not published');
     return { versionId: deployed.versionId, deployedAt: new Date().toISOString(), schemaVersion: restored.schemaVersion };
   });
