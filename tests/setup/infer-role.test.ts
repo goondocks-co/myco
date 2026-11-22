@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseSetupOptions, run } from '@myco/cli/setup.js';
-import { applyObservedSetupJourney, applyObservedSetupRunWork, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
+import { applyObservedSetupJourney, applyObservedSetupRunWork, readablePlan, readSetupFile, saveSetupFile, setupFilePath } from '@myco/setup/answers.js';
 import { deploymentPath, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { defaultDeploymentPath, readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { runnerRecordPath, newRunnerBearer } from '@myco/runner/runner-registry.js';
@@ -33,6 +33,8 @@ const deps = () => ({
   ask: async (question: string) => { questions.push(question); throw new Error(`Unexpected prompt: ${question}`); },
   fetch: Object.assign(async () => { throw new Error('fixture offline'); }, { preconnect: () => {} }),
 });
+
+it('shows a plan one fact to a line', () => expect(readablePlan({ accountId: 'a', steps: [{ kind: 'd1 database', name: 'myco-server' }] })).toBe('  account id: a\n  steps:\n    d1 database myco-server'));
 
 it('resumes one membership without a setup file or role question', async () => {
   membership(FIRST);
