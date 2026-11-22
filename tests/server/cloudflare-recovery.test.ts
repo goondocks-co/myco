@@ -25,6 +25,7 @@ import { RECOVERED_SWITCH } from '../../packages/myco-server/src/core/embedding/
 import { asSchema41 } from './legacy-recovery-fixture.js';
 import { seedRecoveryAuthority, recoveryAuthoritySnapshot, assertRecoveredAuthority } from './recovery-authority-fixture.js';
 import { cloudflareResources, recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
+import { getPluginVersion } from '@myco/version.js';
 
 async function fixture(failVectorRead = false, { legacy = false, authority = false } = {}) {
   const reports: string[] = [];
@@ -123,6 +124,7 @@ async function fixture(failVectorRead = false, { legacy = false, authority = fal
       expect(readDeploymentRecord(mycoHome)).toBeNull();
       const config = fs.readFileSync(path.join(options!.cwd!, args[args.indexOf('-c') + 1]!), 'utf8');
       deployments.push(config);
+      if (config.includes('[limits]')) return answer('✘ [ERROR] CPU allowance refused [code: 100328]', 1);
       expect(destination.query("SELECT value FROM schema_meta WHERE key='fixture_note'").get()).toEqual({ value: 'keep this finding' });
       return answer('Current Version ID: 11111111-2222-4333-8444-555555555555\nhttps://fixture.account.workers.dev');
     }
@@ -163,10 +165,13 @@ it('resumes data transfer on the same fresh resources and publishes only after b
     expect(result.record.workerName).toMatch(/^myco-recovery-/);
     // Four resources, each created once: the database, the blob store, the recovery staging store, and the index.
     expect(f.creates()).toBe(4);
-    expect(f.deployments).toHaveLength(2);
+    expect(f.deployments).toHaveLength(3);
     expect(f.deployments[0]).not.toContain('d1_databases');
     expect(f.deployments[0]).not.toContain('triggers');
     expect(f.deployments[1]).toContain('MYCO_ORIGIN = "https://fixture.account.workers.dev"');
+    expect(published).not.toContain('[limits]');
+    expect(result.record.cpuLimitRefusedRelease).toBe(getPluginVersion());
+    expect(JSON.parse(fs.readFileSync(journalFile, 'utf8')).cpuLimitRefusedRelease).toBe(getPluginVersion());
     expect(readDeploymentRecord(f.mycoHome)).toEqual(result.record);
     expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(original);
     assertRestoredObjects(f);
@@ -207,7 +212,7 @@ it('restores a schema-41 artifact through the one migration applier, and copies 
     await f.restore();
     expect(f.reports.filter((line) => line === notice)).toEqual([notice]);
     expect(f.reports.join('\n')).not.toContain('schema step');
-    expect(f.reports.join('\n')).not.toContain('#');
+    expect(f.reports.join('\n')).not.toMatch(/#\d+/);
     assertRestoredObjects(f);
     expect(fs.readFileSync(path.join(f.source, 'myco.sqlite'))).toEqual(original);
   } finally { f.cleanup(); }

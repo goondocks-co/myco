@@ -276,7 +276,7 @@ interface ErrorDocument {
 }
 
 /** The error a JSON answer names, with each note it carries, or null when the output holds no such document. */
-function jsonFailure(stdout: string): string | null {
+export function jsonFailure(stdout: string): string | null {
   const document = jsonDocument<ErrorDocument>(stdout);
   const text = document?.error?.text;
   if (typeof text !== 'string' || text.trim() === '') return null;

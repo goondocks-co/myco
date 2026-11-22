@@ -19,7 +19,7 @@ invocation_logs = false
 
 # Workers Paid CPU allowance, with headroom over a 15 s transcript pass and
 # the rest of its tick. The deploy renderer omits this table after the account
-# refuses code 100328. Workers Free allows 10 ms of CPU per HTTP request.
+# refuses code 100328. Workers Free allows 10 ms of CPU per invocation (requests and scheduled ticks).
 [limits]
 cpu_ms = 60_000
 

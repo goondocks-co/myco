@@ -48,7 +48,7 @@ import {
   type DeploymentRecord,
 } from './cloudflare.js';
 import { stageCloudflareDeploy } from './cloudflare-stage.js';
-import { cpuLimitRefusedForThisRelease, renderDeployConfig } from './deploy-config.js';
+import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
@@ -57,12 +57,14 @@ import { getPluginVersion } from '../version.js';
 import type { CommandRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
-import { cloudflareErrorCodes } from './object-read.js';
+import { CloudflareUploads } from './cloudflare-upload.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
 export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' | 'configDir'> {
   mycoHome?: string;
+  /** Probe the configured CPU allowance once, even after a recorded refusal. */
+  cpuLimit?: boolean;
   /** Where the lifecycle says where it is, as it gets there. */
   report?: (line: string) => void;
   /** How an overloaded D1 is waited out between migration attempts. */
@@ -98,22 +100,6 @@ function lifecycleOperation<Options extends LifecycleOptions, Result>(
 function staged(record: DeploymentRecord, options: LifecycleOptions): CloudflareOptions {
   const stage = stageCloudflareDeploy(record, options.mycoHome);
   return { ...options, configDir: stage.dir, configFile: stage.configFile };
-}
-
-const CPU_LIMIT_UNSUPPORTED_CODE = '100328';
-
-/** Persist an account's CPU-limit refusal before retrying only its upload step. */
-async function uploadWithCpuLimit<T>(record: DeploymentRecord, options: LifecycleOptions, upload: () => Promise<T>): Promise<{ record: DeploymentRecord; result: T }> {
-  try {
-    return { record, result: await upload() };
-  } catch (error) {
-    if (cpuLimitRefusedForThisRelease(record) || !cloudflareErrorCodes(error).includes(CPU_LIMIT_UNSUPPORTED_CODE)) throw error;
-    record = { ...record, cpuLimitRefusedRelease: getPluginVersion() };
-    writeDeploymentRecord(record, options.mycoHome);
-    staged(record, options);
-    options.report?.('Cloudflare refused a custom CPU limit. Retrying without it. Workers Free allows 10 ms of CPU per request; heavy work such as transcript import or large reads may be cut short. Workers Paid removes that 10 ms restriction. https://developers.cloudflare.com/workers/platform/limits/#cpu-time');
-    return { record, result: await upload() };
-  }
 }
 
 /**
@@ -244,6 +230,7 @@ async function refuseUnclaimedBucket(options: LifecycleOptions, bare: Cloudflare
  */
 export const createCloudflareDeployment = lifecycleOperation('create', async (options: LifecycleOptions & { url?: string; adoptBucket?: boolean }, existing): Promise<CreateResult> => {
   await preflight(options);
+  const uploads = new CloudflareUploads(options);
   const resources = cloudflareResources(existing ?? {});
   const createdResources: string[] = [];
   const bare = bareCommand(options);
@@ -298,7 +285,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
       return prepared;
     },
   });
-  let deployment = await uploadWithCpuLimit(record, options, () => deployWorker(withConfig));
+  let deployment = await uploads.upload(record, () => deployWorker(withConfig));
   record = deployment.record;
   let deployed = deployment.result;
 
@@ -315,7 +302,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     record = { ...record, url: new URL(deployed.url).origin };
     writeDeploymentRecord(record, options.mycoHome);
     const originConfig = staged(record, options);
-    deployment = await uploadWithCpuLimit(record, options, () => deployWorker(originConfig));
+    deployment = await uploads.upload(record, () => deployWorker(originConfig));
     record = deployment.record;
     deployed = deployment.result;
   }
@@ -439,6 +426,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
+    const uploads = new CloudflareUploads(options);
     let previousVersionId: string | null = null;
     const uploader = new CloudflareWorkerUpdate(workerOptions);
     let uploadedVersion: string | undefined;
@@ -468,7 +456,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
         summary.upload = 'attempted; outcome unknown';
-        const upload = await uploadWithCpuLimit(prepared, options, () => uploader.upload());
+        const upload = await uploads.upload(prepared, () => uploader.upload());
         prepared = upload.record;
         uploadedVersion = upload.result;
         summary.upload = { versionId: uploadedVersion };

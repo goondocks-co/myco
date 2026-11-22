@@ -198,9 +198,21 @@ it('resumes create after a CPU refusal and carries the account fact through crea
   await rollbackCloudflareDeployment({ ...selected, versionId: 'earlier-version' });
   expect(readDeploymentRecord(home)?.cpuLimitRefusedRelease).toBe(getPluginVersion());
   writeDeploymentRecord({ ...readDeploymentRecord(home)!, cpuLimitRefusedRelease: 'earlier-release' }, home);
-  paid = true;
   await updateCloudflareDeployment(selected);
-  expect(limits).toEqual([true, false, false, false, false, true]);
+  expect(said.filter(line => line.includes('still refuses'))).toHaveLength(1);
+  const previousHome = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = home;
+  try {
+    const retry = await drive(['create', '--target', 'cloudflare', '--cpu-limit'], provider);
+    expect(retry.exited).toBe(false);
+    expect(retry.printed).toContain('still refuses');
+    paid = true;
+    expect((await drive(['update', '--target', 'cloudflare', '--cpu-limit'], provider)).exited).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+  }
+  expect(readDeploymentRecord(home)?.cpuLimitRefusedRelease).toBeUndefined();
+  expect(limits).toEqual([true, false, false, false, false, true, false, true, false, true]);
   expect(said.filter(line => line.includes('10 ms'))).toEqual([expect.stringContaining('Workers Paid')]);
 });
 

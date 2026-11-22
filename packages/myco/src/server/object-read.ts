@@ -1,4 +1,4 @@
-import { CommandFailed, CommandTimedOut, jsonDocument } from './runner.js';
+import { CommandFailed, CommandTimedOut, jsonDocument, jsonFailure } from './runner.js';
 import { stripVTControlCharacters } from 'node:util';
 
 /**
@@ -104,34 +104,36 @@ const NETWORK_CODE_IN_TEXT = new RegExp(`\\b(?:${[...TRANSIENT_NETWORK_CODES].jo
 /** The marker Wrangler opens its failure with (`✘ [ERROR] …`); the notes it prints follow that line. */
 const WRANGLER_ERROR = '[ERROR]';
 
-/**
- * The part of a failed provider command's output that states its failure: from Wrangler's `[ERROR]` line through the
- * notes after it, or the whole output when no such line was printed, as a `--json` command's error document is.
- */
-const failureText = (output: string): string => {
+/** Provider error evidence excludes codes from progress output. */
+function providerFailure(output: string): { text: string; codes: readonly string[] } {
   const clean = stripVTControlCharacters(output);
+  const document = jsonDocument<{ error?: unknown; errors?: unknown }>(clean);
+  if (document !== null && typeof document === 'object') {
+    const errors = [document.error, ...(Array.isArray(document.errors) ? document.errors : [])]
+      .filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object');
+    const structuredCodes = errors.flatMap(error => typeof error.code === 'number' && Number.isInteger(error.code) ? [String(error.code)] : []);
+    const text = jsonFailure(clean) ?? errors.flatMap(error => typeof error.message === 'string' ? [error.message] : []).join('\n');
+    if (text !== '' || structuredCodes.length > 0) {
+      const codes = [...blockCodes(text), ...structuredCodes];
+      return { text: [text, ...structuredCodes.map(code => `[code: ${code}]`)].join('\n'), codes };
+    }
+  }
   const at = clean.indexOf(WRANGLER_ERROR);
-  return at === -1 ? clean : clean.slice(at);
-};
-
-/** Provider error documents and error lines exclude unrelated progress output. */
-function providerFailure(error: CommandFailed): string {
-  const document = jsonDocument<Record<string, unknown>>(error.stdout);
-  return document !== null && typeof document === 'object' && ('error' in document || 'errors' in document)
-    ? JSON.stringify(document.error ?? document.errors ?? null) : failureText(`${error.stdout}\n${error.stderr}`);
+  const text = at === -1 ? clean : clean.slice(at);
+  return { text, codes: at === -1 ? [] : blockCodes(text) };
 }
 
-/** Every Cloudflare API error code a provider command's failure names. */
-const apiCodes = (output: string): string[] => [...failureText(output).matchAll(API_CODE)].map((match) => match[1]!);
+/** Every numeric Cloudflare code inside an admitted error block or document. */
+const blockCodes = (output: string): string[] => [...output.matchAll(API_CODE)].map((match) => match[1]!);
 
 /** Whether a Cloudflare API error code answers a request that may succeed when sent again (`TRANSIENT_API_CODES`). */
 export const transientApiCode = (code: string | number): boolean => TRANSIENT_API_CODES.has(String(code));
 
 /** Whether the failure a provider command printed may pass when the command runs again. */
 export function transientProviderOutput(output: string): boolean {
-  const failure = failureText(output);
-  return TRANSIENT_OUTPUT.some((pattern) => pattern.test(failure)) || NETWORK_CODE_IN_TEXT.test(failure)
-    || apiCodes(output).some((code) => TRANSIENT_API_CODES.has(code));
+  const failure = providerFailure(output);
+  return TRANSIENT_OUTPUT.some((pattern) => pattern.test(failure.text)) || NETWORK_CODE_IN_TEXT.test(failure.text)
+    || failure.codes.some((code) => TRANSIENT_API_CODES.has(code));
 }
 
 /** The failure and each cause it carries, as far down as `CAUSE_DEPTH`. */
@@ -148,7 +150,7 @@ export function transientReadFailure(error: unknown): boolean {
   for (const current of causes(error)) {
     if (current instanceof ObjectReadError) return current.transient;
     if (current instanceof CommandTimedOut) return true;
-    if (current instanceof CommandFailed) return transientProviderOutput(providerFailure(current));
+    if (current instanceof CommandFailed) return transientProviderOutput(`${current.stdout}\n${current.stderr}`);
     const { name, code } = current as { name?: unknown; code?: unknown };
     if (name === 'TimeoutError' || name === 'AbortError') return true;
     if (typeof code === 'string' && (TRANSIENT_NETWORK_CODES.has(code) || TRUNCATED_BODY_CODES.has(code))) return true;
@@ -164,7 +166,7 @@ export function refusedAccountCode(error: unknown): string | null {
 /** Numeric provider codes retained by a command failure or its causes. */
 export function cloudflareErrorCodes(error: unknown): readonly string[] {
   for (const current of causes(error)) {
-    if (current instanceof CommandFailed) return apiCodes(providerFailure(current));
+    if (current instanceof CommandFailed) return providerFailure(`${current.stdout}\n${current.stderr}`).codes;
     if (current instanceof ObjectReadError && current.apiCodes.length > 0) return current.apiCodes;
   }
   return [];
