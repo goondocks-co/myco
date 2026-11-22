@@ -59,7 +59,6 @@ export interface GitHubAppManifest {
   callback_urls: string[];
   public: true;
   default_permissions: typeof GITHUB_APP_PERMISSIONS;
-  hook_attributes: { active: false };
 }
 
 /** Conversion credentials; the webhook secret is discarded. */
@@ -129,7 +128,10 @@ function isLoopbackHost(host: string): boolean {
   return host === '[::1]' || host === '::1' || (isIP(host) === 4 && host.startsWith('127.'));
 }
 
-/** Public sign-in and read-only repository access, with no webhook delivery. */
+/**
+ * Public sign-in and read-only repository access. The manifest names no webhook: GitHub requires a delivery URL
+ * with any webhook setting, and an app registered without one delivers none.
+ */
 export function manifestFor(opts: { url: string; name: string; redirectUrl: string }): GitHubAppManifest {
   const origin = new URL(opts.url).origin;
   return {
@@ -139,7 +141,6 @@ export function manifestFor(opts: { url: string; name: string; redirectUrl: stri
     callback_urls: [`${origin}/auth/callback`],
     public: true,
     default_permissions: GITHUB_APP_PERMISSIONS,
-    hook_attributes: { active: false },
   };
 }
 

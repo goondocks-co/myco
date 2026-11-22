@@ -40,9 +40,8 @@ describe('the manifest', () => {
     const manifest = manifestFor({ url: `${URL_}/`, name: await defaultAppName(`${URL_}/`), redirectUrl: 'http://127.0.0.1:4242/callback' });
     expect(manifest).toEqual({
       name: 'Myco (myco.example.co)', url: URL_, redirect_url: 'http://127.0.0.1:4242/callback',
-      callback_urls: [`${URL_}/auth/callback`], public: true, default_permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' }, hook_attributes: { active: false },
+      callback_urls: [`${URL_}/auth/callback`], public: true, default_permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' },
     });
-    expect(manifest.hook_attributes.active).toBe(false);
     expect(manifestFor({ url: URL_, name: 'Team sign-in', redirectUrl: 'http://127.0.0.1:1/callback' }).name).toBe('Team sign-in');
   });
 
