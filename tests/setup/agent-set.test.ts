@@ -287,7 +287,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
       }, { preconnect: () => {} });
       expect(await setup(['--join', SERVER, '--yes', '--no-runner'], {
         mycoHome: home, cwd: root, ask: async () => null, fetch: fetchImpl, agents: () => ['claude-code', 'codex'],
-        stdout: line => lines.push(line), stderr: line => errors.push(line),
+        stdout: (...said: unknown[]) => lines.push(said.join(' ')), stderr: line => errors.push(line),
       }), errors.join('\n')).toBe(0);
     } else {
       const rig = unjoinedRig();
@@ -298,7 +298,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
       })).toBe(true);
     }
     expect(errors).toEqual([]);
-    expect(lines.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
+    expect(lines.map(line => line.trim())).toContain('Capture is set up for Claude Code, Codex.');
     expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   } finally {
     holder.stopWatching();
