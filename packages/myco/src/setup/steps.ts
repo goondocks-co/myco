@@ -4,6 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { SETUP_CREATE_GUIDANCE } from '@goondocks/myco-shared/setup-guidance';
 import { run as login, type LoginDeps } from '@myco/cli/login.js';
+import type { SignInHistory } from '@myco/cli/signin-capture.js';
 import { runJoin, runDrain, provisionDetectedAgents, detectedProvisionLines, recordNoAgents, type MemberCliDeps } from '@myco/cli/member.js';
 import { registerRunner } from '@myco/cli/runner-register.js';
 import { defaultRunnerName, runnerServerUrl } from '@myco/cli/runner-deps.js';
@@ -82,6 +83,7 @@ interface Context {
   ownerLink?: LocalOwnerLink | null;
   ownerLogin?: { accountId: string; login: OperatorLogin };
   legacySummary?: string;
+  signInHistory?: SignInHistory;
 }
 interface SetupStep {
   id: string;
@@ -468,6 +470,7 @@ const STEPS: readonly SetupStep[] = [
       await consent(ctx, 'device', { url: answers.url, action: 'Sign this machine in' }, 'Sign this machine in through device approval?', ctx.explicitJoin || ctx.yes);
       const ok = await (ctx.deps.login ?? login)([ctx.deps.loginAddress ?? answers.url], {
         ...ctx.deps.loginDeps, mycoHome: ctx.home, cwd: answers.root, fetch: ctx.deps.fetch, provision: 'defer',
+        setupCapture: { connectsProject: answers.root !== undefined, deferHistory: history => { ctx.signInHistory = history; } },
         stdout: ctx.out, stderr: ctx.deps.stderr, now: ctx.deps.now, sleep: ctx.deps.sleep,
       });
       if (!ok) throw new Error('Sign-in did not finish; run myco setup again to resume.');
@@ -522,6 +525,7 @@ const STEPS: readonly SetupStep[] = [
       if (answers.newProject !== undefined) args.push('--new', ...(answers.newProject === true ? [] : [answers.newProject]));
       const entry = await (ctx.deps.join ?? runJoin)(args, {
         ...ctx.deps.memberDeps, mycoHome: ctx.home, cwd: answers.root, fetch: ctx.deps.fetch, ask: ctx.ask,
+        deferSignInHistory: history => { ctx.signInHistory = history; },
         stdout: ctx.out, stderr: ctx.deps.stderr, now: ctx.deps.now,
       });
       if (entry === null) throw new Error('Project connection did not finish; run myco setup --project <id|name> or myco setup --new [name] to resume.');
@@ -536,7 +540,7 @@ const STEPS: readonly SetupStep[] = [
       }
       try {
         await runDrain(['--all'], { ...ctx.deps.memberDeps, mycoHome: ctx.home, fetch: ctx.deps.fetch, now: ctx.deps.now,
-          stdout: ctx.out, stderr: ctx.deps.stderr, signInCapture: { serverUrl: chosen(ctx).url } });
+          stdout: ctx.out, stderr: ctx.deps.stderr, signInCapture: { serverUrl: chosen(ctx).url, history: ctx.signInHistory } });
       } catch (error) {
         ctx.out(`Warning: capture delivery could not finish: ${error instanceof Error ? error.message : String(error)}. Run myco member drain to retry.`);
       }

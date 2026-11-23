@@ -2,7 +2,7 @@ import type { RunnerCredentialChoices } from '@goondocks/myco-shared/runner-flee
 import { harnessLabel } from '../lib/harness';
 import { ACCOUNT_UNLINKED, DEVICE_CODE_REFUSAL, DEVICE_MEMBERSHIP_REFUSAL, OWNER_UNCLAIMED } from '@goondocks/myco-shared/setup-guidance';
 import { useLocation } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, buttonVariants, Card, FactRow, FactsPanel, Input } from '../design';
 import { useMe } from '../hooks/use-me';
 import { ApiError, postJson, SignedOutError } from '../lib/api';
@@ -25,16 +25,17 @@ export function Device() {
   const location = useLocation();
   const [code, setCode] = useState(() => {
     const supplied = new URLSearchParams(location.search).get('code')?.trim().toUpperCase();
-    return supplied && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(supplied) ? supplied : pendingDeviceCode() ?? '';
+    return supplied ?? pendingDeviceCode() ?? '';
   });
+  const initialPreviewCode = useRef(code);
   useEffect(() => { pendingDeviceCode(null); }, []);
   const [preview, setPreview] = useState<(Preview & { code: string }) | null>(null);
   const revision = useRef(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [finished, setFinished] = useState<'approved' | 'denied' | null>(null);
-  const check = async () => {
-    const checkedCode = code;
+  const check = useCallback(async (checkedCode: string) => {
+    initialPreviewCode.current = '';
     const version = ++revision.current;
     setPending(true); setError(null); setPreview(null);
     try {
@@ -43,7 +44,11 @@ export function Device() {
     }
     catch (e) { pendingDeviceCode(null); if (version === revision.current) setError(refusal(e)); }
     finally { if (version === revision.current) setPending(false); }
-  };
+  }, []);
+  const member = me.data?.member;
+  useEffect(() => {
+    if (member && initialPreviewCode.current) void check(initialPreviewCode.current);
+  }, [check, member]);
   const decide = async (decision: 'approve' | 'deny') => {
     if (preview === null || preview.code !== code) return;
     setPending(true); setError(null);
@@ -67,10 +72,10 @@ export function Device() {
           : me.error ? <p role="alert">{'This server is not answering. Reload to try again.'}</p>
             : !me.data?.member ? <p role="alert">{me.data?.membership?.state === 'unclaimed' ? OWNER_UNCLAIMED : me.data?.membership?.reason ?? ACCOUNT_UNLINKED}</p>
               : <>
-                <form onSubmit={e => { e.preventDefault(); void check(); }} className="flex flex-col gap-s3">
+                <form onSubmit={e => { e.preventDefault(); void check(code); }} className="flex flex-col gap-s3">
                   <label className="t-body text-ink" htmlFor="device-code">Code from your terminal</label>
                   <Input id="device-code" value={code} maxLength={9} autoComplete="off"
-                    onChange={e => { ++revision.current; setCode(e.target.value.toUpperCase()); setPreview(null); setPending(false); }} />
+                    onChange={e => { initialPreviewCode.current = ''; ++revision.current; setCode(e.target.value.toUpperCase()); setPreview(null); setPending(false); }} />
                   <Button type="submit" pending={pending} disabled={!code.trim()}>Check machine</Button>
                 </form>
                 {preview && preview.code === code && preview.subject === 'runner' && <>

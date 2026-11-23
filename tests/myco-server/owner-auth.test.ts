@@ -144,7 +144,7 @@ describe('owner route dispatch', () => {
   });
 });
 
-import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
+import { OAUTH_STATE_COOKIE, OAUTH_STATE_TTL_SECONDS } from '@myco-server-worker/auth/owner/github.js';
 
 /** Drives the worker with a supplied outbound fetch, the way the entry supplies the real one. */
 const withFetch = (request: Request, env: unknown, fetchImpl: OutboundFetch) =>
@@ -217,13 +217,18 @@ describe('sign-in', () => {
     expect(res.status).toBe(400);
   });
 
-  it('refuses a callback with no state cookie at all', async () => {
+  it('shows recovery guidance when GitHub returns after sign-in expires', async () => {
     const e = sqliteEnv();
-    const res = await worker.fetch(
-      new Request('https://s/auth/callback?code=c&state=whatever', { headers: { 'cf-connecting-ip': '1.2.3.4' } }),
-      { ...e.env, ...OWNER_ENV }
-    );
+    const env = { ...e.serverEnv, secrets: OWNER_ENV };
+    let now = Date.now();
+    const server = createServer({ now: () => now, sourceOf: () => '192.0.2.10', fetchImpl: () => { throw new Error('expired sign-in contacted GitHub'); } });
+    const login = await server.handleRequest(new Request('https://s/auth/login'), env);
+    const state = new URL(login.headers.get('location')!).searchParams.get('state');
+    now += OAUTH_STATE_TTL_SECONDS * 1_000 + 1;
+    const res = await server.handleRequest(new Request(`https://s/auth/callback?code=c&state=${state}`, { headers: { cookie: `${OAUTH_STATE_COOKIE}=${state}` } }), env);
     expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toContain('text/html');
+    expect(await res.text()).toMatch(/Sign-in may have taken too long.*Reopen the original link.*run myco setup again/);
   });
 });
 

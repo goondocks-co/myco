@@ -1,3 +1,4 @@
+import { SIGN_IN_RESTART } from '@goondocks/myco-shared/setup-guidance';
 import type { AuthContext } from '../../context.js';
 import { setCookie, signPayload, verifyPayload, signSession, SESSION_TTL_MS } from './cookie.js';
 import { authorizeUrl, exchangeCode, fetchIdentity, OAUTH_STATE_COOKIE, OAUTH_STATE_TTL_SECONDS, OAUTH_STATE_TYP, type OAuthState } from './github.js';
@@ -6,6 +7,14 @@ const redirectUriFor = (origin: string): string => `${origin}/auth/callback`;
 
 const stateCookie = (state: string, maxAge: number): string =>
   `${OAUTH_STATE_COOKIE}=${state}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+
+function restartSignIn(): Response {
+  const { title, reason } = SIGN_IN_RESTART;
+  return new Response(
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><style>:root{color-scheme:light dark}body{font:1.1rem system-ui;max-width:40rem;margin:15vh auto;padding:1.5rem}</style><main><h1>${title}</h1><p>${reason}</p></main></html>`,
+    { status: 400, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'set-cookie': stateCookie('', 0) } },
+  );
+}
 
 /** Begin sign-in: plant a random state in a short-lived cookie and send the browser to GitHub carrying the same value. */
 export async function handleLogin(_request: Request, ctx: AuthContext): Promise<Response> {
@@ -30,10 +39,10 @@ export async function handleCallback(request: Request, ctx: AuthContext): Promis
   const planted = readStateCookie(request.headers.get('cookie'));
   const minted = state === null ? null : await verifyPayload<OAuthState>(ctx.config.sessionSecret, OAUTH_STATE_TYP, state, ctx.now);
   if (code === null || state === null || planted === null || planted !== state || minted === null) {
-    return new Response(null, { status: 400, headers: { 'set-cookie': stateCookie('', 0) } });
+    return restartSignIn();
   }
   const accessToken = await exchangeCode(ctx.fetchImpl, ctx.config, redirectUriFor(ctx.origin), code);
-  if (accessToken === null) return new Response(null, { status: 400, headers: { 'set-cookie': stateCookie('', 0) } });
+  if (accessToken === null) return restartSignIn();
   const identity = await fetchIdentity(ctx.fetchImpl, accessToken);
   if (identity === null) return new Response(null, { status: 403, headers: { 'set-cookie': stateCookie('', 0) } });
   // The session names the account; whether that account is a member is decided on every request it makes.

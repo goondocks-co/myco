@@ -16,7 +16,7 @@ const scenarios = [
   { name: 'sign-in-unconfigured', url: '/projects', state: 'unconfigured', words: 'myco setup' },
   { name: 'link-unconfigured', url: '/link#xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', state: 'unconfigured', words: 'myco setup' },
   { name: 'projects-empty', url: '/projects', state: 'active', words: 'Get started' },
-  { name: 'device-prefill', url: '/device?code=BCDF-2345', state: 'active', words: 'Check machine' },
+  { name: 'device-prefill', url: '/device?code=BCDF-2345', state: 'active', words: 'Approve this machine' },
 ] as const;
 
 for (const mode of ['light', 'dark'] as const) {
@@ -39,6 +39,9 @@ for (const mode of ['light', 'dark'] as const) {
             }) });
           }
           if (url.pathname === '/auth/link') return route.fulfill({ status: 400, json: { error: 'owner_link_denied' } });
+          if (url.pathname === '/api/device/preview') return route.fulfill({ json: {
+            subject: 'member', machineName: 'Laptop', os: 'macOS', ip: '192.0.2.10', approverIp: '192.0.2.10', ageSeconds: 12, scope: 'membership', expiresAt: Date.now() + 600_000,
+          } });
           if (url.pathname === '/api/setup') return route.fulfill({ json: { ownerLinked: true, viewerIsOwner: true, signInWorking: true, machines: { signedIn: 0 }, projects: 0, liveCapture: false, runnersReady: 0, workProduced: false, legacyWorkers: 0, queuedWithoutRunner: false } });
           if (url.pathname === '/api/projects') return route.fulfill({ json: { projects: [] } });
           return route.continue();
@@ -47,7 +50,7 @@ for (const mode of ['light', 'dark'] as const) {
         await expect(page.getByText(scenario.words, { exact: false }).first()).toBeVisible();
         if (scenario.name === 'device-prefill') {
           await expect(page.getByLabel('Code from your terminal')).toHaveValue('BCDF-2345');
-          await expect(page.getByText('Approve this machine')).toHaveCount(0);
+          await expect(page.getByRole('button', { name: 'Deny' })).toBeVisible();
         }
         if (scenario.state === 'unconfigured') {
           await expect(page.getByText('Sign in with GitHub')).toHaveCount(0);

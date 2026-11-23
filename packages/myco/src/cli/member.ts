@@ -1,5 +1,5 @@
 import { PROMPT_FILE_READER_VERB } from '../member/prompt-file-policy.js';
-import { importSignInHistory, withSignInCapture } from './signin-capture.js';
+import { importSignInHistory, withSignInCapture, type SignInHistory } from './signin-capture.js';
 import { scanLegacyRegistrations } from '@myco/member/legacy-registration-files.js';
 import { findingOwnedBinary } from '@myco/symbionts/registration-takeover.js';
 import { repositoryName, repositoryRemote } from '@myco/utils/git.js';
@@ -75,7 +75,8 @@ import { describeWorkerService, workerServiceWords, type WorkerServiceDeps } fro
 
 export interface MemberCliDeps {
   /** Bound setup's capture follow-up to the Deployment it just joined. */
-  signInCapture?: { serverUrl: string };
+  signInCapture?: { serverUrl: string; history?: SignInHistory };
+  deferSignInHistory?: (history: SignInHistory) => void;
   fetch?: FetchLike;
   now?: () => number;
   cwd?: string;
@@ -430,9 +431,11 @@ async function importJoinedHistory(
   entry: RegistryEntry, mycoHome: string, deps: MemberCliDeps,
   stdout: (line: string) => void, stderr: (line: string) => void,
 ): Promise<void> {
-  await withSignInCapture({ fetch: deps.fetch, now: deps.now, stdout }, capture => importSignInHistory({ serverUrl: entry.serverUrl, project: entry.projectId }, {
+  const history: SignInHistory = capture => importSignInHistory({ serverUrl: entry.serverUrl, project: entry.projectId }, {
     now: deps.now, cwd: entry.root, mycoHome, machineId: entry.machineId, stdout, stderr,
-  }, capture));
+  }, capture);
+  if (deps.deferSignInHistory) deps.deferSignInHistory(history);
+  else await withSignInCapture({ fetch: deps.fetch, now: deps.now, stdout }, history);
 }
 
 /**
@@ -1188,8 +1191,14 @@ export async function runDrain(args: readonly string[], deps: MemberCliDeps = {}
     }
     return results;
   };
-  return deps.signInCapture === undefined || entries.length === 0 ? drain(deps.fetch)
-    : withSignInCapture({ fetch: deps.fetch, now, stdout: out }, ({ fetch, budget }) => drain(fetch, budget));
+  if (signIn === undefined || (entries.length === 0 && !signIn.history)) return drain(deps.fetch);
+  return withSignInCapture({ fetch: deps.fetch, now, stdout: out }, async capture => {
+    try {
+      return await drain(capture.fetch, capture.budget);
+    } finally {
+      await signIn.history?.(capture);
+    }
+  });
 }
 
 /** One line per session a backlog walk reached, and one for a walk that reached none. */

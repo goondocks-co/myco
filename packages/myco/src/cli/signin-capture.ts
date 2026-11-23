@@ -11,6 +11,8 @@ interface SignInCapture {
   signal: AbortSignal;
 }
 
+export type SignInHistory = (capture: SignInCapture) => Promise<void>;
+
 /** One deadline bounds all capture requests made while finishing sign-in. */
 export async function withSignInCapture<T>(
   deps: { fetch?: FetchLike; now?: () => number; stdout: (line: string) => void },
@@ -36,6 +38,10 @@ export async function importSignInHistory(
   deps: Omit<ImportDeps, 'fetch' | 'signal'> & { stdout: (line: string) => void; stderr: (line: string) => void },
   capture: SignInCapture,
 ): Promise<void> {
+  if ((deps.now ?? Date.now)() >= capture.budget.deadline || capture.signal.aborted) {
+    deps.stderr('  Past sessions are still waiting; `myco import` retries them.');
+    return;
+  }
   try {
     const report = await runImport({ ...opts, until: capture.budget.deadline }, { discovery: folderTranscriptDiscovery, ...deps, fetch: capture.fetch, signal: capture.signal });
     const imported = report.projects.reduce((sum, project) => sum + project.agents.reduce((count, agent) => count + agent.imported, 0), 0);

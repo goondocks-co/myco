@@ -12,7 +12,7 @@ import { isSafeProjectRoot } from '../project-root.js';
 import { resolveMemberProjectRoot } from '../member/credential.js';
 import { exchangeJoinCode, parseJoinCode, recordJoinAnswer, runtimeLabelOf, JOIN_CODE_REFUSALS } from '../member/join-code.js';
 import type { WorkerServiceDeps } from './worker-service.js';
-import { importSignInHistory, withSignInCapture } from './signin-capture.js';
+import { importSignInHistory, withSignInCapture, type SignInHistory } from './signin-capture.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import { deploymentUrl, listRegistryEntries } from '../member/registry.js';
 import { detectedProvisionLines, provisionDetectedAgents, recordNoAgents, MemberRepairBusyError } from './member.js';
@@ -66,6 +66,7 @@ export interface LoginDeps {
   provisionTimeoutMs?: number;
   /** Deferral leaves the agent choice unrecorded for a later provisioning step. */
   provision?: 'now' | 'defer';
+  setupCapture?: { connectsProject: boolean; deferHistory: (history: SignInHistory) => void };
   fetch?: typeof fetch;
   now?: () => number;
   cwd?: string;
@@ -189,7 +190,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
   out(`Signed in to ${code.serverUrl} as ${answer.memberLabel ?? answer.memberId} (${answer.owner === true ? 'owner' : answer.role}).`);
   out(`Signed in to the wrong Myco? \`myco logout ${code.serverUrl}\` removes this machine from it.`);
   if (root !== undefined) out(`  Connected ${root} to project ${answer.projectId}. Your agents capture there from now on.`);
-  else out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
+  else if (!deps.setupCapture?.connectsProject) out('  No project yet. A git repository under your capture folders joins the first time an agent works in it, or connect one with `myco member join`.');
   const held = readDefaultDeployment(mycoHome);
   if (!isDefault && held !== null) out(`  New repositories keep joining ${held.serverUrl}; \`myco login --default ${deploymentUrl(code.serverUrl)}\` makes ${deploymentUrl(code.serverUrl)} the one they join.`);
   // Provisioning is separate from sign-in and preserves other installations' settings.
@@ -212,9 +213,16 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
     }
   }
 
-  const entries = listRegistryEntries(mycoHome).filter((entry) => deploymentUrl(entry.serverUrl) === deploymentUrl(code.serverUrl));
-  if (entries.length === 0 && root === undefined) return true;
   const now = deps.now ?? Date.now;
+  const history: SignInHistory | undefined = root === undefined ? undefined : capture => importSignInHistory({ serverUrl: code.serverUrl }, {
+    now, cwd: deps.cwd, mycoHome, machineId, stdout: out, stderr: err,
+  }, capture);
+  if (deps.setupCapture) {
+    if (history) deps.setupCapture.deferHistory(history);
+    return true;
+  }
+  const entries = listRegistryEntries(mycoHome).filter((entry) => deploymentUrl(entry.serverUrl) === deploymentUrl(code.serverUrl));
+  if (entries.length === 0 && history === undefined) return true;
   await withSignInCapture({ fetch: deps.fetch, now, stdout: out }, async capture => {
     const { fetch: fetchImpl, budget, signal } = capture;
     const deadline = budget.deadline;
@@ -232,15 +240,7 @@ export async function run(args: readonly string[], deps: LoginDeps = {}): Promis
         err(`  Could not deliver waiting capture in ${entry.root} (${(error as Error).message}); \`myco member drain\` retries it.`);
       }
     }
-    if (root !== undefined) {
-      if (now() >= deadline || signal.aborted) {
-        err('  Past sessions are still waiting; `myco import` retries them.');
-      } else {
-        await importSignInHistory({ serverUrl: code.serverUrl }, {
-          now, cwd: deps.cwd, mycoHome, machineId, stdout: out, stderr: err,
-        }, capture);
-      }
-    }
+    await history?.(capture);
   });
   return true;
 }

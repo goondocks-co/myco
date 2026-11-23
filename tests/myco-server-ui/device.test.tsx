@@ -19,14 +19,18 @@ function mount(path = '/device') {
 }
 
 describe('device approval page', () => {
-  it('prefills a valid URL code but still requires checking before approval', async () => {
+  it('shows machine details from the URL code and waits for a decision', async () => {
     const calls: string[] = [];
-    globalThis.fetch = (async input => { calls.push(String(input)); return Response.json(ME); }) as typeof fetch;
+    globalThis.fetch = (async input => {
+      calls.push(String(input));
+      return Response.json(String(input) === '/auth/me' ? ME : PREVIEW);
+    }) as typeof fetch;
     mount('/device?code=bcdf-2345');
-    expect(await screen.findByText('Check machine')).toBeTruthy();
+    expect(await screen.findByText('SSH laptop')).toBeTruthy();
     expect((screen.getByLabelText('Code from your terminal') as HTMLInputElement).value).toBe('BCDF-2345');
-    expect(new Set(calls)).toEqual(new Set(['/auth/me']));
-    expect(screen.queryByText('Approve this machine')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Approve this machine' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Deny' })).toBeTruthy();
+    expect(calls.filter(url => url.startsWith('/api/device/'))).toEqual(['/api/device/preview']);
   });
 
   for (const state of ['unclaimed', 'unlinked'] as const) {
@@ -171,11 +175,7 @@ describe('device approval page', () => {
       const url = String(input); calls.push(url);
       return url === '/auth/me' ? Response.json(ME) : Response.json({ error: 'expired_token' }, { status: 400 });
     }) as typeof fetch;
-    mount();
-    await screen.findByText('Check machine');
-    fireEvent.change(screen.getByLabelText('Code from your terminal'), { target: { value: 'BCDF-2345' } });
-    pendingDeviceCode('BCDF-2345');
-    fireEvent.click(screen.getByText('Check machine'));
+    mount('/device?code=BCDF-2345');
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('expired'));
     expect(screen.queryByText('Approve this machine')).toBeNull();
     expect(calls).not.toContain('/api/device/approve');
