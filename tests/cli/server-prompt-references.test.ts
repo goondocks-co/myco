@@ -88,6 +88,7 @@ for (const target of ['local', 'cloudflare']) describe(`hook placement status on
   }
   it('prints zero through the target’s real read path', async () => {
     expect(await status()).toBe('  Context deliveries not placed on a turn (7 UTC days): 0');
+    expect(log.mock.calls.flat().join('\n')).not.toContain('"kind":"db_batch"');
     if (target === 'cloudflare') {
       expect(reads.length).toBeGreaterThan(0);
       expect(loginStartedAfterStatus).toBe(true);

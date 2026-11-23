@@ -1,3 +1,5 @@
+import { openBrowser } from '@goondocks/myco-shared';
+import { withoutServerTelemetry } from './operator-telemetry.js';
 import { recoveryCredentialLines } from '../server/recovery-secret-report.js';
 import { HOSTED_BACKUP_PAUSE_NOTICE, NATIVE_BACKUP_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { cloudflareWrappingKeyLine } from '../server/cloudflare-wrapping-key.js';
@@ -5,7 +7,7 @@ import { localBudgetStatus, cloudflareBudgetStatus, operatorBudgetLine } from '.
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
 import { CommandFailed, type CommandRunner } from '../server/runner.js';
-import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
+import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget, type RegisterOptions } from '../server/github-app.js';
 import { operationWranglerRunner, WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
 import { type LifecycleOptions, type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
@@ -183,17 +185,6 @@ async function reachable(record: { port: number; origin?: string }): Promise<boo
   }
 }
 
-/** Opens a URL in the operator's browser where one is available; failure is silent and the URL is printed anyway. */
-async function openInBrowser(url: string): Promise<void> {
-  const { spawn } = await import('node:child_process');
-  const [command, args] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
-  await new Promise<void>((resolve) => {
-    const child = spawn(command, args, { stdio: 'ignore', detached: true });
-    child.on('error', () => resolve());
-    child.on('spawn', () => { child.unref(); resolve(); });
-  });
-}
-
 /**
  * What an operator backup is holding on this Deployment, when one is. Deletions are recorded and deferred while it is
  * open, so storage grows by what they would have freed; only the backup completing, or being given up, releases it.
@@ -238,7 +229,22 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[], deps: { readRetry?: LifecycleOptions['readRetry']; runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string>; cloudflareOwner?: typeof setupCloudflareOwner; localOwner?: typeof setupLocalOwner; local?: LocalLifecycleDeps } = {}): Promise<void> {
+interface ServerCliDeps {
+  readRetry?: LifecycleOptions['readRetry'];
+  runner?: CommandRunner;
+  fetchImpl?: typeof fetch;
+  openUrl?: RegisterOptions['openUrl'];
+  readSecret?: () => Promise<string>;
+  cloudflareOwner?: typeof setupCloudflareOwner;
+  localOwner?: typeof setupLocalOwner;
+  local?: LocalLifecycleDeps;
+}
+
+export function run(args: string[], deps: ServerCliDeps = {}): Promise<void> {
+  return args[0] === 'run' ? runCommand(args, deps) : withoutServerTelemetry(() => runCommand(args, deps));
+}
+
+async function runCommand(args: string[], deps: ServerCliDeps): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -297,23 +303,16 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
   try {
     if (flags.get('target') === 'compose') fail(composeRetiredMessage(retiredComposeBundle()));
     if (command === 'rotate' || command === 'adopt') fail(`myco server ${command} is retired. Use myco server create --target local.`);
-    if (command === 'setup-owner' && target() === 'cloudflare') {
-      const result = await (deps.cloudflareOwner ?? setupCloudflareOwner)(cloudflareOptions());
-      console.log(`First administrator: ${result.memberId}`);
-      console.log('Open this private link, sign in with GitHub and connect your account; that account becomes the administrator:');
-      console.log(result.url);
-      console.log(`Expires: ${new Date(result.expiresAt).toISOString()}. Keep this link private.`);
-      console.log(ownerLinkNext(result.url, 'cloudflare'));
-      return;
-    }
     if (command === 'setup-owner') {
-      if (target() !== 'local') fail('setup-owner requires --target local or --target cloudflare');
-      const result = await (deps.localOwner ?? setupLocalOwner)(resolveLocalPaths(), carriedNative());
+      const selected = target();
+      const result = selected === 'cloudflare'
+        ? await (deps.cloudflareOwner ?? setupCloudflareOwner)(cloudflareOptions())
+        : await (deps.localOwner ?? setupLocalOwner)(resolveLocalPaths(), carriedNative());
       console.log(`First administrator: ${result.memberId}`);
-      console.log('Start the Deployment, then open this private link and connect your GitHub account:');
+      console.log('Private owner link (expires in 15 minutes):');
       console.log(result.url);
       console.log(`Expires: ${new Date(result.expiresAt).toISOString()}. Keep this link private.`);
-      console.log(ownerLinkNext(result.url, 'local'));
+      console.log(ownerLinkNext(result.url, selected));
       return;
     }
     if (LOCAL_VERBS.has(command) && target() === 'local') {
@@ -659,7 +658,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
         target,
         runner: deps.runner,
         fetchImpl: deps.fetchImpl,
-        openUrl: deps.openUrl ?? openInBrowser,
+        openUrl: deps.openUrl ?? openBrowser,
         log: (line) => console.log(line),
       });
       console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);

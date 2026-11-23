@@ -52,7 +52,7 @@ const runner: CommandRunner = fakeWranglerRunner({ async run(_command, args, opt
 } });
 async function drive(args: string[], secret = SECRET) {
   const fetchImpl: typeof fetch = Object.assign(async (input: RequestInfo | URL) => {
-    if (String(input) === 'https://api.github.com/app') return Response.json({ ...APP_RESPONSE, client_id: 'existing-client' });
+    if (String(input) === 'https://api.github.com/app') return Response.json({ ...APP_RESPONSE, client_id: 'existing-client', owner: { login: 'fixture-user', type: 'User' } });
     expect(String(input)).toBe(`${URL_}/auth/login`);
     return installed ? new Response(null, { status: 302, headers: { location: `https://github.com/login/oauth/authorize?client_id=existing-client&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}` } })
       : Response.json({ error: 'sign_in_unconfigured' }, { status: 401 });
@@ -75,7 +75,7 @@ it('dispatches --existing to the sign-in operation and never prints its secret',
   expect(output).toContain('Owner:       not checked');
   expect(output).toContain(`${URL_}/auth/callback must be listed in the app`);
   expect(output).toContain('sends sign-in to GitHub with client existing-client; sign in once to confirm');
-  expect(output).not.toContain('owned by your account');
+  expect(output).toContain('In GitHub, open fixture-user’s personal Settings, then Developer settings → GitHub Apps.');
   expect(output).not.toContain('and back');
   expect(output).not.toContain(SECRET);
   fs.unlinkSync(keyFile);

@@ -1101,6 +1101,7 @@ describe('Sign-in and access', () => {
       '/api/projects/proj_b/repository': () => Response.json({ repository: null, appConfigured: true }) }));
     mount('/settings/access');
     await screen.findByText('This server’s App is Myco (app), owned by goondocks-co (an organization).');
+    await screen.findByText('In GitHub, open goondocks-co’s organization page → Settings, then Developer settings → GitHub Apps.');
     expect(within(document.querySelector('[data-app-identity]') as HTMLElement).getByRole('link', { name: 'Open the App’s settings' }).getAttribute('href')).toBe('https://github.com/organizations/goondocks-co/settings/apps/myco-app');
     const key = document.querySelector('[data-step="key"]') as HTMLElement;
     expect(within(key).getByText('Import the App’s private key.')).toBeTruthy();

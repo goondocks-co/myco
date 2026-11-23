@@ -212,7 +212,7 @@ describe('new owner journeys (a) and (b)', () => {
     const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
     closers.push(server.close);
     const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {},
-      ask: async question => question.includes('already have') || (refusal === 'pending' && question.startsWith('Make a fresh link?')) ? 'no' : 'yes',
+      ask: async question => question.startsWith('Who should own') ? '' : question.includes('already have') || (refusal === 'pending' && question.startsWith('Make a fresh link?')) ? 'no' : 'yes',
       prepareLocal: async (localHome, plan, localDeps) => ({ ...await prepareLocal(localHome, plan, localDeps), ownerLink: null }),
       ...(refusal === 'missing' ? { recoverLocal: async () => ({ url: 'http://127.0.0.1:8787', ownerLink: null }) } : {}),
     };
@@ -225,7 +225,7 @@ describe('new owner journeys (a) and (b)', () => {
     closers.push(server.close);
     let expired = false;
     const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {}, now: () => Date.now() + (expired ? 16 * 60_000 : 0),
-      ask: async question => question.includes('already have') || question.startsWith('The owner link expired.') ? 'no' : 'yes',
+      ask: async question => question.startsWith('Who should own') ? '' : question.includes('already have') || question.startsWith('The owner link expired.') ? 'no' : 'yes',
       openUrl: async url => { if (new globalThis.URL(url).hash) { expired = true; return; } await server.openUrl(url); },
     };
     expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--url', HOSTED_URL, '--new', 'Expired', '--no-agents', '--no-runner'], deps)).toBe(2);
@@ -307,7 +307,7 @@ describe('new owner journeys (a) and (b)', () => {
 
   for (const [flags, refusal] of [
     [['--create', 'other'], '--create needs cloudflare or local'],
-    [['--create', 'local', '--url', 'https://example.invalid'], 'Local setup is loopback only; use --port and --serve, without --url, --account-id or --org.'],
+    [['--create', 'local', '--url', 'https://example.invalid'], 'Local setup is loopback only; use --port and --serve, without --url or --account-id.'],
     [['--create', 'cloudflare', '--port', '8787'], 'Cloudflare setup uses --account-id and --url, without --port or --serve.'],
     [['--account-id', 'wrong'], '--account-id needs 32 hexadecimal characters'],
     [['--url', 'http://remote.invalid'], '--url needs an https Deployment origin, with no path, query or fragment'],

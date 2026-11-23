@@ -1,11 +1,12 @@
 import fs from 'node:fs';
+import { LOCAL_SERVER_STOP } from '@goondocks/myco-shared/setup-guidance';
 import path from 'node:path';
 import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
 import type { VolumeMetaKey } from '@myco-server-worker/platform/bun/server-main.js';
 import type { LocalDeploymentPaths } from './local.js';
 
 const BACKUP_ADMISSION_LOCK = '.backup.lock';
-const VOLUME_BUSY = 'local Deployment volume is in use; stop its serving process or wait for the active operation';
+const VOLUME_BUSY = `The local Deployment volume is in use. If the server is running, stop it. ${LOCAL_SERVER_STOP} If another operation is using it, wait for it to finish. Then run this command again.`;
 
 /**
  * What a start does before it serves, and how the lease proves the volume did not change under it.

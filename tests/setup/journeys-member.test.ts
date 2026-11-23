@@ -705,7 +705,7 @@ it('names the missing Cloudflare record if it disappears before sign-in setup', 
   const server = ownerDeployment(root, home, 'cloudflare');
   closers.push(server.close);
   let removed = false;
-  const deps: SetupDeps = { ...base(), ...server.deps, ask: async () => 'yes', stdout: line => {
+  const deps: SetupDeps = { ...base(), ...server.deps, ask: async question => question.startsWith('Who should own') ? '' : 'yes', stdout: line => {
     lines.push(line);
     if (line.includes('Register a GitHub sign-in app named')) {
       fs.rmSync(path.join(home, 'server', 'cloudflare', 'record.json'));

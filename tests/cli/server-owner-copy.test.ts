@@ -16,11 +16,8 @@ for (const target of ['cloudflare', 'local']) {
     const text = lines.join('\n');
     expect(text).toContain('expires in 15 minutes');
     expect(text).toContain(`myco server setup-owner --target ${target} again`);
-    expect(text).toContain('Then on each machine you use: myco login https://fixture.invalid.');
-    expect(text).not.toContain('invite this machine');
-    if (target === 'local') {
-      expect(text).toContain('myco server uninstall --target local');
-      expect(text).toContain('myco server install --target local');
-    }
+    expect(text).toMatch(target === 'local'
+      ? /1\. Start the server with myco server install --target local\.\n2\. Open the private link.*\n3\. On each machine.*myco login https:\/\/fixture\.invalid\.\nIf the link expires,.*myco server uninstall --target local.*Ctrl-C/
+      : /1\. Open the private link.*\n2\. On each machine.*myco login https:\/\/fixture\.invalid\.\nIf the link expires, run myco server setup-owner --target cloudflare/);
   });
 }

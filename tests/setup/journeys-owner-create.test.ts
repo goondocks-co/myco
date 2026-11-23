@@ -39,7 +39,7 @@ function holdRunnerLock(lockDir: string): void {
 }
 
 describe('new owner journeys (a) and (b)', () => {
-  const affirmative = async (question: string) => question.includes('already have') ? 'no' : 'yes';
+  const affirmative = async (question: string) => question.startsWith('Who should own') ? '' : question.includes('already have') ? 'no' : 'yes';
   for (const target of ['cloudflare', 'local'] as const) {
     const address = target === 'local' ? 'http://127.0.0.1:8787' : HOSTED_URL;
     const flags = () => ['--create', target, ...(target === 'local' ? ['--port', '8787', '--serve', 'service'] : ['--account-id', ACCOUNT]), '--new', 'Owner project', '--no-agents', '--no-runner', '--yes'];

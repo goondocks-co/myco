@@ -89,8 +89,8 @@ export interface RegisterOptions {
   target: SignInTarget;
   runner?: CommandRunner;
   fetchImpl?: typeof fetch;
-  /** Opens the manifest page in the operator's browser; the URL is printed too. */
-  openUrl?: (url: string) => Promise<void>;
+  /** Opens the manifest page in the operator's browser; false means the page must be opened by hand. */
+  openUrl?: (url: string) => void | boolean | Promise<void | boolean>;
   log?: (line: string) => void;
   timeoutMs?: number;
   /** The local port to listen on; 0 lets the system choose. */
@@ -532,6 +532,13 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Si
     privateKey: pending?.privateKey, privateKeyPem: pending?.privateKeyPem,
   } : pending ?? await new Promise<RegisteredApp>((resolve, reject) => {
     let formServed = false;
+    let openingReported = false;
+    const reportOpening = (line: string) => {
+      if (openingReported) return;
+      openingReported = true;
+      log(line);
+    };
+    const reportOpened = () => reportOpening('Opened the GitHub App registration page in your browser. The link is single-use. Run the command again for a new one.');
     let callbackTaken = false;
     let manifest: GitHubAppManifest | null = null;
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -543,6 +550,7 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Si
       }
       if (url.pathname === formPath && req.method === 'GET' && !formServed && manifest !== null) {
         formServed = true;
+        reportOpened();
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         res.end(manifestPage(manifest, manifestFormAction(options.org, state)));
         return;
@@ -584,8 +592,9 @@ async function registerWithInstaller(options: RegisterOptions, install: (app: Si
       const local = `http://${LOOPBACK}:${address.port}`;
       manifest = manifestFor({ url: options.url, name, redirectUrl: `${local}/callback` });
       const page = `${local}${formPath}`;
-      log(`Open this page to register the app (it opens on its own where a browser is available):\n  ${page}`);
-      (options.openUrl ?? (async () => undefined))(page).catch(() => undefined);
+      const manual = () => reportOpening(`Open this page in your browser to register the app:\n  ${page}`);
+      Promise.resolve().then(() => options.openUrl ? options.openUrl(page) : false)
+        .then(opened => { if (opened === false) manual(); else reportOpened(); }, manual);
     });
   });
 

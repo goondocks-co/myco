@@ -196,7 +196,9 @@ describe('the whole flow on a loopback listener', () => {
     const logs: string[] = [];
     let opened!: (url: string) => void;
     const page = new Promise<string>((resolve) => { opened = resolve; });
-    const pending = registerGitHubApp({ url: `${URL_}/`, org: 'goondocks-co', target, runner: r, fetchImpl, log: (l) => logs.push(l), openUrl: async (u) => opened(u) });
+    const browser = Promise.withResolvers<boolean>();
+    const pending = registerGitHubApp({ url: `${URL_}/`, org: 'goondocks-co', target, runner: r, fetchImpl, log: (line) => logs.push(line),
+      openUrl: async (url) => { opened(url); return browser.promise; } });
     const pageUrl = await page;
     expect(pageUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/[A-Za-z0-9_-]{16,}$/);
     expect(new URL(pageUrl).pathname).not.toBe('/callback');
@@ -212,6 +214,8 @@ describe('the whole flow on a loopback listener', () => {
     expect(form.status).toBe(200);
     expect(html).toContain('organizations/goondocks-co/settings/apps/new');
     expect(back.status).toBe(200);
+    expect(logs.join('\n')).toContain('The link is single-use. Run the command again for a new one.');
+    browser.resolve(false);
     const result = await pending;
     await expect(fetch(pageUrl)).rejects.toThrow();
     expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true }, signInInstalled: true, repositoryAccess: 'installed' });
@@ -222,6 +226,7 @@ describe('the whole flow on a loopback listener', () => {
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8'))).toMatchObject({ versionId: 'new-version', fleet: 3 });
     expect(logs.join('\n')).not.toContain('s3cr3t');
     expect(logs.join('\n')).toContain('owned by goondocks-co');
+    expect(logs.join('\n')).not.toContain(pageUrl);
   });
 
   it('refuses an app owned by someone other than the organization named, installing nothing; a renamed app is accepted and said so', async () => {
@@ -237,7 +242,10 @@ describe('the whole flow on a loopback listener', () => {
       let opened!: (url: string) => void;
       const page = new Promise<string>((resolve) => { opened = resolve; });
       const logs: string[] = [];
-      const outcome = registerGitHubApp({ url: URL_, org: opts.org, target: resolveSignInTarget(undefined, home), runner: runner(), fetchImpl: withLogin(fakeGitHub(opts.app)), log: (l) => logs.push(l), openUrl: async (u) => opened(u) })
+      const outcome = registerGitHubApp({ url: URL_, org: opts.org, target: resolveSignInTarget(undefined, home), runner: runner(), fetchImpl: withLogin(fakeGitHub(opts.app)), log: (line) => {
+        logs.push(line);
+        if (line.startsWith('Open this page in your browser')) opened(line.split('\n')[1].trim());
+      }, openUrl: async () => false })
         .then((r) => r, (err: unknown) => err);
       const { back } = await browse(await page, stateIn);
       return { back, outcome: await outcome, logs };

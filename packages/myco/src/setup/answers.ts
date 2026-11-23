@@ -4,13 +4,15 @@ import path from 'node:path';
 import { z } from 'zod';
 import { readPrivateJson, writePrivateFileAtomic } from '@myco/member/store.js';
 
+export const GITHUB_ORG_NAME = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/;
+
 const AnswersSchema = z.object({
   role: z.enum(['create', 'join', 'runner']).optional(),
   target: z.enum(['cloudflare', 'local']).optional(),
   accountId: z.string().regex(/^[a-f0-9]{32}$/).optional(),
   customUrl: z.url().refine(value => new URL(value).origin === value && new URL(value).protocol === 'https:').optional(),
   addressChoice: z.enum(['workers.dev', 'custom']).optional(),
-  org: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]*$/).optional(),
+  org: z.string().regex(GITHUB_ORG_NAME).nullable().optional(),
   appName: z.string().trim().min(1).max(34).optional(),
   port: z.number().int().min(1).max(65535).optional(),
   serve: z.enum(['service', 'terminal']).optional(),

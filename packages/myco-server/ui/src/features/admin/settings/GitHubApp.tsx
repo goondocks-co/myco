@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  GITHUB_APPS_LISTS, githubAppChecklist, githubAppHeadline, githubAppPages, ownerWords, SETUP_WORDS, WITHHELD_WORDS,
+  appSettingsLocation, GITHUB_APPS_LISTS, githubAppChecklist, githubAppHeadline, githubAppPages, ownerWords, SETUP_WORDS, WITHHELD_WORDS,
   type GitHubAppSetup, type RepositorySuggestion, type SetupLink, type SetupStep, type StepState,
 } from '@goondocks/myco-shared/github-app-setup';
 import { Button, Card, CommandBlock, ErrorState, ExternalLink, LoadingState, StatusChip, tapTarget, type Tone } from '../../../design';
@@ -63,6 +63,7 @@ function AppIdentity({ setup }: { setup: GitHubAppSetup }) {
       {setup.lookupError !== null && <p className="t-small text-muted">{`GitHub’s public page for the App did not answer: ${setup.lookupError}`}</p>}
     </> : <>
       <p className="t-body">{`This server’s App is ${app.name}${app.owner === null ? '' : `, owned by ${ownerWords(app.owner)}`}.`}</p>
+      {app.owner !== null && <p className="t-small">{appSettingsLocation(app.owner)}</p>}
       <GitHubLinks links={[{ label: pages!.settings === null ? 'Open the App on GitHub' : 'Open the App’s settings', href: pages!.settings ?? pages!.app }]} />
     </>}
     <p className="t-small text-muted">{SETUP_WORDS.confirmAccess}</p>

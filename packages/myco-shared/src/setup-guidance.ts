@@ -52,8 +52,20 @@ export const LINK_REFUSALS: Readonly<Record<string, string>> = {
 };
 export const noOwnerSignIn = (url: string): string => `${url} has no owner yet, so nobody can approve this machine. Whoever created it finishes with ${OWNER_SETUP_COMMAND} on the machine that created it, then run myco setup --join ${url}.`;
 
-export const ownerLinkNext = (url: string, target: 'local' | 'cloudflare'): string =>
-  `It expires in 15 minutes; run myco server setup-owner --target ${target} again for a fresh one.${target === 'local' ? ' Stop it first with Ctrl-C in its terminal, or myco server uninstall --target local; then start it with myco server install --target local.' : ''} Then on each machine you use: myco login ${new URL(url).origin}.`;
+export const LOCAL_SERVER_STOP = 'Stop the service with myco server uninstall --target local, or press Ctrl-C in the terminal running the server.';
+
+export function ownerLinkNext(url: string, target: 'local' | 'cloudflare'): string {
+  const steps = [
+    ...(target === 'local' ? ['Start the server with myco server install --target local.'] : []),
+    'Open the private link above, sign in with GitHub and choose Connect this account.',
+    `On each machine you use, run myco login ${new URL(url).origin}.`,
+  ];
+  const retry = `run myco server setup-owner --target ${target} again for a new link.`;
+  return [
+    ...steps.map((step, index) => `${index + 1}. ${step}`),
+    `If the link expires, ${target === 'local' ? `stop any running server before making a new link. ${LOCAL_SERVER_STOP} Then ` : ''}${retry}`,
+  ].join('\n');
+}
 export const LOCAL_OWNER_NEXT = "While it's stopped: myco server setup-owner --target local. Then start it: myco server install --target local.";
 export const toolsStayOnDeploymentGuidance = (agent: string, url: string): { problem: string; remedy: string } => ({
   problem: `${agent}'s Myco tools stay on ${url}; one machine can't point them at two Mycos yet. Capture goes to the right one.`,
