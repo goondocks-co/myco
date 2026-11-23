@@ -817,11 +817,16 @@ exec '${cp}' "$@"
           expect(fs.readFileSync(path.join(run.home, '.myco/bin/myco'), 'utf8')).toBe('#!/bin/sh\necho 2.1.0-alpha.10\n');
         });
         it('fresh defaults select 2.x beta, prefer beta over a newer alpha, and select stable after GA', () => {
-          expect(pick(beforeGa, undefined).out).toContain('Found: myco/v2.0.0-beta.1');
+          const beta = pick(beforeGa, undefined);
+          expect(beta.out).toContain('Found: myco/v2.0.0-beta.1');
+          expect(beta.out).toContain('No stable 2.x release yet; installing the newest beta: 2.0.0-beta.1');
           expect(pick([...beforeGa, release('myco/v2.1.0-alpha.99', true)], undefined).out).toContain('Found: myco/v2.0.0-beta.1');
           expect(pick(afterGa, undefined).out).toContain('Found: myco/v2.0.0');
-          expect(pick([release('myco/v1.4.9'), release('myco/v2.0.0-alpha.2', true), release('myco/v2.0.0-alpha.10', true)], undefined).out).toContain('Found: myco/v2.0.0-alpha.10');
+          const alpha = pick([release('myco/v1.4.9'), release('myco/v2.0.0-alpha.2', true), release('myco/v2.0.0-alpha.10', true)], undefined);
+          expect(alpha.out).toContain('Found: myco/v2.0.0-alpha.10');
+          expect(alpha.out).toContain('No stable 2.x release yet; installing the newest alpha: 2.0.0-alpha.10');
           const stable = pick(beforeGa, 'stable');
+          expect(stable.out).not.toContain('No stable 2.x release yet');
           expect(stable.status).toBe(1);
           expect(stable.out).not.toContain('Found: myco/v1.');
         });

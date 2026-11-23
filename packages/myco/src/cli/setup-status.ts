@@ -64,6 +64,7 @@ function describe(fact: StatusObservation, url: string | undefined): string {
   if (fact.id === 'machine.agents') {
     if (fact.staleTools?.length) return `Capture is set up. ${fact.staleTools.join(' ')}`;
     if (fact.detail === 'legacy-hooks') return 'Myco 1.4 still captures your agents; run myco setup --cutover to hand over.';
+    if (fact.detail === 'legacy-hooks-idle') return 'Agents still have Myco 1.4 hook entries; nothing is captured until the move finishes. Run myco setup --cutover.';
     const capture = fact.memberCapture ? 'Myco 2.0 capture is installed. ' : '';
     if (complete) return fact.detail === 'current'
       ? fact.memberCapture ? `Myco 2.0 capture is installed for ${fact.hooksDeployment ?? address}.` : `set up for ${fact.hooksDeployment ?? address}`

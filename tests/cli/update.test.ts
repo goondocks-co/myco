@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { run, type UpgradeDeps } from '@myco/cli/update.js';
+import { checkAutomaticUpdate } from '@myco/cli/doctor-member.js';
+import { getPluginVersion, setPluginVersion } from '@myco/version.js';
 import { run as alias } from '@myco/cli/upgrade.js';
 import { placeExecutable } from '@myco/install/place-binary.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
@@ -66,6 +68,9 @@ it('adopts before refreshing agents and tells a Deployment operator how to updat
   installedBinary('2.0.0-alpha.2');
   writeLocalRecord(DEFAULT_LOCAL_RECORD, peekLocalPaths(home));
   writeDeploymentRecord({ accountId: 'fixture', workerName: 'worker', databaseName: 'db', bucketName: 'objects', versionId: 'v1', deployedAt: '2026-01-01' }, home);
+  const stale = path.join(home, 'member', 'keep-current.json');
+  fs.mkdirSync(path.dirname(stale), { recursive: true });
+  fs.writeFileSync(stale, JSON.stringify({ lastAttemptAt: 1_700_000_000_000, lastOutcome: { kind: 'already-current', version: '2.0.0-alpha.2', reason: "channel target 2.0.0-alpha.2 is older or outside 'alpha'; staying put" } }));
   const events: string[] = [];
   await run([], {
     home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => true,
@@ -80,6 +85,13 @@ it('adopts before refreshing agents and tells a Deployment operator how to updat
   expect(output).toContain('Update the Cloudflare Deployment to match the new binary. Run myco server update --target cloudflare.');
   expect(output.join('\n')).toContain('Agents refreshed: yes.');
   expect(readUpdateNotice(home, '2.0.0-alpha.2')).toContain('myco update');
+  const running = getPluginVersion();
+  setPluginVersion('2.0.0-alpha.3');
+  try {
+    const detail = checkAutomaticUpdate(home).detail;
+    expect(detail).toContain('updated to 2.0.0-alpha.3');
+    expect(detail).not.toContain('2.0.0-alpha.2');
+  } finally { setPluginVersion(running); }
 });
 it('refreshes an already current member and surfaces refresh failure with the exact recovery command', async () => {
   let refreshed = 0;

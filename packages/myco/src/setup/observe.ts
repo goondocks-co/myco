@@ -2,7 +2,7 @@ import { captureHealthChecks } from '@myco/cli/doctor-capture.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
-import { legacyProjectDestination, installedLegacyHooks } from '@myco/member/legacy-migration.js';
+import { legacyProjectDestination, legacyHookCapture } from '@myco/member/legacy-migration.js';
 import { observeLegacyMigration, legacyConfirmationObserver } from '@myco/cli/cutover.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult, readDeploymentMembershipResult, readRegistryEntryResult } from '@myco/member/registry.js';
 import { ServerClient } from '@myco/member/transport.js';
@@ -152,7 +152,8 @@ export async function observeSetup(home: string, answers: SetupAnswers, deps: Ob
   if (((answers.role === 'join' || answers.role === 'create') && url) || deps.status) {
     await read('machine.agents', () => {
       if (answers.noAgents && !deps.status) { add('machine.agents', 'complete', 'declined'); return; }
-      if (installedLegacyHooks(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes })) { add('machine.agents', 'incomplete', 'legacy-hooks'); return; }
+      const legacyHooks = legacyHookCapture(home, { homeDir: deps.legacyHomeDir, homes: deps.legacyHomes });
+      if (legacyHooks !== 'none') { add('machine.agents', 'incomplete', legacyHooks === 'replaced' ? 'legacy-hooks-idle' : 'legacy-hooks'); return; }
       const record = readProvisionRecordStrict(home);
       if (record === null && answers.role !== 'join' && answers.role !== 'create') return;
       const hooksUrl = deps.status && record !== null ? deploymentUrl(record.serverUrl) : url;

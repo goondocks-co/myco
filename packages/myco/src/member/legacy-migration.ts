@@ -1,6 +1,9 @@
-import { isLegacyMycoHook } from './legacy-verdict.js';
+import { commandWords, isLegacyMycoHook } from './legacy-verdict.js';
 /** The local cutover receipt capability. */
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
+import { readInstallMarker } from '@myco/install/marker-reader.js';
 import { legacyVaultHasContent, readVaultContent, type TableCounts } from '@myco/member/legacy-backup.js';
 import { LegacyMigrationUnreadable, legacyRealpath, legacySources, legacyVaultProjectIds, legacyProjectNames, type LegacySources } from '@myco/member/legacy-sources.js';
 export { LegacyMigrationUnreadable } from '@myco/member/legacy-sources.js';
@@ -10,12 +13,46 @@ import { defaultMycoHome, resolveHomeDir } from '@myco/paths/home.js';
 
 import { scanLegacyRegistrations } from './legacy-registration-files.js';
 
-export function installedLegacyHooks(home: string, opts: { homeDir?: string; homes?: readonly string[] } = {}): boolean {
+function legacyCaptureFindings(home: string, opts: { homeDir?: string; homes?: readonly string[] } = {}) {
   const homeDir = opts.homeDir ?? resolveHomeDir();
   const scan = scanLegacyRegistrations({ homeDir, ownHome: home, legacyHomes: opts.homes ?? [home, defaultMycoHome(homeDir)] });
   if (scan.unreadable.length > 0) throw new LegacyMigrationUnreadable(scan.unreadable[0].file, scan.unreadable[0].reason);
-  return scan.findings.some(finding => (finding.verdict === 'legacy' && ['hooks', 'plugin-file'].includes(finding.location.kind))
+  return scan.findings.filter(finding => (finding.verdict === 'legacy' && ['hooks', 'plugin-file'].includes(finding.location.kind))
     || (finding.location.kind === 'hooks' && finding.verdict === 'foreign' && isLegacyMycoHook(finding.subject)));
+}
+
+export function installedLegacyHooks(home: string, opts: { homeDir?: string; homes?: readonly string[] } = {}): boolean {
+  return legacyCaptureFindings(home, opts).length > 0;
+}
+
+function hookExecutable(subject: string): string | undefined {
+  if (!isLegacyMycoHook(subject)) return undefined;
+  const binary = commandWords(subject).words[0];
+  return binary !== undefined && path.isAbsolute(binary) ? binary : undefined;
+}
+
+/** The recorded install is the file these hooks name, identified by path and hash, never by executing it. */
+function hooksNameInstalledRelease(home: string, files: readonly string[]): boolean {
+  const marker = readInstallMarker(home);
+  if (marker?.version === undefined || marker.version.startsWith('1.') || marker.binary_sha256 === undefined) return false;
+  let marked: string;
+  try { marked = fs.realpathSync(marker.bin); }
+  catch { return false; }
+  const digest = createHash('sha256').update(fs.readFileSync(marked)).digest('hex');
+  if (digest !== marker.binary_sha256.toLowerCase()) return false;
+  return files.every(file => {
+    try { return fs.realpathSync(file) === marked; }
+    catch { return false; }
+  });
+}
+
+/** `replaced` when every legacy hook executable is this home's installed 2.x binary. */
+export function legacyHookCapture(home: string, opts: { homeDir?: string; homes?: readonly string[] } = {}): 'none' | 'capturing' | 'replaced' {
+  const findings = legacyCaptureFindings(home, opts);
+  if (findings.length === 0) return 'none';
+  const executables = findings.map(finding => hookExecutable(finding.subject));
+  if (executables.every((file): file is string => file !== undefined) && hooksNameInstalledRelease(home, executables)) return 'replaced';
+  return 'capturing';
 }
 
 export interface MigrationPass {

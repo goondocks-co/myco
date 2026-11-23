@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import semver from 'semver';
 import { automaticUpdatesEnabled, readInstallMarker } from '@myco/install/marker-reader.js';
 import { validateSourceIntent } from '@myco/install/adoption.js';
-import { setAutomaticUpdates } from '@myco/member/automatic-update-state.js';
+import { recordInstalledUpdate, setAutomaticUpdates } from '@myco/member/automatic-update-state.js';
 import { parseStrictFlags } from './args.js';
 import { updateBinary, binaryUpdatePath, admitsUpdate, explicitUpdateRefusal, resolveAssetRefsForTarget, type BinaryUpdateDeps } from '../upgrade/guarded-binary.js';
 import { claimSubsystem, readClaim, SYMBIONT_CONFIG_SUBSYSTEM } from '../member/subsystem-claim.js';
@@ -297,6 +297,11 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     console.log('Automatic updates will move this machine forward again; run `myco update --automatic off` to stay on this version.');
   }
   await refresh();
+  if (outcome.kind === 'adopted' || outcome.kind === 'already-current') {
+    recordInstalledUpdate(home, outcome.kind === 'already-current'
+      ? { kind: 'already-current', version: outcome.version, reason: outcome.reason }
+      : { kind: 'adopted', version: outcome.version }, deps.automaticUpdateWaitMs);
+  }
   if (source && outcome.kind === 'adopted' && !memberHome()) console.log('Next: myco setup');
 }
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
@@ -17,6 +18,7 @@ import { Database } from 'bun:sqlite';
 import { provisionGlobally } from '@myco/cli/member.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
@@ -500,6 +502,28 @@ for (const explicit of [true, false]) it(`status and dry run confirm the same ${
   expect(passes).toBe(1);
   expect(lines.join('\n')).toContain('Importing earlier agent transcripts is optional');
   expect(fs.readFileSync(vault)).toEqual(bytes);
+});
+
+it('says nothing is captured when 1.4 hook entries point at the installed 2.x binary', async () => {
+  const restore = bindSandboxChildHome(scratch, { MYCO_HOME: fixture.home });
+  try {
+    const binary = path.join(fixture.home, 'bin', 'myco');
+    const stamp = path.join(scratch, 'executed');
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, `#!/bin/sh\necho ran > ${JSON.stringify(stamp)}\n`, { mode: 0o755 });
+    writeInstallMarker(fixture.home, {
+      channel: 'alpha', source: 'curl', version: '2.0.0-alpha.29', bin: binary,
+      binary_sha256: createHash('sha256').update(fs.readFileSync(binary)).digest('hex'),
+    });
+    const settings = path.join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${binary} hook session-start --myco-managed` }] }] } }));
+    const facts = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL }, deps());
+    expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'incomplete', detail: 'legacy-hooks-idle' });
+    expect(await run(['--status'], deps())).toBe(3);
+    expect(lines.find(line => line.includes('Agent hooks:'))).toContain('Agents still have Myco 1.4 hook entries; nothing is captured until the move finishes. Run myco setup --cutover.');
+    expect(fs.existsSync(stamp)).toBe(false);
+  } finally { restore(); }
 });
 
 it('reports legacy hooks before any 2.0 membership or provision record exists', async () => {

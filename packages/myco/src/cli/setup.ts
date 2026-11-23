@@ -287,6 +287,11 @@ async function runSetup(args: readonly string[], deps: SetupDeps): Promise<numbe
     }
     validateCreationOptions(file.answers);
     if (file.answers.role === 'join') {
+      const cwd = deps.cwd ?? process.cwd();
+      if (options.answers.root === undefined && file.answers.root !== undefined && statusRepository(file.answers.root) === undefined) {
+        const here = statusRepository(cwd);
+        if (here !== undefined) file.answers.root = here;
+      }
       file.answers.root ??= resolveMemberProjectRoot(deps.cwd);
       if (file.answers.runWork === undefined && (!freshJoin || (!options.change && readDeploymentMembershipResult(file.answers.url!, home).status === 'present'))) applyObservedSetupRunWork(file, observeSetupRunWork(home, file.answers.url!));
     }
