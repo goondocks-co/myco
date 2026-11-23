@@ -20,7 +20,8 @@ import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
 import { readRunnerUpdateState, withRunnerUpdateState } from '@myco/runner/update.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.js';
-import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 const SERVER = 'https://runner.example';
 const TOKEN = `mycorun_${'r'.repeat(43)}`;
@@ -65,7 +66,7 @@ describe('explicit runner service opt-in', () => {
       const fetch_ = (async (input: RequestInfo | URL) => {
         const route = new URL(String(input)).pathname;
         if (route === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini' } },
-          { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
+          { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
         if (route === '/worker/claim') return Response.json({ persisted: true, claimed: true, heartbeatMs: 20, leaseMs: 90_000,
           run: { id: 'long-run', projectId: 'proj_1', task: 'title-summary', harness: 'claude-code', profile: STUB_PROFILE,
             instruction: 'do it', instructions: null, runToken: 'fixture', credentialEnv: {}, timeoutSeconds: 600 } });
@@ -230,7 +231,7 @@ describe('explicit runner service opt-in', () => {
     expect(platform.running.size).toBe(1);
   });
 
-  it('publishes local-artifact support for the actual custom-lock owner before its first claim', async () => {
+  it('claims with an equal Deployment schema after publishing local-artifact support for its custom lock', async () => {
     await enroll();
     const scoped = deps('linux');
     let claims = 0;
@@ -238,8 +239,8 @@ describe('explicit runner service opt-in', () => {
     const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (new URL(request.url).pathname === '/runners/contact') {
-        return Response.json({ persisted: true, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini', state: 'enabled' },
-          credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
+        return Response.json({ persisted: true, schemaVersion: SERVER_SCHEMA_VERSION, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini', state: 'enabled' },
+          credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
       }
       expect(new URL(request.url).pathname).toBe('/worker/claim');
       claims++;
@@ -247,7 +248,7 @@ describe('explicit runner service opt-in', () => {
       expect(holder?.pid).toBe(process.pid);
       expect(readRunnerUpdateState(mycoHome).runtimeCapabilities?.[SERVER]).toEqual({ pid: holder!.pid, lockStartedAt: holder!.startedAt, localArtifacts: true });
       stopping.abort();
-      return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
+      return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
     }) as typeof globalThis.fetch;
     expect(await run(['run', '--server', SERVER, '--once'], { ...scoped, fetch, signal: stopping.signal,
       ownDeploymentUrls: async () => [], version: '0.0.0-dev+fixture.b1',

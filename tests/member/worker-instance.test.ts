@@ -1,4 +1,4 @@
-import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { profileWorkerServer } from '../helpers/profile-worker-server.js';
 /**
@@ -168,7 +168,7 @@ describe('a second worker for the same Deployment', () => {
     const result = await runWorker(options({
       signal: stopping.signal, deploymentId: 'dep-expected', compatibilityPath: '/runners/contact',
       fetchImpl: (async (input: RequestInfo | URL) => {
-        if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'runner' } }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
+        if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, runner: { id: 'runner' } }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
         claims += 1; stopping.abort(); return idle();
       }) as typeof fetch,
     }));
@@ -208,7 +208,7 @@ describe('a second worker for the same Deployment', () => {
     const claims = [0, 0];
     const logs: string[] = [];
     const send = (index: number): typeof fetch => (async (input: RequestInfo | URL) => {
-      if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, deploymentId: 'dep-shared' }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
+      if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, deploymentId: 'dep-shared' }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
       claims[index]! += 1;
       return idle();
     }) as typeof fetch;
@@ -231,7 +231,7 @@ describe('a second worker for the same Deployment', () => {
     const result = await runWorker(options({
       signal: stopping.signal, deploymentId: 'dep-expected', compatibilityPath: '/runners/contact',
       fetchImpl: (async (input: RequestInfo | URL) => {
-        if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, deploymentId: 'dep-other' }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
+        if (new URL(String(input)).pathname === '/runners/contact') return Response.json({ persisted: true, deploymentId: 'dep-other' }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
         claims += 1; return idle();
       }) as typeof fetch,
     }));

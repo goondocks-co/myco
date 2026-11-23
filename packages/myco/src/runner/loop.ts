@@ -7,8 +7,7 @@ import { issueReportOrder } from '@myco/utils/order-stamp.js';
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
-import { RUNNER_CONTACT_PATH } from './runner-routes.js';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { repositoryFailureForVersion, runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
@@ -177,7 +176,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 export type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; claimCompatible: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: 1 | 2; harnessStop?: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: 1 | 2; harnessStop?: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -290,7 +289,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
   let accounting = false;
-  let claimCompatible = false;
+  let executionProfile = false;
   let profileOutcome = false;
   let modelCatalog = false;
   let steps = false;
@@ -305,7 +304,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
       signal: options.signal,
     });
     accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
-    claimCompatible = featureAdvertised(res.headers.get(FEATURES_HEADER), path === RUNNER_CONTACT_PATH ? RUNNER_CONTRACT_V1 : EXECUTION_PROFILE_FEATURE);
+    executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
     harnessStop = featureAdvertised(res.headers.get(FEATURES_HEADER), HARNESS_STOP_FEATURE);
@@ -319,7 +318,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, claimCompatible, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
+      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
     case 'protocol':
       return {
         kind: 'refused',
@@ -1081,9 +1080,13 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         }
         const runner = compatibility.body.runner;
         paused = runner !== null && typeof runner === 'object' && 'state' in runner && runner.state === 'paused';
-        claimCompatible = compatibility.claimCompatible;
+        const { schema, schemaVersion } = compatibility.body;
+        const found = schemaVersion ?? (schema !== null && typeof schema === 'object' && 'found' in schema ? schema.found : undefined);
+        const servedSchema = typeof found === 'number' && Number.isSafeInteger(found) && found >= 0 ? found : null;
+        claimCompatible = servedSchema === null ? compatibility.executionProfile : servedSchema >= SERVER_SCHEMA_VERSION;
         if (!claimCompatible && !needsServerUpdate) {
-          options.log('The Deployment must be updated before this runner can claim work. Run myco server update on the machine that manages it.');
+          const serving = servedSchema === null ? 'The Deployment reports no schema version' : `The Deployment serves schema ${servedSchema}`;
+          options.log(`${serving} and this runner requires schema ${SERVER_SCHEMA_VERSION}. Run myco server update on the machine that manages it.`);
         }
         needsServerUpdate = !claimCompatible;
         advertisesCatalog = compatibility.modelCatalog;

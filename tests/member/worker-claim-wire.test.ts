@@ -40,6 +40,7 @@ import { PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS, STUB_PROFILE, stubProfileH
 import { MODEL_CATALOG_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 import { withRunMcp } from '../helpers/run-mcp-fetch.ts';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 const NOW = 1_800_000_000_000;
 const PROJECT_ID = 'proj_1';
@@ -163,7 +164,7 @@ describe('a worker on the real claim wire', () => {
     const attached = await r.attach(admin, { once: false, stopping });
     expect(attached.driven).toBe(1);
     expect(r.runRow('run_after_skew')?.status).toBe('queued');
-    expect(attached.lines.filter((line) => line === 'The Deployment must be updated before this runner can claim work. Run myco server update on the machine that manages it.')).toHaveLength(1);
+    expect(attached.lines.filter((line) => line === `The Deployment reports no schema version and this runner requires schema ${SERVER_SCHEMA_VERSION}. Run myco server update on the machine that manages it.`)).toHaveLength(1);
   });
 
   it('advertises execution-profile before a worker can take a run', async () => {

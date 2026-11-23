@@ -1,9 +1,6 @@
 import { HARNESS_CREDENTIALS } from './harness-providers.js';
 import type { RunnerBlockedVersion, RunnerUpdateRequest, RunnerUpdateResult, RunnerUpdateState } from './runner-update.js';
 
-/** The authenticated Deployment supports the runner's claim and run-tool contract. Keep advertising this while that contract is supported. */
-export const RUNNER_CONTRACT_V1 = 'runner-contract-v1';
-
 export type RunnerCredentialChoice = 'own' | 'stored';
 export type RunnerCredentialChoices = Readonly<Record<string, RunnerCredentialChoice>>;
 /** Null marks a persisted source this build cannot use. */

@@ -113,7 +113,7 @@ describe('the listings the manifests declare', () => {
 
 describe('reporting what was listed', () => {
   const catalog = (harness: string): ModelCatalog => ({ harness, source: { kind: 'command', command: harness }, signIn: 'worker-login', fetchedAt: 1, models: [{ id: `${harness}/m`, label: `${harness}/m` }] });
-  const ANSWERED: WorkerAnswer = { kind: 'answered', body: { persisted: true, recorded: true }, accounting: true, claimCompatible: true, profileOutcome: true, modelCatalog: true, steps: true };
+  const ANSWERED: WorkerAnswer = { kind: 'answered', body: { persisted: true, recorded: true }, accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true, steps: true };
   const settle = () => Bun.sleep(5);
 
   it('waits for a stopped listing to dispose before shutdown settles', async () => {
@@ -426,7 +426,7 @@ it('keeps a listing stamp on transport retry and relists above a refused server 
       sent.push(catalog);
       if (sent.length === 1) return { kind: 'unreachable', detail: 'offline' };
       return { kind: 'answered', body: { persisted: true, recorded: sent.length > 2, observedOrder: sent.length === 2 ? 100 : catalog.observedOrder },
-        accounting: true, claimCompatible: true, profileOutcome: true, modelCatalog: true, steps: true };
+        accounting: true, executionProfile: true, profileOutcome: true, modelCatalog: true, steps: true };
     },
   });
   try {
