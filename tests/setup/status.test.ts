@@ -444,6 +444,11 @@ it('prints one declined runner-service line while preserving registration and un
   ]).join('\n')).toContain('Runner service: Could not read Runner service: cannot read service.');
 });
 
+it('prints a fact two journeys share once', () => {
+  const signin = { id: 'machine.signin', scope: STATUS_URL, deployment: STATUS_URL, state: 'complete', detail: 'signed in' } as const;
+  expect(renderSetupStatus([signin, signin])).toEqual([`Deployment ${STATUS_URL}`, '  Signed in: This machine is signed in (remote authentication not checked).']);
+});
+
 it('prints the agent-hook label once when setup is missing', () => {
   expect(renderSetupStatus([{ id: 'machine.agents', scope: fixture.home, state: 'absent', detail: 'none', hooksDeployment: STATUS_URL }])).toEqual([
     `Agent hooks: Not set up; run myco member provision --server ${STATUS_URL}.`,

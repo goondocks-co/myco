@@ -640,7 +640,9 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
   const projectUrl = project?.detail.startsWith('bound-cutover: ') ? project.detail.slice('bound-cutover: '.length) : answers.url;
   const summary = isMember(ctx)
     ? answers.root ? `Setup connected ${path.resolve(answers.root)} to ${projectUrl}. Start a session in your agent here, then open ${projectUrl}.`
+      : project?.state === 'complete' ? `Your Myco is ready at ${answers.url}, and this machine is signed in. Start a session in your agent in a connected repository, then open ${answers.url}.`
       : `Your Myco is ready at ${answers.url}, and this machine is signed in. Next, run myco setup --join ${answers.url} from a git repository to connect a project.`
     : `Runner setup for ${answers.url}. Review this machine on ${answers.url}/runners.`;
   ctx.out(summary);
+  if (isRunner(ctx)) ctx.out(`Myco's own work starts on its runner once Work on a schedule is on: ${answers.url}/settings.`);
 }

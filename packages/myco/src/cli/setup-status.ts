@@ -123,6 +123,7 @@ export function renderSetupStatus(facts: readonly StatusObservation[]): string[]
     if (url) lines.push(`Deployment ${url}`);
     const serviceDeclined = group.some(fact => fact.id === 'runner.service.choice' && fact.state === 'complete' && fact.detail === 'skip');
     let setupPrinted = false;
+    const printed = new Set<string>();
     for (const fact of group) {
       if (fact.id === 'journey') {
         if (setupPrinted) continue;
@@ -141,7 +142,9 @@ export function renderSetupStatus(facts: readonly StatusObservation[]): string[]
       }
       if (fact.id === 'runner.choice' && (fact.detail === 'unasked' && !group.some(candidate => candidate.id === 'runner.enrollment') || group.some(candidate => candidate.id === 'runner.enrollment' && candidate.state === 'complete'))) continue;
       if (captureIds.has(fact.id) || (fact.id === 'project' && fact.informational && fact.detail.startsWith('bound-elsewhere:'))) continue;
-      lines.push(`  ${labels[fact.id] ?? fact.id}: ${describe(fact, url)}`);
+      const line = `  ${labels[fact.id] ?? fact.id}: ${describe(fact, url)}`;
+      if (!printed.has(line)) lines.push(line);
+      printed.add(line);
     }
     const captures = group.filter(fact => captureIds.has(fact.id));
     const repositories = new Set(captures.filter(fact => fact.id === 'machine.backlog' && fact.scope !== url).map(fact => fact.scope));
