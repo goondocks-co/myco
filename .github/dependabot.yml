@@ -49,6 +49,10 @@ updates:
       - dependency-name: "typescript-v6"
         update-types:
           - "version-update:semver-major"
+      # The server's runtime set is pinned exactly and decided by hand (the runtime
+      # dependency gate in tests/myco-server/gates.test.ts); a bump is its own change.
+      - dependency-name: "@stablelib/sha256"
+      - dependency-name: "@modelcontextprotocol/server"
 
   - package-ecosystem: "github-actions"
     directory: "/"
