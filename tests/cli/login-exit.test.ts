@@ -94,7 +94,8 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
     }
 
     const binary = process.env.MYCO_LOGIN_TEST_BINARY;
-    const args = !isSetup ? ['login', address, ...(operation === 'invite' ? ['--root', root] : [])] : ['setup', '--join', serverUrl, '--root', root, '--project', 'proj_1', '--no-agents', '--no-runner', '--no-cutover', '--yes'];
+    const projectArgs = operation === 'setup-new' ? ['--new', 'Fixture'] : ['--project', 'proj_1'];
+    const args = !isSetup ? ['login', address, ...(operation === 'invite' ? ['--root', root] : [])] : ['setup', '--join', serverUrl, '--root', root, ...projectArgs, '--no-agents', '--no-runner', '--no-cutover', '--yes'];
     const command = binary ? [binary, ...args] : [process.execPath, '--tsconfig-override', path.join(REPO, 'tsconfig.json'), path.join(REPO, 'tests/cli/fixtures/login-exit.ts'), ...args];
     const invocation = !tty ? command : ['python3', path.join(REPO, 'tests/cli/fixtures/terminal-process.py'), ...command];
     const child = spawn(invocation[0]!, invocation.slice(1), { cwd: home, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -119,10 +120,15 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
       });
       expect(output).toContain('Signed in to');
       if (!isSetup) expect(output).toContain('Capture is set up for Claude Code, Codex.');
+      else {
+        expect(output).not.toContain('No project yet');
+        expect(output.match(/Checking waiting capture/g)).toHaveLength(1);
+      }
+      if (operation === 'setup-new') expect(output).toContain(`Connected ${root} to project Fixture`);
       expect(summaryAt).toBeDefined();
       expect(foreignRequests).toBe(0);
       if (foreignSpool !== undefined) expect(foreignSpool.readRecords('foreign')).toHaveLength(1);
-      expect(events).toBe(operation === 'setup-new' ? 0 : operation === 'setup' ? 2 : 1);
+      expect(events).toBe(operation === 'setup-new' ? 0 : 1);
       expect(status, output).toEqual({ code: 0, signal: null });
       expect(Date.now() - summaryAt!).toBeLessThan(operation !== 'setup' ? (stalled ? EXIT_WINDOW_MS : 2_000) : 8_000);
       if (!binary) expect(output).toContain('LOGIN_RETURNED:[]');
