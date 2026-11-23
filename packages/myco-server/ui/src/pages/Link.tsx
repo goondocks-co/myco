@@ -30,6 +30,12 @@ const memberWords = (member: Member): string => memberLabel(member) ?? 'the memb
 /** `/link`: connect the signed-in GitHub account to the member the key names. Lives outside the member gate: its visitor is not a member yet. */
 export function LinkPage() {
   const [key] = useState<string | null>(takeKeyFromFragment);
+  // A new link opened in this tab changes only the fragment: take its key and start over with it.
+  useEffect(() => {
+    const onNewLink = () => { if (window.location.hash.length > 1) { takeKeyFromFragment(); window.location.reload(); } };
+    window.addEventListener('hashchange', onNewLink);
+    return () => window.removeEventListener('hashchange', onNewLink);
+  }, []);
   const me = useMe();
   const link = useIdentityMutation({ mutationFn: (key: string) => postJson<Linked>('/auth/link', { key, confirm: true }) });
   const [preview, setPreview] = useState<Member | null>(null);

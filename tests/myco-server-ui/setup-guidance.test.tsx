@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { NotAMember } from '../../packages/myco-server/ui/src/pages/NotAMember';
 import { SignedOut } from '../../packages/myco-server/ui/src/pages/SignedOut';
 import { LinkPage } from '../../packages/myco-server/ui/src/pages/Link';
-import { holdPendingLink } from '../../packages/myco-server/ui/src/lib/pending-link';
+import { holdPendingLink, readPendingLink } from '../../packages/myco-server/ui/src/lib/pending-link';
 import { dashboardMe } from '../helpers/dashboard-permissions';
 
 const originalFetch = globalThis.fetch;
@@ -22,12 +22,14 @@ it('sends unconfigured GitHub sign-in back to setup for this address', () => {
   expect(screen.getByText(`GitHub sign-in is not set up for this Myco (${window.location.origin}). On the machine that created it, run myco setup to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url ${window.location.origin} for self-hosting, or myco server github-app --target cloudflare --url ${window.location.origin} for Cloudflare.`)).toBeTruthy();
 });
 
-it('explains how to replace an expired owner link through setup', async () => {
+it('explains how to replace an expired owner link through setup, and takes a fresh link opened in the same tab', async () => {
   holdPendingLink('x'.repeat(43));
   globalThis.fetch = (async input => String(input).includes('/auth/me')
     ? Response.json(dashboardMe({ member: null }))
     : Response.json({ error: 'owner_link_denied' }, { status: 403 })) as typeof fetch;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><MemoryRouter><LinkPage /></MemoryRouter></QueryClientProvider>);
-  expect(await screen.findByText('This owner link has expired or was already used. On the machine that created this Myco, run myco setup again for a fresh link, then open and complete it.')).toBeTruthy();
+  expect(await screen.findByText('This owner link has expired or was already used. On the machine that created this Myco, run myco setup again for a fresh link, then open and complete it.')).toBeTruthy();  window.location.hash = `#${'y'.repeat(43)}`;
+  window.dispatchEvent(new Event('hashchange'));
+  expect(readPendingLink()).toBe('y'.repeat(43));
 });
