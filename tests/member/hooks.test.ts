@@ -698,6 +698,15 @@ describe('member hooks through the worker: cursor', () => {
     expect(memberKinds()).toEqual(['session.start', 'tool.use', 'tool.failure', 'transcript.segment', 'session.end', 'session.end']);
     assertNoRetired();
   });
+  it('a session whose first hook is a tool use ships its transcript in that delivery pass, which names its agent', async () => {
+    const tx = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-cursor-')), 'agent-transcripts', session, `${session}.jsonl`);
+    fs.mkdirSync(path.dirname(tx), { recursive: true });
+    fs.copyFileSync(path.join(FIXTURES, 'cursor-agent-2026.09-redacted.jsonl'), tx);
+    await runHook('post-tool-use', { conversation_id: session, transcript_path: tx, cwd: '/repo', hook_event_name: 'postToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_output: 'contents' },
+      { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'cursor' });
+    expect(memberKinds()).toEqual(['tool.use', 'transcript.segment']);
+    expect(rig.env.sqlite.query('SELECT agent FROM sessions WHERE session_id = ?').get(session)).toEqual({ agent: 'cursor' });
+  });
 });
 
 describe('member hooks through the worker: hook-source agents', () => {

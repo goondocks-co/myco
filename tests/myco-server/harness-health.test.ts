@@ -275,21 +275,6 @@ describe('provisioned harness health', () => {
       .toEqual(['harness_needs_repair', 'harness_capture_silent']);
   });
 
-  it('names a session by the agent of its first event and counts that event as the agent appearing; a later start adds what it knows', async () => {
-    const r = await rig();
-    const now = Date.now();
-    r.session('machine_1', 'old_cursor', 'cursor', now - 3 * 24 * HOUR);
-    r.session('machine_1', 'active_claude', 'claude-code', now - MINUTE);
-    await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('cursor', 'ready', undefined, now - MINUTE)] }, now);
-    expect((await r.attention(now)).map(item => item.kind)).toEqual(['harness_capture_silent']);
-    const send = (over: Record<string, unknown>) => worker.fetch(memberPost(r.token1, envelope({ sessionId: 'cli', producer: { adapter: 'cursor', version: '1' }, ...over })), r.fixture.env);
-    const row = () => r.fixture.sqlite.query(`SELECT agent, branch, started_at FROM sessions WHERE session_id = 'cli'`).get();
-    expect(await (await send({ eventId: uuid(221), createdAt: now })).json()).toMatchObject({ persisted: true });
-    expect({ attention: await r.attention(now), session: row() }).toEqual({ attention: [], session: { agent: 'cursor', branch: null, started_at: null } });
-    await send({ eventId: uuid(222), kind: 'session.start', createdAt: now - 1_000, payload: { agent: 'cursor', branch: 'main', startedAt: now - 1_000 } });
-    expect(row()).toEqual({ agent: 'cursor', branch: 'main', started_at: now - 1_000 });
-  });
-
   it('updates the indexed live capture receipt only for newly admitted non-import events', async () => {
     const r = await rig();
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW);

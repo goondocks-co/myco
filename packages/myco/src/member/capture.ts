@@ -309,9 +309,11 @@ export async function runMemberHook(
       // A session id that hooks again after its end has resumed: its transcript waits on turn ends once more.
       if (hookName !== 'session-end') delete state.endedAt;
       outcome.record?.(state);
+      // A session that has sent no start ships its transcript from its first hook, so the segment names its agent.
       if (transcriptPath && state.transcript === undefined) {
         const pointer = transcriptPointerFor(transcriptPath, getMachineId());
-        if (pointer) state.transcript = { ...pointer, awaitingTurnEnd: true };
+        const started = hookName === 'session-start' || state.sessionStartRecorded === true;
+        if (pointer) state.transcript = { ...pointer, ...(started ? { awaitingTurnEnd: true as const } : {}) };
       }
       if (outcome.ends && state.transcript?.transcriptId === outcome.transcriptAt?.transcriptId) delete state.transcript?.awaitingTurnEnd;
       transcriptWork = state.promptBackfill !== undefined;

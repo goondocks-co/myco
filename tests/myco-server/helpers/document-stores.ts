@@ -87,7 +87,7 @@ export async function captureDocumentTranscript(db:RelationalStore,blobs:BlobSto
     {projectId,machineId:'machine',tokenId:issued.tokenId,now,clock:()=>now,contentLength:bytes.length,params:{key}});
   if(!(await response.json() as {stored:boolean}).stored)throw new Error('fixture transcript upload refused');
   const result=await ingestEvent(db,{projectId,machineId:'machine',tokenId:issued.tokenId,bodyBytes:bytes.length,now},
-    envelope({eventId:crypto.randomUUID(),sessionId:session,kind:'transcript.segment',createdAt:now,producer:{adapter:agent,version:'1'},
+    envelope({eventId:crypto.randomUUID(),sessionId:session,kind:'transcript.segment',createdAt:now,
       payload:{transcriptId:transcript,agent,blob:key,baseOffset,length:bytes.length,originPath:'fixture.jsonl',role:'primary'}}),env);
   if(!result.persisted)throw new Error(JSON.stringify(result));
   return env;

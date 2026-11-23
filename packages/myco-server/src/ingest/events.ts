@@ -11,7 +11,6 @@ import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js
 import { blobFields, kindSpec, parsePayload, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
 import { searchBlobsDue } from '../db/search/blob-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
-import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { RecordSchemeError } from './record-scheme.js';
 import { checkRefusal, planKind, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { DOCUMENT_TEXT_FIELDS, documentText } from './document-text.js';
@@ -32,13 +31,6 @@ import { chargeStoredBytes, credentialStillLive, sessionReceipt, storedEvent } f
 import { EVENT_INLINE_PAYLOAD_BYTES, retainedEventPayload } from './event-payload.js';
 import { prepareEventBody, settleUnstoredEventBody } from '../core/event-body.js';
 import { eventBodyHeldRead, eventBodyStatements, type EventBody } from '../db/events/body.js';
-
-/** Every capture agent a symbiont manifest declares, by the name its hook command sends as `producer.adapter`. */
-const CAPTURE_AGENTS: ReadonlySet<string> = new Set(CAPTURE_RULE_BUNDLES.map(bundle => bundle.name));
-
-/** The agent an event names: a start's own `agent`, otherwise its producer when that producer is a declared capture agent. */
-const eventAgent = (e: CaptureEnvelope, p: Payload): string | null =>
-  e.kind === 'session.start' ? p.agent as string : CAPTURE_AGENTS.has(e.producer.adapter) ? e.producer.adapter : null;
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 interface TranscriptExtra {
@@ -272,7 +264,7 @@ export async function planEventWrite(
   // on its own housekeeping. A server write still opens a session row that is
   // absent, so a derived event is never refused for want of one.
   const writer = { project: ctx.projectId, session: e.sessionId, machine: ctx.machineId, token: ctx.tokenId, event: e.eventId, nonce: write.nonce };
-  const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: eventAgent(e, p),
+  const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: e.kind === 'session.start' ? (p.agent as string) : null,
     live: e.channel !== 'import', start: e.kind === 'session.start', activityAt: ctx.sentAt === undefined ? ctx.now : Math.min(e.createdAt + (ctx.now - ctx.sentAt), ctx.now) });
 
   // The nonce, not a change count, decides whether THIS write stored the row: reading it back asks the store what
