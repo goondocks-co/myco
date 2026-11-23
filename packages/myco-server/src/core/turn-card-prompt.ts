@@ -27,14 +27,14 @@ const CARD_FIELDS = `## Card fields (all required; use "" or [] when empty)
 - \`asked\`: the instruction that began the work, in its words where short; keep the recorded speaker attribution.
 - \`done\`: what the agent actually did.
 - \`outcome\`: how the turn ended: done, partly done, failed, or abandoned.
-- \`decisions\`: [{ "decision", "reason" }] choices made and why.
+- \`decisions\`: [{ "decision", "reason" }] choices about the code, the product or the approach that a later session could otherwise make differently, and why. Not the turn's verdict or status, not that the work followed its own instructions, not the order the work was done in.
 - \`rejected\`: [{ "approach", "reason" }] approaches tried or proposed and dropped, and why.
 - \`errors\`: [{ "error", "fix" }] each error with the fix that worked, or "" when none did.
 - \`corrections\`: [{ "wrong", "right" }] where a person or another agent corrected the work ("no, don't", "that's wrong"): what was wrong and what was right.
 - \`files\`: paths that mattered.
 - \`commands\`: commands that mattered, with their flags.
 - \`open_questions\`: what was left unresolved.
-- \`signal\`: "high" when the turn holds an error and its fix, a decision with a reason, a rejected approach, a correction, or a non-obvious fact about the code or tools; "low" for ordinary work worth a line; "none" for mechanical turns with nothing to learn.
+- \`signal\`: "high" only when the turn holds at least one of: an error together with the fix that worked; a decision as defined above, with its reason; a rejected approach with its reason; a correction; a fact about the code or tools that the code itself does not show. "low" for ordinary work worth a line, an error nobody fixed included. "none" for mechanical turns, test or probe prompts, and turns that only report status: nothing a later session would act on. Most routine turns are "low" or "none".
 
 ## Exactness
 
