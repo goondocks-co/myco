@@ -6,7 +6,7 @@
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { RunBodyUnavailable, RunNotFound, listReportsWithBodies, runInstructionBody } from '../../db/runs/bodies.js';
 import { decodeCursor } from '../../read/scope.js';
-import { getRunDetail, listRuns } from '../../read/runs.js';
+import { getRunDetail, listRunRefusals, listRuns } from '../../read/runs.js';
 import { failure, scopeOf, viewerOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
 import type { ToolInput } from '../validate.js';
@@ -26,11 +26,15 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
     const detail = await getRunDetail(db, scope, id, ctx.now, viewerOf(ctx));
     if (detail === null) return { ok: false, op, error: 'run not found' };
     try {
-      const instruction = detail.run.instruction ?? await runInstructionBody(env, scope, id);
-      const reports = await listReportsWithBodies(env, scope, id);
+      const [instruction, reports, refusals] = await Promise.all([
+        detail.run.instruction ?? runInstructionBody(env, scope, id),
+        listReportsWithBodies(env, scope, id),
+        listRunRefusals(db, scope, id),
+      ]);
       return { ok: true, op, data: {
         run: snake({ ...detail.run, instruction: instruction === null ? null : redactSecrets(instruction) }), phases: detail.phases === null ? null : snake(detail.phases),
         reports: snake(reports.reports), reports_has_more: reports.hasMore,
+        refusals: snake(refusals.refusals), refusals_has_more: refusals.hasMore,
         outcome_evidence: detail.outcomeEvidence === null ? null : snake(detail.outcomeEvidence),
       } };
     } catch (error) {

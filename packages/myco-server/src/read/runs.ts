@@ -8,7 +8,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, keysetPage, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
 import { runDetailRow, runIsVisible, runListRows, type RunListOrder } from '../db/runs/history.js';
 import { readSet } from '../db/index.js';
-import { attemptStepRows, canopyMapRecord, latestRunAttempts, runAttemptRecord, runCallEvents, type AttemptRecord } from '../db/runs/detail-pages.js';
+import { attemptStepRows, canopyMapRecord, latestRunAttempts, runAttemptRecord, runCallEvents, runFailedCallEvents, type AttemptRecord } from '../db/runs/detail-pages.js';
 import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
 import { getRun, isTerminalRunStatus } from '../db/runs/lifecycle.js';
 import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure, type RunCallResult } from '../db/runs/evidence.js';
@@ -27,6 +27,8 @@ import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-s
 
 /** The most calls one page of a run's detail lists. */
 const MAX_TOOL_CALLS = 200;
+/** The most tool refusals `myco_agent` op `run` lists: the latest; `listRunRefusals` says when a run holds more. */
+export const RUN_REFUSALS_LIMIT = MAX_TOOL_CALLS;
 
 /** A run as the list shows it: what ran, how it ended, and what it cost. The error text stays in the detail; the list carries only that there is one. */
 interface RunListRow {
@@ -462,6 +464,25 @@ export async function getRunCalls(db: RelationalStore, scope: ReadScope, runId: 
 /** One page of a run's calls for callers that only need the rows. */
 export async function runToolCalls(db: RelationalStore, scope: ReadScope, runId: string, limit = MAX_TOOL_CALLS): Promise<RunToolCallRow[]> {
   return (await runToolCallPage(db, scope, runId, { limit })).rows;
+}
+
+/** One tool refusal a run received, read from the same `agent_run_events` rows as `toolCalls`. */
+export interface RunRefusalRow {
+  tool: string;
+  op: string | null;
+  code: string;
+  message: string;
+  recordedAt: number;
+}
+
+/** A run's latest `limit` tool refusals, oldest first, and whether it holds more. */
+export async function listRunRefusals(db: RelationalStore, scope: ReadScope, runId: string, limit = RUN_REFUSALS_LIMIT): Promise<{ refusals: RunRefusalRow[]; hasMore: boolean }> {
+  const rows = await runFailedCallEvents(db, scope.projectId, runId, limit + 1);
+  const refusals = rows.slice(0, limit).reverse().map((row) => {
+    const failure = failureOf(RUN_CALL_FAILED, row.payload)!;
+    return { tool: String(row.tool ?? ''), op: opOfPayload(row.payload), code: failure.code, message: redactSecrets(failure.message), recordedAt: Number(row.recordedAt) };
+  });
+  return { refusals, hasMore: rows.length > limit };
 }
 
 /** The most attempts a run's detail lists: the latest. */

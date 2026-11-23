@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { RunStepRow } from '../../read/runs.js';
 import { read, readSet } from '../index.js';
+import { FAILED_CALL_INDEX, FAILED_CALL_SQL } from '../schema-v701.js';
 import { attemptHarnessSql } from './attempt-harness.js';
 
 export type ToolCallEventRow = { id: number; tool: string | null; durationMs: number | null; outcome: string | null; payload: string | null; recordedAt: number };
@@ -19,6 +20,11 @@ const callsFirst = read<[project: string, run: string, event: string, limit: num
   `${CALLS} ORDER BY recorded_at ASC, id ASC LIMIT ?4` });
 const callsAfter = read<[project: string, run: string, event: string, limit: number, at: number, id: string], ToolCallEventRow>({ name: 'runDetail.callsAfter', sql:
   `${CALLS} AND recorded_at >= ?5 AND (recorded_at > ?5 OR (recorded_at = ?5 AND id > ?6)) ORDER BY recorded_at ASC, id ASC LIMIT ?4` });
+const failedCalls = read<[project: string, run: string, limit: number], ToolCallEventRow>({ name: 'runDetail.failedCalls', sql:
+  `SELECT id, tool_name AS tool, duration_ms AS durationMs, outcome, payload, recorded_at AS recordedAt
+      FROM agent_run_events INDEXED BY ${FAILED_CALL_INDEX}
+      WHERE project_id = ?1 AND run_id = ?2 AND ${FAILED_CALL_SQL}
+      ORDER BY recorded_at DESC, id DESC LIMIT ?3` });
 
 const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.waited_for AS waitedFor, a.waited_since AS waitedSince, a.runner_version AS runnerVersion, a.agent_version AS agentVersion, ${attemptHarnessSql('a')} AS harness, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
   a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
@@ -46,6 +52,12 @@ const canopyMap = read<[project: string, run: string, event: string, tool: strin
 export async function runCallEvents(db: RelationalStore, request: { project: string; run: string; event: string; after: Key; limit: number }): Promise<ToolCallEventRow[]> {
   const { project, run, event, after, limit } = request;
   const [rows] = await readSet(db, after === null ? callsFirst.bind(project, run, event, limit) : callsAfter.bind(project, run, event, limit, after.createdAt, after.id));
+  return rows;
+}
+
+/** Up to `limit` latest failed tool-call events for the run, newest first. */
+export async function runFailedCallEvents(db: RelationalStore, project: string, run: string, limit: number): Promise<ToolCallEventRow[]> {
+  const [rows] = await readSet(db, failedCalls.bind(project, run, limit));
   return rows;
 }
 
