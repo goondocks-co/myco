@@ -205,7 +205,7 @@ if (RUN_DEADLINE_AT_MS !== null && !Number.isSafeInteger(RUN_DEADLINE_AT_MS)) {
 
 // Bun's line naming the test file it starts (`##[group]`-prefixed under
 // GitHub Actions), and its line reporting one test's result.
-const BUN_FILE_HEADER = /^(?:##\[group\])?(\S+\.[cm]?[jt]sx?):$/;
+const BUN_FILE_HEADER = /^(?:##\[group\]|::group::)?(\S+\.[cm]?[jt]sx?):$/;
 const BUN_TEST_RESULT = /^\((?:pass|fail|skip|todo)\) (.+?)(?: \[[\d.]+m?s\])?$/;
 
 /** A group's deadline: its own budget from now, or the run's deadline when that comes first. */

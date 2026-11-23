@@ -22,7 +22,7 @@ export async function observeStatusContract(home: string, answers: SetupAnswers,
   else {
     try {
       const record = peekDeploymentRecord(home);
-      if (record !== null) journeys.push({ role: 'create', target: 'cloudflare' });
+      if (record !== null) journeys.push({ role: 'create', target: 'cloudflare', ...(record.url ? { url: deploymentUrl(record.url) } : {}) });
     } catch (error) { unavailable('deployment.create', error instanceof Error ? error.message : String(error)); }
     try {
       if (fs.lstatSync(peekLocalPaths(home).root, { throwIfNoEntry: false }) !== undefined) journeys.push({ role: 'create', target: 'local' });

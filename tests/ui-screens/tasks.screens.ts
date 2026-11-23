@@ -12,7 +12,7 @@ for (const { viewport, mode } of SHOT_MATRIX) {
   test(`Tasks view ${viewport} ${mode}`, async ({ browser }) => {
     const { context, page, watch } = await openPage(browser, { path: tasksPath(), viewport, mode, cookie: screensEnv('ownerCookie') });
     try {
-      await expect(page.getByRole('heading', { level: 1, name: 'Tasks' })).toBeInViewport();
+      await expect(page.getByRole('heading', { level: 1, name: 'Myco’s work' })).toBeInViewport();
       const project = (JSON.parse(screensEnv('projects')) as Array<{ projectId: string }>)[0]!;
       const answer = await page.evaluate(async (path) => {
         const response = await fetch(path);

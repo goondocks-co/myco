@@ -1,6 +1,6 @@
 import { expectRunRefusal } from '../../helpers/run-refusal.js';
 import { expect } from 'bun:test';
-import { mcp as tool, runTool } from '../clients/requests.ts';
+import { mcp as tool, mcpRefusal, runTool } from '../clients/requests.ts';
 import { withSettings } from '../clients/settings.ts';
 import { captureSession, takeRun, failRun } from '../clients/runs.ts';
 import { promptContext, deliver, publishedTurns, withRecall, learningSettings, cardSession } from '../clients/capture.ts';
@@ -197,7 +197,7 @@ export const guardedSpores: ParityScenario = {
     expectRunRefusal(await resolve({ ...obsolete, expect_revision: 1, expect_status: current.status }), 'runs require active', { tool: 'myco_spores', op: 'obsolete' });
     const ids = [await save(), await save()];
     await member({ op: 'obsolete', id: ids[1], reason: 'Knowledge retired.' });
-    const stale = await member({ op: 'consolidate', source_spore_ids: ids.map(id => ({ id, revision: 0 })), consolidated_content: 'combined', observation_type: 'wisdom', agent_line: 'When combining findings, reread their revisions.' });
+    const stale = await mcpRefusal(target, 'myco_spores', { op: 'consolidate', source_spore_ids: ids.map(id => ({ id, revision: 0 })), consolidated_content: 'combined', observation_type: 'wisdom', agent_line: 'When combining findings, reread their revisions.' });
     expect(stale).toMatchObject({ ok: false, error: 'stale', spore_id: ids[1], status: 'obsolete', revision: 1 });
     expect((await member({ op: 'get', id: ids[0] })).status).toBe('active');
     expect((await member({ op: 'get', id: ids[1] })).status).toBe('obsolete');
