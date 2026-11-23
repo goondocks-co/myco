@@ -227,6 +227,11 @@ export async function memberRouteFixtures(sqlite: Database, issuedAt: number, pe
       malformed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       wellFormed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ revision: String((sqlite.query('SELECT revision FROM raw_provenance_state').get() as { revision: number }).revision) }) }),
     },
+    'POST /members/projects/by-remote': {
+      shape: 'persisted',
+      malformed: (token) => new Request('https://s/members/projects/by-remote', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ remote: '' }) }),
+      wellFormed: (token) => new Request('https://s/members/projects/by-remote', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ remote: 'github.com/acme/gate' }) }),
+    },
     'POST /members/projects/list': {
       shape: 'persisted',
       malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
