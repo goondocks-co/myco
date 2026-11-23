@@ -186,12 +186,13 @@ test('a note body is counted in characters with spaces and line breaks: the inst
   } finally { f.sqlite.close(); }
 });
 
-test('refusals name coverage, bounds and lexical code notation; exhausted attempts cannot apply', async () => {
+test('refusals name coverage, bounds, lexical code notation and task state; exhausted attempts cannot apply', async () => {
   const cases = [
     { answer: {keep:['decision-a','gotcha-b'],reason:'   '}, error:'reason has 0 non-whitespace (3 raw) characters' },
     { answer: {notes:Array.from({length:CURATION_NEW_NOTES+1},()=>note(['decision-a'])),keep:['gotcha-b']}, error: `notes has ${CURATION_NEW_NOTES+1} entries; limit ${CURATION_NEW_NOTES}` },
     { answer: {keep:['decision-a']}, error:'answer omits 1 members' },
     { answer: {notes:[{...note(['decision-a']),agent_line:'Use capture_spool() to retain data.'}],keep:['gotcha-b']}, error:'contains code notation' },
+    { answer: {notes:[{...note(['decision-a']),agent_line:'The retry fix waits on PR #2331, not merged yet.'}],keep:['gotcha-b']}, error:'states the state of a task, "PR #2331, not merged"' },
     { answer: {notes:[{...note(['decision-a']),agent_line:'a'.repeat(AGENT_LINE_MAX_CHARS+5)}],keep:['gotcha-b']}, error:`, 5 more than the ${AGENT_LINE_MAX_CHARS} allowed; shorten that line by at least 5 characters` },
     { answer: {notes:[note(['decision-a'])],keep:['decision-a','gotcha-b']}, error:'occurs in both sources and keep' },
     { answer: {keep:['decision-a'],retire:[{id:'gotcha-b',reason:'External evidence.',made_unnecessary_by:'outside'}]}, error:'expected a kept member id' },

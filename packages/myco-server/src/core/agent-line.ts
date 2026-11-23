@@ -35,6 +35,26 @@ export function agentLineNotation(line: string): string | null {
   return first?.[0] ?? null;
 }
 
+/** What a note holds instead of the state of the task that taught it, as every automated writer reads it. */
+export const TASK_STATE_RULE = 'A note holds what stays true after the task that taught it ends, never the state of that task: a branch to check, a pull request not yet merged, a next step or what is still to do. Those are wrong within a day and belong in a plan. A branch or pull request may appear in content as where something was observed. An automated writer\'s agent_line is refused when it names a branch (on branch fx-name), asks to check whether something merged or landed, or says a numbered pull request is unmerged, still open or awaiting review.';
+
+/** Each explicit statement of a task's state in an agent line; a to-do or next step in other words is left to editorial judgment. */
+const TASK_STATE_STATEMENTS: readonly RegExp[] = [
+  /(?:^|[:;,(]\s*|\b(?:on|in|from|of|the|a|its|this|that|lane|feature|work)\s+)branch\s+["']?[A-Za-z0-9][\w.]*(?:[-/][\w.]+)+/i,
+  /\b(?:check|see|verify|confirm)(?:ing)?\s+(?:if|whether)\s+(?:(?:it|this|that|they)\s+)?(?:(?:is|are|was|has|have)\s+)?(?:been\s+)?(?:merged|landed|pushed|shipped)\b/i,
+  /\b(?:PR|pull request)\s*#?\d+\b[^.;]{0,80}?\b(?:not\s+(?:yet\s+)?(?:merged|landed)|unmerged|still open|awaiting (?:merge|review)|pending (?:merge|review))\b/i,
+];
+
+/** The statement of a task's state `line` carries first, or null. */
+export function agentLineTaskState(line: string): string | null {
+  let first: RegExpExecArray | null = null;
+  for (const pattern of TASK_STATE_STATEMENTS) {
+    const found = pattern.exec(line);
+    if (found !== null && (first === null || found.index < first.index)) first = found;
+  }
+  return first?.[0].replace(/^[:;,(]\s*/, '') ?? null;
+}
+
 /** An agent line as it is stored and counted: one line, runs of whitespace as one space. */
 export const normalizeAgentLine = (value: string): string => value.replace(/\s+/g, ' ').trim();
 

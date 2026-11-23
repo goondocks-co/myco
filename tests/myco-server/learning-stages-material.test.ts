@@ -187,6 +187,9 @@ it('answers a learning run\'s save with the closest active spores, and that is e
     const first = await run.save(AGENT_LINE_EXAMPLE) as { id: string; near_matches: unknown[] };
     expect(first.near_matches).toEqual([]);
     expect(await run.save('Declaring a run tool op in WRITE_OPS keeps dry runs from writing.')).toMatchObject({ ok: false, error: expect.stringContaining('code notation "WRITE_OPS"; nothing was saved') });
+    expect(await run.save('Dashboard generated-asset conflicts: branch fx-dashboard-bundle untracks the bundle; check if merged.')).toMatchObject({ ok: false, error: expect.stringContaining('states the state of a task, "branch fx-dashboard-bundle"; nothing was saved') });
+    expect(await run.save('Retry fix: check whether it landed before deploying.')).toMatchObject({ ok: false, error: expect.stringContaining('"check whether it landed"') });
+    expect(await run.save('Before pushing a lane branch, check the commit authors.', 'Observed on branch fx-tgate, unmerged at capture; PR #2242 was still open.')).toMatchObject({ status: 'active' });
     const second = await run.save('When a preview changes real data, declare that write op so dry runs refuse it.', 'Declare it in WRITE_OPS.') as { id: string; near_matches: unknown[] };
     expect(second.near_matches).toEqual([{ id: first.id, revision: expect.any(Number), observation_type: 'gotcha', agent_line: AGENT_LINE_EXAMPLE }]);
     const near = second.near_matches[0] as { id: string; revision: number };

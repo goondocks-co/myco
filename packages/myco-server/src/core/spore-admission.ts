@@ -1,4 +1,4 @@
-import { admitAgentLine, agentLineNotation } from './agent-line.js';
+import { admitAgentLine, agentLineNotation, agentLineTaskState } from './agent-line.js';
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, MAX_FILE_PATH_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from './spore-input-contract.js';
 import { runRefusal } from './run-tool-contract.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
@@ -78,13 +78,16 @@ async function sourceOf(input: SporeWriteInput, ctx: SporeWriteContext, scope: R
 }
 
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
-/** The agent line a write carries, or the one thing wrong with it; a line carries no code notation. */
-function agentLineOf(input: SporeWriteInput): { ok: true; agentLine: string } | SporeWriteFailure {
+/** The agent line a write carries, or the one thing wrong with it; a line carries no code notation, and a run's line states no task's state. */
+function agentLineOf(input: SporeWriteInput, principal: SporePrincipal): { ok: true; agentLine: string } | SporeWriteFailure {
   const admitted = admitAgentLine(input.agent_line);
   if ('error' in admitted) return failure(admitted.error + '. ' + AGENT_LINE_GUIDANCE);
+  const again = { tool: 'myco_spores', op: String(input.op) };
   const notation = agentLineNotation(admitted.line);
-  return notation === null ? { ok: true, agentLine: admitted.line }
-    : failure(`agent_line contains code notation ${JSON.stringify(notation)}; nothing was saved. Say the situation and guidance in plain words, keep the path, flag or symbol in the body, and call myco_spores op "${String(input.op)}" again.`, { tool: 'myco_spores', op: String(input.op) });
+  if (notation !== null) return failure(`agent_line contains code notation ${JSON.stringify(notation)}; nothing was saved. Say the situation and guidance in plain words, keep the path, flag or symbol in the body, and call myco_spores op "${again.op}" again.`, again);
+  const taskState = principal.kind === 'run' ? agentLineTaskState(admitted.line) : null;
+  return taskState === null ? { ok: true, agentLine: admitted.line }
+    : failure(`agent_line states the state of a task, ${JSON.stringify(taskState)}; nothing was saved. A branch to check or a pull request's merge status is wrong once the task ends. Write what stays true afterwards: the situation and its lesson, with any branch or pull request only in content as where it was observed, and call myco_spores op "${again.op}" again; when no lesson remains, save nothing.`, again);
 }
 const COMMIT_REF = new RegExp(`^[0-9a-f]{${COMMIT_REF_MIN_CHARS},${COMMIT_REF_MAX_CHARS}}$`);
 
@@ -202,7 +205,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const by = writerOf(ctx);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
-    const lined = agentLineOf(input);
+    const lined = agentLineOf(input, ctx.principal);
     if (!lined.ok) return lined;
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
@@ -263,7 +266,7 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const by = writerOf(ctx);
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
-    const lined = agentLineOf(input);
+    const lined = agentLineOf(input, ctx.principal);
     if (!lined.ok) return lined;
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;

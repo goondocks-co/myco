@@ -1,5 +1,5 @@
 import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
-import { AGENT_LINE_NOTATION_RULES, AGENT_LINE_RULE } from '../core/agent-line.js';
+import { AGENT_LINE_NOTATION_RULES, AGENT_LINE_RULE, TASK_STATE_RULE } from '../core/agent-line.js';
 import { EXTRACTION_TASK, SEEDING_TASK } from '../core/task-catalogue.js';
 import { acceptedActions } from '../core/run-postconditions.js';
 /**
@@ -107,7 +107,7 @@ function runSporeDefinition(definition: ToolDefinition, task: string | null): To
   const { cortex: _memberGuidance, ...run } = definition;
   return {
     ...run,
-    description: `Operations: ${properties.op.enum!.join(', ')}. ${guidance} ${session} ${extraction ? 'Save and consolidate require' : 'Save requires'} agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_RULE} ${AGENT_LINE_NOTATION_RULES}${lifecycle}`,
+    description: `Operations: ${properties.op.enum!.join(', ')}. ${guidance} ${session} ${extraction ? 'Save and consolidate require' : 'Save requires'} agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_RULE} ${AGENT_LINE_NOTATION_RULES} ${TASK_STATE_RULE}${lifecycle}`,
     inputSchema: { ...definition.inputSchema, properties: { ...properties,
       session_id: { ...properties.session_id, description: session },
       prompt_id: { ...properties.prompt_id, description: extraction ? 'Compatibility for extraction runs dispatched before the served-material ledger: the captured prompt resolves the supporting session. Use session_id from learning material for current runs.' : 'Omit prompt_id for this run.' },
