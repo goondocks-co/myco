@@ -38,7 +38,7 @@ Runners use agents already signed in on their machines. Registering a runner is 
 
 ### Sign-in and access
 
-This section points to **People & machines** for membership and machine access, and **Project settings › Access keys** for external agents. Keys are scoped to one project; see [External agents](external-agents.md).
+This section points to **People & machines** for membership and machine access, and **Project settings › Access keys** for external agents. Keys are scoped to one project; see [External agents](external-agents.md). **Telemetry keys** let a tool that launches agents report those launches; see [Telemetry from a launcher](agents.md#telemetry-from-a-launcher-opentelemetry).
 
 ## What Myco does in each project
 

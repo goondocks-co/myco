@@ -145,6 +145,27 @@ Myco reads this member once, when the new session starts, and records the parent
 
 Your id is on the `Session::` line Myco adds at session start. A Claude Code session can also pass its own `CLAUDE_CODE_SESSION_ID`, which is its Myco session id. Sub-agents that run inside one session need nothing: they are already part of it.
 
+### Telemetry from a launcher (OpenTelemetry)
+
+A tool that launches agents, such as an orchestrator, can also report what it launched over [OpenTelemetry](https://opentelemetry.io/docs/specs/otlp/). Myco then shows each launch on the **Lineage** tab of the sessions involved. Baggage, above, is what records a session's parent; telemetry adds the launcher's own account of the launch. Telemetry never changes who spoke in a turn, and nothing is matched by time.
+
+An administrator issues a key in the dashboard: **Settings › Sign-in and access › Telemetry keys › Add telemetry key**. The dialog shows two values once: the endpoint base (this Myco's address) and the header, `Authorization: Bearer <key>`. Save the header then; the key is not shown again. A telemetry key only accepts telemetry. It cannot read anything in Myco.
+
+Give the sender both values. A sender that follows the OpenTelemetry environment variables takes:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=https://myco.example.com
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20<key>"
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_COMPRESSION=none
+```
+
+Myco accepts OTLP over HTTP as uncompressed JSON at `/v1/traces`, `/v1/logs` and `/v1/metrics` under that address, up to 1 MB a request. A span is tied to a session by its `gen_ai.conversation.id` attribute, which carries the session's id. Spans are kept for 30 days. Logs and metrics are accepted and counted, not kept.
+
+To check a sender, launch one agent with it and open that agent's session: the **Lineage** tab names the session that launched it. The key's row in Settings says when it was last used. A `401` answer means the header is missing or the key was revoked; a `400` answer says what to change in the request.
+
+Revoking a key in the same place stops that sender at once and removes what it reported.
+
 ## What agents receive
 
 Project instructions arrive at session start. Relevant spores and plans return with each prompt, and the [agent tools](agent-tools.md) let agents search further or record findings. The project's **Context for sessions** switch is on by default.
