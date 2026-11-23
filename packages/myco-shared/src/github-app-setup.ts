@@ -66,6 +66,9 @@ export const installationPage = (installationId: number, account: GitHubAppOwner
 
 export const ownerWords = (owner: GitHubAppOwner): string => `${owner.login} (${owner.type === 'Organization' ? 'an organization' : 'a personal account'})`;
 
+export const appSettingsLocation = (owner: GitHubAppOwner): string =>
+  `In GitHub, open ${owner.type === 'Organization' ? `${owner.login}’s organization page → Settings` : `${owner.login}’s personal Settings`}, then Developer settings → GitHub Apps.`;
+
 /** The operator's command that imports a downloaded key into this Deployment. */
 export const keyImportCommand = (target: OperatorTarget, origin: string): string =>
   `myco server github-app --target ${target} --url ${origin} --private-key-file <downloaded.pem>`;

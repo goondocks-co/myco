@@ -26,7 +26,7 @@ import { runOrThrow } from '@myco/server/runner.js';
 import { readRunnerRecord } from '@myco/runner/runner-registry.js';
 import { readDefaultDeployment, recordDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, listDeploymentMembershipsResult, listRegistryEntriesResult } from '@myco/member/registry.js';
-import { hasObservedSetupJourney, planFingerprint, readablePlan, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
+import { GITHUB_ORG_NAME, hasObservedSetupJourney, planFingerprint, readablePlan, saveSetupFile, setupCloudflareUrl, type SetupFile, type SetupPlan } from '@myco/setup/answers.js';
 import { observeSetup, type Observation, type ObserveDeps } from '@myco/setup/observe.js';
 import { askOnTerminal, askRequired, confirm, type Ask } from '@myco/setup/prompt.js';
 import { planCutover, runCutover, cutoverSourcePlan, cutoverReconciliation, type CutoverDeps, type CutoverPlan } from '@myco/cli/cutover.js';
@@ -47,7 +47,7 @@ export interface SetupDeps extends ObserveDeps {
   recoverLocal?: typeof recoverLocalOwnerLink;
   registerApp?: typeof registerGitHubApp;
   github?: Pick<RegisterOptions, 'fetchImpl' | 'timeoutMs' | 'existing'>;
-  openUrl?: (url: string) => void | Promise<void>;
+  openUrl?: RegisterOptions['openUrl'];
   loginAddress?: string;
   mycoHome?: string;
   cwd?: string;
@@ -133,11 +133,17 @@ const hostedOptions = (ctx: Context) => {
   return { ...options, ...(ctx.ownerLogin ? { login: ctx.ownerLogin.login } : {}) };
 };
 const openUrl = async (ctx: Context, url: string) => {
-  try { await (ctx.deps.openUrl ?? openBrowser)(url); }
-  catch (error) {
+  const reportFailure = () => ctx.out('The browser could not open. Open the printed link in your browser.');
+  if (!ctx.deps.openUrl) {
+    void openBrowser(url).then(opened => { if (!opened) reportFailure(); }, reportFailure);
+    return;
+  }
+  try {
+    if (await ctx.deps.openUrl(url) === false) reportFailure();
+  } catch (error) {
     ctx.deps.signal?.throwIfAborted();
     if (error instanceof Error && error.name === 'AbortError') throw error;
-    ctx.out('The browser could not open. Open the printed link in your browser.');
+    reportFailure();
   }
 };
 const consentToOccurrence = async (ctx: Context, question: string): Promise<void> => {
@@ -241,6 +247,21 @@ const signInTarget = (ctx: Context): SignInTarget => {
   return { kind: 'cloudflare', record, mycoHome: ctx.home };
 };
 async function signInOptions(ctx: Context): Promise<RegisterOptions> {
+  const saved = ctx.file.answers;
+  if (saved.org === undefined) {
+    if (ctx.yes) {
+      saved.org = null;
+      ctx.out('The GitHub sign-in app will belong to your personal account. Use --org <name> to choose an organization.');
+    } else {
+      ctx.out('The owner can manage the app in GitHub. The choice leaves its read permissions the same, and you can transfer the app later in GitHub.');
+      const answer = await ctx.ask('Who should own the GitHub sign-in app? Press Enter for your personal account or enter a GitHub organization name: ');
+      if (answer === null) throw new Error('Use --org <name> for an organization or --yes for your personal account.');
+      const org = answer.trim();
+      if (org !== '' && !GITHUB_ORG_NAME.test(org)) throw new Error('Enter a GitHub organization name or use --org <name>.');
+      saved.org = org || null;
+    }
+    saveSetupFile(ctx.home, ctx.file);
+  }
   const answers = chosen(ctx);
   const name = answers.appName ?? await defaultAppName(answers.url);
   const owner = answers.org ?? 'your account';
@@ -250,8 +271,8 @@ async function signInOptions(ctx: Context): Promise<RegisterOptions> {
     throw new Error(`${createFirst}Use myco server github-app --target ${answers.target} --url ${answers.url} --existing --client-id <id> --client-secret-stdin with its regenerated secret, then run myco setup again.`);
   }
   return {
-    ...ctx.deps.github, url: answers.url, name, org: answers.org, runner: ctx.deps.cloudflare?.runner,
-    fetchImpl: ctx.deps.github?.fetchImpl ?? ctx.deps.fetch, log: ctx.out, openUrl: async url => { await openUrl(ctx, url); },
+    ...ctx.deps.github, url: answers.url, name, org: answers.org ?? undefined, runner: ctx.deps.cloudflare?.runner,
+    fetchImpl: ctx.deps.github?.fetchImpl ?? ctx.deps.fetch, log: ctx.out, openUrl: ctx.deps.openUrl ?? openBrowser,
     target: signInTarget(ctx),
   };
 }

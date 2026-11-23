@@ -136,7 +136,14 @@ export interface TelemetryEvent {
   [key: string]: unknown;
 }
 
+let telemetrySuppressed: (() => boolean) | undefined;
+
+/** Native callers can supply an execution-context policy. */
+export function setTelemetrySuppression(isSuppressed: () => boolean): void {
+  telemetrySuppressed = isSuppressed;
+}
+
 /** Emits a structured event. Values are classifiers, server-issued identifiers, the ids a member named its Project and sessions by, or digests of caller identity — never a request body, path, or address. */
 export function emit(event: TelemetryEvent): void {
-  console.log(JSON.stringify(event));
+  if (!telemetrySuppressed?.()) console.log(JSON.stringify(event));
 }

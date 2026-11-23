@@ -28,7 +28,7 @@ it('conducts a create journey across a parent-owned process interruption', async
     ask: async question => {
       if (process.env.MYCO_SETUP_RESUME && question.startsWith('Approve this plan?')) throw new Error('resume unexpectedly re-asked plan consent');
       if (process.env.MYCO_SETUP_RESUME) return null;
-      return question.startsWith('Choose the address') ? '1' : question.includes('already have') ? 'no' : 'yes';
+      return question.startsWith('Who should own') ? '' : question.startsWith('Choose the address') ? '1' : question.includes('already have') ? 'no' : 'yes';
     },
     sleep: async () => {}, loginDeps: { machineId: `kill-${target}` },
     createCloudflare: async options => { const result = await createCloudflareDeployment(options); if (boundary === 'create') reached(); return result; },

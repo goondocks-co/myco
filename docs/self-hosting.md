@@ -26,7 +26,11 @@ myco setup --create cloudflare
 myco setup --create local
 ```
 
-Setup asks for the account and address before creating Cloudflare resources. For local hosting, it asks for a port and whether to start at login or wait for you to run `myco server run --target local` in another terminal. It guides GitHub registration, private owner linking and this machine's sign-in, then asks about a project and a runner. A runner is a separate choice; creating a server never starts agent work by itself.
+Setup asks for the account and address before creating Cloudflare resources. For local hosting, it asks for a port and whether to start at login or wait for you to run `myco server run --target local` in another terminal.
+
+Before registering the GitHub sign-in App, setup asks who should own it. Press Enter for your personal account or enter a GitHub organization name. The owner manages the App in GitHub and can transfer it later. The choice leaves the App’s read permissions the same. Use `--org <name>` to answer up front. On a fresh setup, `--yes` with no `--org` selects your personal account.
+
+Setup guides GitHub registration, private owner linking and this machine's sign-in, then asks about a project and a runner. A runner is a separate choice; creating a server never starts agent work by itself.
 
 Rerun `myco setup` after an interruption, including a partial Cloudflare create. Existing resources are reused. Changing the account, address or resource names asks for approval again. Setup prints the private owner link and its expiry so you can open it yourself if a browser does not open.
 
@@ -58,6 +62,8 @@ myco server install --target local
 ```
 
 `create` prepares storage and generates keys. `github-app` opens GitHub to register one public App for dashboard sign-in and read-only repository access; confirm there and return to the terminal. It requests Contents, Pull requests and Metadata read permissions, with webhook delivery disabled. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in. Run `create` before `install`; a home without a created Deployment is refused with `create` as the next step.
+
+If `github-app` cannot open a browser, it prints the registration link for you to open. The registration page works once. Run the command again if you need a fresh page. If the local server is running, stop its service with `myco server uninstall --target local` or press Ctrl-C in the terminal that runs it, then rerun the App command.
 
 After the server starts, open the private link, sign in with GitHub, check the account and choose **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become the administrator.
 
@@ -152,7 +158,7 @@ GitHub may ask you to confirm access (your password, passkey or two-factor code)
 
 Before the key is imported, the server identifies its App by the name registration gives it, derived from the server's address, and GitHub's public page for that App, kept only when its Client ID matches this server's. An App renamed on GitHub, or a server reached only at a loopback address, is not identified until the key is imported: the section then names the expected App name and Client ID and links to your Apps and your organizations.
 
-`myco server github-app --target local|cloudflare --url <address>` on an already configured server prints the same steps in the terminal: the App's name and owner, direct links, the exact import command and, after a successful import, the steps that remain (install, connect). To install or rotate a sign-in pair, explicitly use `--existing --client-id <id> --client-secret-stdin`; this installs the supplied pair even when sign-in is already configured. Fresh registration and explicit credential installation finish sign-in before attempting repository-key setup. An absent, invalid or unverifiable key leaves sign-in installed and prints the command to finish repository access.
+`myco server github-app --target local|cloudflare --url <address>` on an already configured server prints the same steps in the terminal: the App's name and owner, direct links, the exact import command and, after a successful import, the steps that remain (install, connect). For an organization-owned App, go to the organization’s page → **Settings** → **Developer settings** → **GitHub Apps**. For a personal App, start in the owner’s personal **Settings**. To install or rotate a sign-in pair, explicitly use `--existing --client-id <id> --client-secret-stdin`; this installs the supplied pair even when sign-in is already configured. Fresh registration and explicit credential installation finish sign-in before attempting repository-key setup. An absent, invalid or unverifiable key leaves sign-in installed and prints the command to finish repository access.
 
 Piped PEM input uses `--private-key-stdin`; key bytes never belong in command arguments. The command signs an App JWT with the existing Client ID and checks `GET /app` for matching identity and all three reads before storing anything. A wrong key or missing permission leaves sign-in untouched. An interrupted or unacknowledged write can be replayed by rerunning without a key input; an unfinished import remains in the private operator journal until completion or `--discard-pending`. Remove the downloaded PEM after the dashboard shows the key step done; the command leaves it on disk and names its path. After verifying a rotated key, delete the old key in GitHub.
 

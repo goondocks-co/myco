@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { withoutServerTelemetry } from './operator-telemetry.js';
 import fs from 'node:fs';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { normalizeMemberServerAddress } from '@myco/member/server-url.js';
@@ -8,7 +9,7 @@ import { UNUSUAL } from '@myco/utils/git-files.js';
 import { runGitAnswer } from '@myco/utils/git.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { runnerServerUrl, RUNNER_NAME_PATTERN } from '@myco/cli/runner-deps.js';
-import { applyObservedSetupJourney, applyObservedSetupRunWork, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
+import { applyObservedSetupJourney, applyObservedSetupRunWork, GITHUB_ORG_NAME, readSetupFile, saveSetupFile, setupCloudflareUrl, type SetupAnswers } from '@myco/setup/answers.js';
 import { observeSetupJourneys, observeSetupRunWork, observeSetupStatus, setupExitCode } from '@myco/setup/observe.js';
 import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
@@ -131,7 +132,7 @@ export function parseSetupOptions(args: readonly string[]): Options {
       }
       case '--org': {
         const org = value();
-        if (!/^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(org)) throw new Error('--org needs a GitHub organization name');
+        if (!GITHUB_ORG_NAME.test(org)) throw new Error('--org needs a GitHub organization name');
         options.answers.org = org; break;
       }
       case '--app-name': {
@@ -178,12 +179,16 @@ export function parseSetupOptions(args: readonly string[]): Options {
 
 function validateCreationOptions(answers: SetupAnswers): void {
   if (answers.target === 'local') requireNativeDeps();
-  if (answers.target === 'local' && (answers.customUrl || answers.accountId || answers.org)) throw new Error('Local setup is loopback only; use --port and --serve, without --url, --account-id or --org.');
+  if (answers.target === 'local' && (answers.customUrl || answers.accountId)) throw new Error('Local setup is loopback only; use --port and --serve, without --url or --account-id.');
   if (answers.target === 'cloudflare' && (answers.port !== undefined || answers.serve !== undefined)) throw new Error('Cloudflare setup uses --account-id and --url, without --port or --serve.');
   if (answers.role && answers.role !== 'create' && [answers.target, answers.customUrl, answers.accountId, answers.org, answers.appName, answers.port, answers.serve].some(value => value !== undefined)) throw new Error('Creation options require --create cloudflare or --create local.');
 }
 
-export async function run(args: readonly string[], deps: SetupDeps = {}): Promise<number> {
+export function run(args: readonly string[], deps: SetupDeps = {}): Promise<number> {
+  return withoutServerTelemetry(() => runSetup(args, deps));
+}
+
+async function runSetup(args: readonly string[], deps: SetupDeps): Promise<number> {
   const out = deps.stdout ?? console.log;
   const err = deps.stderr ?? console.error;
   if (args.includes('--help') || args.includes('-h')) { out(SETUP_HELP); return 0; }

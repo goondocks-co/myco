@@ -83,6 +83,7 @@ describe('new owner journeys (a) and (b)', () => {
     const questions: string[] = [];
     const deps: SetupDeps = { ...base(), ...server.deps, sleep: async () => {}, ask: async question => {
       questions.push(question);
+      if (question.startsWith('Who should own')) return SETUP_APP.ownerLogin;
       if (question.includes('already have')) return 'no';
       if (question.startsWith('Choose the address')) return '2';
       if (question.startsWith('What is the custom domain')) return address;
@@ -94,7 +95,9 @@ describe('new owner journeys (a) and (b)', () => {
     expect(lines.join('\n')).toContain('Cloudflare zone security rules');
     expect(lines.join('\n')).toContain('Myco (myco.custom.invalid)');
     expect(server.commands.filter(command => command === 'login')).toHaveLength(1);
-    expect(readSetupFile(home).answers.accountId).toBe(ACCOUNT);
+    expect(questions.filter(question => question.startsWith('Who should own'))).toHaveLength(1);
+    expect(readSetupFile(home).answers).toMatchObject({ accountId: ACCOUNT, org: SETUP_APP.ownerLogin });
+    expect(lines.join('\n')).toContain('you can transfer the app later in GitHub');
     expect(peekDeploymentRecord(home)?.url).toBe(address);
   });
 
@@ -110,6 +113,8 @@ describe('new owner journeys (a) and (b)', () => {
     const deps: SetupDeps = { ...base(), ...server.deps, registerApp: async () => { calls++; throw new Error('registration interrupted'); } };
     expect(await run(['--yes', '--app-name', 'First app'], deps)).toBe(2);
     expect(calls).toBe(1);
+    expect(readSetupFile(home).answers.org).toBeNull();
+    expect(lines.join('\n')).toContain('personal account. Use --org <name>');
     expect(await run(['--yes', '--app-name', 'Changed app'], deps)).toBe(2);
     expect(calls).toBe(1);
     expect(errors.at(-1)).toContain('changed plans require fresh consent');
@@ -197,7 +202,7 @@ describe('new owner journeys (a) and (b)', () => {
   it('accepts Enter for the advertised native port default', async () => {
     const server = ownerDeployment(root, home, 'local', 'http://127.0.0.1:8787');
     closers.push(server.close);
-    const deps = { ...base(), ...server.deps, sleep: async () => {}, ask: async (question: string) => question.startsWith('Only this machine can reach it.') ? '' : question.includes('already have') ? 'no' : 'yes' };
+    const deps = { ...base(), ...server.deps, sleep: async () => {}, ask: async (question: string) => /^(Only this machine can reach it|Who should own)/.test(question) ? '' : question.includes('already have') ? 'no' : 'yes' };
     expect(await run(['--create', 'local', '--serve', 'service', '--new', 'Default port', '--no-agents', '--no-runner'], deps)).toBe(0);
     expect(readSetupFile(home).answers.port).toBe(8787);
     expect(errors).toEqual([]);
@@ -225,7 +230,7 @@ describe('new owner journeys (a) and (b)', () => {
     const address = target === 'local' ? 'http://127.0.0.1:8787' : HOSTED_URL;
     const server = ownerDeployment(root, home, target, address);
     closers.push(server.close);
-    const deps = { ...base(), ...server.deps, ask: async () => 'yes' };
+    const deps = { ...base(), ...server.deps, ask: async (question: string) => question.startsWith('Who should own') ? '' : 'yes' };
     expect(await run(['--create', target, ...(target === 'local' ? ['--port', '8787', '--serve', 'service'] : ['--account-id', ACCOUNT, '--url', HOSTED_URL]), '--no-agents', '--no-runner'], deps)).toBe(2);
     expect(errors.at(-1)).toBe(`myco setup: ${target === 'local' ? 'Run myco server create --target local first. ' : ''}Use myco server github-app --target ${target} --url ${address} --existing --client-id <id> --client-secret-stdin with its regenerated secret, then run myco setup again.`);
     expect(server.github.calls).toHaveLength(0);

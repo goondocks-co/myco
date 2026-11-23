@@ -45,7 +45,7 @@ describe('native sign-in registration', () => {
     let opened = false;
     try {
       await expect(registerGitHubApp({ url: f.url, target: { kind: 'local', paths: f.paths },
-        openUrl: async () => { opened = true; } })).rejects.toThrow(/volume is in use/);
+        openUrl: async () => { opened = true; } })).rejects.toThrow(/myco server uninstall --target local.*Ctrl-C.*run this command again/);
       expect(opened).toBe(false);
       expect(readFileSync(f.paths.secretsFile, 'utf8')).toBe(before);
     } finally { await serving.stop(); }

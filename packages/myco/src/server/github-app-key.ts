@@ -2,7 +2,7 @@ import { createPrivateKey } from 'node:crypto';
 import { GITHUB_APP_KEY_MAX_BYTES, githubAppAccess, gitHubAppPermissionIssues, type GitHubAppIdentity } from '@goondocks/myco-shared/github-app';
 import { GitHubAppError } from '@goondocks/myco-shared/github-api';
 import {
-  GITHUB_APP_SETUP_PATH, GITHUB_APPS_LISTS, githubAppPages, keyImportCommands, ownerWords, SETUP_WORDS, type KnownApp, type OperatorTarget,
+  appSettingsLocation, GITHUB_APP_SETUP_PATH, GITHUB_APPS_LISTS, githubAppPages, keyImportCommands, ownerWords, SETUP_WORDS, type KnownApp, type OperatorTarget,
 } from '@goondocks/myco-shared/github-app-setup';
 
 /** Normalize GitHub's PKCS#1 download to the single-line PKCS#8 infrastructure secret. `next` is the exact import command. */
@@ -45,6 +45,7 @@ export function repositoryAccessSteps(log: (line: string) => void, options: { ta
     if (finding.lookupError !== null) log(`  GitHub’s public page for the App did not answer: ${finding.lookupError}`);
   } else {
     log(`This server’s App is ${finding.app.name}${finding.app.owner === null ? '' : `, owned by ${ownerWords(finding.app.owner)}`}: ${settings ?? pages!.app}`);
+    if (finding.app.owner !== null) log(appSettingsLocation(finding.app.owner));
   }
   const steps: Array<[string, string | null, string[]]> = [];
   if (!options.keyInstalled) {
