@@ -43,6 +43,6 @@ export async function writeSessionTitle(target: RouteTarget, sessionId: string, 
   const asked = await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(sessionId)}/title`, { method: 'POST' });
   expect({ status: asked.status, outcome: asked.body.outcome }).toEqual({ status: 200, outcome: expect.stringMatching(/^(queued|dispatched)$/) });
   const run = await take(target, 'title-summary');
-  expect(await runTool(target, run, 'myco_run_sessions', { op: 'title', title, summary })).toMatchObject({ written: true });
+  await runTool(target, run, 'myco_run_sessions', { op: 'material' }); expect(await runTool(target, run, 'myco_run_sessions', { op: 'title', title, summary })).toMatchObject({ written: true });
   await runTool(target, run, 'myco_run', { op: 'report', action: 'summary', summary, audit: RUN_AUDIT }); expect(await endRun(target, run, 0.1)).toMatchObject({ ended: true });
 }

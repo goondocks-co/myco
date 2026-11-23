@@ -20,14 +20,14 @@ async function postJson<T>(target: RouteTarget, path: string, body: unknown, hea
   const response = await fetch(`${target.url}${path}`, { method: 'POST', headers: { ...headers, ...json }, body: JSON.stringify(body) });
   expect(response.status).toBe(200); return await response.json() as T;
 }
-async function toolCall<T>(headers: Record<string, string>, target: RouteTarget, name: string, args: Record<string, unknown>, projectId: string, refused = false): Promise<T> {
+async function toolCall<T>(headers: Record<string, string>, target: RouteTarget, name: string, args: Record<string, unknown>, projectId: string, refused: boolean | 'as answered' = false): Promise<T> {
   const body = await postJson<{ error?: unknown; result?: { isError?: boolean; structuredContent?: { result: T } } }>(target, '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: projectId, ...args } } }, headers);
-  expect(body.error).toBeUndefined(); expect(body.result?.isError === true).toBe(refused); return body.result!.structuredContent!.result;
+  const result = body.result!.structuredContent!.result; expect(body.error).toBeUndefined(); expect(body.result?.isError === true).toBe(refused === 'as answered' ? (result as { ok?: unknown } | null)?.ok === false : refused); return result;
 }
 export const mcp = (target: RouteTarget, name: string, args: Record<string, unknown>, projectId = target.projectId): Promise<Record<string, unknown>> => toolCall(target.memberHeaders({ 'x-myco-project': projectId }), target, name, args, projectId);
 /** A member call the tool refuses: answered as a result flagged `isError`, whose result says why. */
 export const mcpRefusal = (target: RouteTarget, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => toolCall(target.memberHeaders({ 'x-myco-project': target.projectId }), target, name, args, target.projectId, true);
-export const runTool = <T = Record<string, unknown>>(target: RouteTarget, run: ClaimedRun, name: string, input: Record<string, unknown>) => toolCall<T>(memberHeadersFor(run.runToken, target.projectId), target, name, input, target.projectId);
+export const runTool = <T = Record<string, unknown>>(target: RouteTarget, run: ClaimedRun, name: string, input: Record<string, unknown>) => toolCall<T>(memberHeadersFor(run.runToken, target.projectId), target, name, input, target.projectId, 'as answered');
 const revisioned = async (target: RouteTarget, path: string, method: 'PUT' | 'DELETE', body?: unknown) => owner(target, path, { method, headers: await revisionHeaders(target, path), ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 export const putSetting = (target: RouteTarget, leaf: string, value: unknown) => revisioned(target, `/api/settings/${leaf}`, 'PUT', { value });
 export const resetSetting = (target: RouteTarget, leaf: string) => revisioned(target, `/api/settings/${leaf}`, 'DELETE');
