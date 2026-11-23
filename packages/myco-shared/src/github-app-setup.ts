@@ -81,7 +81,8 @@ export const SETUP_WORDS = {
   permissionsAccepted: 'GitHub then asks each account the App is installed on to accept the change. An App installed nowhere yet has nothing to accept.',
   key: 'On the App’s settings page, generate a private key. Look for the App’s private keys: today under Credentials → Key pairs → New key. GitHub downloads a .pem file.',
   keyCommand: 'Then run this on the machine that created this server:',
-  install: 'Install the App on each account that owns repositories code tasks should read, choosing Only select repositories. An organization owner may need to approve it.',
+  install: 'Install the App on each account that owns repositories code tasks should read, choosing Only select repositories. An organization is its own account and needs its own installation; an organization owner may need to approve it. Sign-in works without any installation, so working sign-in does not show the App is installed.',
+  installElsewhere: 'Repositories of another account or organization are read only once the App is installed there too.',
   approve: 'The App is public, so anyone can install it. Only installations by accounts approved here are used.',
   connect: 'Open a Project’s Settings → Repository and choose a repository, or let Myco propose the repositories named like your Projects.',
   find: (name: string | null, clientId: string | null) =>
@@ -189,7 +190,7 @@ export function githubAppChecklist(setup: GitHubAppSetup, origin: string): Setup
     : installed.length === 0
       ? { id: 'installed', state: 'todo', title: 'Install the App on the accounts that own your repositories.', detail: [SETUP_WORDS.install, 'Then press Check again.'], links: install, commands: [] }
       : { id: 'installed', state: 'done', title: `Installed on ${accounts(installed)}.`,
-        detail: pending.map((installation) => `${ownerWords(installation.account)} has not accepted the new permissions. It accepts them in GitHub, in its installation’s settings.`),
+        detail: [SETUP_WORDS.installElsewhere, ...pending.map((installation) => `${ownerWords(installation.account)} has not accepted the new permissions. It accepts them in GitHub, in its installation’s settings.`)],
         links: [...pages === null ? [] : [{ label: 'Install on another account', href: pages.install }],
           ...pending.map((installation) => ({ label: `Open ${installation.account.login}’s installation`, href: installationPage(installation.installationId, installation.account) }))], commands: [] };
   const approved: SetupStep = installed.length === 0

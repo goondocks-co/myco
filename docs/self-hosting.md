@@ -142,7 +142,7 @@ Dashboard **Settings → Sign-in and access → GitHub App** carries the whole s
    myco server install --target local
    ```
 
-4. **Installed on an account.** Install the App, from the step's link, on each account that owns repositories code tasks should read, choosing **Only select repositories**. An organization owner may need to approve the installation.
+4. **Installed on an account.** Install the App, from the step's link, on each account that owns repositories code tasks should read, choosing **Only select repositories**. An organization is its own account and needs its own installation, even when the App belongs to your personal account; an organization owner may need to approve it. Sign-in works without any installation, so working sign-in does not show the App is installed. If GitHub does not offer the organization, the App is limited to its owner's account: make it public under the App's **Advanced** settings.
 5. **Approved here.** The App is public so anyone can sign in with it, which also means anyone can install it. The step lists installations by accounts this server has not approved, each with **Approve**. Approve only accounts you own or trust.
 6. **A Project reads its repository.** Connect a repository to a Project (below). The section says "Repository access is set up" only once GitHub lets the App read a connected Project's repository. It tries at most three connected Projects, most recently connected first. When none of those can be read and others were not tried, it says access could not be confirmed for the Projects checked, names them, and how to check another: open that Project's Settings → Repository and save its repository again, which checks it with GitHub. Otherwise it says how many steps remain and which is next.
 
