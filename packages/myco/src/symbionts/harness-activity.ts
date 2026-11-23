@@ -65,13 +65,16 @@ function* sqliteSessions(source: Extract<ActivitySource, { kind: 'sqlite' }>, cu
   } finally { db.close(); }
 }
 
-/** Read only per-session identity and time; unavailable sources throw rather than imply idle activity. */
-export function readHarnessSessions(manifest: SymbiontManifest, mycoHome: string, now: number): Array<{ id: string; at: number }> {
+/**
+ * Read only per-session identity and time, from `since` when given and otherwise over the silence window; unavailable
+ * sources throw rather than imply idle activity.
+ */
+export function readHarnessSessions(manifest: SymbiontManifest, mycoHome: string, now: number, since?: number): Array<{ id: string; at: number }> {
   const workers = new WorkerSessionEvidence(mycoHome);
   const epoch = workers.epoch(manifest.name);
   if (workers.starting(manifest.name)) throw new Error('Worker session identity is not yet available');
   workers.prune(now);
-  const cutoff = now - HARNESS_SILENT_MS;
+  const cutoff = since ?? now - HARNESS_SILENT_MS;
   const activity: Array<{ id: string; at: number }> = [];
   for (const source of manifest.health?.activityLocations ?? []) {
     const sessions = source.kind === 'sqlite' ? sqliteSessions(source, cutoff, mycoHome) : fileSessions(source, manifest, mycoHome);
@@ -83,8 +86,8 @@ export function readHarnessSessions(manifest: SymbiontManifest, mycoHome: string
   return activity;
 }
 
-/** Recent interactive activity across the native store, without a Deployment attribution. */
-export function readHarnessActivity(manifest: SymbiontManifest, mycoHome: string, now: number): number | undefined {
-  const sessions = readHarnessSessions(manifest, mycoHome, now);
+/** Interactive activity across the native store, without a Deployment attribution: recent, or after `since` when given. */
+export function readHarnessActivity(manifest: SymbiontManifest, mycoHome: string, now: number, since?: number): number | undefined {
+  const sessions = readHarnessSessions(manifest, mycoHome, now, since);
   return sessions.reduce<number | undefined>((latest, session) => Math.max(latest ?? 0, session.at), undefined);
 }

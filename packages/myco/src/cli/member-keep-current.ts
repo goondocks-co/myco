@@ -21,7 +21,7 @@ import { listRegistryEntriesResult, listDeploymentMembershipsResult, deploymentP
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
 import { deploymentHarnessRanAt } from '@myco/symbionts/harness-attribution.js';
 import { readHarnessActivity } from '@myco/symbionts/harness-activity.js';
-import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, ranSinceHookRepair } from '@goondocks/myco-shared/harness-health';
 
 export { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 const REPORT_CAP_MS = 2_000;
@@ -56,6 +56,10 @@ function scopedHarnessFact(fact: ProvisionedHarnessFact, manifest: SymbiontManif
   }
   try {
     if (manifest === undefined) throw new Error('Harness manifest is unavailable');
+    if (base.state === 'trust_required' && base.hookRepairAt !== undefined) {
+      const ranAt = readHarnessActivity(manifest, mycoHome, now, base.hookRepairAt);
+      return { ...base, ...(ranAt === undefined ? {} : { ranAt }) };
+    }
     const ranAt = deploymentHarnessRanAt(manifest, mycoHome, serverUrl, now);
     return { ...base, activityScope: 'deployment', ...(ranAt === undefined ? {} : { ranAt }) };
   } catch {
@@ -244,7 +248,8 @@ async function reportHarnessesTo(result: KeepCurrentResult, mycoHome: string, de
       if (!advertised) process.stderr.write(`[myco] keep-current: harness report skipped for ${deploymentUrl(entry.serverUrl)} (${HARNESS_HEALTH_FEATURE} not advertised)\n`);
     }
     if (!advertised) return;
-    const trust = Object.fromEntries(harnesses.flatMap(fact => fact.state === 'trust_required' && fact.hookRepairAt !== undefined ? [[fact.id, fact.hookRepairAt]] : []));
+    const trust = Object.fromEntries(harnesses.flatMap(fact => fact.state === 'trust_required' && fact.hookRepairAt !== undefined
+      && ranSinceHookRepair(fact) ? [[fact.id, fact.hookRepairAt]] : []));
     let trustAcknowledged = Object.keys(trust).length === 0;
     if (!trustAcknowledged) {
       try {
