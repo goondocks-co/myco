@@ -47,13 +47,32 @@ jobs:
         if: github.event_name != 'push'
         run: echo 'Dry run verifies release artifacts; publication requires the exact-SHA main CI aggregate.'
 
-  # Tagged candidates run the full suite; manual candidates run the PR gate, including populated upgrades on both stores.
+  # A pull request that changes the plugin release version is a release preparation.
+  release-preparation:
+    name: Detect a release preparation
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      prepared: ${{ steps.changed.outputs.prepared }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git diff --quiet "$BASE...HEAD" -- packages/myco/plugin-version.json; then echo 'prepared=false' >> "$GITHUB_OUTPUT"; else echo 'prepared=true' >> "$GITHUB_OUTPUT"; fi
+
+  # Tagged candidates and release preparations run the full suite; manual candidates run the PR gate, including populated upgrades on both stores.
   full-ci:
     name: CI for release candidate
-    if: github.event_name != 'pull_request'
+    needs: release-preparation
+    if: always() && (github.event_name != 'pull_request' || needs.release-preparation.outputs.prepared == 'true')
     uses: ./.github/workflows/ci.yml
     with:
-      full: ${{ github.event_name == 'push' }}
+      full: ${{ github.event_name != 'workflow_dispatch' }}
 
   validate-tag:
     name: Validate Release Tag
