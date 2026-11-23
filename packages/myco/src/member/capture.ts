@@ -30,7 +30,7 @@ import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { AGENT_SCRATCH_CAPTURE_NOTICE, assertMemberTranscriptDestination } from './transcript-routing.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
 import { hookDelivered, type HookAppended } from './backlog.js';
-import { helperPass } from './helper-pass.js';
+import { inlineHelperPass } from './helper-pass.js';
 import { refreshableRoot } from './refresh.js';
 import { readRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getMachineId } from '../machine-id.js';
@@ -443,7 +443,7 @@ const INLINE_WAIT_MS = 100;
 async function shipInline(run: HookRun, opts: HookMainOptions, appended: HookAppended): Promise<void> {
   const { projectId, serverUrl } = run.credential;
   const entry = run.credential.source === 'registry' ? undefined : environmentEntry(run.credential, run.mycoHome);
-  const pass = helperPass(run.credential, run.mycoHome, { fetch: opts.fetch, now: run.now, entry, migrateLegacy: false });
+  const pass = inlineHelperPass(run.credential, run.mycoHome, { fetch: opts.fetch, now: run.now, entry });
   for (;;) {
     const left = run.budget.deadline - run.now();
     if (left <= 0) return;

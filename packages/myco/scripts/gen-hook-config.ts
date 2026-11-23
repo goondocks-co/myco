@@ -93,6 +93,8 @@ interface HookConfigEntry {
   sessionContinuation?: unknown;
   promptsFromTranscript?: boolean;
   compactionStart?: { field: string; equals: string };
+  settingsFolder?: { path: string; variable: string; carries?: Record<string, string> };
+  planWriteTools?: ReadonlyArray<{ tool: string; pathField: string; extract?: 'patch' }>;
   promptIdentity: PromptIdentityDeclaration;
 }
 
@@ -216,6 +218,19 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
   if (manifest.capture?.sessionContinuation) entry.sessionContinuation = manifest.capture.sessionContinuation;
   if (manifest.capture?.promptsFromTranscript === true) entry.promptsFromTranscript = true;
   if (manifest.capture?.compactionStart) entry.compactionStart = manifest.capture.compactionStart;
+  if (manifest.settingsFolder) {
+    entry.settingsFolder = {
+      path: manifest.settingsFolder.path,
+      variable: manifest.settingsFolder.variable,
+      ...(manifest.settingsFolder.carries ? { carries: manifest.settingsFolder.carries } : {}),
+    };
+  }
+  const planWriteTools = (manifest.capabilities?.pathBearingTools ?? [])
+    .filter((tool) => tool.mutates && (!('extract' in tool) || tool.extract !== 'shell-arg'))
+    .map((tool) => ('extract' in tool && tool.extract === 'patch'
+      ? { tool: tool.tool, pathField: tool.pathField, extract: 'patch' as const }
+      : { tool: tool.tool, pathField: tool.pathField }));
+  if (planWriteTools.length > 0) entry.planWriteTools = planWriteTools;
   return entry;
 }
 
@@ -421,6 +436,10 @@ export interface HookConfigEntry {
   promptsFromTranscript?: boolean;
   /** A session start whose payload \`field\` equals \`equals\` continues one compacted. */
   compactionStart?: { field: string; equals: string };
+  /** The settings folder declaration this harness uses to move manifest home paths. */
+  settingsFolder?: { path: string; variable: string; carries?: Record<string, string> };
+  /** Mutating file-path tools declared by this harness's manifest, excluding shell-arg extractors. */
+  planWriteTools?: ReadonlyArray<{ tool: string; pathField: string; extract?: 'patch' }>;
   /** How this symbiont's prompts are named; see the manifest schema's \`promptIdentity\`. */
   promptIdentity: PromptIdentityDeclaration;
 }

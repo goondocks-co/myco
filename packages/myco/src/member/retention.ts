@@ -1,7 +1,7 @@
 import { legacyTranscriptDestination } from './transcript-routing.js';
 import { isRoutedSpoolNamespace } from './routing.js';
 import { deploymentKeyFor } from './registry.js';
-import { listRetiredLegacySpoolDirs } from './spool-migration.js';
+import { listRetiredLegacySpoolDirs } from './spool-migration-pin.js';
 /**
  * Unacknowledged records remain in their active journal for delivery regardless
  * of age. Session state is retired only after its event journal has been
@@ -29,7 +29,7 @@ import { CaptureLossLedger } from './capture-loss.js';
 import { isProjectId, MEMBER_SESSION_STATE_RETENTION_MS, MEMBER_TRANSCRIPT_RETENTION_MS } from './constants.js';
 import type { OutboundEvent } from './envelope.js';
 import { resolveMycoHome } from '../paths/home.js';
-import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { expandRoot } from '../symbionts/transcript-discovery.js';
 import { pointerBehind, pointersOf, readSessionState, readSessionStateResultUnlocked, retireSessionFiles, updateSessionState, type TranscriptPointer } from './session-state.js';
 import { blobSourceOf, SPOOL_DIRNAME, WIRE_FIELDS, type MemberSpool, type SpoolRecord } from './spool.js';
@@ -282,8 +282,8 @@ function cleanAcknowledgedQuarantineUnlocked(spool: MemberSpool): number {
  */
 export function memberOwnedTranscriptRoots(env: NodeJS.ProcessEnv = process.env, mycoHome?: string): string[] {
   const roots: string[] = [];
-  for (const manifest of BUNDLED_MANIFESTS) {
-    const discovery = manifest.capture?.transcriptDiscovery;
+  for (const entry of Object.values(HOOK_CONFIG)) {
+    const discovery = entry.transcriptDiscovery;
     if (!discovery || discovery.retention !== 'member') continue;
     for (const root of discovery.roots) roots.push(expandRoot(root, env, mycoHome));
   }

@@ -1,7 +1,8 @@
 import { expect, it } from 'bun:test';
 import path from 'node:path';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
-import { legacySpoolDir, migrateLegacySpool } from '@myco/member/spool-migration.js';
+import { migrateLegacySpool } from '@myco/member/spool-migration.js';
+import { legacySpoolDir } from '@myco/member/spool-migration-pin.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient } from '@myco/member/transport.js';
 import { unboundedBudget } from '@myco/member/budget.js';

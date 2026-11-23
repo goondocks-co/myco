@@ -20,7 +20,7 @@
  * lookup is by the worktree-aware project root, exact match.
  */
 import { markLeft, rootKeyFor } from './auto-join.js';
-import { pinLegacySpoolDestinationForProject } from './spool-migration.js';
+import { pinLegacySpoolDestinationForProject } from './spool-migration-pin.js';
 import { clearJoinedProvisionLogouts } from './provision-record.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';

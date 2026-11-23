@@ -22,7 +22,7 @@ import { recordTranscriptUnavailable } from './capture-health.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getMachineId } from '../machine-id.js';
-import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import type { TranscriptDiscovery } from '../symbionts/manifest-schema.js';
 import { sessionIdFromTranscriptPath } from '../symbionts/transcript-discovery.js';
 import { canStartRequest, unboundedBudget, type HookBudget } from './budget.js';
@@ -37,6 +37,7 @@ import { shipSessionTranscripts, type ShipResult } from './transcript.js';
 import { flushHeldCapture } from './held.js';
 import { attemptHeldMigrationForCapture } from './pending.js';
 import { migrateLegacySpool } from './spool-migration.js';
+import type { LegacySpoolMigrationReport } from './spool-migration-pin.js';
 import { liveRoutingEntry } from './routing.js';
 import { ServerClient, type FetchLike } from './transport.js';
 
@@ -144,15 +145,16 @@ function markBehindTranscripts(spool: MemberSpool, now: number): Set<string> {
  */
 export function agentOfSession(
   sessionId: string, state: SessionState,
-  manifests: ReadonlyArray<{ name: string; capture?: { transcriptDiscovery?: TranscriptDiscovery } }> = BUNDLED_MANIFESTS,
+  manifests?: ReadonlyArray<{ name: string; capture?: { transcriptDiscovery?: TranscriptDiscovery } }>,
 ): string | null {
   if (state.agent !== undefined) return state.agent;
   const file = state.transcript?.path;
   if (file === undefined) return null;
   const target = path.resolve(file);
-  const matches = manifests.filter((manifest) => {
-    return sessionIdFromTranscriptPath(manifest.capture?.transcriptDiscovery, target) === sessionId;
-  });
+  const candidates = manifests !== undefined
+    ? manifests.map((manifest) => ({ name: manifest.name, discovery: manifest.capture?.transcriptDiscovery }))
+    : Object.entries(HOOK_CONFIG).map(([name, entry]) => ({ name, discovery: entry.transcriptDiscovery }));
+  const matches = candidates.filter(({ discovery }) => sessionIdFromTranscriptPath(discovery, target) === sessionId);
   return matches.length === 1 ? matches[0].name : null;
 }
 
@@ -299,28 +301,30 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
   return report;
 }
 
+export type DrainEntryBacklogOptions = {
+  mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
+  credentialSource?: 'registry' | 'env';
+  /** Inline hooks leave retained-journal migration for a detached helper or an explicit drain. */
+  migrateLegacy?: boolean;
+  /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
+  force?: boolean;
+  /**
+   * Send records again whatever wait a refusal set. True by default, for a person's `myco member drain` and
+   * `myco login`; the member helper walks as a hook does, forced or not.
+   */
+  rescan?: boolean;
+  /** Walk the session written to last first. */
+  newestFirst?: boolean;
+};
+
 /**
- * A registry entry's whole backlog, unbounded: the credential renewed first
- * when its window is open, then every session delivered. What `myco member
- * drain` and `myco login` run.
+ * A registry entry's backlog without pulling the legacy spool migration engine onto the caller's import graph.
+ * Callers that run legacy migration pass `migrateLegacy`; inline hooks omit it.
  */
-export async function drainEntryBacklog(
+export async function drainEntryBacklogWith(
   entry: RegistryEntry,
-  opts: {
-    mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
-    credentialSource?: 'registry' | 'env';
-    /** Inline hooks leave retained-journal migration for a detached helper or an explicit drain. */
-    migrateLegacy?: boolean;
-    /** Dial past the offline latch. True by default; the member helper does so only for a turn's or a session's end. */
-    force?: boolean;
-    /**
-     * Send records again whatever wait a refusal set. True by default, for a person's `myco member drain` and
-     * `myco login`; the member helper walks as a hook does, forced or not.
-     */
-    rescan?: boolean;
-    /** Walk the session written to last first. */
-    newestFirst?: boolean;
-  },
+  opts: DrainEntryBacklogOptions,
+  migrateLegacy?: (route: RegistryEntry, mycoHome: string, now: number) => LegacySpoolMigrationReport,
 ): Promise<BacklogReport> {
   const now = opts.now ?? Date.now;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
@@ -334,7 +338,7 @@ export async function drainEntryBacklog(
   if (current.root !== '') {
     attemptHeldMigrationForCapture(() => flushHeldCapture(current.root, current, { mycoHome: opts.mycoHome, now: now(), deadline: budget.deadline }));
   }
-  const migration = opts.migrateLegacy === false ? null : attemptHeldMigrationForCapture(() => migrateLegacySpool(current, opts.mycoHome, now()));
+  const migration = migrateLegacy === undefined ? null : attemptHeldMigrationForCapture(() => migrateLegacy(current, opts.mycoHome, now()));
   if (migration?.status === 'held') process.stderr.write(`[myco] member: legacy capture for ${current.projectId} held locally: ${migration.reason}\n`);
   if ((migration?.contextSkipped ?? 0) > 0) process.stderr.write(`[myco] member: legacy capture for ${current.projectId} moved without ${migration!.contextSkipped} context item(s) — the next prompt asks again\n`);
   for (const reason of migration?.sidecarHolds ?? []) process.stderr.write(`[myco] member: legacy optional state for ${current.projectId} held locally: ${reason}\n`);
@@ -354,4 +358,13 @@ export async function drainEntryBacklog(
   // An acknowledged send is the Deployment accepting this token after all: a refusal recorded against it no longer holds.
   if (registryCredential && report.sessions.some((s) => (s.events?.acked ?? 0) > 0)) clearNonRotatingRefusal(current.serverUrl, current.token, opts.mycoHome, now);
   return report;
+}
+
+/**
+ * A registry entry's whole backlog, unbounded: the credential renewed first
+ * when its window is open, then every session delivered. What `myco member
+ * drain` and `myco login` run.
+ */
+export async function drainEntryBacklog(entry: RegistryEntry, opts: DrainEntryBacklogOptions): Promise<BacklogReport> {
+  return drainEntryBacklogWith(entry, opts, opts.migrateLegacy === false ? undefined : migrateLegacySpool);
 }

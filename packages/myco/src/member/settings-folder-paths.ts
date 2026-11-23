@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expandHome } from '../paths/home.js';
-import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { readProvisionRecord } from './provision-record.js';
 
 /**
@@ -76,8 +76,8 @@ export function settingsVariableFolder(manifest: SettingsFolderPlacement, env: N
  */
 export function movedSettingsFolders(mycoHome: string, env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): string[] {
   const recorded = Object.values(readProvisionRecord(mycoHome)?.settingsFolders ?? {}).flat();
-  const named = BUNDLED_MANIFESTS.flatMap((manifest) => {
-    const folder = settingsVariableFolder(manifest, env, cwd);
+  const named = Object.values(HOOK_CONFIG).flatMap((config) => {
+    const folder = settingsVariableFolder(config, env, cwd);
     return folder === null ? [] : [folder];
   });
   return [...new Set([...recorded, ...named])];
