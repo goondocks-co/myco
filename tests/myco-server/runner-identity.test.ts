@@ -24,7 +24,7 @@ import { failingStatement } from './helpers/store-faults.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
-import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID, PROJECT_HEADER, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
+import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID, PROJECT_HEADER, SERVER_SCHEMA_VERSION, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { RUNNER_TOKEN_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/runners.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
@@ -44,6 +44,12 @@ import { PROTOCOL, publishFixture, memberHeaders, turnOnGatedCapabilities } from
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
+import { mkdtempSync } from '../support/fenced-fs.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runWorker } from '@myco/runner/loop.js';
+import { RUNNER_CONTACT_PATH } from '@myco/runner/runner-routes.js';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 const NOW = 1_800_000_000_000;
 const OWNER = 'mem_machine_1';
@@ -184,7 +190,7 @@ describe('runner registration through the device flow', () => {
 
       // A client that lost the poll's answer recovers its registration with the candidate it already holds.
       const contact = await r.json(r.asRunner(started.candidate, '/runners/contact', { machineId: 'mini-1', os: 'darwin', version: '2.0.0' }));
-      expect(contact).toMatchObject({ persisted: true, runner: { id: runnerId, name: 'homelab-mini', state: 'enabled' }, credential: { id: r.row('SELECT id FROM runner_credentials')!.id } });
+      expect(contact).toMatchObject({ persisted: true, schemaVersion: SERVER_SCHEMA_VERSION, runner: { id: runnerId, name: 'homelab-mini', state: 'enabled' }, credential: { id: r.row('SELECT id FROM runner_credentials')!.id } });
 
       // The request is spent: a second approval registers nothing.
       expect((await r.asSession('/api/device/approve-runner', { user_code: started.user_code })).status).toBe(409);
@@ -234,6 +240,41 @@ describe('runner registration through the device flow', () => {
 });
 
 describe('a runner-only machine', () => {
+  it('leaves queued work untouched and reports schema skew once while it keeps contacting an older Deployment', async () => {
+    const r = rig();
+    try {
+      const { token } = await r.register('mini');
+      await r.queueTitling();
+      const stopping = new AbortController();
+      const lines: string[] = [];
+      const olderSchema = SERVER_SCHEMA_VERSION - 1;
+      let contacts = 0;
+      let claims = 0;
+      const held = await runWorker({
+        serverUrl: 'https://s', token, lockDir: null, compatibilityPath: RUNNER_CONTACT_PATH,
+        runRoot: removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-runner-skew-'))),
+        pollIdleMs: 1, only: ['claude-code'], log: line => { lines.push(line); },
+        signal: AbortSignal.any([stopping.signal, AbortSignal.timeout(2_000)]),
+        fetchImpl: (async (input, init) => {
+          const route = new URL(String(input)).pathname;
+          const answer = await r.asRunner(token, route, JSON.parse(String(init?.body)));
+          if (route === RUNNER_CONTACT_PATH) {
+            if (++contacts === 3) stopping.abort();
+            return Response.json({ ...await r.json(answer), schemaVersion: olderSchema }, { headers: answer.headers });
+          }
+          if (route === '/worker/claim') { claims++; stopping.abort(); }
+          return answer;
+        }) as typeof fetch,
+      });
+      expect(held).toEqual({ driven: 0, refused: null });
+      expect(contacts).toBe(3);
+      expect(claims).toBe(0);
+      expect(lines).toEqual([`The Deployment serves schema ${olderSchema} and this runner requires schema ${SERVER_SCHEMA_VERSION}. Run myco server update on the machine that manages it.`]);
+      expect(r.row('SELECT status, error FROM agent_runs')).toEqual({ status: 'queued', error: null });
+      expect(r.row('SELECT COUNT(*) AS n FROM agent_run_attempts')).toEqual({ n: 0 });
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('claims, runs and closes a title-summary run with no membership: its run is handed no stored login, and history names the runner', async () => {
     const r = rig();
     try {

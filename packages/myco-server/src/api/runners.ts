@@ -8,7 +8,8 @@ import { machinesOf } from '../read/machines.js';
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RunnerContext } from '../context.js';
-import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
+import { SERVER_SCHEMA_VERSION, WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
+import { schemaVersion } from '../read/meta.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { controlRunner, renameRunner, registerRunner, RUNNER_NAME_PATTERN, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
 import { commit } from '../db/index.js';
@@ -54,8 +55,11 @@ export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): P
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
   const receipt = update === null ? null : await readRunnerUpdateReceipt(env.db, ctx.auth.runnerId, update);
+  const storedSchema = await schemaVersion(env.db);
   return ok({
     persisted: true,
+    // Migrations may advance the store before the new Worker starts serving it.
+    schemaVersion: storedSchema === null ? null : Math.min(storedSchema, SERVER_SCHEMA_VERSION),
     ...(receipt ?? {}),
     runner: { id: runner.id, name: runner.name, state: runner.state, deploymentId: await deploymentIdentity(env.db) },
     credential: { id: ctx.auth.credentialId, expiresAt: ctx.auth.expiresAt, refreshAfter: runnerWindowOpensAt(ctx.auth.expiresAt) },

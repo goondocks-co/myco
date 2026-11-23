@@ -21,6 +21,7 @@ import { readRunnerUpdateState, withRunnerUpdateState } from '@myco/runner/updat
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.js';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
+import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 
 const SERVER = 'https://runner.example';
 const TOKEN = `mycorun_${'r'.repeat(43)}`;
@@ -230,7 +231,7 @@ describe('explicit runner service opt-in', () => {
     expect(platform.running.size).toBe(1);
   });
 
-  it('publishes local-artifact support for the actual custom-lock owner before its first claim', async () => {
+  it('claims with an equal Deployment schema after publishing local-artifact support for its custom lock', async () => {
     await enroll();
     const scoped = deps('linux');
     let claims = 0;
@@ -238,7 +239,7 @@ describe('explicit runner service opt-in', () => {
     const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       if (new URL(request.url).pathname === '/runners/contact') {
-        return Response.json({ persisted: true, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini', state: 'enabled' },
+        return Response.json({ persisted: true, schemaVersion: SERVER_SCHEMA_VERSION, runner: { id: 'runner-one', deploymentId: 'dep-one', name: 'mini', state: 'enabled' },
           credential: { id: 'credential-one', expiresAt: 9999999, refreshAfter: 8888888 } }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
       }
       expect(new URL(request.url).pathname).toBe('/worker/claim');
