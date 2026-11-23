@@ -21,7 +21,7 @@ import {
   normalizeRemote,
 } from '@goondocks/myco-shared/member-protocol';
 import { admitProject, PROJECT_NAME_MAX } from '../db/storage/projects.js';
-import { resolveRepository } from '../core/remotes.js';
+import { projectForRemote, resolveRepository } from '../core/remotes.js';
 import { connectedRoot, connectMachineRoot, disconnectMachineRoot, restoreMachineRoot } from '../core/machine-settings.js';
 import { ROOT_KEY } from '../core/settings.js';
 import { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
@@ -38,6 +38,17 @@ export const handleMemberProjectList = emptyBodyRoute(async (env: ServerEnv, ctx
   const projects = await listVisibleProjects(env.db, { id: ctx.memberId });
   return ok({ persisted: true, projects: projects.map((p) => ({ projectId: p.projectId, name: p.name, sessionCount: p.sessionCount, lastActivityAt: p.lastActivityAt })) });
 });
+
+/** Look up a canonical remote's binding among the Projects that accept this member's capture. */
+export async function handleMemberProjectByRemote(env: ServerEnv, ctx: CredentialContext): Promise<Response> {
+  const remote = parseJsonObject(ctx.body)?.remote;
+  if (typeof remote !== 'string' || remote.length === 0 || remote.length > MAX_REMOTE_CHARS) {
+    return ok({ persisted: false, code: 'invalid_field', reason: `remote must be a nonempty canonical remote of at most ${MAX_REMOTE_CHARS} characters` });
+  }
+  const projectId = await projectForRemote(env.db, remote);
+  const project = projectId === null ? undefined : (await listVisibleProjects(env.db, { id: ctx.memberId })).find(p => p.projectId === projectId);
+  return ok({ persisted: true, project: project === undefined ? null : { projectId: project.projectId, name: project.name } });
+}
 
 /**
  * `POST /members/projects` with `{ name }`: create a project for the member to connect a folder to, under the same

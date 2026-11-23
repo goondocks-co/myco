@@ -8,7 +8,7 @@ import { handleCurationAnswer, handleCurationCoverage } from './api/curation.js'
 import { MAX_REPOSITORY_REQUEST_BYTES } from '@goondocks/myco-shared/repository';
 import { handleSetup } from './api/setup.js';
 import { handleLegacyHistory } from './api/legacy-history.js';
-import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
+import { LEGACY_HISTORY_PATH, PROJECT_BY_REMOTE_PATH } from '@goondocks/myco-shared/member-protocol';
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
 import { handleRunnerCredentialChoice, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleRemovedRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
@@ -36,7 +36,7 @@ import { clearCookie } from './auth/owner/cookie.js';
 import { handleCallback, handleLogin } from './auth/owner/routes.js';
 import { handleArchiveProject, handleCreateProject, handleProjects, handleUnarchiveProject, handleRenameProject } from './api/projects.js';
 import { handleMemberStatus, handleStatus } from './api/status.js';
-import { handleCreateMemberProject, handleMemberProjectList, handleReportUncaptured, handleUncapturedState, handleResolveMemberProject } from './api/member-projects.js';
+import { handleCreateMemberProject, handleMemberProjectByRemote, handleMemberProjectList, handleReportUncaptured, handleUncapturedState, handleResolveMemberProject } from './api/member-projects.js';
 import { handleProvisionedHarnessReport } from './api/harness-health.js';
 import { handleDiagnostics } from './api/diagnostics.js';
 import { handleProjectSearch, handleSearchAcross } from './api/search.js';
@@ -244,6 +244,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('machine-settings', 'capture', 'machine', ['member']), method: 'POST', path: '/members/uncaptured/state', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleUncapturedState },
   { authorization: httpPolicy('machine-settings', 'capture', 'machine', ['member']), method: 'POST', path: '/members/harnesses/report', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleProvisionedHarnessReport },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'POST', path: '/members/projects/list', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberProjectList },
+  { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'POST', path: PROJECT_BY_REMOTE_PATH, auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberProjectByRemote },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'POST', path: '/members/settings', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberSettings },
   // Deployment health as a member's `myco stats` reads it: Deployment-wide facts, the credential's own stored bytes and the transcript retention window, so no Project is read or created.
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'POST', path: '/members/status', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, scope: 'credential', credential: handleMemberStatus },

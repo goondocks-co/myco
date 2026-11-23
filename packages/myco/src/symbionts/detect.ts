@@ -70,11 +70,14 @@ function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
   return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-/** Installed agents use their declared directory or another settings folder of theirs, or executable and installation locations. */
+/** Detect each harness from its declared settings folders, executable or installation locations. */
 export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
-  return loadManifests().filter(m => m.detectionDir === null ? false : m.detectionDir
-    ? installedDirectory(m.detectionDir) || movedSettingsFolderFound(m)
-    : hasSymbiontInstallation(m));
+  return loadManifests().filter(manifest => {
+    const directory = manifest.detectionDir;
+    if (directory === null) return false;
+    if (directory === undefined) return hasSymbiontInstallation(manifest);
+    return installedDirectory(directory) || movedSettingsFolderFound(manifest) || isBinaryOnPath(manifest.binary);
+  });
 }
 
 function movedSettingsFolderFound(manifest: SymbiontManifest): boolean {

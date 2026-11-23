@@ -414,6 +414,8 @@ export const MACHINE_UNCAPTURED_REASONS = ['outside_folders', 'no_remote'] as co
 
 /** Where a machine asks which project a repository joins: `{ rootKey, label, remote? }`. */
 export const RESOLVE_PROJECT_PATH = '/members/projects/resolve';
+/** Where a member looks up an existing Project by the normalized repository remote. */
+export const PROJECT_BY_REMOTE_PATH = '/members/projects/by-remote';
 /** Where a machine reports a repository it will not join on its own: `{ rootKey, label, remote?, reason }`. */
 export const REPORT_UNCAPTURED_PATH = '/members/uncaptured';
 /**

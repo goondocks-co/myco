@@ -23,6 +23,7 @@
   "member POST /members/ownership",
   "member POST /members/ownership/transfer",
   "member POST /members/projects",
+  "member POST /members/projects/by-remote",
   "member POST /members/projects/list",
   "member POST /members/projects/resolve",
   "member POST /members/raw-claims",
