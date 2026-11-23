@@ -260,12 +260,15 @@ describe('teammate journey (c)', () => {
     expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
   });
 
-  for (const target of ['native', 'd1-adapter'] as const) it(`joins as a fake GitHub teammate through ${target}, with no worker`, async () => {
+  for (const target of ['native', 'd1-adapter'] as const) it(`joins as a fake GitHub teammate through ${target}, without a terminal or runner`, async () => {
     const server = await deployment(target);
     const platform = recordingPlatform();
     const deps: SetupDeps = { ...base(), fetch: server.fetchImpl, sleep: async () => {}, loginDeps: { machineId: 'setup-teammate-machine' }, worker: { runner: platform.runner } };
-    const args = ['--join', URL, '--root', project, '--project', 'proj_1', '--no-agents', '--no-runner'];
+    const args = ['--join', URL, '--root', project, '--project', 'proj_1', '--no-agents'];
     expect(await run(args, deps)).toBe(0);
+    expect(lines.filter(line => line.startsWith('If nobody approves within 10 minutes'))).toHaveLength(1);
+    expect(lines.filter(line => line.includes('myco setup --run-work to set up a runner later'))).toHaveLength(1);
+    expect(readSetupFile(home).answers.runWork).toBe(false);
     expect(errors).toEqual([]);
     expect(readDeploymentMembership(URL, home)?.memberId).toBe('mem_machine_2');
     expect(readDefaultDeployment(home)?.serverUrl).toBe(URL);
@@ -379,6 +382,7 @@ describe('runner journey (d)', () => {
       return configuredFetch(input, init);
     });
     expect(await run(['--runner', URL, '--runner-name', 'mini', '--runner-service', 'skip', '--yes'], { ...fake.deps, fetch: fetchImpl })).toBe(0);
+    expect(lines.filter(line => line.startsWith('If nobody approves within 10 minutes'))).toHaveLength(1);
     expect(readDeploymentMembership(URL, home)).toBeNull();
     expect(readRunnerRecord(URL, home)?.name).toBe('mini');
     expect(await run([], { ...fake.deps, fetch: fetchImpl })).toBe(0);

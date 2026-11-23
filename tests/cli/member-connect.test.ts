@@ -13,7 +13,8 @@ import { recordingPlatform } from '../member/helpers/service-platform.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run as login } from '@myco/cli/login.js';
 import { runJoin } from '@myco/cli/member.js';
-import { readRegistryEntry } from '@myco/member/registry.js';
+import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
+import { deploymentScopedHeaders, RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
 import { unjoinedRig } from '../member/helpers/server.js';
 
 describe('myco member join inside a repository', () => {
@@ -94,6 +95,22 @@ describe('myco member join inside a repository', () => {
     const byId = repo('three');
     expect((await runJoin(['--project', shared.project_id], deps(rig, byId)))?.projectId).toBe(shared.project_id);
     expect(projects(rig).filter((p) => p.name === 'Shared work')).toHaveLength(1);
+  });
+
+  it('connects without a terminal when the Deployment already holds the repository remote', async () => {
+    const rig = await signedIn();
+    const signedInMember = readDeploymentMembership('https://s', home)!;
+    const response = await rig.fetch(`https://s${RESOLVE_PROJECT_PATH}`, {
+      method: 'POST', headers: deploymentScopedHeaders(signedInMember),
+      body: JSON.stringify({ rootKey: 'a'.repeat(64), label: 'Shared work', remote: 'https://git.example/team/work.git' }),
+    });
+    const existing = await response.json() as { projectId: string };
+    expect(existing.projectId).toBeString();
+    const dir = repo('clone-with-another-name');
+    execFileSync('git', ['remote', 'add', 'origin', 'git@git.example:team/work.git'], { cwd: dir });
+    expect(await runJoin([], deps(rig, dir, { ask: async () => null }))).not.toBeNull();
+    expect(readRegistryEntry(dir, home)?.projectId).toBe(existing.projectId);
+    expect(out.join('\n')).toContain(`Connected ${dir} to project Shared work (${existing.projectId})`);
   });
 
   it('asks a terminal which project, lists them where none can answer, and connects nothing on an answer that names none', async () => {

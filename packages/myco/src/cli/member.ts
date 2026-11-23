@@ -2,7 +2,7 @@ import { PROMPT_FILE_READER_VERB } from '../member/prompt-file-policy.js';
 import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { scanLegacyRegistrations } from '@myco/member/legacy-registration-files.js';
 import { findingOwnedBinary } from '@myco/symbionts/registration-takeover.js';
-import { repositoryName } from '@myco/utils/git.js';
+import { repositoryName, repositoryRemote } from '@myco/utils/git.js';
 import { askOnTerminal } from '@myco/setup/prompt.js';
 import semver from 'semver';
 import { readBinaryVersion, installedVersionSupersedes, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
@@ -20,7 +20,7 @@ export { MemberRepairBusyError } from './member-repair.js';
  * attempts found no membership at all; `mcp-headers` prints the member
  * headers a remote MCP entry asks for.
  */
-import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
+import { IDENTITY_LINK_TTL_MS, INVITE_CONTROLS, PROJECT_BY_REMOTE_PATH } from '@goondocks/myco-shared/member-protocol';
 import { seedMachineSettings } from '../member/machine-settings.js';
 import { autoJoinIdentityIssues, listAutoJoinStates, pendingImportHolds } from '../member/auto-join.js';
 import { optOut, settleConnection } from './member-auto-join.js';
@@ -66,7 +66,7 @@ import { folderWords, harnessSettingsFolders, withSettingsFolderSnapshot } from 
 import { canonicalFolder, pathInSettingsFolder, settingsVariableFolder, type SettingsFolder } from '../member/settings-folder-paths.js';
 import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
-import { openDeployment, openDeploymentRequests } from './deployment-reader.js';
+import { openDeployment, openDeploymentRequests, ROUTE_MISSING } from './deployment-reader.js';
 import { detectMachineInstalledSymbionts, loadManifests, resolvePackageRoot } from '../symbionts/detect.js';
 import { MemberPendingLogoutError, MemberProvisionConflictError, SymbiontInstaller } from '../symbionts/installer.js';
 import { ensureGitIgnored } from '@myco/utils/git-exclude.js';
@@ -314,7 +314,7 @@ interface DeploymentProject { projectId: string; name: string; sessionCount: num
  * `myco member join [<server-url>] [--project <id|name> | --new [name]] [--root <dir>] [--no-agents]`: connect the folder
  * this runs in to a project on the Deployment this machine is a member of, over the membership `myco login` recorded,
  * so no token is typed. The project is one the Deployment holds, named by id or name, or one created for the folder.
- * With neither named, a terminal is asked which; anywhere else the projects and both commands are listed.
+ * With neither named, prefer the Project bound to the repository's remote, then ask which Project to connect.
  */
 async function connectFolder(
   parsed: JoinArgs, deps: MemberCliDeps, out: (line: string) => void, err: (line: string) => void, fail: (line: string) => null,
@@ -348,18 +348,30 @@ async function connectFolder(
   if (!opened.ok) return fail(opened.error.message);
   const client = opened.value;
 
-  let project: DeploymentProject | undefined;
+  let project: Pick<DeploymentProject, 'projectId' | 'name'> | undefined;
   const create = async (name: string): Promise<DeploymentProject | null> => {
     const made = await client.post(MEMBER_PROJECTS_PATH, { name });
     if (!made.ok) { fail(`${deploymentUrl(serverUrl)} did not create the project (${made.error.code}): ${made.error.message}`); return null; }
     return { projectId: String(made.value.projectId), name: String(made.value.name), sessionCount: 0 };
   };
-  const defaultProjectName = repositoryName(root);
+  const remote = parsed.create === undefined && parsed.project === undefined ? repositoryRemote(root) : null;
+  if (remote !== null) {
+    const matched = await client.post(PROJECT_BY_REMOTE_PATH, { remote });
+    if (!matched.ok) {
+      if (matched.error.code !== ROUTE_MISSING) return fail(`${deploymentUrl(serverUrl)} could not match the repository remote (${matched.error.code}): ${matched.error.message}`);
+    } else if (matched.value.project !== null) {
+      const match = matched.value.project;
+      if (typeof match !== 'object' || !('projectId' in match) || typeof match.projectId !== 'string'
+        || !('name' in match) || typeof match.name !== 'string') return fail('the Deployment returned an unreadable project match');
+      project = { projectId: match.projectId, name: match.name };
+    }
+  }
+  const defaultProjectName = repositoryName(root, { remote: remote ?? undefined });
   if (parsed.create !== undefined) {
     const made = await create(parsed.create.name ?? defaultProjectName);
     if (made === null) return null;
     project = made;
-  } else {
+  } else if (project === undefined) {
     const listed = await client.post(MEMBER_PROJECTS_LIST_PATH, {});
     if (!listed.ok) return fail(`${deploymentUrl(serverUrl)} did not list its projects (${listed.error.code}): ${listed.error.message}`);
     const projects = (Array.isArray(listed.value.projects) ? listed.value.projects : []) as DeploymentProject[];
@@ -1683,7 +1695,8 @@ export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
     help: `  join [--project <id|name> | --new [name]] [--root <dir>] [--no-agents] [<server-url>]
                      Connect the repository you are in to a project on the Deployment this machine is
                      signed in to (\`myco login\`): an existing one by id or name, or a new one (named
-                     for the folder unless you name it). With neither, a terminal asks which. Your agents
+                     for the folder unless you name it). With neither, use the project bound to the
+                     repository's remote or ask which project to connect. Your agents
                      are set up to capture there; --no-agents leaves them as they are.
   join <server-url> --project <id> (--token-stdin | --token-env <NAME>) [--root <dir>] [--provision <agent>]
                      Record this machine's membership of a project on a Myco server. The token is read

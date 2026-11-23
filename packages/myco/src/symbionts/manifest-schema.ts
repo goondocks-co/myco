@@ -1064,7 +1064,7 @@ export const SymbiontManifestSchema = z.object({
   displayName: z.string(),
   binary: z.string(),
   configDir: z.string(),
-  /** Global detection directory; omitted uses executable/install locations, null disables detection. */
+  /** Global detection directory. Omission also allows health install locations. Null disables detection. */
   detectionDir: z.string().nullable().optional(),
   settingsFolder: SettingsFolderSchema.optional(),
   health: z.object({

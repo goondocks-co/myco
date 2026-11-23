@@ -13,7 +13,6 @@ import path from 'node:path';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { run } from '@myco/cli/login.js';
 import { detectedProvisionLines, runProvision } from '@myco/cli/member.js';
-import { isBinaryOnPath } from '@myco/symbionts/detect.js';
 import { writeDeploymentMembership, deploymentKeyFor } from '@myco/member/registry.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
@@ -78,9 +77,8 @@ describe('myco login sets up the agents on this machine', () => {
     expect(err).toEqual([]);
   });
 
-  it('sets up the agents of a sign-in with no project, and provisions and refreshes them, where the home could be no project folder', async () => {
+  it('sets up and refreshes a PATH-installed agent on first use, with no settings folder or connected project', async () => {
     // A home at the user's home directory, the way `/root/.myco` sits one below a home parent: no project root may be there.
-    fs.mkdirSync(claudeDir, { recursive: true });
     const priorPath = process.env.PATH;
     const bin = path.join(home, 'bin');
     fs.mkdirSync(bin, { recursive: true });
@@ -88,9 +86,8 @@ describe('myco login sets up the agents on this machine', () => {
     process.env.PATH = `${bin}${path.delimiter}${priorPath ?? ''}`;
     const homedir = spyOn(os, 'homedir').mockReturnValue(home);
     try {
-      expect(isBinaryOnPath('claude')).toBe(true);
       const rig = unjoinedRig();
-      expect(await run([await invite(rig)], deps(rig, { agents: () => ['claude-code'] }))).toBe(true);
+      expect(await run([await invite(rig)], deps(rig))).toBe(true);
       expect(read(path.join(claudeDir, 'settings.json')) ?? '').toContain('--credential registry');
       expect(out.join('\n')).toContain('Capture is set up for Claude Code.');
       out = [];

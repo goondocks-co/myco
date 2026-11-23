@@ -2,7 +2,7 @@ import { hostname } from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { SIGN_IN_WAIT, SETUP_CREATE_GUIDANCE } from '@goondocks/myco-shared/setup-guidance';
+import { SETUP_CREATE_GUIDANCE } from '@goondocks/myco-shared/setup-guidance';
 import { run as login, type LoginDeps } from '@myco/cli/login.js';
 import { runJoin, runDrain, provisionDetectedAgents, detectedProvisionLines, recordNoAgents, type MemberCliDeps } from '@myco/cli/member.js';
 import { registerRunner } from '@myco/cli/runner-register.js';
@@ -445,7 +445,6 @@ const STEPS: readonly SetupStep[] = [
       const credential = fact(ctx, 'machine.credential');
       if (fact(ctx, 'machine.signin')?.state === 'complete' && credential?.state !== 'incomplete') return;
       await consent(ctx, 'device', { url: answers.url, action: 'Sign this machine in' }, 'Sign this machine in through device approval?', ctx.explicitJoin || ctx.yes);
-      ctx.out(SIGN_IN_WAIT);
       const ok = await (ctx.deps.login ?? login)([ctx.deps.loginAddress ?? answers.url], {
         ...ctx.deps.loginDeps, mycoHome: ctx.home, cwd: answers.root, fetch: ctx.deps.fetch, provision: 'defer',
         stdout: ctx.out, stderr: ctx.deps.stderr, now: ctx.deps.now, sleep: ctx.deps.sleep,
@@ -526,11 +525,17 @@ const STEPS: readonly SetupStep[] = [
     id: 'runner.choice', requires: [], applies: isMember,
     act: async (ctx) => {
       if (ctx.file.answers.runWork !== undefined) return;
+      const ask: Ask = async (question) => {
+        const answer = await ctx.ask(question);
+        if (answer !== null) return answer;
+        ctx.out('Run myco setup --run-work to set up a runner later.');
+        return 'no';
+      };
       if (isLocal(ctx)) {
-        const answer = await askRequired(ctx.ask, 'Your Myco does no agent work by itself. Make this machine its runner? [y/n]', '--run-work or --no-runner');
+        const answer = await askRequired(ask, 'Your Myco does no agent work by itself. Make this machine its runner? [y/n]', '--run-work or --no-runner');
         if (!/^(y|yes|n|no)$/i.test(answer)) throw new Error('Answer yes or no; pass --run-work or --no-runner.');
         ctx.file.answers.runWork = /^(y|yes)$/i.test(answer);
-      } else ctx.file.answers.runWork = await confirm(ctx.ask, 'Make this machine a runner?', '--run-work or --no-runner');
+      } else ctx.file.answers.runWork = await confirm(ask, 'Make this machine a runner?', '--run-work or --no-runner');
       saveSetupFile(ctx.home, ctx.file);
     },
   },
