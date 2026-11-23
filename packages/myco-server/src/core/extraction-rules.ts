@@ -1,4 +1,4 @@
-import { AGENT_LINE_RULE } from './agent-line.js';
+import { AGENT_LINE_RULE, TASK_STATE_RULE } from './agent-line.js';
 
 /** The standing rules every extraction run works under, as the run's instructions file. */
 export const EXTRACTION_RULES = [
@@ -39,4 +39,6 @@ export const EXTRACTION_RULES = [
   '## What to skip',
   '',
   'Prompts that are greetings, acknowledgements, pasted errors with no resolution, or routine asks whose answer is in the code itself. Quality over count: one precise observation is worth ten vague ones.',
+  '',
+  `The state of a task is not a spore. ${TASK_STATE_RULE} Judge the rest yourself: a reminder to look at something later, a status of work in flight, an order to do pieces of one project in, or a gap the session meant to close next is task state whatever its words. Ask what a reader would still act on after the task ends. "Dashboard generated-asset conflicts: branch fx-bundle untracks the generated file; check if merged" is task state; "When a generated dashboard file conflicts on rebase, regenerate it with the build instead of merging it by hand" is the spore. When nothing durable remains, save nothing.`,
 ].join('\n');

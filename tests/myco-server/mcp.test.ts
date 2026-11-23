@@ -345,7 +345,7 @@ describe('POST /mcp', () => {
     for (const [line, token] of Object.entries(notation)) expect([line, (await lined(line)).error]).toEqual([line, expect.stringContaining(`code notation ${JSON.stringify(token)};`)]);
     expect(sqlite.query(`SELECT COUNT(*) c FROM spores WHERE content = 'upload stall'`).get()).toEqual({ c: 0 });
     for (const line of ['When using Bun/Node.js or node.js(22), pin one runtime.', 'When the status(retry once) or on/off(e.g. maintenance) shows, wait.', 'When reads and/or read/write tokens stall, check I/O.',
-      'Upgrading from 2.0: rerun set-up (e.g. after a re-install) at /api/projects.', 'When a step -- the build -- fails, check outboxLease and exit code 1(retry).'])
+      'Upgrading from 2.0: rerun set-up (e.g. after a re-install) at /api/projects.', 'When a step -- the build -- fails, check outboxLease and exit code 1(retry).', 'The fix is on branch fx-retry; check if merged.'])
       expect([line, (await lined(line)).status]).toEqual([line, 'active']);
     const a = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'a' })).result;
     const b = (await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'b' })).result;

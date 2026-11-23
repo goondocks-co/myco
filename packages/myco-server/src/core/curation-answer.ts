@@ -1,5 +1,5 @@
 import { CURATION_BODY_OVER_LIMIT } from '@goondocks/myco-shared/call-words';
-import { admitAgentLine, agentLineNotation, normalizeAgentLine } from './agent-line.js';
+import { admitAgentLine, agentLineNotation, agentLineTaskState, normalizeAgentLine } from './agent-line.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_TARGET_WORDS } from './injection.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES, type CurationAnswer, type CurationNote } from './spore-curation-contract.js';
 
@@ -66,6 +66,8 @@ export function checkCurationAnswer(input: Record<string, unknown>, group: reado
     const line = admitted.line;
     const notation = agentLineNotation(line);
     if (notation !== null) return `notes[${index}].agent_line contains code notation ${shown(notation)}; use plain situation and guidance, with no path, flag or symbol`;
+    const taskState = agentLineTaskState(line);
+    if (taskState !== null) return `notes[${index}].agent_line states the state of a task, ${shown(taskState)}; write what stays true after the task ends, with any branch or pull request only in content as where it was observed`;
     notes.push({ sources: raw.sources as string[], observation_type: raw.observation_type, agent_line: line, content: raw.content });
   }
   for (const id of input.keep) {
