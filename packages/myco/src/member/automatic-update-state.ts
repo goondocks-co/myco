@@ -101,6 +101,18 @@ function changeUpdatePreferences(home: string, preferences: { automaticUpdates?:
   } finally { acquired.lock.release(); }
 }
 
+/** Record the version a finished update installed, under the same lock as an automatic check. */
+export function recordInstalledUpdate(home: string, outcome: AutomaticUpdateState['lastOutcome'], waitMs = PREFERENCE_WAIT_MS, clock: () => number = Date.now): void {
+  const acquired = LifecycleLock.acquire(`${statePath(home)}.lock`, {
+    command: 'myco update', wait: true, timeoutMs: waitMs,
+  });
+  if (!acquired.acquired) throw new Error('An automatic update is running; try again when it finishes.');
+  try {
+    fs.mkdirSync(path.dirname(statePath(home)), { recursive: true });
+    atomicWriteFileSync(statePath(home), JSON.stringify({ lastAttemptAt: clock(), lastOutcome: outcome }));
+  } finally { acquired.lock.release(); }
+}
+
 /** Missing or damaged scheduling state is due on the next helper pass. */
 export function readAutomaticUpdate(home: string): AutomaticUpdateState | null {
   let state: AutomaticUpdateState;

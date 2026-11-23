@@ -38,10 +38,16 @@ describe('the Windows installer', () => {
   });
 
   it.skipIf(PWSH === '')('fresh default chooses beta before alpha, then stable after GA', () => {
-    expect(select(beforeGa).out).toContain('Found: myco/v2.0.0-beta.2');
+    const beta = select(beforeGa);
+    expect(beta.out).toContain('Found: myco/v2.0.0-beta.2');
+    expect(beta.out).toContain('No stable 2.x release yet; installing the newest beta: 2.0.0-beta.2');
     expect(select([...beforeGa, release('2.1.0-alpha.99')]).out).toContain('Found: myco/v2.0.0-beta.2');
-    expect(select([release('1.4.9'), release('2.0.0-alpha.2'), release('2.0.0-alpha.10')]).out).toContain('Found: myco/v2.0.0-alpha.10');
-    expect(select([...beforeGa, release('2.0.0'), release('2.1.0-beta.1')]).out).toContain('Found: myco/v2.0.0');
+    const alpha = select([release('1.4.9'), release('2.0.0-alpha.2'), release('2.0.0-alpha.10')]);
+    expect(alpha.out).toContain('Found: myco/v2.0.0-alpha.10');
+    expect(alpha.out).toContain('No stable 2.x release yet; installing the newest alpha: 2.0.0-alpha.10');
+    const stable = select([...beforeGa, release('2.0.0'), release('2.1.0-beta.1')]);
+    expect(stable.out).toContain('Found: myco/v2.0.0');
+    expect(stable.out).not.toContain('No stable 2.x release yet');
   });
 
   it.skipIf(PWSH === '')('fresh machines never fall back to 1.x, including explicit stable and beta', () => {

@@ -798,6 +798,7 @@ main() {
       PAGE=$((PAGE + 1))
     done
 
+    FELL_THROUGH=0
     if [ "$BLOCKS_INSTALL" = 1 ] && [ "$REPLACE_LEGACY" = 0 ] && [ "$MEMBER_HOME" = 0 ]; then
       TAG=""
       if [ "$CHANNEL_EXPLICIT" = 1 ]; then TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
@@ -809,8 +810,8 @@ main() {
       if [ "$CHANNEL_EXPLICIT" = 0 ] && { [ "$CHANNEL_AUTO" = 1 ] || [ "$BLOCKS_INSTALL" = 1 ]; }; then
         CHANNEL=stable
         TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"
-        if [ -z "$TAG" ]; then CHANNEL=beta; TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
-        if [ -z "$TAG" ]; then CHANNEL=alpha; TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
+        if [ -z "$TAG" ]; then FELL_THROUGH=1; CHANNEL=beta; TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
+        if [ -z "$TAG" ]; then FELL_THROUGH=1; CHANNEL=alpha; TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"; fi
       else
         TAG="$(pick_tag "$CHANNEL" "${CURRENT_VERSION}")"
       fi
@@ -828,6 +829,9 @@ main() {
       fi
       printf "  Releases: https://github.com/%s/releases\n" "$REPO" >&2
       exit 1
+    fi
+    if [ "$FELL_THROUGH" = 1 ] && [ "$TAG" != "stay-put" ]; then
+      info "No stable 2.x release yet; installing the newest ${CHANNEL}: $(printf '%s' "$TAG" | sed 's|^myco/v||')"
     fi
     info "Found: ${TAG}"
     VERSION="$(printf '%s' "$TAG" | sed 's|^myco/v||')"

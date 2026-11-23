@@ -276,6 +276,31 @@ for (const bound of [false, true]) it(`re-resolves an inferred repository after 
   expect(errors).toEqual([]);
 });
 
+it('replaces a saved folder that is not a repository with the repository it is run in, and keeps a saved repository', async () => {
+  membership(FIRST);
+  const saved = path.join(scratch, 'not-a-repo');
+  const repo = path.join(scratch, 'repo');
+  const other = path.join(scratch, 'other');
+  fs.mkdirSync(saved);
+  for (const root of [repo, other]) {
+    fs.mkdirSync(root);
+    execFileSync('git', ['init', '-q', root]);
+    writeRegistryEntry({ version: 2, root, projectId: `proj_${path.basename(root)}`, serverUrl: FIRST, token: 'x'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
+  }
+  saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST, root: saved, noAgents: true, runWork: false }, consented: {} });
+  expect(await run([], { ...deps(), cwd: repo, fetch: online() })).toBe(0);
+  expect(readSetupFile(home).answers.root).toBe(repo);
+  expect(lines.join('\n')).toContain(`Setup connected ${repo} to ${FIRST}.`);
+  expect([...lines, ...errors].join('\n')).not.toContain(saved);
+  expect(errors.join('\n')).not.toContain('is not a project directory');
+  lines = []; errors = [];
+  saveSetupFile(home, { version: 1, answers: { role: 'join', url: FIRST, root: other, noAgents: true, runWork: false }, consented: {} });
+  expect(await run([], { ...deps(), cwd: repo, fetch: online() })).toBe(0);
+  expect(readSetupFile(home).answers.root).toBe(other);
+  expect(lines.join('\n')).toContain(`Setup connected ${other} to ${FIRST}.`);
+  expect(lines.join('\n')).not.toContain(`Setup connected ${repo}`);
+});
+
 for (const saved of [false, true]) it(`keeps ${saved ? 'a saved' : 'an explicit'} root and an explicit default choice on an inferred journey`, async () => {
   membership(FIRST); membership(SECOND);
   recordDefaultDeployment(SECOND, { mycoHome: home });

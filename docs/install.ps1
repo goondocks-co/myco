@@ -307,10 +307,16 @@ if ($LegacyInstall) {
     else { $tag = Select-MycoRelease $releases $Channel $CurrentVersion 1 1 }
 } else {
     if (-not $ChannelExplicit -and ($ChannelAuto -or $Legacy -or $UnknownBinary)) {
+        $fellThrough = $false
         foreach ($candidateChannel in @('stable', 'beta', 'alpha')) {
             $Channel = $candidateChannel
             $tag = Select-MycoRelease $releases $Channel $CurrentVersion
             if ($tag) { break }
+            $fellThrough = $true
+        }
+        if ($fellThrough -and $tag -and $tag -ne 'stay-put') {
+            $named = if ($tag.StartsWith('myco/v')) { $tag.Substring(6) } else { $tag }
+            Write-Host "No stable 2.x release yet; installing the newest ${Channel}: $named"
         }
     } else { $tag = Select-MycoRelease $releases $Channel $CurrentVersion }
 }
