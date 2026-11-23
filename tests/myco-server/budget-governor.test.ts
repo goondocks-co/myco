@@ -11,7 +11,7 @@ import { endLeasedRun } from '@myco-server-worker/core/harness.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { refreshEstimates,estimateForClaim,estimateKey } from '@myco-server-worker/core/budget-estimates.js';
-import { budgetStatusLine } from '@goondocks/myco-shared/budget-status';
+import { budgetStatusLine, budgetSummaryLine } from '@goondocks/myco-shared/budget-status';
 import { claimSettings } from '@myco-server-worker/core/worker-selection.js';
 import { selectWorkerExecution } from '@myco-server-worker/core/harness.js';
 import { capabilitiesRequiredBy, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
@@ -392,6 +392,7 @@ it('returns no admitted head for an unaffordable forecast while affordable and m
     const waiting=await readBudgetStatus(f.db,f.now);
     expect(waiting.heldHeads).toMatchObject([{runId:'unaffordable',reason:'budget_too_small',requiredUsd:2}]);
     expect(budgetStatusLine(waiting)).toContain('raise the budget to $2.00 for run unaffordable');
+    expect(budgetSummaryLine(waiting)).toMatch(/^Spent \$\d+\.\d\d of the \$\d+\.\d\d work budget in the last 24 hours\. .* needs a budget of at least \$2\.00 to run\.$/);
     f.queue('affordable','automatic','proj_1','title-summary',f.now+1);
     expect(await poll(f.now+2)).toMatchObject({claimed:true,run:{id:'affordable'}});
     f.queue('manual','manual','proj_1','title-summary',f.now+3);
