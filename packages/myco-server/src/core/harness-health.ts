@@ -2,7 +2,7 @@ import type { RelationalStore } from './adapters.js';
 import {
   HARNESS_HEALTH_STATES, MAX_HARNESS_ACTION_CHARS, MAX_HARNESS_ID_CHARS, MAX_PROVISIONED_HARNESSES, MAX_HARNESS_DEPLOYMENT_CHARS,
   type ProvisionedHarnessFact, type ProvisionedHarnessReport,
-  HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS,
+  HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS, ranSinceHookRepair,
 } from '@goondocks/myco-shared/harness-health';
 import {
   commitHarnessReport,
@@ -80,12 +80,14 @@ const capabilityHash = (fact: ProvisionedHarnessFact): Promise<string> => sha256
 
 /**
  * The trust transition of one reported harness. A machine that reported trust wanted and now reports capture configured
- * stays in trust_required until a qualifying session start proves it. A new repair, or a confirmation followed by a new
- * trust report, starts a new epoch. A replayed report repeats the state and cannot reset an older epoch.
+ * stays in trust_required until a qualifying session start proves it, keeping the use it reported after the hook repair.
+ * A new repair, or a confirmation followed by a new trust report, starts a new epoch. A replayed report repeats the state
+ * and cannot reset an older epoch.
  */
 function nextFact(fact: ProvisionedHarnessFact, previous: StoredHarnessFact | undefined, lastCapture: number, now: number): StoredHarnessFact {
   if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now, trustEpoch: (previous?.trustEpoch ?? 0) + 1 };
-  if (previous?.state === 'trust_required' && captureConfigured(fact.state) && lastCapture <= previous.sinceAt) return { ...previous, ranAt: fact.ranAt, activityScope: fact.activityScope };
+  if (previous?.state === 'trust_required' && captureConfigured(fact.state) && lastCapture <= previous.sinceAt)
+    return { ...previous, ranAt: ranSinceHookRepair(previous) ? previous.ranAt : fact.ranAt, activityScope: fact.activityScope };
   if (previous?.state === 'trust_required' && fact.state === 'trust_required' && fact.hookRepairAt === undefined && lastCapture > previous.sinceAt) return { ...fact, sinceAt: now, trustEpoch: previous.trustEpoch + 1 };
   const epoch = previous?.trustEpoch ?? 0;
   return { ...fact, sinceAt: previous?.state === fact.state ? previous.sinceAt : now, trustEpoch: fact.state === 'trust_required' && previous?.state !== 'trust_required' ? epoch + 1 : epoch };
@@ -154,6 +156,7 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
       const lastCapturedAt = captured.get(`${report.machineId}\0${harness.id}`) ?? null;
       const trustConfirmed = harness.state === 'trust_required' && (confirmedTrust.get(`${report.machineId}\0${harness.id}`) ?? 0) > harness.sinceAt;
       if (!captureConfigured(harness.state) && !trustConfirmed) {
+        if (harness.state === 'trust_required' && !ranSinceHookRepair(harness)) continue;
         facts.push({ ...base, kind: 'harness_needs_repair', state: harness.state, action: harness.action!, since: harness.sinceAt });
         continue;
       }

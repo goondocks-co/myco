@@ -18,7 +18,8 @@ const RECEIPT_ROW = `INSERT INTO sessions (project_id, session_id, machine_id, c
 const liveFields = LIVE_CAPTURE_FIELDS.map(column => `${column}=${liveEvidenceMax('sessions', column)}`).join(',');
 const activityFields = 'latest_activity_at=MAX(COALESCE(sessions.latest_activity_at,excluded.latest_activity_at),excluded.latest_activity_at)';
 const memberReceipt = write<Receipt>({ name: 'capture.memberReceipt', sql:
-  `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at,${activityFields},${liveFields}` });
+  `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at,
+    agent = COALESCE(sessions.agent, excluded.agent),${activityFields},${liveFields}` });
 const deploymentReceipt = write<Receipt>({ name: 'capture.deploymentReceipt', sql: `${RECEIPT_ROW} ON CONFLICT (project_id, session_id) DO UPDATE SET ${liveFields}
     WHERE ${LIVE_CAPTURE_FIELDS.map(column => liveEvidenceAdvances('sessions', column)).join(' OR ')}` });
 
@@ -35,7 +36,8 @@ interface Writer { project: string; session: string; machine: string; token: str
 export const chargeStoredBytes = (charged: boolean, bytes: number, token: string): Bound => (charged ? charge.bind(bytes, token) : uncharged.bind());
 
 /**
- * The stored event's session receipt. Member contact moves the receipt date; Deployment parsing retains it.
+ * The stored event's session receipt. Member contact moves the receipt date and names the session's agent when none is held;
+ * Deployment parsing retains both.
  * Live-channel receipts advance activity. Starts retain the earlier client or receipt clock independently of harness reports.
  */
 export function sessionReceipt(w: Writer, receipt: { charged: boolean; now: number; createdAt: number; agent: string | null; live: boolean; start: boolean; activityAt: number }): Bound {

@@ -19,7 +19,7 @@ async function setup(db: RelationalStore) {
   await db.prepare(`INSERT INTO machine_claims(machine_id,member_id,claimed_at,label) VALUES('m_live','mem_a',1,'studio'),('m_former','mem_a',1,'old laptop')`).run();
   await issueMemberToken(db, { memberId: 'mem_a', machineId: 'm_live' }, NOW - MINUTE);
   for (const machine of ['m_live', 'm_former']) {
-    await recordProvisionedHarnessReport(db, machine, { harnesses: [{ id: 'codex', provisioned: true, state: 'trust_required', action: 'Approve Codex.' }] }, NOW - MINUTE);
+    await recordProvisionedHarnessReport(db, machine, { harnesses: [{ id: 'codex', provisioned: true, state: 'trust_required', action: 'Approve Codex.', ranAt: NOW - MINUTE }] }, NOW - MINUTE);
     await db.prepare(`INSERT INTO uncaptured_roots(machine_id,root_key,member_id,label,reason,misses,held,first_seen_at,last_seen_at) VALUES(?1,'root','mem_a','repo','no_remote',1,'held',1,?2)`).bind(machine, NOW).run();
   }
   for (const [i, id] of LIVE.entries()) await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at)
