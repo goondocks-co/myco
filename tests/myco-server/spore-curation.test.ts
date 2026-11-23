@@ -186,6 +186,31 @@ test('a note body is counted in characters with spaces and line breaks: the inst
   } finally { f.sqlite.close(); }
 });
 
+test('myco_agent op run serves a failed curation run’s refusals from the same recorded tool calls as the dashboard', async () => {
+  const f = await fixture();
+  try {
+    await f.enable(); await f.add('decision-a'); await f.add('gotcha-b'); await f.discover();
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('group not claimed');
+    const over = CURATION_BODY_CHARS + 1;
+    await f.call(claim.run.runToken, 'myco_run_curation', { ...keepAnswer(['gotcha-b']), notes: [note(['decision-a'], 'x'.repeat(over))] });
+    await f.call(claim.run.runToken, 'myco_run_curation', { ...keepAnswer(['gotcha-b']), notes: [{ ...note(['decision-a']), agent_line: 'Use capture_spool() to retain data.' }] });
+    const ended = await endLeasedRun(f.env, { principal: f.principal, now: f.now + 1 }, { ...scope, runId: claim.run.id, attemptId: claim.run.attemptId, status: 'completed' });
+    expect(ended).toMatchObject({ ended: true, status: 'failed' });
+    const member = await issueMemberToken(f.db, { memberId: 'mem_worker', machineId: 'refusal-reader' }, f.now);
+    const agent = await f.call(member.token, 'myco_agent', { op: 'run', id: claim.run.id }) as { ok: boolean; data: { run: { error_reason: string | null }; reports: unknown[]; refusals: Array<{ tool: string; op: string | null; code: string; message: string; recorded_at: number }>; refusals_has_more: boolean } };
+    expect(agent).toMatchObject({ ok: true, data: { run: { error_reason: null }, reports: [], refusals_has_more: false } });
+    expect(agent.data.refusals).toHaveLength(2);
+    expect(agent.data.refusals[0]).toMatchObject({ tool: 'myco_run_curation', op: 'answer', code: 'tool_failure', message: expect.stringContaining(`it has ${over} characters, 1 more than the ${CURATION_BODY_CHARS} allowed`), recorded_at: f.now });
+    expect(agent.data.refusals[1]).toMatchObject({ tool: 'myco_run_curation', op: 'answer', code: 'tool_failure', message: expect.stringContaining('contains code notation'), recorded_at: f.now });
+    const server = createServer({ now: () => f.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
+    const page = await server.handleRequest(await asOwner(f.db, `/api/projects/proj_1/runs/${claim.run.id}`), { ...f.env, secrets: OWNER_ENV });
+    const dashboard = await page.json() as { toolCalls: Array<{ tool: string; op: string | null; failure?: { code: string; message: string } }> };
+    expect(agent.data.refusals.map(({ tool, op, code, message }) => ({ tool, op, code, message }))).toEqual(
+      dashboard.toolCalls.filter((call) => call.failure !== undefined).map((call) => ({ tool: call.tool, op: call.op, code: call.failure!.code, message: call.failure!.message })),
+    );
+  } finally { f.sqlite.close(); }
+});
+
 test('refusals name coverage, bounds, lexical code notation and task state; exhausted attempts cannot apply', async () => {
   const cases = [
     { answer: {keep:['decision-a','gotcha-b'],reason:'   '}, error:'reason has 0 non-whitespace (3 raw) characters' },

@@ -659,7 +659,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_agent",
-    "description": `Read agent run history. runs (default) returns {ok,op,data:{runs,cursor}}, filtered by task and agent_id; pass cursor with the same filters for older pages. limit is 1–${MAX_PAGE} (default 50). run requires id and returns the run, phases, bounded reports, reports_has_more and outcome_evidence. Example: {"op":"runs","task":"extract-curate","limit":20}.`,
+    "description": `Read agent run history. runs (default) returns {ok,op,data:{runs,cursor}}, filtered by task and agent_id; pass cursor with the same filters for older pages. limit is 1–${MAX_PAGE} (default 50). run requires id and returns the run, phases, bounded reports, reports_has_more, bounded refusals, refusals_has_more and outcome_evidence. Example: {"op":"runs","task":"extract-curate","limit":20}.`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
