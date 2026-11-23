@@ -8,7 +8,7 @@ import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { readRunnerUpdateState } from '@myco/runner/update.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
+import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-update-compiled-'));
 const versions = ['2.0.0-alpha.2', '2.0.0-alpha.3'] as const;
@@ -64,9 +64,9 @@ describe.skipIf(process.platform !== 'darwin')('compiled runner update workflow'
           return Response.json({ persisted: true, runner: { id: 'runner_fixture', deploymentId: 'dep_fixture', name: 'mini', state: 'enabled' },
             credential: { id: 'credential_fixture', expiresAt: Date.now() + 600000, refreshAfter: Date.now() + 500000 },
             updateRequest: requested ? { id: 'dashboard_fixture', requestedAt: Date.now() } : null,
-          }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+          }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
         }
-        if (url.pathname === '/worker/claim') return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+        if (url.pathname === '/worker/claim') return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 50 }, { headers: { [FEATURES_HEADER]: RUNNER_CONTRACT_V1 } });
         return Response.json({ persisted: true });
       } });
       const serverUrl = server.url.origin;

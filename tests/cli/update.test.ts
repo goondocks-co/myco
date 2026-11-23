@@ -13,6 +13,8 @@ import { resolveMycoPackageCheck } from '@myco/upgrade/checker.js';
 import { assetName, resolveTargetTriple } from '@myco/upgrade/release-assets.js';
 import { globalFetchDouble } from '../helpers/global-fetch.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
+import { DEFAULT_LOCAL_RECORD, peekLocalPaths, writeLocalRecord } from '@myco/server/local.js';
+import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 
 let network: ReturnType<typeof spyOn<typeof globalThis, 'fetch'>>;
 let exit: ReturnType<typeof spyOn<typeof process, 'exit'>>;
@@ -60,8 +62,10 @@ const installedBinary = (version: string) => {
 };
 const refs = (version: string) => ({ targetVersion: version, assetName: 'myco-darwin-arm64', assetUrl: 'fixture', sha256sumsUrl: 'sums' });
 it('upgrade is exactly the update operation', () => { expect(alias).toBe(run); });
-it('verifies and adopts before refreshing agents and reports the recorded channel', async () => {
+it('adopts before refreshing agents and tells a Deployment operator how to update it', async () => {
   installedBinary('2.0.0-alpha.2');
+  writeLocalRecord(DEFAULT_LOCAL_RECORD, peekLocalPaths(home));
+  writeDeploymentRecord({ accountId: 'fixture', workerName: 'worker', databaseName: 'db', bucketName: 'objects', versionId: 'v1', deployedAt: '2026-01-01' }, home);
   const events: string[] = [];
   await run([], {
     home, currentVersion: '2.0.0-alpha.2', isMemberHome: () => true,
@@ -72,6 +76,8 @@ it('verifies and adopts before refreshing agents and reports the recorded channe
   });
   expect(events).toEqual(['verify', 'adopt', 'refresh']);
   expect(output.join('\n')).toContain('from 2.0.0-alpha.2 to 2.0.0-alpha.3 on channel alpha');
+  expect(output).toContain('Update the native Deployment to match the new binary. Run myco server update --target local.');
+  expect(output).toContain('Update the Cloudflare Deployment to match the new binary. Run myco server update --target cloudflare.');
   expect(output.join('\n')).toContain('Agents refreshed: yes.');
   expect(readUpdateNotice(home, '2.0.0-alpha.2')).toContain('myco update');
 });
@@ -238,6 +244,7 @@ it('adopts the running source candidate before refreshing member setup', async (
 });
 
 it('routes a source candidate through the installed runner owner', async () => {
+  writeLocalRecord(DEFAULT_LOCAL_RECORD, peekLocalPaths(home));
   const candidate = path.join(home, 'candidate');
   const { withRunnerUpdateState } = await import('@myco/runner/update.js');
   let queued = false;
@@ -260,6 +267,7 @@ it('routes a source candidate through the installed runner owner', async () => {
   expect(queued).toBe(true);
   expect(output.join('\n')).toContain('source replacement queued');
   expect(output.join('\n')).toContain('Agents refreshed: no (runner update pending).');
+  expect(output.join('\n')).toContain('After the binary update, run myco server update --target local.');
 });
 
 it('refuses incomplete or conflicting source intents before updating', async () => {

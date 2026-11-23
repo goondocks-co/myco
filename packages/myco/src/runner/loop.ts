@@ -7,6 +7,8 @@ import { issueReportOrder } from '@myco/utils/order-stamp.js';
 import { memberServerDialUrl } from '@myco/member/server-url.js';
 import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
+import { RUNNER_CONTACT_PATH } from './runner-routes.js';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { repositoryFailureForVersion, runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
@@ -175,7 +177,7 @@ type Requester = Pick<WorkerOptions, 'serverUrl' | 'token' | 'renew' | 'fetchImp
  * single "no answer" for both makes a refusal indistinguishable from silence.
  */
 export type WorkerAnswer =
-  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; executionProfile: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: 1 | 2; harnessStop?: boolean }
+  | { kind: 'answered'; body: Record<string, unknown>; accounting: boolean; claimCompatible: boolean; profileOutcome: boolean; modelCatalog: boolean; steps: boolean; repositoryFailure?: 1 | 2; harnessStop?: boolean }
   | { kind: 'refused'; code: string; detail: string }
   | { kind: 'unreachable'; detail: string };
 
@@ -288,7 +290,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const send = options.fetchImpl ?? fetch;
   let raw: RawAnswer;
   let accounting = false;
-  let executionProfile = false;
+  let claimCompatible = false;
   let profileOutcome = false;
   let modelCatalog = false;
   let steps = false;
@@ -303,7 +305,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
       signal: options.signal,
     });
     accounting = featureAdvertised(res.headers.get(FEATURES_HEADER), WORKER_ACCOUNTING_FEATURE);
-    executionProfile = featureAdvertised(res.headers.get(FEATURES_HEADER), EXECUTION_PROFILE_FEATURE);
+    claimCompatible = featureAdvertised(res.headers.get(FEATURES_HEADER), path === RUNNER_CONTACT_PATH ? RUNNER_CONTRACT_V1 : EXECUTION_PROFILE_FEATURE);
     profileOutcome = featureAdvertised(res.headers.get(FEATURES_HEADER), PROFILE_OUTCOME_FEATURE);
     modelCatalog = featureAdvertised(res.headers.get(FEATURES_HEADER), MODEL_CATALOG_FEATURE);
     harnessStop = featureAdvertised(res.headers.get(FEATURES_HEADER), HARNESS_STOP_FEATURE);
@@ -317,7 +319,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
   const outcome = classifyEventAnswer(raw);
   switch (outcome.class) {
     case 'acked':
-      return { kind: 'answered', body: outcome.body, accounting, executionProfile, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
+      return { kind: 'answered', body: outcome.body, accounting, claimCompatible, profileOutcome, modelCatalog, steps, ...(repositoryFailure ? { repositoryFailure } : {}), ...(harnessStop ? { harnessStop: true } : {}) };
     case 'protocol':
       return {
         kind: 'refused',
@@ -1060,6 +1062,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       // Compatibility is checked on a read before the queue can be claimed.
       let advertisesCatalog = false;
       let paused = false;
+      let claimCompatible = false;
       {
         const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, options.contactBody === undefined ? {} : { ...options.contactBody(), arch: process.arch, availability: 'ready', readinessReason: 'Awake and checking for work.' }));
         if (compatibility.kind === 'refused') {
@@ -1071,11 +1074,6 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           await pause(options.pollIdleMs);
           continue;
         }
-        if (!compatibility.executionProfile) {
-          if (!needsServerUpdate) { needsServerUpdate = true; options.log('this server needs updating before it can give this worker work'); }
-          await pause(options.pollIdleMs);
-          continue;
-        }
         if (!await admitIdentity(compatibility.body)) {
           if (options.signal.aborted) return { driven, refused: null };
           options.log('the contact names another Deployment or carries no enrolled Deployment identity; no work is claimed');
@@ -1083,6 +1081,11 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         }
         const runner = compatibility.body.runner;
         paused = runner !== null && typeof runner === 'object' && 'state' in runner && runner.state === 'paused';
+        claimCompatible = compatibility.claimCompatible;
+        if (!claimCompatible && !needsServerUpdate) {
+          options.log('The Deployment must be updated before this runner can claim work. Run myco server update on the machine that manages it.');
+        }
+        needsServerUpdate = !claimCompatible;
         advertisesCatalog = compatibility.modelCatalog;
         await deliverStepLogs(options, compatibility.steps, requestMs);
         if (!wake.settled()) continue;
@@ -1102,7 +1105,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         if (settled === undefined) continue;
         if ('restart' in settled) return settled.restart;
       }
-      if (settled?.idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
+      if (!claimCompatible || settled?.idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
       let offer: ReturnType<typeof offerOf>;
       try { offer = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read())); }
       catch (error) {

@@ -44,6 +44,15 @@ import { PROTOCOL, publishFixture, memberHeaders, turnOnGatedCapabilities } from
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
+import { mkdtempSync } from '../support/fenced-fs.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runWorker } from '@myco/runner/loop.js';
+import { RUNNER_CONTACT_PATH } from '@myco/runner/runner-routes.js';
+import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
+import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
+import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
 
 const NOW = 1_800_000_000_000;
 const OWNER = 'mem_machine_1';
@@ -241,6 +250,33 @@ describe('a runner-only machine', () => {
       r.e.sqlite.run(`UPDATE deployment_settings SET value = '"deployment"' WHERE leaf = 'agent.harnesses.claude-code.credential'`);
       const { token, runnerId } = await r.register('mini');
       await r.queueTitling();
+      const stopping = new AbortController();
+      const lines: string[] = [];
+      let contacts = 0;
+      let claims = 0;
+      const held = await runWorker({
+        serverUrl: 'https://s', token, lockDir: null, compatibilityPath: RUNNER_CONTACT_PATH,
+        runRoot: removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-runner-skew-'))),
+        pollIdleMs: 1, only: ['claude-code'], log: line => { lines.push(line); },
+        signal: AbortSignal.any([stopping.signal, AbortSignal.timeout(2_000)]),
+        fetchImpl: (async (input, init) => {
+          const route = new URL(String(input)).pathname;
+          const answer = await r.asRunner(token, route, JSON.parse(String(init?.body)));
+          if (route === RUNNER_CONTACT_PATH) {
+            answer.headers.set(FEATURES_HEADER, EXECUTION_PROFILE_FEATURE);
+            if (++contacts === 3) stopping.abort();
+          }
+          if (route === '/worker/claim') { claims++; stopping.abort(); }
+          return answer;
+        }) as typeof fetch,
+      });
+      expect(held).toEqual({ driven: 0, refused: null });
+      expect(contacts).toBe(3);
+      expect(claims).toBe(0);
+      expect(lines).toEqual(['The Deployment must be updated before this runner can claim work. Run myco server update on the machine that manages it.']);
+      expect(r.row('SELECT status, error FROM agent_runs')).toEqual({ status: 'queued', error: null });
+      expect(r.row('SELECT COUNT(*) AS n FROM agent_run_attempts')).toEqual({ n: 0 });
+      expect((await r.asRunner(token, RUNNER_CONTACT_PATH)).headers.get(FEATURES_HEADER)?.split(',')).toContain(RUNNER_CONTRACT_V1);
       const opened: string[] = [];
       r.arm((sql) => { if (/deployment_secrets/.test(sql)) opened.push(sql); });
       const claimed = await r.claim(token);

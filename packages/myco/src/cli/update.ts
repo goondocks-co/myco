@@ -1,6 +1,7 @@
 /** `myco update` resolves, verifies and adopts a binary within the selected channel. */
 
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import semver from 'semver';
 import { automaticUpdatesEnabled, readInstallMarker } from '@myco/install/marker-reader.js';
 import { validateSourceIntent } from '@myco/install/adoption.js';
@@ -69,6 +70,18 @@ export interface UpgradeDeps extends BinaryUpdateDeps {
 function liveInstalledRunners(home: string, deps: UpgradeDeps) {
   return (deps.runnerRecords ?? listRunnerRecords)(home).filter(isLiveRunner).filter(record =>
     (deps.runnerServiceInstalled ?? ((serverUrl, mycoHome) => workerServiceInstalled(executorServiceTarget(serverUrl, { mycoHome, binaryPath: deps.mycoBinary, platform: deps.platform }, 'runner'))))(record.serverUrl, home));
+}
+
+async function reportDeploymentUpdate(home: string, next = 'Run'): Promise<void> {
+  const [{ peekDeploymentRecordPath }, { localDeploymentPresent, peekLocalPaths }] = await Promise.all([
+    import('../server/cloudflare.js'), import('../server/local.js'),
+  ]);
+  if (localDeploymentPresent(peekLocalPaths(home))) {
+    console.log(`Update the native Deployment to match the new binary. ${next} myco server update --target local.`);
+  }
+  if (existsSync(peekDeploymentRecordPath(home))) {
+    console.log(`Update the Cloudflare Deployment to match the new binary. ${next} myco server update --target cloudflare.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +256,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     if (isCheck) console.log('Agents refreshed: no (check only).');
     else if (state.transaction || Object.keys(state.requests ?? {}).length > 0) {
       console.log('Agents refreshed: no (runner update pending). Next: myco runner status; once idle, run myco update again to finish member setup if no binary handoff was needed.');
+      if (!parsed.has('--skip-binary')) await reportDeploymentUpdate(home, 'After the binary update, run');
     } else await refresh();
     return;
   }
@@ -271,6 +285,7 @@ export async function run(args: string[], deps: UpgradeDeps = {}): Promise<void>
     if (replacingSource) console.log('Replacing this source build with the selected channel release.');
     const change = outcome.previousVersion === undefined ? `Installed ${outcome.version}` : `from ${outcome.previousVersion} to ${outcome.version}`;
     console.log(`Myco: ${change}${source ? ' (source build)' : ` on channel ${channel}`}.`);
+    await reportDeploymentUpdate(home);
   } else if (replacingSource) {
     console.log(`Myco: kept source build ${outcome.version}; no eligible release on the '${channel}' channel (${outcome.reason}).`);
     console.log('Choose a release channel with `myco update --channel alpha`, `--channel beta` or `--channel stable`.');

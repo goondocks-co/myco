@@ -5,12 +5,13 @@ import os from 'node:os';
 import { runWorker } from '@myco/runner/loop.js';
 import { RUNNER_CONTACT_PATH } from '@myco/runner/runner-routes.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { RUNNER_CONTRACT_V1 } from '@goondocks/myco-shared/runner-fleet';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
 const answer = (body: Record<string, unknown>) => Response.json(body, {
-  headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE },
+  headers: { [FEATURES_HEADER]: `${EXECUTION_PROFILE_FEATURE},${RUNNER_CONTRACT_V1}` },
 });
 
 describe('runner update idle admission', () => {

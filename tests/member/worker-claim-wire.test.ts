@@ -147,24 +147,6 @@ describe('a worker on the real claim wire', () => {
     } finally { process.env.PATH = path; }
   });
 
-  it('waits for execution-profile advertisement without claiming or failing an old server run', async () => {
-    expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
-    const stopping = new AbortController();
-    const r = await rig((path, n) => {
-      if (n >= 3) stopping.abort();
-      if (path === '/members/status') return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1', 'x-myco-features': 'worker-accounting-v1' } });
-      if (path === '/worker/claim') return Response.json({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
-      return null;
-    });
-    const admin = await r.member('mem_admin', 'admin');
-    r.queueRun('run_old_server');
-    const attached = await r.attach(admin, { once: false, stopping });
-    expect(r.sent.filter((sent) => sent.path === '/worker/claim' || sent.path === '/worker/end')).toEqual([]);
-    expect(r.runRow('run_old_server')?.status).toBe('queued');
-    expect(attached.driven).toBe(0);
-    expect(attached.lines.filter((line) => line === 'this server needs updating before it can give this worker work')).toHaveLength(1);
-  });
-
   it('rechecks execution-profile support before the next claim when the server needs updating', async () => {
     expect(stubProfileHarness()).toEqual(PROFILE_STUB_DETECTED);
     const stopping = new AbortController();
@@ -173,7 +155,6 @@ describe('a worker on the real claim wire', () => {
         if (n >= 3) stopping.abort();
         return Response.json({ persisted: true }, { headers: { 'x-myco-protocol': '1' } });
       }
-      if (path === '/worker/claim' && n >= 3) stopping.abort();
       return null;
     });
     const admin = await r.member('mem_admin', 'admin');
@@ -181,9 +162,8 @@ describe('a worker on the real claim wire', () => {
     r.queueRun('run_after_skew');
     const attached = await r.attach(admin, { once: false, stopping });
     expect(attached.driven).toBe(1);
-    expect(r.sent.filter((sent) => sent.path === '/worker/claim')).toHaveLength(1);
     expect(r.runRow('run_after_skew')?.status).toBe('queued');
-    expect(attached.lines.filter((line) => line === 'this server needs updating before it can give this worker work')).toHaveLength(1);
+    expect(attached.lines.filter((line) => line === 'The Deployment must be updated before this runner can claim work. Run myco server update on the machine that manages it.')).toHaveLength(1);
   });
 
   it('advertises execution-profile before a worker can take a run', async () => {
