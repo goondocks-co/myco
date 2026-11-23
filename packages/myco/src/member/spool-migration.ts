@@ -7,38 +7,19 @@ import { resolveMycoHome } from '../paths/home.js';
 import { LifecycleLock, withFileLockSync } from '../utils/lifecycle-lock.js';
 import { isProjectId, REFUSED_LOG_MAX_BYTES } from './constants.js';
 import { CONTEXT_DIRNAME, PROJECT_CONTEXT_FILE } from './context-cache.js';
-import { listRegistryEntriesResult, deploymentUrl, type RegistryEntry } from './registry.js';
+import type { RegistryEntry } from './registry.js';
 import { LEGACY_MIGRATION_FILE, memberRoutingIdentity, pinSpoolDestination, routedSpoolDir, ROUTING_FILE, sameRoutingIdentity, type MemberRoutingIdentity } from './routing.js';
 import { bufferLockPath, emptySessionState, readMigrationSettledUnlocked, readSessionState, readSessionStateResultUnlocked, recordMigrationSettledUnlocked, sessionStatePath, writeSessionStateUnlocked, type SessionState } from './session-state.js';
 import { readSourceStateForMove, reconcileSessionState } from './session-reconcile.js';
 import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE, SPOOL_DIRNAME, WIRE_FIELDS, turnEndIdentity, type SpoolRecord } from './spool.js';
+import { ASSIGNMENT_FILE, assignmentPath, holdRouting, LEGACY_MIGRATION_VERSION as VERSION, LEGACY_SPOOL_RETIRE_GRACE_MS, legacySpoolDir, listRetiredLegacySpoolDirs, MIGRATION_LOCK, MigrationHold, pinLegacySpoolDestinationForProject, readAssignment, readPinned, readRoutingHold, reportFor, RETIRED_SPOOL_DIRNAME, ROUTING_HOLD_FILE, uniqueDestination, type LegacySpoolMigrationReport } from './spool-migration-pin.js';
 import { publishStagedBlob, readStagedBlob } from './staged-blobs.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, isPrivateMode, memberRoot, pathIsAbsent, readPrivateJson, writePrivateFileAtomic, type PrivateRead } from './store.js';
 
 export { LEGACY_MIGRATION_FILE };
-const MIGRATION_LOCK = '.migration.lock';
-const ROUTING_HOLD_FILE = '.legacy-routing-hold.json';
-const ASSIGNMENT_FILE = '.legacy-assignment.json';
 const RECEIPT_SUFFIX = '.migration-receipt.json';
 const SIDECAR_RECEIPT_FILE = '.legacy-sidecars.json';
-const VERSION = 1;
-export const LEGACY_SPOOL_RETIRE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
-const RETIRED_SPOOL_DIRNAME = 'retired-spool';
 const RETIREMENT_FILE = '.legacy-retirement.json';
-
-export interface LegacySpoolMigrationReport {
-  status: 'absent' | 'held' | 'pinned' | 'assigned' | 'migrated';
-  projectId: string;
-  destination: MemberRoutingIdentity | null;
-  reason?: string;
-  sessions: number;
-  records: number;
-  copied: number;
-  sidecarHolds?: string[];
-  ignoredSidecars?: string[];
-  /** Legacy context asks, render markers and session answer caches not carried into the destination. */
-  contextSkipped?: number;
-}
 
 interface Marker extends LegacySpoolMigrationReport {
   version: typeof VERSION;
@@ -66,55 +47,11 @@ interface SidecarReceipt { version: typeof VERSION; files: Record<string, string
 /** What a sidecar receipt records for a session's answer cache, which is never copied. */
 const SKIPPED_SIDECAR = 'skipped';
 
-class MigrationHold extends Error {}
-
 const sha = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
 
-/** Project-only spool location used by member builds before Deployment routing. */
-export function legacySpoolDir(projectId: string, mycoHome: string = resolveMycoHome()): string {
-  if (!isProjectId(projectId)) throw new Error('Invalid legacy spool project id');
-  const dir = path.join(memberRoot(mycoHome), SPOOL_DIRNAME, projectId);
-  assertMemberPathContained(dir, mycoHome);
-  return dir;
-}
-
 function markerPath(dir: string): string { return path.join(dir, LEGACY_MIGRATION_FILE); }
-function routingHoldPath(dir: string): string { return path.join(dir, ROUTING_HOLD_FILE); }
-function assignmentPath(dir: string): string { return path.join(dir, ASSIGNMENT_FILE); }
 function receiptPath(dir: string, sessionId: string): string { return path.join(dir, `.${sessionId}${RECEIPT_SUFFIX}`); }
 function sourceJournal(dir: string, sessionId: string): string { return path.join(dir, `${sessionId}.jsonl`); }
-
-function readPinned(dir: string): MemberRoutingIdentity | null {
-  const read = readPrivateJson<MemberRoutingIdentity>(path.join(dir, ROUTING_FILE));
-  if (read.ok) {
-    try { return memberRoutingIdentity(read.value); }
-    catch { throw new MigrationHold('Legacy spool destination is invalid'); }
-  }
-  if (read.reason === 'missing') return null;
-  throw new MigrationHold('Legacy spool destination is unreadable');
-}
-
-function readRoutingHold(dir: string): string | null {
-  const read = readPrivateJson<{ version: number; reason: string }>(routingHoldPath(dir));
-  if (read.ok) return typeof read.value?.reason === 'string' ? read.value.reason : 'Legacy routing hold is invalid';
-  return read.reason === 'missing' ? null : 'Legacy routing hold is unreadable';
-}
-
-function holdRouting(dir: string, reason: string): void {
-  if (readRoutingHold(dir) !== null) return;
-  writePrivateFileAtomic(routingHoldPath(dir), `${JSON.stringify({ version: VERSION, reason, at: Date.now() })}\n`);
-}
-
-function readAssignment(dir: string): MemberRoutingIdentity | null {
-  const read = readPrivateJson<{ version: number; route: MemberRoutingIdentity; at: number }>(assignmentPath(dir));
-  if (!read.ok) {
-    if (read.reason === 'missing') return null;
-    throw new MigrationHold('Legacy spool assignment is unreadable');
-  }
-  if (read.value?.version !== VERSION || !Number.isFinite(read.value.at)) throw new MigrationHold('Legacy spool assignment is invalid');
-  try { return memberRoutingIdentity(read.value.route); }
-  catch { throw new MigrationHold('Legacy spool assignment is invalid'); }
-}
 
 function legacyCounts(dir: string, mycoHome: string): Pick<LegacySpoolMigrationReport, 'sessions' | 'records'> {
   const source = new MemberSpool(null, { dir, mycoHome, initialize: false });
@@ -252,41 +189,6 @@ function copySidecars(source: MemberSpool, target: MemberSpool): { holds: string
   try { writePrivateFileAtomic(path.join(source.dir, SIDECAR_RECEIPT_FILE), `${JSON.stringify({ version: VERSION, files })}\n`); }
   catch (error) { holds.push(`Legacy sidecar receipt: ${(error as Error).message}`); }
   return { holds, ignored: scanned.ignored, contextSkipped };
-}
-
-function uniqueDestination(projectId: string, mycoHome: string): MemberRoutingIdentity {
-  const registry = listRegistryEntriesResult(mycoHome);
-  if (!registry.readable || registry.unavailableEntries !== 0) throw new MigrationHold('Registry bindings are unavailable');
-  const matches = registry.entries.filter((entry) => entry.projectId === projectId);
-  const urls = new Set(matches.map((entry) => deploymentUrl(entry.serverUrl)));
-  if (urls.size !== 1) throw new MigrationHold('Legacy spool has no unique Deployment binding');
-  try { return memberRoutingIdentity({ projectId, serverUrl: [...urls][0]! }); }
-  catch { throw new MigrationHold('Legacy spool binding has an invalid Deployment URL'); }
-}
-
-/** Pin an existing Project-only spool before any binding for its Project changes. */
-export function pinLegacySpoolDestinationForProject(projectId: string, mycoHome: string = resolveMycoHome()): LegacySpoolMigrationReport {
-  const dir = legacySpoolDir(projectId, mycoHome);
-  const base: LegacySpoolMigrationReport = reportFor(projectId, null);
-  if (!fs.existsSync(dir)) return base;
-  ensurePrivateFile(path.join(dir, MIGRATION_LOCK));
-  return withFileLockSync(path.join(dir, MIGRATION_LOCK), () => {
-    try {
-      const assigned = readAssignment(dir);
-      const hold = readRoutingHold(dir);
-      const pinned = readPinned(dir);
-      if (assigned !== null && pinned !== null && !sameRoutingIdentity(assigned, pinned)) throw new MigrationHold('Legacy spool assignment conflicts with its pinned Deployment');
-      if (assigned === null && hold !== null) throw new MigrationHold(hold);
-      const destination = assigned ?? pinned ?? uniqueDestination(projectId, mycoHome);
-      if (pinned === null) pinSpoolDestination(dir, destination);
-      new MemberSpool(destination, { mycoHome });
-      return { ...base, status: assigned === null ? 'pinned' as const : 'assigned' as const, destination };
-    } catch (error) {
-      if (!(error instanceof MigrationHold)) throw error;
-      holdRouting(dir, error.message);
-      return { ...base, status: 'held' as const, reason: error.message };
-    }
-  });
 }
 
 /** A user's explicit destination for legacy capture, recorded without erasing the earlier routing hold. */
@@ -503,10 +405,6 @@ function copySession(source: MemberSpool, target: MemberSpool, sessionId: string
   }
 }
 
-function reportFor(projectId: string, destination: MemberRoutingIdentity | null): LegacySpoolMigrationReport {
-  return { status: 'absent', projectId, destination, sessions: 0, records: 0, copied: 0, contextSkipped: 0 };
-}
-
 function verifyReceipts(source: MemberSpool, sessions: ReadonlySet<string>): void {
   const current = new Set([...source.sessionIds(), ...source.stateSessionIds(), ...source.transcriptBacklogIds()]);
   if (current.size !== sessions.size || [...current].some((id) => !sessions.has(id))) throw new MigrationHold('Legacy spool changed during migration');
@@ -557,27 +455,6 @@ function validatedMarker(read: PrivateRead<Marker>, route: MemberRoutingIdentity
       !Number.isFinite(marker.at) || !Array.isArray(marker.sessionIds) ||
       marker.sessionIds.some((id) => typeof id !== 'string')) return null;
   return marker;
-}
-
-/** Retired journals remain discoverable for writers holding an already-open file descriptor. */
-export function listRetiredLegacySpoolDirs(mycoHome: string = resolveMycoHome()): string[] {
-  const root = path.join(memberRoot(mycoHome), RETIRED_SPOOL_DIRNAME);
-  if (pathIsAbsent(root)) return [];
-  assertMemberPathContained(root, mycoHome);
-  const dirs: string[] = [];
-  for (const projectId of fs.readdirSync(root).sort()) {
-    if (!isProjectId(projectId)) throw new Error('Retired legacy spool has an invalid Project');
-    const projectDir = path.join(root, projectId);
-    assertMemberPathContained(projectDir, mycoHome);
-    if (!fs.lstatSync(projectDir).isDirectory()) throw new Error('Retired legacy spool Project is not a directory');
-    for (const name of fs.readdirSync(projectDir).sort()) {
-      const dir = path.join(projectDir, name);
-      assertMemberPathContained(dir, mycoHome);
-      if (!fs.lstatSync(dir).isDirectory()) throw new Error('Retired legacy spool is not a directory');
-      dirs.push(dir);
-    }
-  }
-  return dirs;
 }
 
 function retireLegacySpool(source: MemberSpool, marker: Marker, now: number): void {

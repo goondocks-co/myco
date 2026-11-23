@@ -65,11 +65,15 @@ export interface HookConfigEntry {
   promptsFromTranscript?: boolean;
   /** A session start whose payload `field` equals `equals` continues one compacted. */
   compactionStart?: { field: string; equals: string };
+  /** The settings folder declaration this harness uses to move manifest home paths. */
+  settingsFolder?: { path: string; variable: string; carries?: Record<string, string> };
+  /** Mutating file-path tools declared by this harness's manifest, excluding shell-arg extractors. */
+  planWriteTools?: ReadonlyArray<{ tool: string; pathField: string; extract?: 'patch' }>;
   /** How this symbiont's prompts are named; see the manifest schema's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;
 }
 
-const hookPart8 = (): HookConfigEntry["hookResponse"] => ({
+const hookPart11 = (): HookConfigEntry["hookResponse"] => ({
   "format": "json",
   "fieldNames": {
     "additionalContext": "additionalContext",
@@ -148,7 +152,25 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     },
     "hookResponse": {
       "format": "antigravity-inject-steps"
-    }
+    },
+    "planWriteTools": [
+      {
+        "tool": "replace_file_content",
+        "pathField": "TargetFile"
+      },
+      {
+        "tool": "multi_replace_file_content",
+        "pathField": "TargetFile"
+      },
+      {
+        "tool": "write_to_file",
+        "pathField": "TargetFile"
+      },
+      {
+        "tool": "replace",
+        "pathField": "file_path"
+      }
+    ]
   },
   "claude-code": {
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
@@ -390,7 +412,32 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "compactionStart": {
       "field": "source",
       "equals": "compact"
-    }
+    },
+    "settingsFolder": {
+      "path": "~/.claude",
+      "variable": "CLAUDE_CONFIG_DIR",
+      "carries": {
+        "~/.claude.json": ".claude.json"
+      }
+    },
+    "planWriteTools": [
+      {
+        "tool": "Write",
+        "pathField": "file_path"
+      },
+      {
+        "tool": "Edit",
+        "pathField": "file_path"
+      },
+      {
+        "tool": "MultiEdit",
+        "pathField": "file_path"
+      },
+      {
+        "tool": "NotebookEdit",
+        "pathField": "notebook_path"
+      }
+    ]
   },
   "cline": {
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
@@ -416,7 +463,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "member"
     },
-    "hookResponse": hookPart8(),
+    "hookResponse": hookPart11(),
     "captureRules": withCaptureRules([
       {
         "when": {
@@ -440,7 +487,22 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           "close": "</user_input>"
         }
       }
-    ])
+    ]),
+    "settingsFolder": {
+      "path": "~/.cline",
+      "variable": "CLINE_DIR"
+    },
+    "planWriteTools": [
+      {
+        "tool": "editor",
+        "pathField": "path"
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "input",
+        "extract": "patch"
+      }
+    ]
   },
   "codex": {
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
@@ -631,7 +693,23 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     ]),
     "subagentParentPath": "source.subagent.thread_spawn.parent_thread_id",
     "subagentThreadIdPath": "id",
-    "subagentLabelPath": "source.subagent.thread_spawn"
+    "subagentLabelPath": "source.subagent.thread_spawn",
+    "settingsFolder": {
+      "path": "~/.codex",
+      "variable": "CODEX_HOME"
+    },
+    "planWriteTools": [
+      {
+        "tool": "apply_patch",
+        "pathField": "",
+        "extract": "patch"
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "command",
+        "extract": "patch"
+      }
+    ]
   },
   "copilot": {
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
@@ -694,7 +772,33 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "PostToolUse": "flat",
         "PostToolUseFailure": "flat"
       }
-    }
+    },
+    "settingsFolder": {
+      "path": "~/.copilot",
+      "variable": "COPILOT_HOME"
+    },
+    "planWriteTools": [
+      {
+        "tool": "replace_string_in_file",
+        "pathField": "filePath"
+      },
+      {
+        "tool": "create_file",
+        "pathField": "filePath"
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "filePath"
+      },
+      {
+        "tool": "edit",
+        "pathField": "path"
+      },
+      {
+        "tool": "create",
+        "pathField": "path"
+      }
+    ]
   },
   "cursor": {
     "pluginRootEnvVar": "CURSOR_PLUGIN_ROOT",
@@ -761,7 +865,25 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
           "close": "</user_query>"
         }
       }
-    ])
+    ]),
+    "planWriteTools": [
+      {
+        "tool": "Write",
+        "pathField": "file_path"
+      },
+      {
+        "tool": "Edit",
+        "pathField": "file_path"
+      },
+      {
+        "tool": "MultiEdit",
+        "pathField": "file_path"
+      },
+      {
+        "tool": "Delete",
+        "pathField": "file_path"
+      }
+    ]
   },
   "opencode": {
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
@@ -792,7 +914,22 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "member"
     },
-    "hookResponse": hookPart8()
+    "hookResponse": hookPart11(),
+    "planWriteTools": [
+      {
+        "tool": "write",
+        "pathField": "filePath"
+      },
+      {
+        "tool": "edit",
+        "pathField": "filePath"
+      },
+      {
+        "tool": "apply_patch",
+        "pathField": "patchText",
+        "extract": "patch"
+      }
+    ]
   },
   "pi": {
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
@@ -824,7 +961,21 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "harness"
     },
-    "hookResponse": hookPart8()
+    "hookResponse": hookPart11(),
+    "settingsFolder": {
+      "path": "~/.pi/agent",
+      "variable": "PI_CODING_AGENT_DIR"
+    },
+    "planWriteTools": [
+      {
+        "tool": "write",
+        "pathField": "path"
+      },
+      {
+        "tool": "edit",
+        "pathField": "path"
+      }
+    ]
   },
   "windsurf": {
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",
@@ -861,6 +1012,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "{sessionId}.jsonl"
       ],
       "retention": "harness"
-    }
+    },
+    "planWriteTools": [
+      {
+        "tool": "post_write_code",
+        "pathField": "file_path"
+      }
+    ]
   }
 } as const;

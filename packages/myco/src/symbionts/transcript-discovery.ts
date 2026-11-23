@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveMycoHome } from '../paths/home.js';
-import { BUNDLED_MANIFESTS } from './manifests.generated.js';
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import type { TranscriptDiscovery } from './manifest-schema.js';
 
 /**
@@ -24,7 +24,7 @@ const SESSION_ID_TOKEN = '{sessionId}';
  * by construction.
  */
 export function manifestTranscriptDiscovery(agent: string): TranscriptDiscovery | undefined {
-  return BUNDLED_MANIFESTS.find((m) => m.name === agent)?.capture?.transcriptDiscovery;
+  return HOOK_CONFIG[agent]?.transcriptDiscovery;
 }
 
 /** Locate a transcript using the agent's manifest-declared layout. */

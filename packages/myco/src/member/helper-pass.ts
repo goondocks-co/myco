@@ -3,7 +3,7 @@
  * retention. What a detached helper runs, and what a hook that must deliver
  * before it exits runs in its own process (`--ship inline`, or a helper it could not start apart from itself).
  */
-import { drainEntryBacklog } from './backlog.js';
+import { drainEntryBacklog, drainEntryBacklogWith, type DrainEntryBacklogOptions } from './backlog.js';
 import { deadlineBudget, type HookBudget } from './budget.js';
 import type { HelperPass } from './helper.js';
 import { prefetchContext, watchingFeatures } from './prefetch.js';
@@ -18,14 +18,20 @@ import { ServerClient, type FetchLike } from './transport.js';
 import { promptContextLogPrefix } from './context-diagnostics.js';
 import { terminalText } from '@myco/utils/terminal-text.js';
 
-/** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
-export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps: {
+type HelperPassDeps = {
   fetch?: FetchLike; now?: () => number;
   /** Full retained-journal migration is deferred while an inline hook owns the pass. */
   migrateLegacy?: boolean;
   /** The membership to deliver under, for a credential the registry does not hold (a sandbox's environment). */
   entry?: RegistryEntry;
-} = {}): HelperPass {
+};
+
+function buildHelperPass(
+  route: MemberRoutingIdentity,
+  mycoHome: string,
+  deps: HelperPassDeps,
+  drain: (entry: RegistryEntry, opts: DrainEntryBacklogOptions) => ReturnType<typeof drainEntryBacklogWith>,
+): HelperPass {
   const now = deps.now ?? Date.now;
   return async (deadline, { force }) => {
     // Roots bound to one Deployment and Project share the same spool.
@@ -48,7 +54,7 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
       : null;
     const [contextResult, backlogResult] = await Promise.allSettled([
       prefetch(),
-      drainEntryBacklog(current, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' }),
+      drain(current, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' }),
     ]);
     if (contextResult.status === 'rejected') process.stderr.write(`${promptContextLogPrefix(route.serverUrl, route.projectId)}context prefetch failed: ${terminalText(contextResult.reason instanceof Error ? contextResult.reason.message : String(contextResult.reason))}\n`);
     if (backlogResult.status === 'rejected') throw backlogResult.reason;
@@ -62,6 +68,16 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
     process.stderr.write(`[myco] helper: pass over ${backlog.sessions.length} session(s), ${shipped} record(s) and segment(s) delivered${force ? ' (past the offline latch)' : ''}${context}, ended by ${backlog.endedBy}\n`);
     return { more: pluginCapture.more || backlog.endedBy === 'budget' || prefetched?.stoppedBy === 'budget' };
   };
+}
+
+/** One pass of the helper over a project, ending by `deadline`: the project's backlog delivered, then its retention. */
+export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps: HelperPassDeps = {}): HelperPass {
+  return buildHelperPass(route, mycoHome, deps, drainEntryBacklog);
+}
+
+/** One pass run inline inside a hook: skips legacy spool migration so hooks do not bundle the migration engine. */
+export function inlineHelperPass(route: MemberRoutingIdentity, mycoHome: string, deps: Omit<HelperPassDeps, 'migrateLegacy'> = {}): HelperPass {
+  return buildHelperPass(route, mycoHome, { ...deps, migrateLegacy: false }, (entry, opts) => drainEntryBacklogWith(entry, opts));
 }
 
 /** The membership with its credential renewed first when its window is open, as the backlog's delivery does. */

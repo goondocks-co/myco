@@ -17,7 +17,8 @@ import { restoreHeldReceiptsForHook } from '@myco/member/held.js';
 import { appendPending, flushPendingForRoot, pendingSpool } from '@myco/member/pending.js';
 import { reconcileSessionState, type SourceSessionState } from '@myco/member/session-reconcile.js';
 import { emptySessionState, readSessionState, updateSessionState, writeSessionStateUnlocked, type SessionState, type TranscriptPointer } from '@myco/member/session-state.js';
-import { assignLegacySpoolDestination, legacySpoolDir, migrateLegacySpool } from '@myco/member/spool-migration.js';
+import { assignLegacySpoolDestination, migrateLegacySpool } from '@myco/member/spool-migration.js';
+import { legacySpoolDir } from '@myco/member/spool-migration-pin.js';
 import { MemberSpool } from '@myco/member/spool.js';
 
 const SERVER_URL = 'https://reconcile.example';

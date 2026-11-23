@@ -8,7 +8,6 @@
  * what changed since.
  */
 import fs from 'node:fs';
-import { BUNDLED_MANIFESTS } from '../symbionts/manifests.generated.js';
 import { getAtPath } from '@goondocks/myco-shared/dot-path';
 import { filesNamedByToolInput } from '@goondocks/myco-shared/member-protocol';
 import path from 'node:path';
@@ -46,12 +45,12 @@ export function resolvePlanDir(dir: string, projectRoot: string): string {
  * agent's own variable moved, each of them that lives in its default settings folder inside the moved one.
  */
 function agentPlanDirs(agent: string, env: NodeJS.ProcessEnv = process.env): string[] {
-  const dirs = HOOK_CONFIG[agent]?.planDirs ?? [];
-  const manifest = BUNDLED_MANIFESTS.find(candidate => candidate.name === agent);
-  const moved = manifest === undefined ? null : settingsVariableFolder(manifest, env);
-  if (manifest === undefined || moved === null) return dirs;
+  const config = HOOK_CONFIG[agent];
+  const dirs = config?.planDirs ?? [];
+  const moved = config === undefined ? null : settingsVariableFolder(config, env);
+  if (config === undefined || moved === null) return dirs;
   const home = resolveHomeDir();
-  const inMoved = dirs.filter(dir => dir.startsWith('~/')).map(dir => pathInSettingsFolder(manifest, dir, { path: moved, origin: 'variable' }, home))
+  const inMoved = dirs.filter(dir => dir.startsWith('~/')).map(dir => pathInSettingsFolder(config, dir, { path: moved, origin: 'variable' }, home))
     .filter(dir => !dirs.some(own => path.join(home, own.slice(2)) === dir));
   return [...dirs, ...inMoved];
 }
@@ -77,7 +76,7 @@ export function planWritePath(agent: string, toolName: string | undefined, toolI
 
 /** Every plan path named by a declared file mutation, including multi-file patches. */
 export function planWritePaths(agent: string, toolName: string | undefined, toolInput: unknown, projectRoot: string, machineDirs: readonly string[] = []): string[] {
-  const declared = BUNDLED_MANIFESTS.find(manifest => manifest.name === agent)?.capabilities?.pathBearingTools.filter(tool => tool.tool === toolName && tool.mutates && (!('extract' in tool) || tool.extract !== 'shell-arg')) ?? [];
+  const declared = HOOK_CONFIG[agent]?.planWriteTools?.filter(tool => tool.tool === toolName) ?? [];
   if (declared.length === 0 && (typeof toolName !== 'string' || !FILE_WRITE_TOOLS.has(toolName))) return [];
   const input = (toolInput !== null && typeof toolInput === 'object' ? toolInput : {}) as Record<string, unknown>;
   const paths = declared.flatMap(tool => {
