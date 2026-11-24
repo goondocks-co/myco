@@ -24,9 +24,12 @@ export function storedRunnerCredentialChoices(text: string): StoredRunnerCredent
     .map(([agent, choice]) => [agent, choice === 'own' || choice === 'stored' ? choice : null]));
 }
 
+/** Whether a runner's reported offer names `agent` as installed on its machine: the rule claims and sign-in choices share. */
+export const offersAgentInstalled = (offer: { id: string; installed?: boolean }, agent: string): boolean => offer.id === agent && offer.installed !== false;
+
 /** Stored sign-in admits a reported agent independently of its machine's authentication status. */
 export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean; unavailableReason?: 'login_missing' }, choices?: StoredRunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
-  return offer.unavailableReason !== 'login_missing' && offer.installed !== false && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
+  return offer.unavailableReason !== 'login_missing' && offersAgentInstalled(offer, offer.id) && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
 }
 
 export interface HarnessSignInFailure {
@@ -35,7 +38,7 @@ export interface HarnessSignInFailure {
   source: RunnerCredentialChoice;
 }
 
-export const STORED_SIGN_IN_HINT = 'Update this agent’s stored key in Settings → Models and keys.';
+export const STORED_SIGN_IN_HINT = 'Update this agent’s stored key in Settings → Connections.';
 
 /** Contact diagnostics retain bounded agent labels and remedies, never harness output. */
 export function parseHarnessSignInFailure(value: unknown): HarnessSignInFailure | undefined {

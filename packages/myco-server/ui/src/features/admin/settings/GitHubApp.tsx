@@ -3,11 +3,12 @@ import {
   appSettingsLocation, GITHUB_APPS_LISTS, githubAppChecklist, githubAppHeadline, githubAppPages, ownerWords, SETUP_WORDS, WITHHELD_WORDS,
   type GitHubAppSetup, type RepositorySuggestion, type SetupLink, type SetupStep, type StepState,
 } from '@goondocks/myco-shared/github-app-setup';
-import { Button, Card, CommandBlock, ErrorState, ExternalLink, LoadingState, StatusChip, tapTarget, type Tone } from '../../../design';
+import { agoWords } from '@goondocks/myco-shared/time-words';
+import { Button, CommandBlock, Disclosure, ErrorState, ExternalLink, LoadingState, StatusChip, tapTarget, type Tone } from '../../../design';
 import {
   settingsRefusalText, useConnectSuggestion, useGitHubAccountActions, useGitHubAppSetup, useGitHubInstallations, useRepositorySuggestions,
 } from '../../../hooks/use-settings';
-import { AdminSection } from '../AdminFrame';
+import { ConnectionRow } from './ConnectionRow';
 
 const STATE: Record<StepState, { label: string; tone: Tone }> = {
   done: { label: 'Done', tone: 'ok' },
@@ -16,40 +17,72 @@ const STATE: Record<StepState, { label: string; tone: Tone }> = {
   waiting: { label: 'Waiting', tone: 'neutral' },
 };
 
+/** Where a link to the GitHub App setup lands, on Connections. */
+export const GITHUB_ANCHOR = 'github-app';
+
+/** GitHub as one connection: whether the App is set up and reading, when that was checked, and the setup checklist under it. */
+function githubStatus(setup: GitHubAppSetup | undefined): { words: string; tone: Tone } {
+  if (setup === undefined) return { words: 'Checking', tone: 'neutral' };
+  const steps = githubAppChecklist(setup, window.location.origin);
+  if (steps.every((step) => step.state === 'done')) return { words: 'Working', tone: 'ok' };
+  return steps.some((step) => step.state === 'failed') ? { words: 'Needs attention', tone: 'bad' } : { words: 'Not set up', tone: 'warn' };
+}
+
 /**
- * The server's GitHub App, set up from here: a checklist whose every step is read live from GitHub and this server
- * when the section opens and on Check again, with direct links to the App's own pages and the one command that needs
- * the operator's machine.
+ * The server's GitHub App as a connection row: whether it works and when that was checked, Test to check again, and
+ * the setup checklist folded under it, open while a step remains. Every step is read live from GitHub and this server.
  */
-export function GitHubApp() {
+export function GitHubRow() {
   const setup = useGitHubAppSetup();
   const data = setup.data;
   const keyWorks = data?.key.state === 'ready' || data?.key.state === 'permissions_missing';
   const installations = useGitHubInstallations(keyWorks);
-  const accounts = useGitHubAccountActions();
   const check = () => { void setup.refetch(); if (keyWorks) void installations.refetch(); };
-  return <AdminSection id="github-app" title="GitHub App" description="This server’s App signs people in and reads the repositories each account selects in GitHub, for accounts approved here.">
-    {setup.isPending ? <LoadingState label="Checking the GitHub App with GitHub" count={3} />
-      : setup.isError ? <ErrorState error={setup.error} onRetry={() => void setup.refetch()} />
-      : <Card className="flex flex-col gap-s4" data-github-app-setup="">
-        <AppIdentity setup={setup.data} />
-        <Checklist setup={setup.data} />
-        {installations.isSuccess && installations.data.accounts.length > 0 && (
-          <div className="flex flex-col gap-s2" data-approved-accounts="">
-            <p className="t-small text-muted">Repositories can be connected from installations by these accounts:</p>
-            {installations.data.accounts.map((account) => (
-              <div key={account.accountId} className="flex flex-wrap items-center justify-between gap-s3">
-                <span className="t-small">{ownerWords(account)}</span>
-                <Button variant="ghost" pending={accounts.withdraw.isPending && accounts.withdraw.variables === account.accountId}
-                  onClick={() => accounts.withdraw.mutate(account.accountId)}>Remove approval</Button>
-              </div>
-            ))}
-          </div>
-        )}
-        {installations.isError && <p role="alert" className="t-small text-bad">{settingsRefusalText(installations.error)}</p>}
-        <div><Button onClick={check} pending={setup.isFetching}>Check again</Button></div>
-      </Card>}
-  </AdminSection>;
+  const status = setup.isError ? { words: 'Could not check', tone: 'bad' as const } : githubStatus(data);
+  return (
+    <ConnectionRow
+      id={GITHUB_ANCHOR}
+      kind="github"
+      label="GitHub"
+      use="Sign-in, and reading your repositories, through this server’s own GitHub App."
+      status={status}
+      note={<>
+        {data !== undefined && <p data-setup-headline="">{githubAppHeadline(githubAppChecklist(data, window.location.origin), data)}</p>}
+        {setup.dataUpdatedAt > 0 && <p>{`Checked ${agoWords(setup.dataUpdatedAt, Date.now())}`}</p>}
+      </>}
+      actions={<Button size="sm" onClick={check} pending={setup.isFetching}>Test</Button>}
+    >
+      {setup.isPending ? <LoadingState label="Checking the GitHub App with GitHub" count={2} />
+        : setup.isError ? <ErrorState error={setup.error} onRetry={() => void setup.refetch()} />
+        : <Disclosure summary="Setup and repositories" defaultOpen={githubStatus(data).words !== 'Working' || window.location.hash === `#${GITHUB_ANCHOR}`}>
+          <GitHubSetup setup={setup.data} installations={installations} />
+        </Disclosure>}
+    </ConnectionRow>
+  );
+}
+
+/** The App's identity, its live checklist and the accounts approved here. */
+function GitHubSetup({ setup, installations }: { setup: GitHubAppSetup; installations: ReturnType<typeof useGitHubInstallations> }) {
+  const accounts = useGitHubAccountActions();
+  return (
+    <div className="flex flex-col gap-s4" data-github-app-setup="">
+      <AppIdentity setup={setup} />
+      <Checklist setup={setup} />
+      {installations.isSuccess && installations.data.accounts.length > 0 && (
+        <div className="flex flex-col gap-s2" data-approved-accounts="">
+          <p className="t-small text-muted">Repositories can be connected from installations by these accounts:</p>
+          {installations.data.accounts.map((account) => (
+            <div key={account.accountId} className="flex flex-wrap items-center justify-between gap-s3">
+              <span className="t-small">{ownerWords(account)}</span>
+              <Button variant="ghost" pending={accounts.withdraw.isPending && accounts.withdraw.variables === account.accountId}
+                onClick={() => accounts.withdraw.mutate(account.accountId)}>Remove approval</Button>
+            </div>
+          ))}
+        </div>
+      )}
+      {installations.isError && <p role="alert" className="t-small text-bad">{settingsRefusalText(installations.error)}</p>}
+    </div>
+  );
 }
 
 /** Which App this is and who owns it, or where to look for it when GitHub has not said. */
@@ -73,7 +106,6 @@ function AppIdentity({ setup }: { setup: GitHubAppSetup }) {
 function Checklist({ setup }: { setup: GitHubAppSetup }) {
   const steps = githubAppChecklist(setup, window.location.origin);
   return <div className="flex flex-col gap-s3">
-    <p role="status" className="t-body font-medium text-ink" data-setup-headline="">{githubAppHeadline(steps, setup)}</p>
     <ol className="flex flex-col divide-y divide-line" aria-label="Repository access setup">
       {steps.map((step) => <li key={step.id} className="flex flex-col gap-s2 py-s3" data-step={step.id} data-state={step.state}>
         <div className="flex flex-wrap items-start gap-s2">

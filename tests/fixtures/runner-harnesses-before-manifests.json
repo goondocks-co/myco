@@ -66,17 +66,17 @@
     {
       "name": "openai",
       "label": "OpenAI",
-      "alsoUsedFor": "embeddings, when the embedding provider is OpenAI"
+      "alsoUsedFor": "search by meaning, when search uses OpenAI"
     },
     {
       "name": "openrouter",
       "label": "OpenRouter",
-      "alsoUsedFor": "embeddings, when the embedding provider is OpenRouter"
+      "alsoUsedFor": "search by meaning, when search uses OpenRouter"
     },
     {
       "name": "single-turn",
-      "label": "Single-turn endpoint",
-      "alsoUsedFor": "direct single-turn model calls to the configured base URL"
+      "label": "Own model address",
+      "alsoUsedFor": "quick jobs sent to your own model address"
     }
   ],
   "SECRET_SLOT_NAMES": [
@@ -133,7 +133,7 @@
         "xhigh"
       ],
       "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
-      "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
+      "modelHint": "Use a Codex model ID. With no model set, work of this size waits."
     },
     "opencode": {
       "models": {
@@ -155,7 +155,7 @@
         "max"
       ],
       "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
-      "modelHint": "Use provider/model. An unset model holds runs at this tier.",
+      "modelHint": "Name the provider and the model, as openrouter/qwen/qwen3. With no model set, work of this size waits.",
       "presets": [
         {
           "id": "openrouter-claude-latest",

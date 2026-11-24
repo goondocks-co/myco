@@ -8,7 +8,8 @@ import { RunsPage } from '../features/runs/RunsPage';
 import { MyMachinesPage } from '../features/admin/people/MyMachinesPage';
 import { PeoplePage } from '../features/admin/people/PeoplePage';
 import { ProjectSettingsPage } from '../features/admin/project/ProjectSettingsPage';
-import { SettingsPage } from '../features/admin/settings/SettingsPage';
+import { SettingsPage, useSettingsRedirect } from '../features/admin/settings/SettingsPage';
+import { Navigate } from 'react-router-dom';
 import { NotFound } from '../pages/NotFound';
 import {
   SETTINGS_SECTIONS,
@@ -17,9 +18,10 @@ import {
 import { useRouteProject } from './route-project';
 
 /**
- * People & machines shows the directory to every member. Settings in its five
+ * People & machines shows the directory to every member. Settings in its
  * sections, a project's settings and Health require an admin; My machines is
- * available to every member.
+ * available to every member. An older Settings address leads to where its part
+ * lives now before the admin check, so every reader lands on the current page.
  */
 export const adminRoutes: RouteObject[] = routeGroup(adminRoutesPaths, {
   runs: <RunsPage />,
@@ -32,6 +34,8 @@ export const adminRoutes: RouteObject[] = routeGroup(adminRoutesPaths, {
 }).concat(SETTINGS_SECTIONS.map((section) => ({ path: section.to, element: <SettingsRoute section={section.id} /> })));
 
 function SettingsRoute({ section }: { section: SettingsSectionId }) {
+  const moved = useSettingsRedirect(section);
+  if (moved !== null) return <Navigate to={moved} replace />;
   return <AdminOnly title="Settings"><SettingsPage section={section} /></AdminOnly>;
 }
 

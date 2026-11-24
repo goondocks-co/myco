@@ -4,25 +4,32 @@ An administrator changes server settings in the dashboard. Each member sets thei
 
 ## Settings
 
-**Settings** has five sections for the whole server.
+**Settings** has six sections for the whole server.
 
 ### Myco’s work
 
 - **When Myco works** controls **Work on a schedule**, how long projects count as active, and when a quiet session is ready for a title. Scheduled work starts off. **Title imported sessions** separately enables titling older sessions.
 - **How much at once** controls **Tasks at once**, **Runs of one task at once** and **Runs of one task per hour**. The default for runs of one task at once is **2 across all projects**. Further runs queue. Clear an override to restore the default, or choose **No limit**.
-- **Which agent does the work** sets **Preferred agent** and **Then try, in order**, among agents the registered runners offer.
 - **What sessions receive** controls **Session-start instructions**, injection at session or subagent start, spores and plans with prompts, and the planning reminder. The instructions are one shared template for all projects, up to 4 KB. **Items per prompt** shares its count between spores and plans; a 300-token budget can serve fewer.
 - **Code map** controls **Update every** and **Paths left out**. Projects with Code map on keep their map current after new capture, including during active work; the default interval is six hours. Automatic updates need scheduled work, a connected repository and a ready runner, and task limits apply.
 
 First extraction of a large history ramps at two automatic runs a day until the initial history drains or the active window expires. The normal automatic ceiling is 12 learning runs per project per day, with three slots reserved for recent live sessions. [How Myco learns](how-myco-learns.md) explains the four kinds of work.
 
-### Models and keys
+### Models
 
-**Claude Code tiers**, **Codex tiers** and **OpenCode tiers** choose models and effort for Myco's tasks. Configure the tiers a runner will use; unset Codex or OpenCode models hold that work until configured. **Per-task overrides** can choose a different agent, tier, model, effort or schedule for one task. A model pin also needs an agent in the same override.
+Two decisions, then Advanced.
 
-Runners use agents already signed in on their machines. Registering a runner is separate from member sign-in; choosing a preferred agent does not register one.
+**Quick jobs** (session titles and summaries) are **Answered by** one of the answerers this server offers: Cloudflare's included model on a Cloudflare server, **My own model address** (any OpenAI-compatible address, its model name and an optional key), or, on a local server, **A runner's agent**. The words under the choice say what it costs and needs.
 
-**Search embeddings** sets the provider and model used to search by meaning. Cloudflare servers default to Workers AI. A local server has no default embedding provider and matches words until one is configured. Changing the embedding model rebuilds the search index in the background while search remains available.
+**Work that needs an agent** is three steps. **Agent** picks the coding agent runners try first, from the agents your registered runners offer, or **No preference**, where each runner uses the first agent it is signed in to; the line under it says which agent each runner uses today. **Paid by** sets, in one change on every runner offering that agent, whether it pays with **each runner's own sign-in** (the default) or **a stored key**; every runner changes or none does, and one line per runner says what it uses now. Choosing a stored key when none is usable saves nothing and offers to add one. A stored Claude Code value says whether it is a subscription token or an API key (billed to the API account, including any monthly credit). If a chosen stored key stops working, the work waits; it never falls back to a runner's own sign-in. **Check** asks whether learning from sessions could start now, by the same rules a runner's claim follows, the daily work budget included, and names the runner that would take it or the one thing in the way.
+
+**Advanced** folds away the model each agent uses for small, medium and large jobs (one group per agent a runner offers, or whose sizes were changed), **Size of each job**, **Agents tried next**, **Overrides for each task** and **Search by meaning**, each with a line saying whether it was changed. Unset Codex or OpenCode models hold that work until configured. **Overrides for each task** can choose a different agent, size, model, effort or schedule for one task; a model named there needs an agent beside it. **Search by meaning** sets the embedding provider and model; Cloudflare servers default to Workers AI, a local server matches words until one is configured, and changing the model rebuilds search in the background while it stays available.
+
+Runners use agents already signed in on their machines. Registering a runner is separate from member sign-in; choosing an agent does not register one.
+
+### Connections
+
+One list of everything Myco holds a credential for: **GitHub** (this server's App, with its setup checklist under it and **Test** to check it again), each stored model key, and each telemetry key. Each row says what it is for, whether it works and since when, and its actions. **Add a connection** first asks what kind (a model key, a launcher that reports activity, or an agent that reads one project from outside) and then shows only that kind's fields. A telemetry key's row shows how a launcher uses it; see [Telemetry from a launcher](agents.md#telemetry-from-a-launcher-opentelemetry).
 
 ### Capture and retention
 
@@ -38,7 +45,7 @@ Runners use agents already signed in on their machines. Registering a runner is 
 
 ### Sign-in and access
 
-This section points to **People & machines** for membership and machine access, and **Project settings › Access keys** for external agents. Keys are scoped to one project; see [External agents](external-agents.md). **Telemetry keys** let a tool that launches agents report those launches; see [Telemetry from a launcher](agents.md#telemetry-from-a-launcher-opentelemetry).
+This section points to **People & machines** for membership and machine access, and **Project settings › Access keys** for external agents. Keys are scoped to one project; see [External agents](external-agents.md).
 
 ## What Myco does in each project
 
@@ -56,7 +63,7 @@ Map work and learning from code need **Project settings › Repository** connect
 
 Every member can use **Myco’s work › Run a task**. By default a member who is not an administrator can start each task four times in a rolling day, across all projects. Administrators have no member daily limit.
 
-To change that allowance for one task, set `memberRunsPerDay` in **Models and keys › Per-task overrides › Task overrides**. For example:
+To change that allowance for one task, set `memberRunsPerDay` in **Models › Advanced › Overrides for each task**. For example:
 
 ```json
 {"extract-curate": {"schedule": {"memberRunsPerDay": 10}}}

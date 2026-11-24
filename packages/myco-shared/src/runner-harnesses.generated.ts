@@ -106,7 +106,7 @@ export const RUNNER_HARNESSES = [
         "xhigh"
       ],
       "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$",
-      "modelHint": "Use a Codex model ID. An unset model holds runs at this tier."
+      "modelHint": "Use a Codex model ID. With no model set, work of this size waits."
     },
     "diagnostics": [
       {
@@ -183,7 +183,7 @@ export const RUNNER_HARNESSES = [
         "max"
       ],
       "modelPattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$",
-      "modelHint": "Use provider/model. An unset model holds runs at this tier.",
+      "modelHint": "Name the provider and the model, as openrouter/qwen/qwen3. With no model set, work of this size waits.",
       "providerAliasPattern": "^openrouter/~",
       "presets": [
         {

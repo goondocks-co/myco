@@ -1,4 +1,5 @@
-import { DEFAULT_COMPLETION_MODEL, DIRECT_CALLS_PER_MINUTE } from './completion/provider.js';
+import { DIRECT_CALLS_PER_MINUTE } from './completion/provider.js';
+import { quickJobsRoute } from './completion/configured-provider.js';
 import { BUDGET_LEAF } from './budget-policy.js';
 import { dailyBudget } from './settings.js';
 /**
@@ -260,10 +261,11 @@ const singleTurn: SettingPolicy = {
   leaves: ['single_turn.model', 'single_turn.base_url'],
   async resolve(env) {
     const held = await storedSettings(env.db, ['single_turn.model', 'single_turn.base_url']);
-    const value = (leaf: string) => { const row = held.get(leaf); return row !== undefined && row.violation === null ? row.value : null; };
+    const value = (leaf: string) => { const row = held.get(leaf); return row !== undefined && row.violation === null && typeof row.value === 'string' ? row.value : undefined; };
+    const route = quickJobsRoute(env.platform.name, { model: value('single_turn.model'), base: value('single_turn.base_url') });
     return {
-      'single_turn.model': { effective: value('single_turn.model') ?? (env.platform.name === 'cloudflare' ? DEFAULT_COMPLETION_MODEL : null), reason: 'Single-turn calls use at most ' + DIRECT_CALLS_PER_MINUTE + ' provider calls per minute, including validation retries.' },
-      'single_turn.base_url': { effective: value('single_turn.base_url'), reason: 'OpenAI-compatible API base URL, including /v1 when required. The optional key is stored under Provider keys, Single-turn endpoint.' },
+      'single_turn.model': { effective: route.answeredBy === 'runner' ? value('single_turn.model') ?? null : route.model, reason: 'Quick jobs use at most ' + DIRECT_CALLS_PER_MINUTE + ' model calls per minute, including validation retries.' },
+      'single_turn.base_url': { effective: value('single_turn.base_url') ?? null, reason: 'An OpenAI-compatible address, including /v1 when required. Its optional key is under Connections, Own model address.' },
     };
   },
 };

@@ -410,7 +410,7 @@ runner:
     efforts: { low: low, default: medium, high: high }
     allowedEfforts: [minimal, low, medium, high, xhigh]
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$'
-    modelHint: Use a Codex model ID. An unset model holds runs at this tier.
+    modelHint: Use a Codex model ID. With no model set, work of this size waits.
   # How a stop it explains in its own words reads as a coded reason: a failed turn's message and what it writes to
   # stderr when it exits without completing one. The first pattern that matches decides; the words are read on the
   # worker and never stored.

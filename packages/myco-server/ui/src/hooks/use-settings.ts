@@ -120,6 +120,14 @@ export function useSettingsActions() {
       onError: onConflict,
       onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
     }),
+    /** Removes the quick-jobs address and its model in one write, against both revisions the page read. */
+    clearQuickJobsAddress: useMutation({
+      gcTime: 0,
+      mutationFn: (v: { leaves: readonly string[] }) => deleteJson<{ applied: true }>('/api/quick-jobs/address',
+        { 'if-match': JSON.stringify(Object.fromEntries(v.leaves.map((leaf) => [leaf, Number(revisionFor(leaf)['if-match'])]))) }),
+      onError: onConflict,
+      onSuccess: () => refresh('settings', 'titling-backfill', 'tasks'),
+    }),
     repairDocument: useMutation({
       gcTime: 0,
       mutationFn: (v: { leaf: string }) => postJson<{ applied: true }>(`/api/settings/${encodeURIComponent(v.leaf)}/repair`, {}, revisionFor(v.leaf)),
@@ -165,13 +173,14 @@ export function useSettingsActions() {
       gcTime: 0,
       mutationFn: (v: { name: string; value: string }) => putJson<SecretRow>(`/api/secrets/${encodeURIComponent(v.name)}`, { value: v.value }),
       onError: onConflict,
-      onSuccess: () => refresh('secrets'),
+      // Whether each agent has a usable stored key is read with the runners.
+      onSuccess: () => refresh('secrets', 'runners'),
     }),
     deleteSecret: useMutation({
       gcTime: 0,
       mutationFn: (v: { name: string }) => deleteJson<{ deleted: boolean }>(`/api/secrets/${encodeURIComponent(v.name)}`),
       onError: onConflict,
-      onSuccess: () => refresh('secrets'),
+      onSuccess: () => refresh('secrets', 'runners'),
     }),
     setProjectSetting: useMutation({
       mutationFn: (v: { projectId: string; leaf: string; value: number; revision: number }) =>

@@ -9,7 +9,7 @@ import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words'
  * added on one side without the other fails by name.
  */
 import type { SettingsSectionId } from '../../../routes/nav';
-import { PROFILE_HARNESSES, REASONING_TIERS } from '@goondocks/myco-shared/execution-profile';
+import { CONFIGURABLE_PROFILE_HARNESSES, harnessName, PROFILE_HARNESSES, REASONING_TIERS } from '@goondocks/myco-shared/execution-profile';
 
 /**
  * How a setting is edited. `agent` is one of the agents a machine can run
@@ -54,13 +54,17 @@ export interface LeafGroup {
   label: string;
   note: string;
   leaves: readonly LeafField[];
-  /** The agent whose tiers the group sets, where it sets one's. */
+  /** The agent whose model sizes the group sets, where it sets one's. */
   harness?: string;
+  /** Folded under Advanced at the foot of its section, opened only by someone with a reason to. */
+  advanced?: true;
 }
 
 const SIGN_IN_OPTIONS = { deployment: 'The server’s stored key', 'worker-login': 'This machine’s sign-in' } as const;
 
-const tierWords = (tier: string): string => `${tier.charAt(0).toUpperCase()}${tier.slice(1)} tier`;
+/** A reasoning tier as the jobs it serves: small, medium and large. */
+export const SIZE_WORDS: Readonly<Record<string, string>> = { low: 'Small', default: 'Medium', high: 'Large' };
+const tierWords = (tier: string): string => `${SIZE_WORDS[tier] ?? tier} jobs`;
 
 const profileFields = (harness: string): LeafField[] => [
   ...REASONING_TIERS.flatMap((tier) => [
@@ -73,6 +77,23 @@ const profileFields = (harness: string): LeafField[] => [
     options: Object.keys(SIGN_IN_OPTIONS), optionLabels: SIGN_IN_OPTIONS, resettable: true,
     note: 'Applies only to legacy workers. Each registered runner’s sign-in is chosen on the Runners page and takes precedence.' },
 ];
+
+/**
+ * The model sizes of each agent whose manifest lets its models be chosen, named and described from the manifest. A
+ * group's anchor is the first word of the agent's id, as older links name it.
+ */
+const PROFILE_GROUPS: readonly LeafGroup[] = CONFIGURABLE_PROFILE_HARNESSES.map((harness): LeafGroup => {
+  const waits = REASONING_TIERS.some((tier) => PROFILE_HARNESSES[harness]!.models[tier] === null);
+  return {
+    id: `${harness.split('-')[0]}-profile`,
+    section: 'models',
+    label: `${harnessName(harness)} model sizes`,
+    note: `The model and effort ${harnessName(harness)} is asked for on small, medium and large jobs.${waits ? ' A size with no model waits until one is set.' : ''}`,
+    leaves: profileFields(harness),
+    harness,
+    advanced: true,
+  };
+});
 
 export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
@@ -90,16 +111,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
-    id: 'single-turn',
-    section: 'work',
-    label: 'Single-turn model',
-    note: 'Myco calls this model directly for session titles and summaries. Work that needs tools continues on runners. Self-hosted servers with no model use a runner for titles.',
-    leaves: [
-      { leaf: 'single_turn.model', label: 'Model', kind: 'text', resettable: true, note: 'Cloudflare defaults to @cf/openai/gpt-oss-20b. Self-hosted servers need a model and an API base URL.' },
-      { leaf: 'single_turn.base_url', label: 'API base URL', kind: 'text', resettable: true, note: 'Session prompts, agent replies and short file excerpts are sent to this address. HTTP is allowed only for loopback or private IP addresses. For example, http://localhost:1234/v1 for LM Studio. Store an optional key under Provider keys → Single-turn endpoint. On Cloudflare, reset this address to use its built-in model service.' },
-    ],
-  },
-  {
     id: 'limits',
     section: 'work',
     label: 'How much at once',
@@ -108,16 +119,6 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
       { leaf: 'agent.limits.concurrent_runs', label: 'Tasks at once', kind: 'number', min: 1, unlimited: true },
       { leaf: 'agent.limits.task_concurrent_runs', label: 'Runs of one task at once', kind: 'number', min: 1, unlimited: true, note: 'Across all projects, this many runs of the same task can work at once. Further runs wait until one finishes.' },
       { leaf: 'agent.limits.task_runs_per_hour', label: 'Runs of one task per hour', kind: 'number', min: 1, unlimited: true },
-    ],
-  },
-  {
-    id: 'workers',
-    section: 'work',
-    label: 'Which agent does the work',
-    note: 'The coding agent a machine uses when it runs Myco’s work. A machine offers the agents it is signed in to; this names which to prefer. Health shows what each machine last reported.',
-    leaves: [
-      { leaf: 'worker.harness', label: 'Preferred agent', kind: 'agent', note: 'The agent a machine tries first, when it is signed in to it.' },
-      { leaf: 'worker.harness_fallback', label: 'Then try, in order', kind: 'agents', note: 'The agents a machine tries next, top first.' },
     ],
   },
   {
@@ -145,34 +146,41 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
-    id: 'claude-profile',
+    id: 'single-turn',
     section: 'models',
-    label: 'Claude Code tiers',
-    note: 'The model and effort requested for each tier when Claude Code runs Myco’s work. A task may override its tier under Per-task overrides.',
-    leaves: profileFields('claude-code'),
-    harness: 'claude-code',
+    label: 'Quick jobs',
+    note: 'Session titles and summaries: one question, one answer, no tools.',
+    leaves: [
+      { leaf: 'single_turn.base_url', label: 'Address', kind: 'text', resettable: true, note: 'An OpenAI-compatible address, such as http://localhost:1234/v1 for LM Studio or https://openrouter.ai/api/v1. Session prompts, agent replies and short file excerpts are sent there. Plain http is allowed only on this machine or a private network.' },
+      { leaf: 'single_turn.model', label: 'Model', kind: 'text', resettable: true, note: 'The model name that address answers to.' },
+    ],
   },
   {
-    id: 'codex-profile',
+    id: 'workers',
     section: 'models',
-    label: 'Codex tiers',
-    note: 'Set a model for each tier a Codex worker may run. An unset model waits for configuration.',
-    leaves: profileFields('codex'),
-    harness: 'codex',
+    label: 'Agent',
+    note: 'The coding agent a runner uses for Myco’s work, when it is signed in to it.',
+    leaves: [
+      { leaf: 'worker.harness', label: 'Agent', kind: 'agent', note: 'The agent a runner tries first, when it is signed in to it.' },
+    ],
   },
+  ...PROFILE_GROUPS,
   {
-    id: 'opencode-profile',
+    id: 'agent-order',
     section: 'models',
-    label: 'OpenCode tiers',
-    note: 'Set a provider/model for every tier OpenCode may run. A tier without a model waits for configuration.',
-    leaves: profileFields('opencode'),
-    harness: 'opencode',
+    label: 'Agents tried next',
+    note: 'The agents a runner tries, top first, when it is not signed in to the chosen one.',
+    advanced: true,
+    leaves: [
+      { leaf: 'worker.harness_fallback', label: 'Then try, in order', kind: 'agents', note: 'The agents a runner tries next, top first.' },
+    ],
   },
   {
     id: 'embedding',
     section: 'models',
-    label: 'Search embeddings',
-    note: 'What makes search find things by meaning: the provider and model search reads every source with. Changing the model once search is built rebuilds it for every source in the background, and search keeps working meanwhile.',
+    label: 'Search by meaning',
+    note: 'The provider and model search reads every source with. Changing the model once search is built rebuilds it for every source in the background, and search keeps working meanwhile.',
+    advanced: true,
     leaves: [
       { leaf: 'embedding.provider', label: 'Embedding provider', kind: 'embedding-provider' },
       { leaf: 'embedding.model', label: 'Embedding model', kind: 'embedding-model' },
@@ -183,10 +191,11 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'advanced',
     section: 'models',
-    label: 'Per-task overrides',
+    label: 'Overrides for each task',
     note: 'Overrides for each task, as one document.',
+    advanced: true,
     leaves: [
-      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'An object keyed by task name, in braces. A model pin requires an agent in the same task override. “Title imported sessions” under Myco’s work writes its switch here.' },
+      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'An object keyed by task name, in braces. A model named for a task needs an agent named beside it. “Title imported sessions” under Myco’s work writes its switch here.' },
     ],
   },
   {

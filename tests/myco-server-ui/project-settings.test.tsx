@@ -415,8 +415,8 @@ describe('the repository', () => {
       [`${api}/repository`]: () => Response.json({ repository: REPOSITORY, appConfigured: false }) }));
     mount(`/p/${P}/settings`);
     const setup = await screen.findByTestId('repository-setup');
-    expect(setup.textContent).toContain('Settings → Sign-in and access → GitHub App shows each remaining step.');
-    expect(within(setup).getByRole('link', { name: 'Open the GitHub App setup →' }).getAttribute('href')).toBe('/settings/access#github-app');
+    expect(setup.textContent).toContain('Settings → Connections → GitHub shows each remaining step.');
+    expect(within(setup).getByRole('link', { name: 'Open the GitHub App setup →' }).getAttribute('href')).toBe('/settings/connections#github-app');
     const row = (await screen.findByRole('switch', { name: 'Code map' })).closest('[data-setting="capability.canopy"]') as HTMLElement;
     await waitFor(() => expect(row.textContent).toContain('On · Code tasks need repository access set up'));
     expect(within(row).queryByRole('link')).toBeNull();

@@ -8,7 +8,7 @@ Use a machine that can reach the Deployment and stay available long enough to fi
 
 Install a supported coding agent, such as Claude Code, Codex or OpenCode, and complete that agent's normal sign-in **on the runner machine**, under the account that will run the service. A login on your laptop does not sign in another machine. Check that the agent can actually run work with your subscription or provider access.
 
-In **Settings** → **Models and keys**, configure the model tiers for the agent you use. Codex and OpenCode need a model for each tier that tasks use. The **Legacy workers sign in with** field applies only to legacy workers. Registered runners use their per-agent choices on **Runners** instead.
+In **Settings** → **Models**, choose the agent and who pays for it; under **Advanced**, set the model for each job size. Codex and OpenCode need a model for each size that tasks use. The **Legacy workers sign in with** field applies only to legacy workers. Registered runners use their per-agent choices on **Runners** instead.
 
 In **Settings** → **Myco’s work**, **Preferred agent** and **Then try, in order** choose among the agents the runner offers. A listed model alone does not prove access or available quota.
 
@@ -40,7 +40,7 @@ An owner or administrator can **Pause** a runner to let its current task finish 
 
 ## Use a stored API key
 
-For a machine without a subscription, install the agent and register the runner. In **Settings** → **Models and keys**, store the provider key, then open **Runners** and choose **Use the server’s stored key** for that runner’s agent. Claude Code and OpenCode use the Anthropic slot; Codex uses its own Codex (OpenAI) slot. Cursor uses the Cursor slot with a Cursor API key, as [Cursor’s CLI authentication documentation](https://cursor.com/docs/cli/reference/authentication) specifies. An Anthropic key cannot sign the Cursor CLI in.
+For a machine without a subscription, install the agent and register the runner. In **Settings** → **Connections**, add the provider key, then in **Settings** → **Models** set **Paid by** to **A stored key** (or choose **Use the server’s stored key** for one runner on **Runners**). Claude Code and OpenCode use the Anthropic slot; Codex uses its own Codex (OpenAI) slot. Cursor uses the Cursor slot with a Cursor API key, as [Cursor’s CLI authentication documentation](https://cursor.com/docs/cli/reference/authentication) specifies. An Anthropic key cannot sign the Cursor CLI in.
 
 You can also request choices during registration:
 

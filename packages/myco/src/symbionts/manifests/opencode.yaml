@@ -134,7 +134,7 @@ runner:
     allowedEfforts: [minimal, low, medium, high, xhigh, max]
     # OpenRouter names a model that follows its family's newest with a leading `~`.
     modelPattern: '^[A-Za-z0-9][A-Za-z0-9._-]*/~?[A-Za-z0-9][A-Za-z0-9._:/-]{0,240}$'
-    modelHint: Use provider/model. An unset model holds runs at this tier.
+    modelHint: Name the provider and the model, as openrouter/qwen/qwen3. With no model set, work of this size waits.
     # OpenRouter serves a `~` model as whichever model it names at each request.
     providerAliasPattern: '^openrouter/~'
     # OpenRouter's `~anthropic/…-latest` models follow Anthropic's newest model of each family. Other providers

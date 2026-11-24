@@ -1,8 +1,8 @@
 /**
  * The admin pages and My machines, at every viewport (desktop, tablet, phone) in both modes.
  *
- * Signed in as the owner: People & machines, Settings (its first section and
- * Models and keys), a project's settings and Health. Signed in as a member who
+ * Signed in as the owner: People & machines, Settings (its first section,
+ * Models and Connections), a project's settings and Health. Signed in as a member who
  * is not an admin: the read-only People directory, My machines and its Rename
  * dialog. Other admin pages say they are for an admin.
  *
@@ -81,7 +81,7 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(tabs).toBeInViewport();
   await expect(tabs.getByRole('link', { name: 'Myco’s work' })).toHaveAttribute('aria-current', 'page');
-  // The five sections never wrap: on a phone the strip scrolls in its own box, and fades at the edge where more wait.
+  // The sections never wrap: on a phone the strip scrolls in its own box, and fades at the edge where more wait.
   await expectOneLine(page, 'nav[aria-label="Settings sections"] a');
   await expect(page.locator('[data-more-tabs]')).toHaveCount(viewport === 'phone' ? 1 : 0);
   await expect(page.getByRole('switch').first()).toBeVisible();
@@ -105,14 +105,23 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
   }
 }
 
+/** Opens one fold under Models' Advanced by its anchor. */
+async function openFold(page: Page, id: string): Promise<void> {
+  await page.locator(`[data-fold="${id}"] button[aria-expanded="false"]`).first().click();
+}
+
 async function expectModels(page: Page): Promise<void> {
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
-  await expect(tabs.getByRole('link', { name: 'Models and keys' })).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('heading', { name: 'Claude Code tiers' })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: /^Embedding\ provider(?::|$)/ })).toBeVisible();
+  await expect(tabs.getByRole('link', { name: 'Models', exact: true })).toHaveAttribute('aria-current', 'page');
+  for (const heading of ['Quick jobs', 'Work that needs an agent', 'Advanced']) await expect(page.getByRole('heading', { name: heading })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: /^Answered by(?::|$)/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check now' })).toBeVisible();
+  await expect(page.locator('[data-fold="task-tiers"]')).toBeVisible();
   await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
-  await expect(page.locator('#credentials')).toBeVisible();
+  await openFold(page, 'embedding');
+  await expect(page.getByRole('combobox', { name: /^Embedding\ provider(?::|$)/ })).toBeVisible();
   if (!onFixture()) return;
+  await openFold(page, 'advanced');
   const overrides = page.locator('[data-setting="agent.tasks"]');
   await expect(overrides).toContainText('cortex-instructions: this task no longer exists');
   await expect(overrides.getByRole('button', { name: 'Clear the stored value for Task overrides' })).toBeVisible();
@@ -124,6 +133,15 @@ async function expectModels(page: Page): Promise<void> {
   await expect(rebuild).toContainText('Rebuilding search with nomic-embed-text (768 dimensions)');
   await expect(rebuild).toContainText('Search keeps using bge-m3 until every source is done');
   await expect(rebuild.getByRole('button', { name: 'Cancel the switch' })).toBeVisible();
+}
+
+/** Connections: GitHub with its setup checklist open while a step remains, and the way to add another. */
+async function expectConnections(page: Page): Promise<void> {
+  await expectSection(page, 'Connections', 'Everything Myco is connected to');
+  await expect(page.locator('[data-connection="github"]')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add a connection' })).toBeVisible();
+  await expect(page.locator('[data-setup-headline]')).toHaveText('Repository access is not set up yet: 5 of 6 steps remain. Next: Set the App’s repository permissions.');
+  await expect(page.locator('[data-step="key"] code')).toHaveText(['myco server uninstall --target local', /^myco server github-app --target local --url http:\/\/127\.0\.0\.1:\d+ --private-key-file <downloaded\.pem>$/, 'myco server install --target local']);
 }
 
 /** A section of Settings past the first: its tab is the current one, and its first group is on the page. */
@@ -180,13 +198,10 @@ async function expectMyMachines(page: Page): Promise<void> {
 const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (page: Page, viewport: ViewportName) => Promise<void> }> = [
   { name: 'settings', path: () => '/settings', rendered: (page, viewport) => expectSettings(page, viewport) },
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
+  { name: 'settings-connections', path: () => '/settings/connections', rendered: (page) => expectConnections(page) },
   { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectCaptureSettings(page) },
   { name: 'settings-backups', path: () => '/settings/backups', rendered: (page) => expectSection(page, 'Backups', 'Store checks') },
-  { name: 'settings-access', path: () => '/settings/access', rendered: async (page) => {
-    await expectSection(page, 'Sign-in and access', 'Who can sign in');
-    await expect(page.locator('[data-setup-headline]')).toHaveText('Repository access is not set up yet: 5 of 6 steps remain. Next: Set the App’s repository permissions.');
-    await expect(page.locator('[data-step="key"] code')).toHaveText(['myco server uninstall --target local', /^myco server github-app --target local --url http:\/\/127\.0\.0\.1:\d+ --private-key-file <downloaded\.pem>$/, 'myco server install --target local']);
-  } },
+  { name: 'settings-access', path: () => '/settings/access', rendered: (page) => expectSection(page, 'Sign-in and access', 'Who can sign in') },
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
   { name: 'health', path: () => '/status/health', rendered: (page) => expectHealth(page) },
 ];

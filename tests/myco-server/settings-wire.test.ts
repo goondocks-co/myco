@@ -19,7 +19,7 @@ import type { TitlingBackfillProgress } from '../../packages/myco-server/src/cor
 import type { RepositoryConnection } from '../../packages/myco-server/src/core/repositories.ts';
 import type { ReleaseCheck, ReleaseProvenanceView } from '../../packages/myco-server/src/core/release-provenance.ts';
 import type { SettingsLeafRow, TaskTierRow } from '../../packages/myco-server/src/api/settings.ts';
-import type { EmbeddingChoices } from '../../packages/myco-shared/src/settings-contract.ts';
+import type { EmbeddingChoices, QuickJobs } from '../../packages/myco-shared/src/settings-contract.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -40,7 +40,7 @@ const SAME: [
 ] = [true, true, true, true, true];
 
 const READS: [
-  Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices }, Settings.SettingsAnswer>,
+  Reads<{ persisted: true; leaves: ServerLeaf[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices; quickJobs: QuickJobs }, Settings.SettingsAnswer>,
   Reads<{ secrets: ServerSecret[] }, Settings.SecretsAnswer>,
   Reads<TitlingBackfillProgress, Settings.TitlingBackfillProgress>,
   Reads<Awaited<ReturnType<typeof projectSettingsEditor>>, Project.CapabilitiesAnswer>,

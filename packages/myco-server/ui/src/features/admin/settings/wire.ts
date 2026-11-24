@@ -8,8 +8,9 @@
  * `tests/myco-server/settings-wire.test.ts` holds each to the server's own
  * under `typecheck:tests`.
  */
-import type { EffectiveSetting, EmbeddingChoices, IdleCloseDeadlines } from '@goondocks/myco-shared/settings-contract';
+import type { EffectiveSetting, EmbeddingChoices, IdleCloseDeadlines, QuickJobs } from '@goondocks/myco-shared/settings-contract';
 import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';
+import type { HarnessCredentialKind } from '@goondocks/myco-shared/harness-providers';
 
 /** `GET /api/settings`: one leaf, what is stored for it, and the effective answer of the policy that acts on it. */
 export type LeafRow = {
@@ -36,6 +37,8 @@ export interface SettingsAnswer {
   taskTiers: TaskTierRow[];
   /** Null where the server could not read them. */
   embedding: EmbeddingChoices | null;
+  /** Who answers quick jobs now, and the answerers this server offers. */
+  quickJobs: QuickJobs;
   /** The models each worker last listed for each harness it offers, newest received first. */
   models?: SettingsModelCatalog[];
 }
@@ -56,6 +59,8 @@ export interface SecretRow {
   readable: boolean;
   /** Its first and last characters only, or null when nothing is stored. */
   maskedValue: string | null;
+  /** Whether the stored value is a subscription token or an API key; null when nothing readable is stored. */
+  kind: HarnessCredentialKind | null;
   updatedAt: number | null;
   updatedBy: string | null;
 }

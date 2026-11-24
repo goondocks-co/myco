@@ -8,7 +8,7 @@ import { providerLabel } from '../../../lib/providers';
 import { SettingRow } from '../AdminFrame';
 import { StoredValue } from '../StoredValue';
 import { useMemberNames } from '../members';
-import type { LeafField } from './catalogue';
+import { SIZE_WORDS, type LeafField } from './catalogue';
 import { effectiveWords } from './LeafControl';
 import type { LeafRow, SettingsModelCatalog } from './wire';
 import { agoWords } from '@goondocks/myco-shared/time-words';
@@ -158,7 +158,7 @@ function ListedModelRow({ field, row, listed, onType }: { field: LeafField; row:
             </div>
             {row?.configured === true && !locked && <Button size="sm" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button>}
           </div>
-          {row?.configured && !locked && <p className="t-meta text-muted">Clearing restores this tier’s default model.</p>}
+          {row?.configured && !locked && <p className="t-meta text-muted">Clearing restores this size’s default model.</p>}
           {!locked && (
             <div className="flex flex-wrap gap-s2">
               {known?.upgrade !== undefined && (
@@ -193,12 +193,12 @@ export function ModelPresets({ harness }: { harness: string }) {
       try {
         await actions.setLeaf.mutateAsync({ leaf: `agent.reasoning_map.${harness}.${tier}`, value: preset.models[tier] });
       } catch (failure) {
-        setOutcome({ preset: preset.id, words: `The ${tier} tier was not set: ${settingsRefusalText(failure)}`, refused: true });
+        setOutcome({ preset: preset.id, words: `The ${SIZE_WORDS[tier]?.toLowerCase() ?? tier} jobs model was not set: ${settingsRefusalText(failure)}`, refused: true });
         setApplying(null);
         return;
       }
     }
-    setOutcome({ preset: preset.id, words: 'Every tier now uses these models.', refused: false });
+    setOutcome({ preset: preset.id, words: 'Every size now uses these models.', refused: false });
     setApplying(null);
   };
 
@@ -218,7 +218,7 @@ export function ModelPresets({ harness }: { harness: string }) {
               <Button size="sm" disabled={applying !== null} pending={applying === preset.id} onClick={() => void apply(preset)}>Use these models</Button>
               <Disclosure summary="Model IDs">
                 <ul className="t-mono t-small break-all text-muted">
-                  {REASONING_TIERS.map((tier) => <li key={tier}>{`${capitalized(tier)}: ${preset.models[tier]}`}</li>)}
+                  {REASONING_TIERS.map((tier) => <li key={tier}>{`${SIZE_WORDS[tier] ?? capitalized(tier)}: ${preset.models[tier]}`}</li>)}
                 </ul>
               </Disclosure>
             </div>

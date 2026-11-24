@@ -242,6 +242,25 @@ export async function setRunnerCredentialChoice(db: RelationalStore, wrappingKey
   if (before === null || before.state === 'removed') return null;
   const choices = await runnerCredentialChoices(db, runnerId);
   const changes = await runnerSignInStatements(db, wrappingKey, actorId, runnerId, { [agent]: choice }, choices, before.revision, now);
-  if (!await commitSignInChanges(db, { actor: actorId, runner: runnerId, revision: before.revision }, changes)) throw new Error('runner sign-in change refused');
+  if (!await commitSignInChanges(db, [{ actor: actorId, runner: runnerId, revision: before.revision }], changes)) throw new Error('runner sign-in change refused');
   return runnerCredentialChoices(db, runnerId);
+}
+
+/**
+ * One agent's sign-in source set on every runner named, in one commit guarded by each runner's revision: every runner
+ * changes or none does. A stored source with no usable key refuses the whole change before anything is written.
+ * Answers false when a runner moved since it was read.
+ */
+export async function setAgentCredentialChoice(db: RelationalStore, wrappingKey: SecretWrappingKey, actorId: string, runnerIds: readonly string[],
+  agent: string, choice: RunnerCredentialChoice, now: number): Promise<boolean> {
+  const guards: { actor: string; runner: string; revision: number }[] = [];
+  const changes: Bound[] = [];
+  for (const runnerId of runnerIds) {
+    const before = await readRunner(db, runnerId);
+    if (before === null || before.state === 'removed') continue;
+    const statements = await runnerSignInStatements(db, wrappingKey, actorId, runnerId, { [agent]: choice }, await runnerCredentialChoices(db, runnerId), before.revision, now);
+    guards.push({ actor: actorId, runner: runnerId, revision: before.revision });
+    changes.push(...statements);
+  }
+  return commitSignInChanges(db, guards, changes);
 }

@@ -22,6 +22,8 @@ export interface KeyDescription {
   configured: boolean;
   readable: boolean;
   maskedValue: string | null;
+  /** Whether the stored value is a subscription token or an API key; null when nothing readable is stored. */
+  kind: 'subscription' | 'api-key' | null;
   updatedAt: number | null;
   updatedBy: string | null;
 }

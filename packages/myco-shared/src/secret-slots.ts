@@ -28,9 +28,9 @@ export interface SecretSlot {
 export const SECRET_SLOTS: readonly SecretSlot[] = [
   { name: 'anthropic', label: 'Anthropic', alsoUsedFor: null },
   ...RUNNER_OWN_SLOTS.map((slot): SecretSlot => ({ name: slot.name, label: slot.label, alsoUsedFor: null })),
-  { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
-  { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
-  { name: 'single-turn', label: 'Single-turn endpoint', alsoUsedFor: 'direct single-turn model calls to the configured base URL' },
+  { name: 'openai', label: 'OpenAI', alsoUsedFor: 'search by meaning, when search uses OpenAI' },
+  { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'search by meaning, when search uses OpenRouter' },
+  { name: 'single-turn', label: 'Own model address', alsoUsedFor: 'quick jobs sent to your own model address' },
 ];
 
 export const SECRET_SLOT_NAMES: readonly SecretSlotName[] = SECRET_SLOTS.map((slot) => slot.name);
@@ -43,14 +43,14 @@ export function harnessesReading(slot: SecretSlotName): string[] {
   return Object.entries(HARNESS_CREDENTIALS).filter(([, declared]) => declared.slot === slot).map(([id]) => id);
 }
 
-/** What a stored slot does when explicitly chosen for a run, plus its other declared uses. */
+/** What a stored slot is for, in one sentence: the agents that use it when a stored key is chosen for their work, and its other declared uses. */
 export function slotUse(slot: SecretSlot, label: (harness: string) => string): string {
   const harnesses = harnessesReading(slot.name).map(label);
   const runs = harnesses.length === 0 ? null
-    : `${list(harnesses)} ${harnesses.length === 1 ? 'uses' : 'use'} this key only when explicitly chosen for Myco’s work. A runner defaults to its machine’s sign-in; choosing a stored key holds work if the key is unavailable`;
-  const other = slot.alsoUsedFor === null ? null : `${runs === null ? 'Used' : 'Also used'} for ${slot.alsoUsedFor}`;
+    : `${list(harnesses)} ${harnesses.length === 1 ? 'uses' : 'use'} it for Myco’s work when you choose a stored key instead of each runner’s own sign-in`;
+  const other = slot.alsoUsedFor === null ? null : `${runs === null ? 'Used' : 'also used'} for ${slot.alsoUsedFor}`;
   const parts = [runs, other].filter((part): part is string => part !== null);
-  return parts.length === 0 ? 'Nothing on this server reads it.' : `${parts.join('. ')}.`;
+  return parts.length === 0 ? 'Nothing on this server reads it.' : `${parts.join('; ')}.`;
 }
 
 const list = (names: readonly string[]): string =>

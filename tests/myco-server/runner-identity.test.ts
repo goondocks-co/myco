@@ -1389,6 +1389,29 @@ describe('runner agent sign-in choice', () => {
     } finally { r.e.sqlite.close(); }
   });
 
+  it('sets who pays for one agent on every runner that offers it installed, all or nothing, and reads those runners back', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      const [mini, win, other] = [await r.register('mini'), await r.register('win'), await r.register('other')];
+      const report = (token: string, harnesses: unknown[]) => r.json(r.asRunner(token, '/worker/claim', { harnesses, capabilities: WORKER_CAPABILITIES }));
+      await report(mini.token, OFFERED);
+      await report(win.token, OFFERED);
+      await report(other.token, [offeredHarness('codex'), { ...offeredHarness('claude-code'), installed: false }]);
+      const refused = await r.asSession('/api/runners/sign-in', { agent: 'claude-code', choice: 'stored' });
+      expect({ status: refused.status, body: await refused.json() }).toEqual({ status: 409, body: { error: 'credential_unavailable' } });
+      expect(r.row("SELECT COUNT(*) AS n FROM runners WHERE credential_choices <> '{}'")).toEqual({ n: 0 });
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey).put('anthropic', 'sk-ant-api-fixture-runner-only', OWNER, r.now());
+      const set = await r.asSession('/api/runners/sign-in', { agent: 'claude-code', choice: 'stored' });
+      expect(set.status).toBe(200);
+      const answer = await set.json() as { agents: Array<{ agent: string; storedUsable: boolean; runners: Array<{ name: string; choice: string }> }> };
+      expect(answer.agents.find((entry) => entry.agent === 'claude-code')).toMatchObject({ storedUsable: true, runners: [{ name: 'mini', choice: 'stored' }, { name: 'win', choice: 'stored' }] });
+      expect([mini, win, other].map(({ runnerId }) => r.row('SELECT credential_choices AS c FROM runners WHERE id = ?', runnerId)?.c))
+        .toEqual(['{"claude-code":"stored"}', '{"claude-code":"stored"}', '{}']);
+      expect((await r.asSession('/api/runners/sign-in', { agent: 'claude-code', choice: 'own' }, MEMBER_SUB)).status).toBe(403);
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('holds stored choices with missing, incompatible or unreadable keys without falling back; fleet agrees', async () => {
     for (const state of ['missing', 'incompatible', 'unreadable'] as const) {
       const r = rig();

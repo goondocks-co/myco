@@ -10,7 +10,7 @@ import { handleSetup } from './api/setup.js';
 import { handleLegacyHistory } from './api/legacy-history.js';
 import { LEGACY_HISTORY_PATH, PROJECT_BY_REMOTE_PATH } from '@goondocks/myco-shared/member-protocol';
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
-import { handleRunnerCredentialChoice, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleRemovedRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
+import { handleAgentPayers, handleAgentSignIn, handleAgentWorkCheck, handleRunnerCredentialChoice, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleRemovedRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { handleRunnerRuns } from './api/runner-runs.js';
@@ -47,7 +47,7 @@ import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-b
 import { handleRereadJob, handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
-  handleMemberSettings, handleRepairTaskDocument, handleResetSetting, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
+  handleMemberSettings, handleRepairTaskDocument, handleResetSetting, handleClearQuickJobsAddress, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
 } from './api/settings.js';
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups,
@@ -171,6 +171,9 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('legacy-worker', 'read', 'deployment', ['member']), method: 'GET', path: '/api/workers/legacy', auth: 'session', authority: 'member', handler: handleLegacyWorkers },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners', auth: 'session', authority: 'member', handler: handleListRunners },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners/removed', auth: 'session', authority: 'member', handler: handleRemovedRunners },
+  { authorization: httpPolicy('runner', 'admin', 'deployment'), method: 'GET', path: '/api/runners/check', auth: 'session', authority: 'admin', handler: handleAgentWorkCheck },
+  { authorization: httpPolicy('runner', 'admin', 'deployment'), method: 'GET', path: '/api/runners/agents', auth: 'session', authority: 'admin', handler: handleAgentPayers },
+  { authorization: httpPolicy('runner', 'admin', 'deployment'), method: 'POST', path: '/api/runners/sign-in', auth: 'session', authority: 'admin', handler: handleAgentSignIn },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners/{runnerId}/runs',
     pattern: /^\/api\/runners\/(?<runnerId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'session', authority: 'member', handler: handleRunnerRuns },
   { authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: '/api/runners/{runnerId}/update',
@@ -367,6 +370,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/settings/agent.tasks/repair', auth: 'session', authority: 'admin', handler: handleRepairTaskDocument },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PATCH', path: '/api/settings/agent.tasks', auth: 'session', authority: 'admin', handler: handleSetTaskTier },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PUT', path: '/api/embedding', auth: 'session', authority: 'admin', handler: handleSetEmbedding },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'DELETE', path: '/api/quick-jobs/address', auth: 'session', authority: 'admin', handler: handleClearQuickJobsAddress },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'GET', path: '/api/embedding/switch', auth: 'session', authority: 'member', handler: handleEmbeddingSwitch },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'GET', path: '/api/embedding/passed-over', auth: 'session', authority: 'member', handler: handlePassedOverSources },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/embedding/switch', auth: 'session', authority: 'admin', handler: handleStartEmbeddingSwitch },

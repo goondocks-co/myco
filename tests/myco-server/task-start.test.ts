@@ -15,6 +15,7 @@ import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import type { TaskStartPreview } from '@myco-server-worker/read/task-start.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { credentialUnavailable, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';
@@ -60,6 +61,24 @@ async function rig(settings: Record<string, unknown> = {}) {
   const claim = (harnesses: string[], capabilities: string[] = [...capabilitiesRequiredBy('vault-seed')]) => claimNextRun(f.serverEnv, { principal: legacyWorker(token.tokenId, 'fixture'), harnesses: harnesses.map(offeredHarness), capabilities, now: Date.now() });
   return { f, env, send, preview, heard, claim, second };
 }
+
+describe('checking whether agent work could start now', () => {
+  it('names the machine and agent that would take learning from sessions, or what holds it, to an admin only, and starts nothing', async () => {
+    const r = await rig({ 'worker.harness': 'claude-code' });
+    await completeBudgetMigration(r.f.db, Date.now());
+    expect(await r.send('GET', '/api/runners/check')).toMatchObject({ status: 200, body: { task: 'extract-curate', reason: 'no_runner', takers: [] } });
+    await r.heard(['claude-code']);
+    const ready = await r.send('GET', '/api/runners/check');
+    expect(ready.body).toMatchObject({ reason: 'ready', takers: [{ agent: 'claude-code', runners: [{ name: null }] }] });
+    expect((await r.send('GET', '/api/runners/check', MEMBER_SUB)).status).toBe(403);
+    expect(r.f.sqlite.query('SELECT COUNT(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
+    // A day's spending that leaves no room for the next automatic run is the one thing in the way.
+    r.f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.budget.daily_usd','1',1,'owner')");
+    r.f.sqlite.run("INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'spent', 'user', 'title-summary', 'completed', ?)", [Date.now() - 60_000]);
+    r.f.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source) VALUES('proj_1','spent','spent-1','fixture',?,1,'actual')", [Date.now() - 60_000]);
+    expect((await r.send('GET', '/api/runners/check')).body).toMatchObject({ reason: 'budget', takers: [{ agent: 'claude-code' }] });
+  });
+});
 
 describe('previewing a task started by hand', () => {
   it('names the agent, tier, model and effort a claim then runs it under', async () => {

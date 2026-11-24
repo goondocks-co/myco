@@ -95,8 +95,11 @@ const UNBUILT_CHOICES = {
 /** The settings the page offers, and those it keeps under Older settings, as the server's flags decide. */
 const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
 const RETIRED_FIELDS = [...RETIRED_LEAVES].map((leaf) => ({ leaf }));
+/** Who answers quick jobs on a hosted server that stores no address. */
+const HOSTED_QUICK_JOBS = { answeredBy: 'included', offered: ['included', 'address'] };
 const leaves = (over: Record<string, Partial<{ value: unknown; revision: string; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
   embedding: HOSTED_CHOICES,
+  quickJobs: HOSTED_QUICK_JOBS,
   taskTiers: OUTCOME_TASKS.map((task) => ({ task, name: taskName(task), tier: TASK_TIERS[task], source: 'task' })),
   leaves: DEPLOYMENT_LEAVES.map((leaf) => {
     const f = { leaf };
@@ -105,11 +108,19 @@ const leaves = (over: Record<string, Partial<{ value: unknown; revision: string;
   }),
 });
 const secrets = (anthropicConfigured: boolean) => ({ secrets: [
-  { name: 'anthropic', configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? ADA : null },
-  { name: 'codex', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'openai', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
-  { name: 'openrouter', configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
+  { name: 'anthropic', configured: anthropicConfigured, readable: true, maskedValue: anthropicConfigured ? 's…c' : null, kind: anthropicConfigured ? 'subscription' : null, updatedAt: anthropicConfigured ? NOW : null, updatedBy: anthropicConfigured ? ADA : null },
+  { name: 'codex', configured: false, readable: true, maskedValue: null, kind: null, updatedAt: null, updatedBy: null },
+  { name: 'openai', configured: false, readable: true, maskedValue: null, kind: null, updatedAt: null, updatedBy: null },
+  { name: 'openrouter', configured: false, readable: true, maskedValue: null, kind: null, updatedAt: null, updatedBy: null },
 ] });
+type Choice = 'own' | 'stored' | null;
+/** `GET /api/runners/agents`: each agent offered, with the runners offering it and what each pays with, and the agent each uses today. */
+const payers = (agents: Array<{ agent: string; storedUsable?: boolean; runners: Array<[id: string, name: string, choice: Choice]> }>, today: Array<[id: string, name: string, agent: string | null]> = []) => ({
+  agents: agents.map(({ agent, storedUsable = false, runners }) => ({ agent, storedUsable, runners: runners.map(([id, name, choice]) => ({ id, name, choice })) })),
+  today: today.map(([id, name, agent]) => ({ id, name, agent })),
+});
+/** One runner offering the agents whose model sizes Models lists, each paid by its own sign-in. */
+const ONE_RUNNER = payers(['claude-code', 'codex', 'opencode'].map((agent) => ({ agent, runners: [['rn_mini', 'homelab-mini', 'own'] as [string, string, Choice]] })), [['rn_mini', 'homelab-mini', 'claude-code']]);
 const TITLING = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: true, building: false, remaining: 12, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
 
 interface Sent { method: string; path: string; body: unknown; headers: Record<string, string> }
@@ -143,6 +154,8 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/api/settings': () => Response.json(leaves({ 'cortex.digest.inject_on_session_start': { value: true, updatedBy: ADA, updatedAt: NOW - 2 * 3_600_000 } })),
   '/api/secrets': () => Response.json(secrets(true)),
   '/api/titling-backfill': () => Response.json(TITLING),
+  '/api/runners/agents': () => Response.json(ONE_RUNNER),
+  '/api/telemetry/keys': () => Response.json({ endpoint: 'https://myco.example', keys: [] }),
   ...extra,
 });
 
@@ -179,9 +192,24 @@ async function section(label: string) {
   fireEvent.click(within(await sectionsNav()).getByRole('link', { name: label }));
   await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Settings sections' })).getByRole('link', { name: label }).getAttribute('aria-current')).toBe('page'));
 }
-const group = (label: string) => screen.findByRole('group', { name: label });
+/** A settings group's card by its label, opening its fold under Advanced first where it is folded. */
+const group = (label: string) => waitFor(() => {
+  const open = screen.queryByRole('group', { name: label });
+  if (open !== null) return open;
+  const fold = screen.queryAllByRole('button').find((button) => button.getAttribute('aria-expanded') === 'false' && button.textContent?.startsWith(label));
+  if (fold !== undefined) fireEvent.click(fold);
+  throw new Error(`${label} is not open yet`);
+});
+/** One row of Connections by its name. */
+const connection = (label: string): HTMLElement => {
+  const row = screen.getAllByText(label).map((element) => element.closest<HTMLElement>('[data-connection]')).find((element) => element !== null);
+  if (row === undefined || row === null) throw new Error(`${label} is not a connection on the page`);
+  return row;
+};
 const statusOf = (leaf: string) => document.querySelector(`[data-setting-status="${leaf}"]`)?.textContent;
 const SECTION_LABEL = Object.fromEntries(SETTINGS_SECTIONS.map((s) => [s.id, s.label])) as Record<string, string>;
+/** The groups Models shows through its own steps rather than as a card of fields: quick jobs and the agent. */
+const OWN_GROUPS = groupsOf('models').filter((g) => g.advanced !== true);
 
 describe('Settings, in five sections', () => {
   it('names tasks in user words and offers a repair for a stored invalid tier', async () => {
@@ -195,17 +223,17 @@ describe('Settings, in five sections', () => {
       '/api/settings/agent.tasks': () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
-    const editor = within(await group('Task tiers'));
-    const labels = OUTCOME_TASKS.map((task) => editor.getByRole('combobox', { name: new RegExp(`^${taskName(task)} tier(?::|$)`) }));
+    const editor = within(await group('Size of each job'));
+    const labels = OUTCOME_TASKS.map((task) => editor.getByRole('combobox', { name: new RegExp(`^${taskName(task)} size(?::|$)`) }));
     expect(labels).toHaveLength(OUTCOME_TASKS.length);
     expect(editor.getByText('Curate overlapping spores')).toBeTruthy();
     expect(editor.getByText('Curate stale plans')).toBeTruthy();
     expect(editor.queryByText('A task')).toBeNull();
     expect(statusOf('task-tier-title-summary')).toContain('Correct the tier in Settings or reset the task tier.');
-    fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions tier' }));
+    fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions size' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: null } });
-    expect(groupsOf('models')[0]?.id).toBe('claude-profile');
+    expect(groupsOf('models').filter((g) => g.advanced)[0]?.id).toBe('claude-profile');
     expect(LEAF_GROUPS.findIndex((group) => group.id === 'claude-profile')).toBeLessThan(LEAF_GROUPS.findIndex((group) => group.id === 'codex-profile'));
   });
 
@@ -218,8 +246,8 @@ describe('Settings, in five sections', () => {
       '/api/settings/agent.tasks': () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
-    const editor = within(await group('Task tiers'));
-    expect(editor.queryByRole('button', { name: 'Reset Title and summarize sessions tier' })).toBeNull();
+    const editor = within(await group('Size of each job'));
+    expect(editor.queryByRole('button', { name: 'Reset Title and summarize sessions size' })).toBeNull();
     fireEvent.click(editor.getByRole('button', { name: 'Reset task overrides' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: '/api/settings/agent.tasks' });
@@ -236,9 +264,9 @@ describe('Settings, in five sections', () => {
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
-    await group('Codex tiers');
+    await group('Codex model sizes');
     expect(statusOf(leaf)).toContain('stored value does not apply');
-    fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for High tier effort' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Large jobs effort' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: `/api/settings/${leaf}` });
   });
@@ -262,11 +290,12 @@ describe('Settings, in five sections', () => {
     expect(spores.getAttribute('aria-checked')).toBe('true');
     for (const [label, leaf, words] of [
       ['Myco’s work', 'cortex.spores.inject_on_prompt_submit', 'This setting is on'],
-      ['Models and keys', 'agent.reasoning_map.claude-code.low', 'Myco uses haiku'],
+      ['Models', 'agent.reasoning_map.claude-code.low', 'Myco uses haiku'],
       ['Capture and retention', 'import.window_days', 'When active, Myco uses 7 days'],
       ['Backups', 'backup.auto_interval_hours', 'Myco uses 6 hours'],
     ]) {
       await section(label!);
+      if (label === 'Models') await group('Claude Code model sizes');
       if (label === 'Backups') expect(screen.getByText(/Each hosted backup pauses database requests/).textContent).toContain('larger databases take longer');
       await waitFor(() => expect(statusOf(leaf!)).toContain(words!));
       const status = document.querySelector(`[data-setting-status="${leaf}"]`)!;
@@ -289,7 +318,7 @@ describe('Settings, in five sections', () => {
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
-    const claude = within(await group('Claude Code tiers'));
+    const claude = within(await group('Claude Code model sizes'));
     expect(claude.getByLabelText('Legacy workers sign in with')).toBeTruthy();
     expect(statusOf(leaf)).toBe('Myco uses The server’s stored key (server default).');
     fireEvent.click(claude.getByLabelText('Legacy workers sign in with'));
@@ -322,27 +351,27 @@ describe('Settings, in five sections', () => {
       },
     }));
     mount('/settings/models');
-    const editor = within(await group('Task tiers'));
-    expect(editor.getByText('Task override')).toBeTruthy();
+    const editor = within(await group('Size of each job'));
+    expect(editor.getByText('Changed for this task')).toBeTruthy();
     document = {
       'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
       'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
     };
-    await pick('Title and summarize sessions tier', 'High');
+    await pick('Title and summarize sessions size', 'Large');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: 'high' } });
     expect(document).toEqual({
       'title-summary': { reasoningLevel: 'high', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
       'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
     });
-    fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions tier' }));
+    fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions size' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: null } });
     expect(document).toEqual({
       'title-summary': { schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
       'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
     });
-    await waitFor(() => expect(statusOf('task-tier-title-summary')).toBe('Task default'));
+    await waitFor(() => expect(statusOf('task-tier-title-summary')).toBe('Declared size'));
   });
 
   it('edits a tier model and resets that leaf alone', async () => {
@@ -352,25 +381,25 @@ describe('Settings, in five sections', () => {
       [`/api/settings/${model}`]: () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
-    const tiers = within(await group('Claude Code tiers'));
-    const input = tiers.getByLabelText('Low tier model');
+    const tiers = within(await group('Claude Code model sizes'));
+    const input = tiers.getByLabelText('Small jobs model');
     expect((input as HTMLInputElement).value).toBe('sonnet');
     fireEvent.change(input, { target: { value: 'haiku' } });
     fireEvent.blur(input);
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: `/api/settings/${model}`, body: { value: 'haiku' } });
-    fireEvent.click(tiers.getByRole('button', { name: 'Clear the stored value for Low tier model' }));
+    fireEvent.click(tiers.getByRole('button', { name: 'Clear the stored value for Small jobs model' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'DELETE', path: `/api/settings/${model}` });
   });
 
-  it('lists the five sections as one strip of tabs, each at its own address, the first current on /settings', async () => {
+  it('lists the sections as one strip of tabs, each at its own address, the first current on /settings', async () => {
     server(base());
     mount('/settings');
     const nav = await sectionsNav();
     const links = within(nav).getAllByRole('link');
-    expect(links.map((a) => a.textContent)).toEqual(['Myco’s work', 'Models and keys', 'Capture and retention', 'Backups', 'Sign-in and access']);
-    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access']);
+    expect(links.map((a) => a.textContent)).toEqual(['Myco’s work', 'Models', 'Connections', 'Capture and retention', 'Backups', 'Sign-in and access']);
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/settings', '/settings/models', '/settings/connections', '/settings/capture', '/settings/backups', '/settings/access']);
     expect(links[0]!.getAttribute('aria-current')).toBe('page');
     // The strip never wraps: it scrolls in its own box.
     expect(nav.className).toContain('overflow-x-auto');
@@ -385,7 +414,7 @@ describe('Settings, in five sections', () => {
     mount('/settings');
     let controls = 0;
     for (const s of SETTINGS_SECTIONS) {
-      const groups = groupsOf(s.id);
+      const groups = groupsOf(s.id).filter((g) => !OWN_GROUPS.includes(g));
       if (groups.length === 0) continue;
       await section(s.label);
       for (const g of groups) {
@@ -400,7 +429,7 @@ describe('Settings, in five sections', () => {
         }
       }
     }
-    expect(controls).toBe(LIVE_FIELDS.length);
+    expect(controls).toBe(LIVE_FIELDS.filter((f) => !OWN_GROUPS.some((g) => g.leaves.includes(f))).length);
     await section('Myco’s work');
     await group('What sessions receive');
     // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
@@ -412,10 +441,11 @@ describe('Settings, in five sections', () => {
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
-  it('places every group in exactly one section, and leaves Sign-in and access to pointers', () => {
+  it('places every group in exactly one section, and leaves Connections and Sign-in and access to their own rows', () => {
     expect(new Set(LEAF_GROUPS.map((g) => g.id)).size).toBe(LEAF_GROUPS.length);
     for (const g of LEAF_GROUPS) expect(SECTION_LABEL[g.section]).toBeDefined();
     expect(groupsOf('access')).toEqual([]);
+    expect(groupsOf('connections')).toEqual([]);
     for (const id of ['work', 'models', 'capture', 'backups'] as const) expect(groupsOf(id).length).toBeGreaterThan(0);
   });
 
@@ -440,7 +470,7 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json({ ...leaves(), embedding: UNBUILT_CHOICES }),
       '/api/embedding': () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     await screen.findByLabelText('Embedding provider');
     await waitFor(() => expect(statusOf('embedding.provider')).toBe('Search uses Cloudflare Workers AI with bge-m3 (1024 dimensions).'));
     expect(screen.queryByLabelText('Embedding endpoint')).toBeNull();
@@ -470,7 +500,7 @@ describe('Settings, in five sections', () => {
       return Response.json({ applied: true, estimate: { provider: 'openrouter', model: 'baai/bge-m3', sources: 4_812, estimatedTokens: 2_400_000, estimatedUsd: 0.024,
         passedOver: { count: 1, sources: [{ projectId: P_X, projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true }] }, progress: 'ready' } });
     }) as typeof fetch;
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     await waitFor(() => expect(statusOf('embedding.model')).toContain('Choosing another model offers to switch search to it'));
     await pick('Embedding provider', 'OpenRouter');
     await pick('Embedding model', 'baai/bge-m3 · 1024 dimensions · rebuilds search');
@@ -499,7 +529,7 @@ describe('Settings, in five sections', () => {
     const { sent } = server(base({
       '/api/embedding/switch/estimate': () => Response.json({ applied: false, reason: 'invalid_value', leaf: 'embedding.model', detail: 'No OpenRouter key is stored. Add one under Provider keys' }, { status: 400 }),
     }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     await waitFor(() => expect(statusOf('embedding.model')).toContain('Choosing another model offers to switch search to it'));
     await pick('Embedding provider', 'OpenRouter');
     await pick('Embedding model', 'baai/bge-m3 · 1024 dimensions · rebuilds search');
@@ -530,7 +560,7 @@ describe('Settings, in five sections', () => {
       stalled: 'Rebuilding search has not moved for 42 minutes: the last embedding run failed (“the provider timed out”).',
       passedOver: { count: 23, sources: [{ projectId: P_X, projectName: 'Project X', type: 'session', title: 'A very long session', reason: 'the model refused its text with HTTP 400', anyModel: false }] } };
     server(base({ '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: waiting } }) }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     const panel = await waitFor(() => found('[data-embedding-waiting]'));
     expect(panel.textContent).toContain('Waiting');
     expect(panel.textContent).toMatch(/had a problem \(HTTP 503\)\. Myco tries again shortly\. Next try at \d{2}:\d{2}\./);
@@ -547,7 +577,7 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: BUILDING } }),
       [`/api/embedding/switch/${BUILDING.id}`]: () => Response.json({ applied: true, switch: null }),
     }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     const panel = await waitFor(() => found('[data-embedding-switch="building"]'));
     expect(panel.textContent).toContain('Rebuilding search with bge-base-en-v1.5 (768 dimensions): 120 of 400 sources done (30%).');
     expect(panel.textContent).toContain('Search keeps using bge-m3 until every source is done, then moves to bge-base-en-v1.5 on its own.');
@@ -566,7 +596,7 @@ describe('Settings, in five sections', () => {
     const counting = { ...BUILDING, progress: 'building' as const, done: 40, total: 40,
       passedOver: { count: 2, sources: [{ projectId: P_X, projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true }] } };
     server(base({ '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: counting } }) }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     const panel = await waitFor(() => found('[data-embedding-switch="building"]'));
     expect(panel.textContent).toContain('Rebuilding search with bge-base-en-v1.5 (768 dimensions): 40 sources done so far, still counting the rest.');
     expect(panel.textContent).not.toContain('of 40');
@@ -579,7 +609,7 @@ describe('Settings, in five sections', () => {
 
   it('shows the exact share on a meter once a switch\'s sources are all counted', async () => {
     server(base({ '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: { ...BUILDING, progress: 'ready', done: 40, total: 60 } } }) }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     const panel = await waitFor(() => found('[data-embedding-switch="building"]'));
     const meter = within(panel as HTMLElement).getByRole('meter');
     expect([meter.getAttribute('aria-valuenow'), meter.getAttribute('aria-valuemax'), meter.getAttribute('aria-valuetext')]).toEqual(['40', '60', '40 of 60']);
@@ -592,7 +622,7 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: paused } }),
       [`/api/embedding/switch/${BUILDING.id}/resume`]: () => Response.json({ applied: true, switch: BUILDING }),
     }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     const panel = await waitFor(() => found('[data-embedding-switch="paused"]'));
     expect(panel.textContent).toContain('Rebuilding search with bge-base-en-v1.5 (768 dimensions) is paused at 120 of 400 sources done (30%).');
     expect(panel.textContent).toContain('HTTP 401');
@@ -608,7 +638,7 @@ describe('Settings, in five sections', () => {
         ? { ...row, configured: true, value: 'ollama', stored: 'ollama', state: 'not-applicable', reason: 'Ollama is not offered on Cloudflare; this server offers Cloudflare Workers AI, OpenRouter. Reset the provider to use Cloudflare Workers AI.' }
         : row) }),
     }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     await waitFor(() => expect(statusOf('embedding.provider')).toContain('Reset the provider'));
     expect(screen.getByRole('button', { name: 'Clear the stored value for Embedding provider' })).toBeTruthy();
     expect(statusOf('embedding.provider')).toContain('Search uses Cloudflare Workers AI with bge-m3');
@@ -621,7 +651,7 @@ describe('Settings, in five sections', () => {
         ? { ...row, configured: true, value: '', stored: '', storedApplies: false, state: 'invalid', reason: 'The blank stored model does not apply. Clear the stored value.' }
         : row) }),
     }));
-    mount('/settings/models');
+    mount('/settings/models#embedding');
     await waitFor(() => expect(statusOf('embedding.model')).toContain('Search uses Cloudflare Workers AI with bge-m3'));
     expect(statusOf('embedding.model')).toContain('blank stored model');
     expect(document.querySelector('[data-setting="embedding.model"] [role="alert"]')).toBeNull();
@@ -677,7 +707,7 @@ describe('Settings, in five sections', () => {
 
   it('saves the task overrides document on Save, and refuses one that is not JSON before it leaves', async () => {
     const { sent } = server(base({ '/api/settings/agent.tasks': () => Response.json({ applied: true }) }));
-    mount('/settings/models');
+    mount('/settings/models#advanced');
     const doc = await screen.findByLabelText('Task overrides');
     const row = doc.closest('[data-setting]') as HTMLElement;
     fireEvent.change(doc, { target: { value: '{"title-summary":' } });
@@ -689,30 +719,13 @@ describe('Settings, in five sections', () => {
     expect(sent[0]).toMatchObject({ path: '/api/settings/agent.tasks', body: { value: { 'title-summary': { harness: 'codex' } } } });
   });
 
-  it('picks the preferred agent from the agents a machine can run, and clears it to no preference', async () => {
-    let held: unknown;
-    const { sent } = server(base({
-      '/api/settings': () => Response.json(leaves(held === undefined ? {} : { 'worker.harness': { value: held, updatedBy: ADA, updatedAt: NOW } })),
-      '/api/settings/worker.harness': (init) => { held = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
-    }));
-    mount('/settings');
-    await waitFor(() => expect(statusOf('worker.harness')).toBe('Myco uses none (not set).'));
-    await pick('Preferred agent', 'Codex');
-    await waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: 'codex' } });
-    await waitFor(() => expect(screen.getByLabelText('Preferred agent').textContent).toContain('Codex'));
-    await pick('Preferred agent', 'No preference');
-    await waitFor(() => expect(sent).toHaveLength(2));
-    expect(sent[1]).toMatchObject({ path: '/api/settings/worker.harness', body: { value: null } });
-  });
-
   it('keeps the fallback agents in order, and saves a list only of agents a machine can run, each once', async () => {
     const held = { value: ['bogus', 'codex'] as unknown[] };
     const { sent } = server(base({
       '/api/settings': () => Response.json(leaves({ 'worker.harness_fallback': { value: held.value, updatedBy: ADA, updatedAt: NOW } })),
       '/api/settings/worker.harness_fallback': (init) => { held.value = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
     }));
-    mount('/settings');
+    mount('/settings/models#agent-order');
     const list = await screen.findByRole('list', { name: 'Then try, in order' });
     expect(within(list).getAllByRole('listitem').map((li) => li.getAttribute('data-agent'))).toEqual(['bogus', 'codex']);
     expect(list.textContent).toContain('bogus (not an agent a machine can run)');
@@ -799,8 +812,8 @@ describe('Settings, in five sections', () => {
       const field = await screen.findByLabelText(label);
       expect({ leaf, value: (field as HTMLInputElement).value }).toEqual({ leaf, value: String(CONFIGURED[leaf]) });
     }
-    await section('Myco’s work');
-    expect((await screen.findByLabelText('Preferred agent')).textContent).toContain('Claude Code');
+    await section('Models');
+    expect((await screen.findByLabelText(/^Agent(?::|$)/)).textContent).toContain('Claude Code');
     expect(sent).toHaveLength(1);
   });
 
@@ -846,7 +859,7 @@ describe('Settings, in five sections', () => {
       })),
     }));
     mount('/settings/models');
-    await screen.findByText('Anthropic');
+    await screen.findByText('Answered by');
     expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
   });
 
@@ -885,7 +898,9 @@ describe('Settings, in five sections', () => {
 
 describe('older links to a Settings tab', () => {
   it('lead each tab to the section that holds its group now, at the group', () => {
-    expect(oldTabTarget('secrets')).toBe('/settings/models#credentials');
+    expect(oldTabTarget('secrets')).toBe('/settings/connections#credentials');
+    expect(oldTabTarget('single-turn')).toBe('/settings/models#single-turn');
+    expect(oldTabTarget('workers')).toBe('/settings/models#workers');
     expect(oldTabTarget('capabilities')).toBe('/settings/access#projects');
     expect(oldTabTarget('records')).toBe('/settings/capture#records');
     expect(oldTabTarget('agent')).toBe('/settings/models');
@@ -898,39 +913,161 @@ describe('older links to a Settings tab', () => {
     }
   });
 
-  it('replace the address with the section and land on the group', async () => {
+  it('replace the address with the section and land on the group, and lead a moved anchor to its new section', async () => {
     server(base());
     mount('/settings?tab=secrets');
-    await waitFor(() => expect(location()).toBe('/settings/models#credentials'));
-    expect(await screen.findByRole('group', { name: 'Keys' })).toBeTruthy();
+    await waitFor(() => expect(location()).toBe('/settings/connections#credentials'));
+    expect(await screen.findByRole('group', { name: 'Connections' })).toBeTruthy();
     cleanup();
+    for (const [old, now] of [['/settings/access#github-app', '/settings/connections#github-app'], ['/settings/access#telemetry', '/settings/connections#telemetry'], ['/settings#single-turn', '/settings/models#single-turn']]) {
+      server(base());
+      mount(old!);
+      await waitFor(() => expect(location()).toBe(now));
+      cleanup();
+    }
     server(base());
     mount('/settings?tab=capabilities');
     await waitFor(() => expect(location()).toBe('/settings/access#projects'));
     expect(await screen.findByRole('group', { name: 'Projects' })).toBeTruthy();
   });
+
+  it('land on a list’s place once it has loaded, even when the list is empty, and lead a member who is not an admin there too', async () => {
+    const proto = window.HTMLElement.prototype as unknown as { scrollIntoView?: () => void };
+    const original = proto.scrollIntoView;
+    const scrolled: string[] = [];
+    proto.scrollIntoView = function (this: HTMLElement) { scrolled.push(this.id); };
+    try {
+      for (const [old, anchor] of [['/settings?tab=secrets', 'credentials'], ['/settings/access#telemetry', 'telemetry']]) {
+        server(base({ '/api/secrets': () => Response.json(secrets(false)) }));
+        mount(old!);
+        await waitFor(() => expect(scrolled).toContain(anchor));
+        expect(document.querySelector('[data-connection="key"], [data-connection="telemetry"]')).toBeNull();
+        cleanup();
+      }
+      server(base({ '/auth/me': () => Response.json(dashboardMe({ ...ME, member: { ...ME.member, role: 'member' as const } })) }));
+      mount('/settings?tab=secrets');
+      await waitFor(() => expect(location()).toBe('/settings/connections#credentials'));
+    } finally { proto.scrollIntoView = original; }
+  });
 });
 
-describe('provider keys', () => {
-  it('stores a key from the session alone and never shows it afterwards, and removes one from its menu behind a confirm', async () => {
-    const { sent } = server(base({ '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', configured: true, readable: true, maskedValue: 's…0', updatedAt: NOW, updatedBy: ADA })) }));
+describe('Models', () => {
+  it('says what each quick-jobs answerer costs and needs, shows an address’s fields only for it, and returns to the included model by clearing them', async () => {
+    let answeredBy = 'address';
+    const address = { 'single_turn.base_url': { value: 'http://localhost:1234/v1' }, 'single_turn.model': { value: 'qwen3' } };
+    const { sent } = server(base({
+      '/api/settings': () => Response.json({ ...leaves(answeredBy === 'address' ? address : {}), quickJobs: { ...HOSTED_QUICK_JOBS, answeredBy } }),
+      '/api/quick-jobs/address': () => { answeredBy = 'included'; return Response.json({ applied: true }); },
+    }));
     mount('/settings/models');
-    const keys = await group('Keys');
-    await waitFor(() => expect(within(keys).getByText(/s…c/)).toBeTruthy());
-    expect(statusOf('secret.anthropic')).toContain('saved by Ada');
-    fireEvent.click(within(keys).getByRole('button', { name: 'Replace' }));
-    fireEvent.change(await screen.findByLabelText('Key'), { target: { value: SECRET } });
+    const help = () => document.querySelector('[data-quick-jobs-help]')?.textContent ?? '';
+    await waitFor(() => expect(help()).toContain('It costs what that service charges'));
+    expect((screen.getByLabelText('Address') as HTMLInputElement).value).toBe('http://localhost:1234/v1');
+    expect(screen.getByRole('button', { name: 'Add key' })).toBeTruthy();
+    await pick('Answered by', 'Cloudflare (included)');
+    await waitFor(() => expect(sent.map(({ method, path }) => `${method} ${path}`)).toEqual(['DELETE /api/quick-jobs/address']));
+    expect(JSON.parse(sent[0]!.headers['if-match']!)).toEqual({ 'single_turn.base_url': 0, 'single_turn.model': 0 });
+    await waitFor(() => expect(help()).toContain('Included with your Cloudflare account'));
+    expect(screen.queryByLabelText('Address')).toBeNull();
+    await pick('Answered by', 'My own model address');
+    expect(await screen.findByLabelText('Address')).toBeTruthy();
+    expect(statusOf('quick-jobs')).toBe('Cloudflare (included) still answers until the address and model are saved.');
+    expect(sent).toHaveLength(1);
+  });
+
+  it('says with no agent chosen which agent each runner uses today, offers only agents runners report, and clears a choice back to no preference', async () => {
+    let held: string | null = null;
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves(held === null ? {} : { 'worker.harness': { value: held } })),
+      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'own']] }, { agent: 'codex', runners: [['rn_mini', 'homelab-mini', 'own']] }],
+        [['rn_mini', 'homelab-mini', 'claude-code'], ['rn_win', 'CHRISTOPHER63F5', null]])),
+      '/api/settings/worker.harness': (init) => { held = JSON.parse(String(init!.body)).value; return Response.json({ applied: true }); },
+    }));
+    mount('/settings/models');
+    const note = () => document.querySelector('[data-agent-note]')?.textContent ?? '';
+    await waitFor(() => expect(note()).toBe('No agent chosen: each runner uses the first agent it is signed in to. Today: homelab-mini uses Claude Code; CHRISTOPHER63F5 uses no agent it is signed in to.'));
+    expect(screen.getByLabelText(/^Agent(?::|$)/).textContent).toContain('No preference');
+    expect(document.querySelector('[data-setting="paid-by"]')?.textContent).toContain('For Claude Code, the agent your runners use today.');
+    fireEvent.click(screen.getByLabelText(/^Agent(?::|$)/));
+    expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['No preference', 'Claude Code', 'Codex']);
+    fireEvent.click(screen.getByRole('option', { name: 'Codex' }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/worker.harness', body: { value: 'codex' } });
+    await waitFor(() => expect(note()).toContain('No other agent is tried.'));
+    await pick('Agent', 'No preference');
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ method: 'PUT', path: '/api/settings/worker.harness', body: { value: null } });
+  });
+
+  it('sets who pays in one request for every runner offering the agent, refuses a stored key none is usable for and offers to add one, and checks whether a run could start', async () => {
+    let usable = false;
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves({ 'worker.harness': { value: 'claude-code' } })),
+      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', storedUsable: usable, runners: [['rn_win', 'CHRISTOPHER63F5', 'stored'], ['rn_mini', 'homelab-mini', 'own']] }])),
+      '/api/runners/sign-in': () => Response.json({ error: 'credential_unavailable' }, { status: 409 }),
+      '/api/runners/check': () => Response.json({ task: 'extract-curate', observedAt: NOW, reason: 'budget', takers: [{ agent: 'claude-code', runners: [{ id: 'rn_mini', name: 'homelab-mini' }] }] }),
+    }));
+    mount('/settings/models');
+    const list = await screen.findByRole('list', { name: 'What each runner uses for Claude Code' });
+    expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['CHRISTOPHER63F5: the stored key', 'homelab-mini: its own sign-in']);
+    expect(screen.getByLabelText('Paid by').textContent).toContain('Differs by runner');
+    await pick('Paid by', 'A stored key');
+    expect((await screen.findByRole('alert')).textContent).toContain('No usable key is stored for Claude Code, so nothing was saved.');
+    expect(sent).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Replace the key' }));
+    expect((await screen.findByRole('dialog')).textContent).toContain('Replace the Anthropic key');
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
+    cleanup();
+    usable = true;
+    mount('/settings/models');
+    await screen.findByRole('list', { name: 'What each runner uses for Claude Code' });
+    await pick('Paid by', 'A stored key');
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'POST', path: '/api/runners/sign-in', body: { agent: 'claude-code', choice: 'stored' } });
+    expect((await screen.findByRole('alert')).textContent).toBe('Nothing was saved: no usable key is stored for Claude Code.');
+    fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
+    await waitFor(() => expect(statusOf('agent-work-check')).toContain('Not now: homelab-mini could take it with Claude Code, but today’s work budget is used up'));
+    expect(sent).toHaveLength(1);
+  });
+
+  it('folds each tuning group under Advanced with one line on whether it was changed', async () => {
+    server(base({ '/api/settings': () => Response.json(leaves({ 'agent.reasoning_map.codex.low': { value: 'luna', updatedBy: ADA, updatedAt: NOW } })) }));
+    mount('/settings/models');
+    await waitFor(() => {
+      const states = Object.fromEntries([...document.querySelectorAll<HTMLElement>('[data-fold]')].map((fold) => [fold.dataset.fold, fold.querySelector('[data-fold-state]')?.textContent]));
+      expect(states).toMatchObject({ 'claude-profile': 'Default', 'codex-profile': 'Changed by Ada just now', 'task-tiers': 'Default', embedding: 'Default' });
+    });
+    cleanup();
+    server(base({ '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'own']] }])) }));
+    mount('/settings/models');
+    await waitFor(() => expect(document.querySelector('[data-fold="claude-profile"]')).not.toBeNull());
+    expect([...document.querySelectorAll<HTMLElement>('[data-fold$="-profile"]')].map((fold) => fold.dataset.fold)).toEqual(['claude-profile']);
+    expect(screen.queryByLabelText('Small jobs model')).toBeNull();
+  });
+});
+
+describe('Connections', () => {
+  it('lists each stored key with what it is for, its kind and what uses it, replaces one without ever showing it, and removes one only once confirmed', async () => {
+    const { sent } = server(base({
+      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', storedUsable: true, runners: [['rn_mini', 'homelab-mini', 'stored']] }])),
+      '/api/secrets/anthropic': (init) => (init?.method === 'DELETE' ? Response.json({ deleted: true }) : Response.json({ name: 'anthropic', configured: true, readable: true, maskedValue: 's…0', kind: 'api-key', updatedAt: NOW, updatedBy: ADA })),
+    }));
+    mount('/settings/connections');
+    const key = await waitFor(() => { const row = connection('Anthropic key'); expect(row.textContent).toContain('Used by homelab-mini (Claude Code).'); return row; });
+    expect(key.textContent).toContain('Claude Code and OpenCode use it for Myco’s work when you choose a stored key instead of each runner’s own sign-in.');
+    expect(key.textContent).toContain('Subscription token: draws on that subscription.');
+    expect(key.textContent).toContain('saved by Ada');
+    expect(within(key).getByText('In use')).toBeTruthy();
+    expect(screen.queryByText('Codex (OpenAI) key')).toBeNull();
+    fireEvent.click(within(key).getByRole('button', { name: 'Replace' }));
+    fireEvent.change(await screen.findByLabelText('Anthropic key'), { target: { value: SECRET } });
     fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/secrets/anthropic', body: { value: SECRET } });
-    await waitFor(() => expect(screen.queryByLabelText('Key')).toBeNull());
-    expect(document.body.textContent).not.toContain(SECRET);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(document.body.innerHTML).not.toContain(SECRET);
     for (const el of document.querySelectorAll('input, textarea')) expect((el as HTMLInputElement).value).not.toBe(SECRET);
-    // Removing is in the key's menu, and asks first.
-    expect(within(keys).queryByRole('button', { name: 'Remove key' })).toBeNull();
-    fireEvent.keyDown(within(keys).getByRole('button', { name: 'More for the Anthropic key' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Remove key' }));
+    fireEvent.click(within(connection('Anthropic key')).getByRole('button', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain('stops working until a new one is stored');
     expect(sent).toHaveLength(1);
@@ -939,28 +1076,50 @@ describe('provider keys', () => {
     expect(sent[1]).toMatchObject({ method: 'DELETE', path: '/api/secrets/anthropic' });
   });
 
-  it('keeps the dialog open with the refusal when a key is refused', async () => {
+  it('adds a key by first asking what kind of connection, then whose key, and keeps the dialog open with a refusal', async () => {
     server(base({ '/api/secrets/codex': () => Response.json({ error: 'bad_request', reason: 'a key carries no line breaks' }, { status: 400 }) }));
-    mount('/settings/models');
-    const keys = await group('Keys');
-    fireEvent.click(within(within(keys).getByText('Codex (OpenAI)').closest('[data-setting]') as HTMLElement).getByRole('button', { name: 'Set' }));
-    fireEvent.change(await screen.findByLabelText('Key'), { target: { value: 'x\ny' } });
+    mount('/settings/connections');
+    fireEvent.click(await screen.findByRole('button', { name: 'Add a connection' }));
+    const kinds = await screen.findByRole('list', { name: 'Kinds of connection' });
+    expect(within(kinds).getAllByRole('button')).toHaveLength(3);
+    for (const name of [/^A model key/, /^A launcher that reports activity/, /^An agent that reads one project from outside/]) expect(within(kinds).getByRole('button', { name })).toBeTruthy();
+    fireEvent.click(within(kinds).getByRole('button', { name: /^A model key/ }));
+    expect(screen.queryByLabelText('Name it after the launcher')).toBeNull();
+    await pick('Whose key', 'Codex (OpenAI)');
+    fireEvent.change(await screen.findByLabelText('Codex (OpenAI) key'), { target: { value: 'x\ny' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save key' }));
     expect((await screen.findByRole('alert')).textContent).toBe('The server could not accept that.');
     expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
-  it('names what each key is used for, so a key stored for embeddings is not mistaken for a run\'s login (#1212)', async () => {
-    server(base());
-    mount('/settings/models');
-    const keys = await group('Keys');
-    const row = (label: string) => within(keys).getByText(label).closest('[data-setting]')!.textContent ?? '';
-    expect(row('Codex (OpenAI)')).toContain('Codex uses this key only when explicitly chosen for Myco’s work');
-    expect(row('OpenAI')).toContain('Used for embeddings, when the embedding provider is OpenAI.');
-    expect(row('OpenAI')).not.toContain('Codex');
-    expect(row('Anthropic')).toContain('Claude Code and OpenCode use this key');
-    // Repository access is the server's GitHub App: no GitHub key is offered.
-    expect(within(keys).queryByText('GitHub')).toBeNull();
+  it('shows what a telemetry key reported and how a launcher uses it, shows a new key’s header once, and removes one only once confirmed', async () => {
+    let revoked = false;
+    const key = { id: 'tk_build', label: 'routr on mbp', lastUsedAt: NOW, revokedAt: null, usedSpans: 100, spanQuota: 100, dailySpans: 3, clockSkewMs: 120_000, quotaReached: true, cleanupDone: false, accepted: 113, rejected: 0 };
+    const { sent } = server(base({
+      '/api/telemetry/keys': (init) => (init?.method === 'POST'
+        ? Response.json({ key: 'example-key', headers: 'Authorization=Bearer%20example-key', endpoint: 'https://myco.example' })
+        : Response.json({ endpoint: 'https://myco.example', keys: [{ ...key, revokedAt: revoked ? NOW : null }] })),
+      '/api/telemetry/keys/tk_build/revoke': () => { revoked = true; return Response.json({ revoked: true }); },
+    }));
+    mount('/settings/connections');
+    const row = await waitFor(() => connection('routr on mbp'));
+    expect(row.textContent).toContain('113 accepted, none rejected in the last day');
+    expect(row.textContent).toContain('120 seconds');
+    expect(within(row).getByText('Full')).toBeTruthy();
+    fireEvent.click(within(row).getByRole('button', { name: 'How a launcher uses this key' }));
+    expect(row.querySelector('[data-telemetry-usage]')?.textContent).toContain('OTEL_EXPORTER_OTLP_ENDPOINT=https://myco.example');
+    fireEvent.click(screen.getByRole('button', { name: 'Add a connection' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^A launcher that reports activity/ }));
+    fireEvent.change(screen.getByLabelText('Name it after the launcher'), { target: { value: 'My sender' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create key' }));
+    expect((await screen.findByRole('dialog')).textContent).toContain('OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20example-key"');
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    await waitFor(() => expect(document.body.textContent).not.toContain('example-key'));
+    fireEvent.click(within(connection('routr on mbp')).getByRole('button', { name: 'Remove' }));
+    expect((await screen.findByRole('dialog')).textContent).toContain('what it reported is removed');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
+    await waitFor(() => expect(revoked).toBe(true));
+    expect(sent.map(({ method, path }) => `${method} ${path}`)).toEqual(['POST /api/telemetry/keys', 'POST /api/telemetry/keys/tk_build/revoke']);
   });
 });
 
@@ -1089,7 +1248,7 @@ describe('Title imported sessions', () => {
   });
 });
 
-describe('Sign-in and access', () => {
+describe('GitHub on Connections', () => {
   it('carries the App setup as a live checklist with direct links, approves an installation, connects proposed repositories and says set up only once a Project reads one', async () => {
     let state: unknown = SETUP;
     const { sent } = server(base({ '/api/github-app': () => Response.json(state),
@@ -1099,7 +1258,7 @@ describe('Sign-in and access', () => {
       '/api/github-app/suggestions': () => Response.json({ complete: true, withheld: [], suggestions: ['a', 'b'].map((name, index) => ({ projectId: `proj_${name}`, project: name, installationId: 41, repositoryId: index + 1, fullName: `goondocks-co/${name}`, defaultBranch: 'main' })) }),
       '/api/projects/proj_a/repository': () => Response.json({ repository: null, appConfigured: true }),
       '/api/projects/proj_b/repository': () => Response.json({ repository: null, appConfigured: true }) }));
-    mount('/settings/access');
+    mount('/settings/connections');
     await screen.findByText('This server’s App is Myco (app), owned by goondocks-co (an organization).');
     await screen.findByText('In GitHub, open goondocks-co’s organization page → Settings, then Developer settings → GitHub Apps.');
     expect(within(document.querySelector('[data-app-identity]') as HTMLElement).getByRole('link', { name: 'Open the App’s settings' }).getAttribute('href')).toBe('https://github.com/organizations/goondocks-co/settings/apps/myco-app');
@@ -1110,19 +1269,19 @@ describe('Sign-in and access', () => {
     expect(screen.getByText(/^Repository access is not set up yet: 4 of 6 steps remain\. Next: Import the App’s private key\.$/)).toBeTruthy();
     expect(screen.getByText(/confirm access/)).toBeTruthy();
     state = { ...KEYED, installations: { list: [INSTALLED], more: false } };
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(within(connection('GitHub')).getByRole('button', { name: 'Test' }));
     const installed = await screen.findByText('Installed by an account this server has not approved: goondocks-co (an organization)');
     fireEvent.click(within(installed.parentElement as HTMLElement).getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(sent.filter((request) => request.method === 'POST').map(({ path, body }) => ({ path, body }))).toEqual([{ path: '/api/github-app/accounts', body: { installationId: 41 } }]));
     state = { ...KEYED, installations: { list: [{ ...INSTALLED, approved: true }], more: false } };
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(within(connection('GitHub')).getByRole('button', { name: 'Test' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Find repositories for my Projects' }));
     await screen.findByText('a: goondocks-co/a, branch main');
     fireEvent.click(screen.getByRole('button', { name: 'Connect all 2' }));
     await waitFor(() => expect(sent.filter((request) => request.method === 'PUT').map(({ path, body }) => ({ path, body }))).toEqual(['a', 'b'].map((name, index) => ({
       path: `/api/projects/proj_${name}/repository`, body: { installationId: 41, repositoryId: index + 1, branch: 'main', revision: null } }))));
     state = { ...KEYED, installations: { list: [{ ...INSTALLED, approved: true }], more: false }, connectedProjects: 2, repository: { project: 'a', fullName: 'goondocks-co/a' } };
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(within(connection('GitHub')).getByRole('button', { name: 'Test' }));
     await screen.findByText('Repository access is set up: a reads goondocks-co/a.');
     const approved = (await screen.findByText('goondocks-co (an organization)', { selector: '[data-approved-accounts] span' })).parentElement as HTMLElement;
     fireEvent.click(within(approved).getByRole('button', { name: 'Remove approval' }));
@@ -1136,7 +1295,7 @@ describe('Sign-in and access', () => {
     server(base({ '/api/github-app': () => { reads += 1; return Response.json(state); },
       '/api/github-app/installations': () => Response.json({ installations: [], accounts: [], page: 1, more: false, app: { slug: 'myco-app', owner: APP_OWNER } }),
       '/api/github-app/suggestions': () => Response.json({ complete: false, suggestions: [], withheld: [{ projectId: 'proj_a', project: 'a' }] }) }));
-    mount('/settings/access', client);
+    mount('/settings/connections', client);
     const approved = await waitFor(() => { const step = document.querySelector('[data-step="approved"]') as HTMLElement; expect(step.dataset.state).toBe('done'); return step; });
     expect(within(approved).getByText('Installed by an account this server has not approved: second-org (an organization); has not accepted the new permissions')).toBeTruthy();
     expect(within(approved).getByRole('button', { name: 'Approve' })).toBeTruthy();
@@ -1146,11 +1305,14 @@ describe('Sign-in and access', () => {
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
     cleanup();
     state = { ...SETUP, key: { state: 'unavailable', reason: 'GitHub refused App verification (HTTP 401).' } };
-    mount('/settings/access', client);
+    mount('/settings/connections', client);
     await screen.findByText('GitHub did not accept the imported key: GitHub refused App verification (HTTP 401).');
     expect(reads).toBe(2);
   });
 
+});
+
+describe('Sign-in and access', () => {
   it('counts the people who can sign in, never Myco, and leads to People & machines, My machines and each live project\'s access keys', async () => {
     server(base());
     mount('/settings/access');
@@ -1173,7 +1335,7 @@ it('shows retired task preferences as metadata outside the task-overrides editor
   server(base({ '/api/settings': () => Response.json(leaves({ 'agent.tasks': { value: historic,
     editableValue: { 'title-summary': { reasoningLevel: 'low' } },
     retiredValue: { 'title-summary': { provider: 'anthropic' }, 'container-smoke': { model: 'haiku' } } } })) }));
-  mount('/settings/models');
+  mount('/settings/models#advanced');
   const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
   expect((editor as HTMLTextAreaElement).value).not.toContain('provider');
   expect((editor as HTMLTextAreaElement).value).not.toContain('container-smoke');
@@ -1212,11 +1374,11 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     const leaf = 'agent.reasoning_map.claude-code.low';
     const { sent } = server(base({ '/api/settings': withModels([CLAUDE]), [`/api/settings/${leaf}`]: () => Response.json({ applied: true }) }));
     mount('/settings/models');
-    const claude = within(await group('Claude Code tiers'));
+    const claude = within(await group('Claude Code model sizes'));
     expect(claude.getAllByText(/^Models listed by your machines/)).toHaveLength(1);
     expect(document.querySelector('[data-model-listing="claude-code"]')?.textContent).toContain('Models listed by your machines 1 h ago, each with its own sign-in to Claude Code.');
     expect(statusOf(leaf)).toBe('Myco uses haiku (server default).');
-    fireEvent.click(claude.getByLabelText('Low tier model'));
+    fireEvent.click(claude.getByLabelText('Small jobs model'));
     expect(await optionWords()).toEqual(['haiku: newest Haiku (now Haiku 4.5)', 'sonnet: newest Sonnet (now Sonnet 5.5)', 'Opus 4.8 (claude-opus-4-8)']);
     fireEvent.click(await screen.findByRole('option', { name: 'sonnet: newest Sonnet (now Sonnet 5.5)' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -1227,7 +1389,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     const credential = 'agent.harnesses.codex.credential';
     server(base({ '/api/settings': withModels([CODEX], {}, (row) => (row.leaf === credential ? { ...row, effective: 'deployment', effectiveValue: 'deployment', source: 'default' } : row)) }));
     mount('/settings/models');
-    await group('Codex tiers');
+    await group('Codex model sizes');
     expect(document.querySelector('[data-model-listing="codex"]')?.textContent)
       .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.');
   });
@@ -1236,9 +1398,9 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     const leaf = 'agent.reasoning_map.claude-code.high';
     server(base({ '/api/settings': withModels([CLAUDE], { [leaf]: { value: 'claude-opus-4-1', updatedBy: ADA, updatedAt: NOW } }) }));
     mount('/settings/models');
-    await group('Claude Code tiers');
+    await group('Claude Code model sizes');
     expect(statusOf(leaf)).toContain('claude-opus-4-1 is not among the models your machines listed for Claude Code.');
-    fireEvent.click(within(await group('Claude Code tiers')).getByLabelText('High tier model'));
+    fireEvent.click(within(await group('Claude Code model sizes')).getByLabelText('Large jobs model'));
     expect((await optionWords())[0]).toBe('claude-opus-4-1 (not listed)');
   });
 
@@ -1249,7 +1411,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
-    const codex = within(await group('Codex tiers'));
+    const codex = within(await group('Codex model sizes'));
     expect(statusOf(leaf)).toContain('Codex names GPT-6-Sol as the successor to GPT-5.5.');
     fireEvent.click(codex.getByRole('button', { name: 'Use GPT-6-Sol' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -1260,29 +1422,29 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     const leaf = 'agent.reasoning_map.opencode.default';
     server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'opencode/big-pickle', ...OPENROUTER_LATEST])], { [leaf]: { value: 'openai/gpt-6', updatedBy: ADA, updatedAt: NOW } }) }));
     mount('/settings/models');
-    const opencode = within(await group('OpenCode tiers'));
-    fireEvent.click(opencode.getByLabelText(/^Default tier model provider(?::|$)/));
+    const opencode = within(await group('OpenCode model sizes'));
+    fireEvent.click(opencode.getByLabelText(/^Medium jobs model provider(?::|$)/));
     expect(await optionWords()).toEqual(['All providers', 'OpenAI', 'OpenCode Zen', 'OpenRouter']);
     fireEvent.click(await screen.findByRole('option', { name: 'OpenRouter' }));
     await waitFor(() => expect(screen.queryByRole('option')).toBeNull());
-    expect(opencode.getByLabelText('Default tier model').textContent).toContain('openai/gpt-6');
-    fireEvent.click(opencode.getByLabelText('Default tier model'));
+    expect(opencode.getByLabelText('Medium jobs model').textContent).toContain('openai/gpt-6');
+    fireEvent.click(opencode.getByLabelText('Medium jobs model'));
     expect(await optionWords()).toEqual(['openai/gpt-6', ...OPENROUTER_LATEST]);
   });
 
   it('marks the model the agent runs when none is named, and says what an unset tier means', async () => {
     server(base({ '/api/settings': withModels([CODEX]) }));
     mount('/settings/models');
-    await group('Codex tiers');
+    await group('Codex model sizes');
     expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
-    fireEvent.click(within(await group('Codex tiers')).getByLabelText('Low tier model'));
+    fireEvent.click(within(await group('Codex model sizes')).getByLabelText('Small jobs model'));
     expect((await optionWords())[0]).toBe('GPT-6.1-Sol (gpt-6.1-sol), Codex’s default');
   });
 
   it('says what an unset tier means where the model is typed, too', async () => {
     server(base({ '/api/settings': withModels([]) }));
     mount('/settings/models');
-    await group('Codex tiers');
+    await group('Codex model sizes');
     expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
   });
 
@@ -1293,33 +1455,33 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
       ...Object.fromEntries(tiers.map((leaf) => [`/api/settings/${leaf}`, () => Response.json({ applied: true })])),
     }));
     mount('/settings/models');
-    const opencode = within(await group('OpenCode tiers'));
+    const opencode = within(await group('OpenCode model sizes'));
     expect(opencode.getByText('Newest Claude through OpenRouter')).toBeTruthy();
     expect(opencode.getByText('Haiku, Sonnet and Opus through OpenRouter, always the newest version. Offered because your machines’ OpenCode lists these models from OpenRouter.')).toBeTruthy();
     fireEvent.click(opencode.getByRole('button', { name: 'Model IDs' }));
-    expect(opencode.getByText(`High: ${OPENROUTER_LATEST[2]}`)).toBeTruthy();
+    expect(opencode.getByText(`Large: ${OPENROUTER_LATEST[2]}`)).toBeTruthy();
     fireEvent.click(opencode.getByRole('button', { name: 'Use these models' }));
     await waitFor(() => expect(sent).toHaveLength(3));
     expect(sent.map((s) => ({ method: s.method, path: s.path, body: s.body }))).toEqual(tiers.map((leaf, i) => ({ method: 'PUT', path: `/api/settings/${leaf}`, body: { value: OPENROUTER_LATEST[i] } })));
-    expect(await opencode.findByText('Every tier now uses these models.')).toBeTruthy();
+    expect(await opencode.findByText('Every size now uses these models.')).toBeTruthy();
   });
 
   it('offers no preset where no machine lists its models', async () => {
     server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'github-copilot/claude-opus-5.5'])]) }));
     mount('/settings/models');
-    expect(within(await group('OpenCode tiers')).queryByRole('button', { name: 'Use these models' })).toBeNull();
+    expect(within(await group('OpenCode model sizes')).queryByRole('button', { name: 'Use these models' })).toBeNull();
   });
 
   it('types a model where no machine has listed the agent\'s models, or where the person asks to', async () => {
     server(base({ '/api/settings': withModels([CLAUDE]) }));
     mount('/settings/models');
-    const codex = within(await group('Codex tiers'));
-    expect(codex.getByLabelText('Low tier model').tagName).toBe('INPUT');
+    const codex = within(await group('Codex model sizes'));
+    expect(codex.getByLabelText('Small jobs model').tagName).toBe('INPUT');
     expect(document.querySelector('[data-model-listing="codex"]')).toBeNull();
-    const claude = within(await group('Claude Code tiers'));
-    expect(claude.getByLabelText('Low tier model').tagName).toBe('BUTTON');
+    const claude = within(await group('Claude Code model sizes'));
+    expect(claude.getByLabelText('Small jobs model').tagName).toBe('BUTTON');
     fireEvent.click(claude.getAllByRole('button', { name: 'Type a model name' })[0]!);
-    expect(claude.getByLabelText('Low tier model').tagName).toBe('INPUT');
+    expect(claude.getByLabelText('Small jobs model').tagName).toBe('INPUT');
   });
 });
 
@@ -1336,7 +1498,7 @@ it('repairs non-applying task entries separately from clearing all overrides', a
     } : row) }),
     '/api/settings/agent.tasks/repair': () => { repaired = true; return Response.json({ applied: true }); },
   }));
-  mount('/settings/models');
+  mount('/settings/models#advanced');
   const editor = await screen.findByRole('textbox', { name: 'Task overrides' });
   const row = within(editor.closest('[data-setting]') as HTMLElement);
   expect((editor.closest('[data-setting]') as HTMLElement).querySelector('pre') === null).toBe(true);

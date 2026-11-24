@@ -1,5 +1,6 @@
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { setRunnerCredentialChoice } from '../auth/runners.js';
+import { setAgentCredentialChoice, setRunnerCredentialChoice } from '../auth/runners.js';
+import { readAgentPayers, runnersOffering } from '../read/agent-payers.js';
 import { isAdmin } from '../auth/roles.js';
 import { machinesOf } from '../read/machines.js';
 /**
@@ -16,6 +17,7 @@ import { commit } from '../db/index.js';
 import { readRemovedRunners, readWorkerFleet, runnerContactWrite, runnerObservation } from '../core/worker-contacts.js';
 import { readFleetProjection } from '../db/runs/fleet.js';
 import { fleetTotals, pageRunners, parseFleetPage } from '../core/fleet-page.js';
+import { readAgentWorkCheck } from '../read/agent-work-check.js';
 import { requestByUserCode } from '../auth/device.js';
 import { sha256Hex } from '../hash.js';
 import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
@@ -88,6 +90,29 @@ export async function handleListRunners(env: ServerEnv, ctx: OwnerContext): Prom
   const legacyWorkers = isAdmin(ctx.member.role) ? projection.legacyWorkers : await ownLegacyWorkers(env, ctx.member.id, projection.legacyWorkers);
   return ok({ observedAt: projection.observedAt, queue: projection.queue, ...('storedCredentials' in projection ? { storedCredentials: projection.storedCredentials } : {}),
     runners: window.rows, cursor: window.cursor, totals: fleetTotals(projection.runners), legacyWorkers });
+}
+
+/** Every agent a registered runner offers, who pays for it on each runner, and whether a stored key would work. */
+export async function handleAgentPayers(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return ok(await readAgentPayers(env, ctx.now));
+}
+
+/**
+ * An administrator chooses the sign-in for one agent on every registered runner that offers it, in one write: every
+ * runner changes or none does. A stored key no agent run could use refuses the whole change.
+ */
+export const handleAgentSignIn = withRunnerSignInRefusal(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
+  const body = await readJsonObject(ctx.request);
+  if (typeof body?.agent !== 'string' || !Object.hasOwn(HARNESS_CREDENTIALS, body.agent)
+    || (body.choice !== 'own' && body.choice !== 'stored')) return Response.json({ error: 'invalid_sign_in' }, { status: 400 });
+  const offering = runnersOffering(await readWorkerFleet(env.db, ctx.now, true), body.agent).map((runner) => runner.id);
+  if (!await setAgentCredentialChoice(env.db, env.wrappingKey, ctx.member.id, offering, body.agent, body.choice, ctx.now)) return Response.json({ error: 'conflict' }, { status: 409 });
+  return ok(await readAgentPayers(env, ctx.now));
+});
+
+/** Whether learning from sessions could start now, and on which runner, or what holds it. Starts nothing. */
+export async function handleAgentWorkCheck(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  return ok(await readAgentWorkCheck(env, ctx.now));
 }
 
 const ownLegacyWorkers = async <Row extends { machineId: string | null }>(env: ServerEnv, memberId: string, workers: readonly Row[]): Promise<Row[]> => {

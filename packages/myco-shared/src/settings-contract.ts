@@ -45,6 +45,15 @@ export interface EffectiveSetting {
   storedApplies?: boolean | null;
 }
 
+/** Who answers quick jobs (session titles and summaries): the platform's included model, an address of the owner's, or an agent on a runner. */
+export type QuickJobsAnswerer = 'included' | 'address' | 'runner';
+
+/** Who answers quick jobs under the stored settings, and the answerers this server's target can use. */
+export interface QuickJobs {
+  answeredBy: QuickJobsAnswerer;
+  offered: readonly QuickJobsAnswerer[];
+}
+
 /** The idle-close minutes learning deadlines run on: what is set, what a rebuild is moving to, and what applies now. */
 export interface IdleCloseDeadlines {
   configured: number;

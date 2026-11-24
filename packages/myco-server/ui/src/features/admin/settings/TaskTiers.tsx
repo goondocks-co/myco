@@ -3,10 +3,14 @@ import { REASONING_TIERS, type ReasoningTier } from '@goondocks/myco-shared/exec
 import { Button, Select } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
-import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
+import { RowCard, SettingRow } from '../AdminFrame';
+import { SIZE_WORDS } from './catalogue';
 import type { TaskTierRow } from './wire';
 
-/** The effective tier is server-owned; an edit patches one task against the live overrides. */
+/** The note above the task sizes, where they are shown. */
+export const TASK_SIZES_NOTE = 'Each task starts at the size it is declared with. Choose a size here to change it; Reset restores the declared size.';
+
+/** Each task's job size. The effective size is server-owned; an edit patches one task against the live overrides. */
 export function TaskTiers({ tiers }: { tiers: readonly TaskTierRow[] }) {
   const actions = useSettingsActions();
   const admin = useIsAdmin();
@@ -29,39 +33,37 @@ export function TaskTiers({ tiers }: { tiers: readonly TaskTierRow[] }) {
   };
 
   return (
-    <AdminSection id="task-tiers" title="Task tiers" description="Each task starts at its declared tier. Choose a tier here to override it; reset restores the task’s declared tier.">
-      <RowCard label="Task tiers">
-        {tiers.map((row, index) => {
-          const { task, name: label, tier, source } = row;
-          return (
-            <SettingRow
-              key={task}
-              setting={`task-tier-${task}`}
-              label={label}
-              htmlFor={`task-tier-${task}`}
-              status={error?.task === task ? error.message : source === 'invalid' ? row.remedy : source === 'task-override' ? 'Task override' : 'Task default'}
-              refused={error?.task === task}
-              control={<div className="flex w-full items-center gap-s2">
-                <Select
-                  id={`task-tier-${task}`}
-                  label={`${label} tier`}
-                  value={tier ?? ''}
-                  placeholder={source === 'invalid' ? 'Choose a tier' : undefined}
-                  disabled={!admin || pending || (source === 'invalid' && row.repair === 'reset-leaf')}
-                  options={REASONING_TIERS.map((option) => ({ value: option, label: option[0]!.toUpperCase() + option.slice(1) }))}
-                  onValueChange={(option) => save(task, option as ReasoningTier)}
-                />
-                {source === 'invalid' && row.repair === 'reset-leaf' && index === 0 && admin && (
-                  <Button size="sm" aria-label="Reset task overrides" disabled={pending} onClick={resetDocument}>Reset</Button>
-                )}
-                {source !== 'task' && !(source === 'invalid' && row.repair === 'reset-leaf') && admin && (
-                  <Button size="sm" aria-label={`Reset ${label} tier`} disabled={pending} onClick={() => save(task, null)}>Reset</Button>
-                )}
-              </div>}
-            />
-          );
-        })}
-      </RowCard>
-    </AdminSection>
+    <RowCard label="Size of each job">
+      {tiers.map((row, index) => {
+        const { task, name: label, tier, source } = row;
+        return (
+          <SettingRow
+            key={task}
+            setting={`task-tier-${task}`}
+            label={label}
+            htmlFor={`task-tier-${task}`}
+            status={error?.task === task ? error.message : source === 'invalid' ? row.remedy : source === 'task-override' ? 'Changed for this task' : 'Declared size'}
+            refused={error?.task === task}
+            control={<div className="flex w-full items-center gap-s2">
+              <Select
+                id={`task-tier-${task}`}
+                label={`${label} size`}
+                value={tier ?? ''}
+                placeholder={source === 'invalid' ? 'Choose a size' : undefined}
+                disabled={!admin || pending || (source === 'invalid' && row.repair === 'reset-leaf')}
+                options={REASONING_TIERS.map((option) => ({ value: option, label: SIZE_WORDS[option] ?? option }))}
+                onValueChange={(option) => save(task, option as ReasoningTier)}
+              />
+              {source === 'invalid' && row.repair === 'reset-leaf' && index === 0 && admin && (
+                <Button size="sm" aria-label="Reset task overrides" disabled={pending} onClick={resetDocument}>Reset</Button>
+              )}
+              {source !== 'task' && !(source === 'invalid' && row.repair === 'reset-leaf') && admin && (
+                <Button size="sm" aria-label={`Reset ${label} size`} disabled={pending} onClick={() => save(task, null)}>Reset</Button>
+              )}
+            </div>}
+          />
+        );
+      })}
+    </RowCard>
   );
 }
