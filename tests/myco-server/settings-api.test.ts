@@ -46,6 +46,31 @@ const patch = asOwnerPatch;
 const json = async (r: Response) => (await r.json()) as Record<string, unknown>;
 
 describe('settings API', () => {
+  it('says who answers quick jobs: the included model until an address and its model are saved', async () => {
+    const e = env();
+    const quickJobs = async () => (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).quickJobs;
+    expect(await quickJobs()).toEqual({ answeredBy: 'included', offered: ['included', 'address'] });
+    for (const [leaf, value] of [['single_turn.base_url', 'https://openrouter.ai/api/v1'], ['single_turn.model', 'qwen/qwen3']] as const) {
+      expect((await worker.fetch(await put(e.db, `/api/settings/${leaf}`, { value }, { 'if-match': '0' }), e.all)).status).toBe(200);
+    }
+    expect(await quickJobs()).toEqual({ answeredBy: 'address', offered: ['included', 'address'] });
+    const clear = async (revisions: Record<string, number>) => worker.fetch(new Request('https://s/api/quick-jobs/address', {
+      method: 'DELETE', headers: { ...Object.fromEntries((await asOwnerPost(e.db, '/api/quick-jobs/address')).headers), 'if-match': JSON.stringify(revisions) },
+    }), e.all);
+    const stale = await clear({ 'single_turn.base_url': 0, 'single_turn.model': 0 });
+    expect({ status: stale.status, reason: (await json(stale)).reason }).toEqual({ status: 409, reason: 'conflict' });
+    expect(await quickJobs()).toMatchObject({ answeredBy: 'address' });
+    expect((await clear({ 'single_turn.base_url': 1, 'single_turn.model': 1 })).status).toBe(200);
+    expect(await quickJobs()).toMatchObject({ answeredBy: 'included' });
+    expect(e.sqlite.query("SELECT COUNT(*) AS n FROM deployment_settings WHERE leaf LIKE 'single_turn.%'").get()).toEqual({ n: 0 });
+    expect(e.sqlite.query("SELECT leaf, reset_by FROM deployment_setting_resets WHERE leaf LIKE 'single_turn.%' ORDER BY leaf").all())
+      .toEqual([{ leaf: 'single_turn.base_url', reset_by: 'mem_machine_1' }, { leaf: 'single_turn.model', reset_by: 'mem_machine_1' }]);
+    // A model name left without its address is never handed to the included model.
+    e.sqlite.run("INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('single_turn.model','\"qwen/qwen3\"',1,'historic')");
+    const leaves = (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).leaves as Array<Record<string, unknown>>;
+    expect(leaves.find((row) => row.leaf === 'single_turn.model')?.effective).toBe('@cf/openai/gpt-oss-20b');
+  });
+
   it('converges finite legacy raw retention writes on the canonical leaf and records the alias reset', async () => {
     const e = env();
     e.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('retention.transcripts','30',1,'historic')`);

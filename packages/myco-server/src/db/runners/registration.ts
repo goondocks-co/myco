@@ -157,10 +157,13 @@ export const signInChange = (change: { runner: string; actor: string; agent: str
   auditChoice.bind(crypto.randomUUID(), change.runner, change.actor, change.agent, change.choice, change.revision, change.now),
 ];
 
-/** Sign-in changes commit with the actor guard and the revision the reader saw. Answers false when either no longer holds. */
-export async function commitSignInChanges(db: RelationalStore, guard: { actor: string; runner: string; revision: number }, changes: readonly Bound[]): Promise<boolean> {
+/**
+ * Sign-in changes commit with the actor guard and the revision the reader saw of every runner they change, all in one
+ * batch. Answers false, writing nothing, when any guard no longer holds.
+ */
+export async function commitSignInChanges(db: RelationalStore, guards: readonly { actor: string; runner: string; revision: number }[], changes: readonly Bound[]): Promise<boolean> {
   try {
-    await commit(db, adminAtRevision.bind(guard.actor, guard.runner, guard.revision), ...changes);
+    await commit(db, ...guards.map((guard) => adminAtRevision.bind(guard.actor, guard.runner, guard.revision)), ...changes);
     return true;
   } catch (error) {
     if (refused(error, registrationRefused)) return false;

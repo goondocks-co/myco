@@ -2,10 +2,11 @@ import { harnessSignInFailureWords, storedKeyFailureWords } from '@goondocks/myc
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { FleetQueue, FleetRun, RunnerCredentialChoice, RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import type { FleetRun, RunnerCredentialChoice, RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import { Button, ConfirmDialog, ErrorState, Input, MoreMenu, StatusChip } from '../../../design';
 import { permissionOf, useMe } from '../../../hooks/use-me';
-import { fetchJson, postJson, type RunnerRow, type WorkerRow } from '../../../lib/api';
+import { fetchJson, postJson, type RunnerRow } from '../../../lib/api';
+import { useFleet } from '../../../hooks/use-fleet';
 import { harnessLabel } from '../../../lib/harness';
 import { runnerPath, runPath } from '../../../routes/nav';
 import { WorkTabs } from '../../work/WorkTabs';
@@ -19,12 +20,10 @@ import { live } from '../../../lib/live';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 import { sinceWords } from '../../today/words';
 
-const RUNNERS_KEY = ['runners'] as const;
-interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue; storedCredentials?: Record<string, boolean>; cursor?: string | null; totals?: { active: number } }
 
 /** Every machine entrusted with Myco's work, with observations separated from server controls and assignments. */
 export function RunnersPage() {
-  const runners = useQuery({ queryKey: RUNNERS_KEY, queryFn: ({ signal }) => fetchJson<FleetAnswer>('/api/runners', signal), ...live<FleetAnswer>({ follows: ['fleet', 'runs'] }) });
+  const runners = useFleet();
   const permission = permissionOf(useMe().data, 'runners');
   const machines = useMachines();
   const [setup, setSetup] = useState(false);

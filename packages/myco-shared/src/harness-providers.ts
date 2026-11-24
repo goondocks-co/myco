@@ -32,7 +32,8 @@ export function credentialEnvFor(harness: string, key: string): Record<string, s
   return variable === undefined ? {} : { [variable]: key };
 }
 
-const credentialKind = (key: string): HarnessCredentialKind => key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? 'subscription' : 'api-key';
+/** Which kind of credential a stored value is: a subscription token or an API key, told apart by its prefix. */
+export const credentialKind = (key: string): HarnessCredentialKind => key.startsWith(SUBSCRIPTION_TOKEN_PREFIX) ? 'subscription' : 'api-key';
 
 /** A retained provider runtime uses the same credential-kind declaration as its driver. */
 export function providerCredentialEnv(provider: HarnessProvider, key: string): Record<string, string> {

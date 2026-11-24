@@ -134,7 +134,7 @@ A home holding `server/` or a Cloudflare operator record refuses purge unless yo
 
 ## Set up repository access
 
-Dashboard **Settings → Sign-in and access → GitHub App** carries the whole setup as a checklist. Each step is read live from GitHub and this server when the section opens and when you press **Check again**; nothing is marked done by hand. It names this server's App and its owner, links straight to the App's own pages, and shows the one command that needs the operator's machine with this Deployment's target and address filled in:
+Dashboard **Settings → Connections → GitHub** carries the whole setup as a checklist. Each step is read live from GitHub and this server when the page opens and when you press **Test**; nothing is marked done by hand. It names this server's App and its owner, links straight to the App's own pages, and shows the one command that needs the operator's machine with this Deployment's target and address filled in:
 
 1. **Sign-in is configured.** This server holds the App's Client ID and secret; the step does not run a sign-in itself.
 2. **The App requests read-only repository permissions.** The step names each missing permission and links to the App's permissions page: set repository Contents, Pull requests and Metadata to Read-only and save; leave account permissions and the callback URL unchanged. GitHub then asks each account the App is installed on to accept the change. An App installed nowhere yet has nothing to accept. The step reflects what the App requests; an installation that has not accepted them is named under the next step, when GitHub's installation detail says so.

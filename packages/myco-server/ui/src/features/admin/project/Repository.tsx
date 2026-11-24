@@ -14,7 +14,7 @@ import type { InstallationRow, RepositoryRow } from './wire';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** What a Project's repository waits for when this server holds no GitHub App key. */
-export const APP_SETUP_WORDS = 'Repository access is not set up on this server yet. Settings → Sign-in and access → GitHub App shows each remaining step.';
+export const APP_SETUP_WORDS = 'Repository access is not set up on this server yet. Settings → Connections → GitHub shows each remaining step.';
 
 /**
  * The committed source a project's code tasks read: one repository this

@@ -1,6 +1,6 @@
 # OpenTelemetry ingestion
 
-An administrator creates a named key under **Settings → Sign-in and access → Telemetry keys**.
+An administrator creates a named key under **Settings → Connections → Add a connection**.
 The dashboard shows the endpoint base and the OTLP header list `Authorization=Bearer%20<key>` once.
 Keys contain 256 random bits; only SHA-256 digests are stored. A key accepts ingestion and grants no reads.
 At most eight keys are live. Revoked records remain until their bounded cleanup finishes and an administrator removes them.

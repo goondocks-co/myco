@@ -529,9 +529,9 @@ it('restores without held wrapping material, starts the server and names each cr
       expect(await store.runnerKey('anthropic', Date.now())).toBeNull();
       expect(await harnessCredentialAvailable(server.env.db, key, 'claude-code')).toBe(false);
       expect(await openCompletionCredential(server.env.db, key)).toBeNull();
-      expect(lines.join('\n')).toContain('OpenAI: Settings → Models and keys');
+      expect(lines.join('\n')).toContain('OpenAI: Settings → Connections');
       expect(lines.join('\n')).not.toMatch(/repository:|release-provenance:|proj_1/);
-      expect(lines.join('\n')).toContain('Settings → Models and keys');
+      expect(lines.join('\n')).toContain('Settings → Connections');
       expect(lines.join('\n').includes(secrets.SECRET_WRAP_KEY!)).toBe(false);
     } finally { await server.stop(); }
   } finally { f.cleanup(); }

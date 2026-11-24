@@ -62,7 +62,7 @@ describe('the dashboard for a member who is not an admin', () => {
   const PAGES = [
     '/projects', '/p/live', '/sessions', '/p/live/sessions', '/p/live/sessions/s1', '/p/live/sessions/s1?raw=transcript', '/knowledge', '/knowledge/plans',
     '/p/live/knowledge', '/p/live/knowledge/plans', '/p/live/knowledge/map', '/p/live/spores/sp1', '/p/live/plans/k1', '/p/live/runs', '/work', '/work/tasks', '/p/live/work/tasks', '/p/live/work', '/p/live/work/runs/r1',
-    '/me/machines', '/people', '/settings', '/settings/models', '/settings/capture', '/settings/backups', '/settings/access', '/p/live/settings', '/status/health',
+    '/me/machines', '/people', '/settings', '/settings/models', '/settings/connections', '/settings/capture', '/settings/backups', '/settings/access', '/p/live/settings', '/status/health',
     '/p/live/access', '/access', '/status', '/measures', '/settings?tab=secrets', '/operations', '/notifications',
   ];
 

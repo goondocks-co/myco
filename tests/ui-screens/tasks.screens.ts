@@ -156,25 +156,27 @@ test('Settings tier changes the model shown by the real Tasks registry', async (
     return await response.json() as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> };
   });
   try {
-    const preferred = page.getByRole('combobox', { name: /^Preferred\ agent(?::|$)/ });
-    if ((await preferred.textContent()) !== 'Claude Code') {
-      await preferred.click();
+    await page.goto(new URL('/settings/models', page.url()).toString());
+    const agent = page.getByRole('combobox', { name: /^Agent(?::|$)/ });
+    if ((await agent.textContent()) !== 'Claude Code') {
+      await agent.click();
       await Promise.all([
         page.waitForResponse((response) => response.url().endsWith('/api/settings/worker.harness') && response.request().method() === 'PUT' && response.status() === 200),
         page.getByRole('option', { name: 'Claude Code', exact: true }).click(),
       ]);
     }
-    await page.goto(new URL('/settings/models', page.url()).toString());
-    const claude = page.getByRole('group', { name: 'Claude Code tiers' });
-    for (const [tier, model] of [['default', 'sonnet'], ['high', 'opus']] as const) {
-      const input = claude.getByLabel(`${tier} tier model`);
-      await input.fill(model);
+    await page.locator('[data-fold="claude-profile"] button[aria-expanded="false"]').first().click();
+    const claude = page.getByRole('group', { name: 'Claude Code model sizes' });
+    for (const [tier, size] of [['default', 'Medium'], ['high', 'Large']] as const) {
+      const input = claude.getByLabel(`${size} jobs model`);
+      await input.fill(tier === 'default' ? 'sonnet' : 'opus');
       await Promise.all([
         page.waitForResponse((response) => response.url().endsWith(`/api/settings/agent.reasoning_map.claude-code.${tier}`) && response.request().method() === 'PUT' && response.status() === 200),
         input.press('Tab'),
       ]);
     }
-    const tier = page.getByRole('combobox', { name: /^Learning\ tier(?::|$)/ });
+    await page.locator('[data-fold="task-tiers"] button[aria-expanded="false"]').first().click();
+    const tier = page.getByRole('combobox', { name: /^Learning\ size(?::|$)/ });
     const pickTier = async (label: string) => {
       if ((await tier.textContent()) === label) return;
       await tier.click();
@@ -183,11 +185,11 @@ test('Settings tier changes the model shown by the real Tasks registry', async (
         page.getByRole('option', { name: label, exact: true }).click(),
       ]);
     };
-    await pickTier('Default');
+    await pickTier('Medium');
     await page.goto(new URL(tasksPath(), page.url()).toString());
     await expect(page.locator('article[data-task="extract-curate"] [data-task-model]')).toContainText('default tier · Claude Code: Sonnet');
-    await page.goto(new URL('/settings/models', page.url()).toString());
-    await pickTier('High');
+    await page.goto(new URL('/settings/models#task-tiers', page.url()).toString());
+    await pickTier('Large');
     await page.goto(new URL(tasksPath(), page.url()).toString());
     await expect(page.locator('article[data-task="extract-curate"] [data-task-model]')).toContainText('high tier · Claude Code: Opus');
   } finally {

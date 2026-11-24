@@ -20,11 +20,13 @@ import {
   taskOverridesMetadata,
   type SettingsRefusal,
   RETIRED_LEAVES,
+  QUICK_JOBS_ADDRESS_LEAVES,
 } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { readQuietPolicy } from '../db/learning/quiet-policy.js';
 import { EMBEDDING_SELECTION_LEAVES } from '../core/embedding/policy.js';
-import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices, type IdleCloseDeadlines } from '@goondocks/myco-shared/settings-contract';
+import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices, type IdleCloseDeadlines, type QuickJobs } from '@goondocks/myco-shared/settings-contract';
+import { readQuickJobs } from '../core/completion/configured-provider.js';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS, TASK_WORDS, type RetainedTask } from '../core/task-catalogue.js';
 import { readModelCatalogs, type StoredModelCatalog } from '../core/model-catalogs.js';
@@ -146,9 +148,9 @@ export type SettingsLeafRow = {
 /**
  * Every Deployment leaf: what is stored, and for a live leaf the effective answer of the policy its consumer acts
  * through (`core/settings-policies.ts`); the embedding picker's choices, or null where they cannot be read; and every
- * outcome's tier. The settings table is read once for all of it. URL secrets are redacted for non-admin readers.
+ * outcome's tier; and who answers quick jobs. The settings table is read once for all of it. URL secrets are redacted for non-admin readers.
  */
-async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ leaves: SettingsLeafRow[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices | null }> {
+async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ leaves: SettingsLeafRow[]; taskTiers: TaskTierRow[]; embedding: EmbeddingChoices | null; quickJobs: QuickJobs }> {
   const read: ServerEnv = { ...env, db: await settingsSnapshot(env.db) };
   const stored = await settingsWriter(read.db).leaves();
   const revisions = await settingsRevisions(read.db);
@@ -187,9 +189,10 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
     emit({ kind: 'embedding_choices_unreadable', error_class: classify(error) });
     return null;
   });
-  if (!redacted) return { leaves, taskTiers, embedding };
+  const quickJobs = await readQuickJobs(read.db, env.platform.name);
+  if (!redacted) return { leaves, taskTiers, embedding, quickJobs };
   const redact = <T>(value: T): T => JSON.parse(JSON.stringify(value), (_key, v: unknown) => (typeof v === 'string' ? withoutUrlSecrets(v) : v)) as T;
-  return redact({ leaves, taskTiers, embedding });
+  return redact({ leaves, taskTiers, embedding, quickJobs });
 }
 
 /** One harness's models as a machine's worker last listed them, as Settings offers them: the models, how and when. */
@@ -269,7 +272,7 @@ export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: C
   const machine = await machineBlockFor(env.db, ctx.memberId, ctx.machineId, ctx);
   const deployment = await deploymentSettings(env, true).then((answer) => ({ persisted: true, ...answer })).catch((error: unknown) => {
     emit({ kind: 'member_settings_unreadable', error_class: classify(error) });
-    return { persisted: true, leaves: [], taskTiers: [], embedding: null, unreadable: true };
+    return { persisted: true, leaves: [], taskTiers: [], embedding: null, quickJobs: null, unreadable: true };
   });
   return ok({ ...deployment, ...(machine === null ? {} : { machine }) });
 });
@@ -399,6 +402,22 @@ export const handleResetSetting = settingRevisionRoute(ctx => ctx.params.leaf, a
   const result = await writerFor(env).resetLeaf(ctx.params.leaf, ctx.member.id, ctx.now, revision);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
 });
+
+const QUICK_JOBS_REVISIONS = `an object of both quick-jobs address revisions, such as {${QUICK_JOBS_ADDRESS_LEAVES.map(leaf => `"${leaf}":0`).join(',')}}`;
+
+function expectedQuickJobsRevisions(text: string): Record<string, number> | null {
+  let revisions: unknown;
+  try { revisions = JSON.parse(text); } catch { return null; }
+  const expected = record(revisions);
+  return expected === null || QUICK_JOBS_ADDRESS_LEAVES.some(leaf => !Number.isSafeInteger(expected[leaf]) || Number(expected[leaf]) < 0)
+    ? null : expected as Record<string, number>;
+}
+
+/** `DELETE /api/quick-jobs/address`: remove the quick-jobs address and its model in one write; this server's own answerer takes quick jobs. */
+export const handleClearQuickJobsAddress = withRevision(QUICK_JOBS_ADDRESS_LEAVES[0], expectedQuickJobsRevisions, async (env, ctx, revisions) => {
+  const result = await writerFor(env).clearQuickJobsAddress(ctx.member.id, ctx.now, revisions);
+  return result.applied ? ok({ applied: true }) : refused(result.refusal);
+}, QUICK_JOBS_REVISIONS);
 
 /** Remove task override entries and fields that no longer have a Deployment consumer. */
 export const handleRepairTaskDocument = settingRevisionRoute('agent.tasks', async (env, ctx, revision) => {

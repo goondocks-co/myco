@@ -170,6 +170,6 @@ describe('the slots a Deployment stores keys in (#1212)', () => {
     expect(read.filter((slot) => !isSecretSlotName(slot!))).toEqual([]);
     // `configured-provider.ts` opens these for embeddings; a key stored for that is nobody's login.
     expect({ openai: harnessesReading('openai'), openrouter: harnessesReading('openrouter') }).toEqual({ openai: [], openrouter: [] });
-    expect(SECRET_SLOTS.find((slot) => slot.name === 'openai')?.alsoUsedFor).toContain('embeddings');
+    expect(SECRET_SLOTS.find((slot) => slot.name === 'openai')?.alsoUsedFor).toContain('search by meaning');
   });
 });

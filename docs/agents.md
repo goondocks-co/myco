@@ -149,7 +149,7 @@ Your id is on the `Session::` line Myco adds at session start. A Claude Code ses
 
 A tool that launches agents, such as an orchestrator, can also report what it launched over [OpenTelemetry](https://opentelemetry.io/docs/specs/otlp/). Myco then shows each launch on the **Lineage** tab of the sessions involved. Baggage, above, is what records a session's parent; telemetry adds the launcher's own account of the launch. Telemetry never changes who spoke in a turn, and nothing is matched by time.
 
-An administrator issues a key in the dashboard: **Settings › Sign-in and access › Telemetry keys › Add telemetry key**. The dialog shows two values once: the endpoint base (this Myco's address) and the header, `Authorization: Bearer <key>`. Save the header then; the key is not shown again. A telemetry key only accepts telemetry. It cannot read anything in Myco.
+An administrator issues a key in the dashboard: **Settings › Connections › Add a connection › A launcher that reports activity**. The dialog shows the environment to set once: the endpoint base (this Myco's address) and the header, `Authorization: Bearer <key>`. Save the header then; the key is not shown again. A telemetry key only accepts telemetry. It cannot read anything in Myco.
 
 Give the sender both values. A sender that follows the OpenTelemetry environment variables takes:
 

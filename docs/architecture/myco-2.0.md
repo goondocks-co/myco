@@ -490,7 +490,8 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/people` | NEW | UI, Core | Blk | People & machines, for an admin: members, invitations, and the machines that write here | #1162 |
 | `/runners` | NEW | UI, Core | Blk | Registered execution machines and their version, release channel, update availability and last result; owner/admin Update now is applied at the next idle point | #1594, #1144 |
 | `/me/machines` | NEW | UI, Core | Blk | My machines, for every member: their machines, each one's settings and name | #1393 |
-| `/settings/models` | NEW | UI, Core | Blk | Settings' models and keys section | #1518 |
+| `/settings/models` | NEW | UI, Core | Blk | Settings' models section | #1518 |
+| `/settings/connections` | NEW | UI, Core | Blk | Settings' connections section | #1518 |
 | `/settings/capture` | NEW | UI, Core | Blk | Settings' capture and retention section, new repositories among it | #1518 |
 | `/settings/backups` | NEW | UI, Core | Blk | Settings' backups section | #1518 |
 | `/settings/access` | NEW | UI, Core | Blk | Settings' sign-in and access section | #1518 |
@@ -1202,7 +1203,7 @@ The leaf registry (`core/settings.ts`) and this table are held equal in both dir
 | `retention.raw_days` | Capture and retention, `/settings/capture` | Hot raw window, 1–3650 days; default 90. The effective policy surfaces an explicit legacy zero hold |
 | `import.spores_enabled`, `import.enabled`, `import.window_days`, `import.max_sessions_per_harness` | Capture and retention, `/settings/capture` | Import switch, history window and per-agent cap |
 | `agent.limits.concurrent_runs`, `agent.limits.task_concurrent_runs`, `agent.limits.task_runs_per_hour` | Myco’s work, `/settings` | Deployment and per-task run ceilings |
-| `agent.reasoning_map.*`, `agent.effort_map.*` | Models and keys, `/settings/models` | Per-harness tier profiles |
+| `agent.reasoning_map.*`, `agent.effort_map.*` | Models › Advanced, `/settings/models` | Per-harness tier profiles |
 | `backup.retention.keep_daily`, `backup.retention.keep_weekly` | Backups, `/settings/backups` | Newest manual relational exports and the newest export of each of the N most recent UTC weeks containing exports |
 | `backup.recovery.keep_stagings` | Backups, `/settings/backups` | Full recovery copies; 2 by default on hosted and native targets |
 

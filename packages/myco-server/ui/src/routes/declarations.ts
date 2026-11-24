@@ -16,7 +16,8 @@ export const HEALTH_PATH = '/status/health';
 export const MY_MACHINES_PATH = '/me/machines';
 export const SETTINGS_SECTIONS = [
   { id: 'work', label: 'Myco’s work', to: SETTINGS_PATH },
-  { id: 'models', label: 'Models and keys', to: `${SETTINGS_PATH}/models` },
+  { id: 'models', label: 'Models', to: `${SETTINGS_PATH}/models` },
+  { id: 'connections', label: 'Connections', to: `${SETTINGS_PATH}/connections` },
   { id: 'capture', label: 'Capture and retention', to: `${SETTINGS_PATH}/capture` },
   { id: 'backups', label: 'Backups', to: `${SETTINGS_PATH}/backups` },
   { id: 'access', label: 'Sign-in and access', to: `${SETTINGS_PATH}/access` },

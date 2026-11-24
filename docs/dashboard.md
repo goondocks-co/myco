@@ -104,10 +104,11 @@ The server pages sit at the foot of the menu. **People & machines** is readable 
 
 ### Settings
 
-**Settings** holds everything that applies to the whole server, in five sections:
+**Settings** holds everything that applies to the whole server, in six sections:
 
 - Myco's work
-- Models and keys
+- Models
+- Connections
 - Capture and retention
 - Backups
 - Sign-in and access

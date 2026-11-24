@@ -3,7 +3,7 @@ import { listSecrets, readRunnerSecret, readSecret, type SecretRow } from '../db
 import type { RunnerSecretAvailability, RunnerSecretVersion } from '../db/settings/runner-secret-health.js';
 import type { StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { putSecret, removeRetiredSecrets, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
-import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
+import { HARNESS_CREDENTIALS, credentialEnvFor, credentialKind, type HarnessCredentialKind } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
 import { emit } from '../telemetry.js';
 import { fromBase64, toBase64 } from '../base64.js';
@@ -49,6 +49,8 @@ export interface SecretDescription {
   readable: boolean;
   /** First and last characters only, or null when nothing is stored. Never the value. */
   maskedValue: string | null;
+  /** Whether the stored value is a subscription token or an API key; null when nothing readable is stored. Never the value. */
+  kind: HarnessCredentialKind | null;
   updatedAt: number | null;
   updatedBy: string | null;
 }
@@ -197,16 +199,19 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
    */
   const described = async (r: SecretRow): Promise<SecretDescription & { name: string }> => {
     let maskedValue: string | null = null;
+    let kind: HarnessCredentialKind | null = null;
     let readable = true;
     try {
       // The mask is derived here rather than stored. A stored preview would put the
       // first and last characters of every credential back into the table this
       // design exists to keep them out of.
-      maskedValue = maskSecret(await openRow(r));
+      const value = await openRow(r);
+      maskedValue = maskSecret(value);
+      kind = credentialKind(value);
     } catch {
       readable = false;
     }
-    return { name: r.name, configured: true, readable, maskedValue, updatedAt: r.updated_at, updatedBy: r.updated_by };
+    return { name: r.name, configured: true, readable, maskedValue, kind, updatedAt: r.updated_at, updatedBy: r.updated_by };
   };
 
   const preparePut = async (name: string, raw: string, actor: string, nowMs: number): Promise<Bound<never, 'write'>> => {
@@ -238,7 +243,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
 
     async describe(name) {
       const r = await row(name);
-      if (r === null) return { configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null };
+      if (r === null) return { configured: false, readable: true, maskedValue: null, kind: null, updatedAt: null, updatedBy: null };
       const { name: _name, ...rest } = await described(r);
       return rest;
     },

@@ -98,10 +98,13 @@ describe('deployment secrets', () => {
       configured: true,
       readable: true,
       maskedValue: `${ANTHROPIC.slice(0, 8)}…${ANTHROPIC.slice(-4)}`,
+      kind: 'api-key',
       updatedAt: 2_000,
       updatedBy: 'mem_7',
     });
     expect(JSON.stringify(described)).not.toContain(ANTHROPIC);
+    await r.store.put('anthropic', 'sk-ant-oat01-c3Vic2NyaXB0aW9uLXRva2VuLXZhbHVl', 'mem_7', 3_000);
+    expect((await r.store.describe('anthropic')).kind).toBe('subscription');
     // A stored preview would put the first and last characters of every credential
     // back into the table this design exists to keep them out of.
     expect(raw(r.sqlite)).not.toContain(ANTHROPIC.slice(0, 8));
@@ -109,7 +112,7 @@ describe('deployment secrets', () => {
 
   it('reports an absent secret as unconfigured rather than failing', async () => {
     const r = rig();
-    expect(await r.store.describe('never-set')).toEqual({ configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null });
+    expect(await r.store.describe('never-set')).toEqual({ configured: false, readable: true, maskedValue: null, kind: null, updatedAt: null, updatedBy: null });
     expect(await r.store.get('never-set')).toBeNull();
   });
 

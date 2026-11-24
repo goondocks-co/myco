@@ -165,6 +165,9 @@ export const RETIRED_LEAVES: ReadonlySet<string> = new Set();
 /** The leaves this tier owns. Derived from the specs, so a leaf cannot be named in one and missing from the other. */
 export const DEPLOYMENT_LEAVES: readonly string[] = Object.keys(DEPLOYMENT_LEAF_SPECS);
 
+/** The leaves that send quick jobs to an address of the owner's: the address, then the model it answers to. */
+export const QUICK_JOBS_ADDRESS_LEAVES = ['single_turn.base_url', 'single_turn.model'] as const;
+
 /** The built-in value of one execution profile leaf on this Deployment. */
 export function executionProfileLeafDefault(leaf: string): { present: boolean; value: string | null } | null {
   const parts = leaf.split('.');
@@ -537,6 +540,11 @@ export interface SettingsWriter {
   setLeaf(leaf: string, value: unknown, actor: string, nowMs: number, expectedRevision?: number): Promise<SettingsResult>;
   /** Set the whole embedding selection at once, so a provider never meets a model or endpoint it does not offer. */
   setEmbedding(choice: EmbeddingChoice, actor: string, nowMs: number, expectedRevisions?: Readonly<Record<string, number>>): Promise<SettingsResult>;
+  /**
+   * Remove the quick-jobs address and its model together, so quick jobs return to this server's own answerer and no
+   * model named for an address outlives it. Both leaves' revisions are checked in the one write.
+   */
+  clearQuickJobsAddress(actor: string, nowMs: number, expectedRevisions?: Readonly<Record<string, number>>): Promise<SettingsResult>;
   /** Remove one configured leaf so its built-in value applies. */
   resetLeaf(leaf: string, actor: string, nowMs?: number, expectedRevision?: number): Promise<SettingsResult>;
   /** Clear task entries and fields that have no consumer, while preserving the current live document. */
@@ -734,7 +742,7 @@ export function judgeEmbeddingChoice(choice: EmbeddingChoice, target: Deployment
 }
 
 /** Why the embedding selection cannot change while a switch stands. */
-export const switchUnderWay = (model: string): string => `A switch to ${model} is under way. Cancel it under Search embeddings to choose another model`;
+export const switchUnderWay = (model: string): string => `A switch to ${model} is under way. Cancel it under Models → Advanced → Search by meaning to choose another model`;
 
 /** Judge the selection, then assert its revisions, switch state and held partitions in the write batch. */
 async function writeEmbedding(db: RelationalStore, input: { target: DeploymentTarget | undefined; changes: StoredEmbedding; actor: string; now: number; leaf: string; expected?: Readonly<Record<string, number>> }): Promise<SettingsResult> {
@@ -923,6 +931,14 @@ export function settingsWriter(
           ? [leaf, leaf === 'retention.raw_days' ? 'retention.transcripts' : 'retention.raw_days'] : [leaf];
         const { expected } = await observed(parts, expectedRevision);
         return apply(leaf, { parts: parts.map(leaf => ({ leaf, value: undefined })), expected, actor, now: nowMs });
+      });
+    },
+
+    async clearQuickJobsAddress(actor, nowMs, expectedRevisions) {
+      const [leaf] = QUICK_JOBS_ADDRESS_LEAVES;
+      return withLeafWrite({ leaf, actor }, async () => {
+        const { expected } = await observed(QUICK_JOBS_ADDRESS_LEAVES);
+        return apply(leaf, { parts: QUICK_JOBS_ADDRESS_LEAVES.map((part) => ({ leaf: part, value: undefined })), expected: { ...expected, ...expectedRevisions }, actor, now: nowMs });
       });
     },
 
