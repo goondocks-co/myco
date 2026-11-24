@@ -88,11 +88,12 @@ for (const [harness, binary, driver, file] of [
   describe(`the ${harness} driver's stops, read as coded reasons`, () => {
     const cases = fixture<NativeCase>(file);
     for (const name of CASES) {
-      it(`records ${name}${cases[name].recorded ? ' (recorded)' : ''} as its code, with nothing the harness said`, async () => {
+      const expected = harness === 'claude-code' && name === 'login_missing' ? 'invalid_key' : name;
+      it(`records ${expected}${cases[name].recorded ? ' (recorded)' : ''} as its code, with nothing the harness said`, async () => {
         for (const secret of SECRETS) {
           const events = await withPath(stub(binary, withSecret(cases[name], secret)), () => collect(driver.run({ ...runDir(), prompt: 'do it', credentialEnv: {} }, new AbortController().signal)));
           const { code, error, stored } = recorded(harness, events);
-          expect(code).toBe(name);
+          expect(code).toBe(expected);
           expect(stored).toBe(error);
           for (const word of [secret, 'Unauthorized', 'panicked', 'TypeError', 'Request']) expect(error).not.toContain(word);
           if (name === 'crashed') expect(error).toBe(`the harness stopped: error (crashed; exit code ${cases[name].exit})`);
@@ -261,7 +262,8 @@ describe('first Claude Code login recovery', () => {
 describe('launch sign-in failures hold the harness until a scheduled probe passes', () => {
   for (const source of ['own', 'stored'] as const) it(`reports a ${source} sign-in hold on the next contact and releases it on schedule`, async () => {
     const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-login-hold-')));
-    const dir = stub('claude', fixture<NativeCase>('claude-code.json').login_missing);
+    const denied = fixture<NativeCase>('claude-code.json').login_missing;
+    const dir = stub('claude', { ...denied, stdout: denied.stdout.map(line => line.replaceAll('API key is invalid.', 'Please run /login.')) });
     const probes = join(scratch, 'probes');
     const binary = join(dir, 'claude');
     writeFileSync(binary, readFileSync(binary, 'utf8').replace(

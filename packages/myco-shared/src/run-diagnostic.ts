@@ -1,5 +1,9 @@
+export const STORED_KEY_FAILURES = ['out_of_credit', 'invalid_key'] as const;
+export type StoredKeyFailure = (typeof STORED_KEY_FAILURES)[number];
+export const isStoredKeyFailure = (code: unknown): code is StoredKeyFailure => STORED_KEY_FAILURES.some(failure => failure === code);
+
 /** The reasons a harness's own words can be read as, by the patterns its manifest declares. */
-export const PATTERNED_DIAGNOSTIC_CODES = ['login_missing', 'rate_limited', 'model_refused', 'timed_out'] as const;
+export const PATTERNED_DIAGNOSTIC_CODES = ['login_missing', ...STORED_KEY_FAILURES, 'rate_limited', 'model_refused', 'timed_out'] as const;
 
 /**
  * Why a harness stopped with an error, as a code: one its words are read as (`PATTERNED_DIAGNOSTIC_CODES`); a process
@@ -33,8 +37,12 @@ export const HARNESS_STOP_FIELD_VALUES = {
 export type HarnessStopFields = Partial<Record<keyof typeof HARNESS_STOP_FIELD_VALUES, string>>;
 export interface HarnessStop extends RunDiagnostic { fields?: HarnessStopFields }
 
+export const STORED_KEY_READER_CODES = {
+  out_of_credit: 'stored_key_out_of_credit', invalid_key: 'stored_key_invalid',
+} as const satisfies Record<StoredKeyFailure, string>;
+
 const DIAGNOSTIC_READER_CODES = {
-  login_missing: 'agent_not_signed_in', rate_limited: 'agent_rate_limited', model_refused: 'agent_model_refused',
+  login_missing: 'agent_not_signed_in', out_of_credit: 'agent_out_of_credit', invalid_key: 'agent_invalid_key', rate_limited: 'agent_rate_limited', model_refused: 'agent_model_refused',
   timed_out: 'agent_timed_out', crashed: 'agent_crashed', harness_error: 'agent_failed', launch_failed: 'agent_launch_failed',
   protocol_error: 'agent_protocol_error', permission_refused: 'agent_permission_refused', tools_unlisted: 'agent_tools_unlisted', tools_unused: 'agent_tools_unused',
 } as const;

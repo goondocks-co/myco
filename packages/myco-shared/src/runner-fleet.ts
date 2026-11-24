@@ -1,3 +1,4 @@
+import type { StoredKeyFailure } from './run-diagnostic.js';
 import { HARNESS_CREDENTIALS } from './harness-providers.js';
 import type { RunnerBlockedVersion, RunnerUpdateRequest, RunnerUpdateResult, RunnerUpdateState } from './runner-update.js';
 
@@ -68,7 +69,7 @@ export interface RunnerFleetRecord {
   credentialChoices?: StoredRunnerCredentialChoices;
   capabilities: string[] | null; labels: string[] | null; preference: string | null;
   os: string | null; arch: string | null; version: string | null;
-  readiness: { state: RunnerAvailability; code?: RunnerAvailability | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'registration'; reason: string; observedAt: number | null };
+  readiness: { state: RunnerAvailability; code?: RunnerAvailability | StoredKeyFailure | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'registration'; reason: string; observedAt: number | null };
   lastReason: string | null;
   models: Array<{ harness: string; source: string | null; fetchedAt: number; receivedAt: number; fresh: boolean; available: boolean }>;
   channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null; lastCheckAt: number | null;
@@ -76,7 +77,12 @@ export interface RunnerFleetRecord {
   updateState: RunnerUpdateState | null; updateRequest: RunnerUpdateRequest | null;
 }
 
-export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building' | 'queue_building';
+export const STORED_KEY_FAILURE_WORDS: Readonly<Record<StoredKeyFailure, string>> = {
+  out_of_credit: 'The chosen stored key ran out of API credit. Work is still waiting. Add credit with the provider or replace the key in Settings, or switch the runner to its own sign-in on Runners.',
+  invalid_key: 'The provider rejected the chosen stored key. Work is still waiting. Replace the key in Settings or switch the runner to its own sign-in on Runners.',
+};
+
+export type QueueReason = StoredKeyFailure | 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building' | 'queue_building';
 export interface FleetQueue {
   state?: 'building';
   observedAt: number; count: number | null; oldestAt: number | null;
@@ -95,6 +101,7 @@ export function runnerDisplay(row: Pick<RunnerFleetRecord, 'state' | 'busy' | 'l
 }
 
 export const QUEUE_REASON_WORDS: Readonly<Record<QueueReason, string>> = {
+  ...STORED_KEY_FAILURE_WORDS,
   capacity: 'Waiting for capacity.',
   no_runner: 'No recently seen runner can currently take this work.',
   credential_unavailable: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change its sign-in on Runners.',

@@ -6,18 +6,23 @@ const session = `json_extract(NEW.run_context, '$.session_id')`;
 const ownedRetry = `${retry('attemptId')} = NEW.dispatched_by`;
 
 /** Sign-in failures release the retry reservation; ordinary task failures retain their backoff. */
-export const V694_STATEMENTS: readonly string[] = [
+export function loginRetryStatements(additional: readonly string[] = []): readonly string[] {
+  const signIn = additional.length === 0 ? "NEW.error_code = 'agent_not_signed_in'"
+    : `NEW.error_code IN (${['agent_not_signed_in', ...additional].map(value => `'${value}'`).join(',')})`;
+  const other = additional.length === 0 ? "NEW.error_code IS NOT 'agent_not_signed_in'"
+    : `(NEW.error_code IS NULL OR NOT ${signIn})`;
+  return [
   'DROP TRIGGER IF EXISTS card_run_retry',
   `CREATE TRIGGER IF NOT EXISTS card_run_retry AFTER UPDATE OF status ON agent_runs
     WHEN NEW.task = 'turn-cards' AND OLD.status IS NOT NEW.status AND NEW.status IN ('completed','failed')
-      AND NEW.error_code IS NOT 'agent_not_signed_in' BEGIN
+      AND ${other} BEGIN
     UPDATE learning_sessions SET
       card_retry_at = CASE WHEN NEW.status = 'completed' THEN 0 ELSE COALESCE(NEW.completed_at,NEW.started_at) +
         CASE WHEN card_failures <= 1 THEN 3600000 WHEN card_failures = 2 THEN 21600000 ELSE 86400000 END END,
       card_failures = CASE WHEN NEW.status = 'completed' THEN 0 ELSE MAX(card_failures,1) END
     WHERE project_id = NEW.project_id AND session_id = CASE WHEN json_valid(NEW.run_context) THEN ${session} END; END`,
   `CREATE TRIGGER IF NOT EXISTS agent_run_login_retry AFTER UPDATE OF status ON agent_runs
-    WHEN OLD.status IS NOT NEW.status AND NEW.status = 'failed' AND NEW.error_code = 'agent_not_signed_in'
+    WHEN OLD.status IS NOT NEW.status AND NEW.status = 'failed' AND ${signIn}
       AND json_valid(NEW.run_context) BEGIN
     UPDATE learning_sessions SET card_failures = ${retry('cardFailures')}, card_retry_at = ${retry('cardRetryAt')}
       WHERE NEW.task = 'turn-cards' AND ${ownedRetry} AND project_id = NEW.project_id AND session_id = ${session}
@@ -38,7 +43,10 @@ export const V694_STATEMENTS: readonly string[] = [
     UPDATE agent_runs SET attempt_counted = 0
       WHERE NEW.task = 'title-summary' AND NEW.attempt_counted = 1 AND project_id = NEW.project_id AND id = NEW.id;
     END`,
-];
+  ];
+}
+
+export const V694_STATEMENTS = loginRetryStatements();
 
 /** Why the step reaches tables earlier steps created. */
 export const V694_REACHES: readonly Reach[] = reaching(['agent_runs'], 'The replacement terminal trigger excludes runner sign-in failures from card backoff. Card retries retain task backoff while runner sign-in failures release their claim reservation. A terminal sign-in failure returns only the retry reservation held by its dispatched attempt.');

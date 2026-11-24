@@ -28,6 +28,8 @@ import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID, PROJECT_HEADER, SERVER_SCHE
 import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { RUNNER_TOKEN_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/runners.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
+import { QUEUE_MAX_AGE_MS, runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
+import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { workerLiveness } from '@myco-server-worker/db/runs/status.js';
 import { commit } from '@myco-server-worker/db/index.js';
 import { runnerObservation, readWorkerFleet, pruneWorkerContacts, recordWorkerContact, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
@@ -1273,6 +1275,51 @@ describe('shared runner fleet projection', () => {
 });
 
 describe('runner agent sign-in choice', () => {
+  it('holds an exhausted stored key and resumes queued work after a successful recheck', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
+        .put('anthropic', 'sk-ant-api-fixture-credit', OWNER, r.now());
+      const { runnerId, token } = await r.register();
+      expect((await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'claude-code', choice: 'stored' })).status).toBe(200);
+      await r.queueTitling();
+      const first = (await r.claim(token)).run;
+      const end = (run: Json, fields: Json) => r.json(r.asRunner(token, '/worker/end', {
+        projectId: 'proj_1', runId: run.id, attemptId: run.attemptId, ...fields,
+      }));
+      await end(first, { status: 'failed', error: 'Your credit balance is too low to access the Anthropic API.',
+        usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 } });
+      const detail = await r.json(r.asSession(`/api/projects/proj_1/runs/${first.id}`, {}, OWNER_SUB, 'GET'));
+      expect(detail.run).toMatchObject({ status: 'failed', errorCode: 'stored_key_out_of_credit', costUsd: 0.01 });
+      await r.queueTitling();
+      r.advance(5 * 60_000);
+      expect((await r.claim(token)).claimed).toBe(false);
+      const fleet = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
+      expect(fleet.runners[0].readiness.code).toBe('out_of_credit');
+      expect(fleet.runners[0].readiness.reason).toContain('Work is still waiting.');
+      const health = await r.json(r.asSession('/api/status', {}, OWNER_SUB, 'GET'));
+      expect(health.workers.queue.reasons).toContainEqual({ reason: 'out_of_credit', count: 1 });
+      const waiting = await r.json(r.asSession('/api/projects/proj_1/runs?status=queued', {}, OWNER_SUB, 'GET'));
+      expect(holdSentence(waiting.rows[0].waitReason)).toBe(fleet.runners[0].readiness.reason);
+      r.advance(QUEUE_MAX_AGE_MS);
+      await runStaleSweep(r.env, r.now());
+      const probe = (await r.claim(token)).run;
+      expect(probe.id).toBe(waiting.rows[0].id);
+      await end(probe, { status: 'completed' });
+      await r.queueTitling();
+      const resumed = await r.claim(token);
+      expect(resumed.claimed).toBe(true);
+      await end(resumed.run, { status: 'failed', error: '401 authentication_error: invalid x-api-key' });
+      await r.queueTitling();
+      expect((await r.claim(token)).claimed).toBe(false);
+      expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0].readiness.code).toBe('invalid_key');
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
+        .put('anthropic', 'sk-ant-api-fixture-replacement', OWNER, r.now());
+      expect((await r.claim(token)).claimed).toBe(true);
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('uses stored credentials for a signed-out agent and keeps an own runner on its machine despite server Settings', async () => {
     const r = rig();
     try {

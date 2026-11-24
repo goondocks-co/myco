@@ -1,3 +1,4 @@
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { contactAuthorityIndex, workerContactUpsert, runnerContactUpsert } from '../db/runs/contact-writes.js';
 import { commit, type Bound } from '../db/index.js';
 import { parseHarnessSignInFailure, harnessSignInFailureWords, runnerAgentLoginReady, storedRunnerCredentialChoices, type HarnessSignInFailure, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
@@ -372,7 +373,7 @@ export const runnerObservation = (runnerId: string, observation: { arch: string 
 /** Fresh reports share control, capacity and readiness admission across every preview. */
 export function fleetReports(fleet: readonly WorkerFleetRow[], includeBusy = false) {
   return fleet.filter(row => row.recent && row.eligible && (includeBusy || row.busy === null)
-    && (row.runnerDetails === undefined || (row.runnerDetails.readiness.state === 'ready' || row.runnerDetails.readiness.code === 'credential_unavailable')))
+    && (row.runnerDetails === undefined || (row.runnerDetails.readiness.state === 'ready' || row.runnerDetails.readiness.code === 'credential_unavailable' || isStoredKeyFailure(row.runnerDetails.readiness.code))))
     .map(row => ({ credentialId: row.credentialId, machineId: row.machineId, offers: row.offers ?? [], capabilities: row.capabilities ?? [], runner: row.runner !== null, credentialChoices: row.runnerDetails?.credentialChoices }));
 }
 

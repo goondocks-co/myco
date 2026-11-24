@@ -1,3 +1,4 @@
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { readDocumentStatus } from '../db/documents/status.js';
 import { readBudgetStatus } from '../db/runs/budget.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
@@ -99,7 +100,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
       const [settings, limits] = await Promise.all([claimSettings(env), readDispatchLimits(env)]);
       const reason = await fleetTaskReason(env, status.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK, workerFacts.fleet,
         ctx.now, settings, limits, undefined, fleetSelectionContext(env, isAdmin(ctx.member.role)));
-      waitingForSignIn = reason === 'not_signed_in' || reason === 'credential_unavailable';
+      waitingForSignIn = reason === 'not_signed_in' || reason === 'credential_unavailable' || isStoredKeyFailure(reason);
     }
     return {...status,line:learningStatusLine(status,budget??null,waitingForSignIn)};
   });

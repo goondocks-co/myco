@@ -9,6 +9,7 @@ import { runnerCheckIn } from '@goondocks/myco-shared/setup-guidance';
 import { featureAdvertised, FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { EFFORT_UNAPPLIED, EXECUTION_PROFILE_FEATURE, MODEL_CATALOG_FEATURE, PROFILE_OUTCOME_FEATURE, PROFILE_UNAPPLIED, parseProfileRefusal, profileSupported, type ExecutionProfile, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
+import type { RunDiagnosticCode } from '@goondocks/myco-shared/run-diagnostic';
 import { repositoryFailureForVersion, runErrorDiagnostic, parseHarnessStop, type HarnessStop, parseRepositoryFailure, budgetError, classifyDiagnostic, HARNESS_NO_ENDING_ERROR, harnessStoppedError, workerFailedError, workerStartError, type WorkerFailureCode, type WorkerStartCode } from '@goondocks/myco-shared/run-text';
 import { sumAttemptUsage, ExecutionAccounting } from './accounting.js';
 import { WORKER_ACCOUNTING_FEATURE, WORKER_ACCOUNTING_VERSION, type ExecutionIdentity, type WorkerUsage, type WorkerExecutionAccounting } from '@goondocks/myco-shared/worker-usage';
@@ -505,6 +506,10 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
   };
 }
 
+function loginMissingForRun(code: RunDiagnosticCode | null, run: ClaimedRun): boolean {
+  return code === 'login_missing' || (code === 'invalid_key' && Object.keys(run.credentialEnv).length === 0);
+}
+
 /**
  * Drive one claimed run to its end.
  *
@@ -650,7 +655,7 @@ async function drive(
         const last = events.at(-1);
         if (!retriedLogin && recheckLogin !== undefined && named.retryFirstLoginMissing === true
           && last?.kind === 'ended' && last.stop === 'error'
-          && classifyDiagnostic(run.harness, last).code === 'login_missing'
+          && loginMissingForRun(classifyDiagnostic(run.harness, last).code, run)
           && !events.some((event) => event.kind === 'tool_call') && !stopping.signal.aborted) {
           retriedLogin = true;
           if (last.detail !== null) keepRunDiagnostic(options, run, harnessStoppedError('error', classifyDiagnostic(run.harness, last)), last.detail);
@@ -1186,7 +1191,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           outcome = { status: 'failed', error: coded, identity: { status: 'unknown', reason: 'worker_failure' } };
         }
         if (outcome.status === 'failed') {
-          if (runErrorDiagnostic(outcome.error ?? '') === 'login_missing') detection.loginMissing(run.harness, Object.keys(run.credentialEnv).length > 0 ? 'stored' : 'own');
+          if (loginMissingForRun(runErrorDiagnostic(outcome.error ?? ''), run)) detection.loginMissing(run.harness, Object.keys(run.credentialEnv).length > 0 ? 'stored' : 'own');
           else detection.invalidate();
         }
         // Only the current lease owner reports the attempt's outcome.

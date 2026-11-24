@@ -1,3 +1,5 @@
+import { STORED_KEY_FAILURE_WORDS } from './runner-fleet.js';
+import { STORED_KEY_READER_CODES } from './run-diagnostic.js';
 /** Consecutive interrupted attempts admitted before automatic work stops. */
 export const MAX_CONSECUTIVE_INTERRUPTION_ATTEMPTS = 3;
 
@@ -83,6 +85,10 @@ export const RUN_FAILURE_WORDS: Readonly<Record<string, string>> = {
   task_start_failed: 'The machine could not start the task.',
   model_not_applied: 'The agent couldn’t use the chosen model.',
   report_without_audit: 'The agent didn’t account for the steps it took, so its work couldn’t be checked.',
+  [STORED_KEY_READER_CODES.out_of_credit]: STORED_KEY_FAILURE_WORDS.out_of_credit,
+  [STORED_KEY_READER_CODES.invalid_key]: STORED_KEY_FAILURE_WORDS.invalid_key,
+  agent_out_of_credit: 'The agent’s sign-in ran out of API credit. Check its balance with the provider.',
+  agent_invalid_key: 'The provider rejected the agent’s API key. Check the sign-in on the machine that ran it.',
   agent_not_signed_in: 'The agent isn’t signed in on the machine that ran it.',
   agent_rate_limited: 'The agent’s provider limited how often it could ask, so it stopped.',
   agent_model_refused: 'The agent’s model refused to carry on with the task.',

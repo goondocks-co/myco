@@ -1,5 +1,8 @@
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
-import { runnerAgentLoginReady, runnerDisplay, type FleetQueue, type QueueReason } from '@goondocks/myco-shared/runner-fleet';
+import { QUEUE_REASON_WORDS, runnerAgentLoginReady, runnerDisplay, type FleetQueue, type QueueReason } from '@goondocks/myco-shared/runner-fleet';
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
+import { credentialHoldReason } from '@goondocks/myco-shared/run-holds';
+import type { RunnerSecretAvailability } from '../settings/runner-secret-health.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import type { ServerEnv } from '../../core/adapters.js';
 import { readWorkerFleet, fleetReports, type WorkerFleetRow } from '../../core/worker-contacts.js';
@@ -34,33 +37,32 @@ export async function fleetTaskReason(env: ServerEnv, task: string, fleet: reado
 async function fleetReasonFromLoad(env: ServerEnv, task: string, fleet: readonly WorkerFleetRow[], settings: ReadonlyMap<string, string>,
   limits: DispatchLimits, load: DispatchLoad, selection: ReturnType<typeof fleetSelectionContext>): Promise<QueueReason> {
   const ceiling = heldBy(load, limits);
-  let reason: QueueReason;
-  if (ceiling === 'queue_building') reason = 'queue_building';
-  else if (ceiling !== null) reason = 'dispatch_ceiling';
-  else if ((await previewFleet(env, task, fleet, settings, false, selection)).executions.length > 0) reason = 'ready';
-  else if ((await previewFleet(env, task, fleet, settings, true, selection)).executions.length > 0) reason = 'capacity';
-  else if (selection.includeSignIn && (await previewFleet(env, task, fleet, settings, false, selection)).heldBy?.startsWith('credential_unavailable:')) reason = 'credential_unavailable';
-  else {
-    const recent = fleet.filter(row => row.recent && (row.runner === null ? row.eligible : row.runner.state !== 'removed'));
-    const potential = async (candidate: WorkerFleetRow) => (await previewFleet(env, task, [{ ...candidate, eligible: true,
-      offers: candidate.offers?.map(offer => ({ ...offer, authenticated: true })) ?? null,
-      runnerDetails: candidate.runnerDetails === undefined ? undefined : { ...candidate.runnerDetails,
-        readiness: { ...candidate.runnerDetails.readiness, state: 'ready' } },
-    }], settings, true, selection)).executions.length > 0;
-    reason = 'no_runner';
-    for (const row of recent) {
-      const code = row.runnerDetails?.readiness.code;
-      const blocked: QueueReason | null = row.runner?.state === 'paused' ? 'paused'
-        : code === 'settling' ? 'settling' : code === 'updating' ? 'updating'
-        : code === 'registration' ? 'registration' : row.offers !== null && !row.offers.some(offer => offer.authenticated) ? 'not_signed_in' : null;
-      if (blocked !== null && (await potential(row) || (blocked === 'not_signed_in' && row.offers?.length === 0 && row.capabilities !== null
-        && capabilitiesRequiredBy(task).every(capability => row.capabilities!.includes(capability))))) {
-        reason = blocked;
-        break;
-      }
-      if (row.offers === null || row.capabilities === null || code === 'unknown') reason = 'unavailable';
-      else if (reason === 'no_runner') reason = 'model_profile';
+  if (ceiling !== null) return ceiling === 'queue_building' ? 'queue_building' : 'dispatch_ceiling';
+  const idle = await previewFleet(env, task, fleet, settings, false, selection);
+  if (idle.executions.length > 0) return 'ready';
+  const busy = await previewFleet(env, task, fleet, settings, true, selection);
+  if (busy.executions.length > 0) return 'capacity';
+  const credential = selection.includeSignIn ? credentialHoldReason(idle.heldBy) ?? credentialHoldReason(busy.heldBy) : null;
+  if (credential !== null) return credential;
+  const recent = fleet.filter(row => row.recent && (row.runner === null ? row.eligible : row.runner.state !== 'removed'));
+  const potential = async (candidate: WorkerFleetRow) => (await previewFleet(env, task, [{ ...candidate, eligible: true,
+    offers: candidate.offers?.map(offer => ({ ...offer, authenticated: true })) ?? null,
+    runnerDetails: candidate.runnerDetails === undefined ? undefined : { ...candidate.runnerDetails,
+      readiness: { ...candidate.runnerDetails.readiness, state: 'ready' } },
+  }], settings, true, selection)).executions.length > 0;
+  let reason: QueueReason = 'no_runner';
+  for (const row of recent) {
+    const code = row.runnerDetails?.readiness.code;
+    const blocked: QueueReason | null = row.runner?.state === 'paused' ? 'paused'
+      : code === 'settling' ? 'settling' : code === 'updating' ? 'updating'
+      : code === 'registration' ? 'registration' : row.offers !== null && !row.offers.some(offer => offer.authenticated) ? 'not_signed_in' : null;
+    if (blocked !== null && (await potential(row) || (blocked === 'not_signed_in' && row.offers?.length === 0 && row.capabilities !== null
+      && capabilitiesRequiredBy(task).every(capability => row.capabilities!.includes(capability))))) {
+      reason = blocked;
+      break;
     }
+    if (row.offers === null || row.capabilities === null || code === 'unknown') reason = 'unavailable';
+    else if (reason === 'no_runner') reason = 'model_profile';
   }
   return reason;
 }
@@ -114,15 +116,19 @@ async function queueProjection(env: ServerEnv, fleet: readonly WorkerFleetRow[],
 }
 
 /** Chosen stored sources affect readiness only through their slot's current usability. */
-export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRow[], now: number, available: (agent: string) => Promise<boolean>): Promise<void> {
+export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRow[], now: number, available: (agent: string) => Promise<RunnerSecretAvailability>): Promise<void> {
   const agents = new Set(fleet.flatMap(row => row.runnerDetails?.readiness.state === 'ready'
     ? row.offers?.filter(offer => row.runnerDetails?.credentialChoices?.[offer.id] === 'stored').map(offer => offer.id) ?? [] : []));
-  const storedCredentials = Object.fromEntries(await Promise.all([...agents].map(async agent => [agent, await available(agent)] as const)));
+  const availability = Object.fromEntries(await Promise.all([...agents].map(async agent => [agent, await available(agent)] as const)));
+  const storedCredentials = Object.fromEntries(Object.entries(availability).map(([agent, state]) => [agent, state === true]));
   for (const row of fleet) {
     const runner = row.runnerDetails;
     if (runner === undefined || runner.readiness.state !== 'ready' || runner.offers === null
       || runner.offers.some(offer => runnerAgentLoginReady(offer, runner.credentialChoices, storedCredentials))) continue;
-    runner.readiness = { state: 'unknown', code: 'credential_unavailable', reason: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change its sign-in on Runners.', observedAt: now };
+    const failure = runner.offers.filter(offer => runner.credentialChoices?.[offer.id] === 'stored')
+      .map(offer => availability[offer.id]).find(isStoredKeyFailure);
+    const code = failure ?? 'credential_unavailable';
+    runner.readiness = { state: 'unknown', code, reason: QUEUE_REASON_WORDS[code], observedAt: now };
     runner.display = runnerDisplay(runner);
   }
 }
@@ -132,7 +138,7 @@ export async function readFleetProjection(env: ServerEnv, now: number, includeSt
   const selection = fleetSelectionContext(env, includeStoredCredentials);
   const fleet = await fleetAvailability(env, now, selection.includeSignIn);
   const storedCredentials = includeStoredCredentials ? Object.fromEntries(await Promise.all(Object.keys(HARNESS_CREDENTIALS)
-    .map(async agent => [agent, await selection.available(agent)] as const))) : undefined;
+    .map(async agent => [agent, await selection.available(agent) !== false] as const))) : undefined;
   if (includeStoredCredentials) await applyFleetSignInAvailability(fleet, now, selection.available);
   const queue = await queueProjection(env, fleet, now, selection);
   return { observedAt: now, fleet, queue, ...(includeStoredCredentials ? { storedCredentials } : {}),

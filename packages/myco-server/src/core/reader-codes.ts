@@ -1,4 +1,4 @@
-import { diagnosticReaderCode } from '@goondocks/myco-shared/run-diagnostic';
+import { diagnosticReaderCode, STORED_KEY_READER_CODES } from '@goondocks/myco-shared/run-diagnostic';
 import { parseRunError, runErrorDiagnostic } from '@goondocks/myco-shared/run-text';
 import { type RunControlRefusalCode } from '@goondocks/myco-shared/run-control';
 export const STALE_RUN_ERROR = 'the machine running it stopped responding';
@@ -10,7 +10,8 @@ export const RUN_CLOSE_AUDIT_ERROR = 'the run ended without its audit';
 
 export type RunErrorCode = RunControlRefusalCode | 'lease_lapsed' | 'machine_did_not_start' | 'machine_unresponsive' | 'task_start_failed' | 'model_not_applied' | 'report_without_audit' | 'run_cancelled'
   | 'budget_too_small' | 'budget_wait_expired' | 'cards_wait_expired'
-  | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed'
+  | 'agent_not_signed_in' | 'agent_rate_limited' | 'agent_model_refused' | 'agent_timed_out' | 'agent_crashed' | 'agent_out_of_credit' | 'agent_invalid_key'
+  | (typeof STORED_KEY_READER_CODES)[keyof typeof STORED_KEY_READER_CODES]
   | 'repository_unprepared' | 'agent_failed' | 'agent_launch_failed' | 'agent_protocol_error' | 'agent_permission_refused' | 'agent_tools_unlisted' | 'agent_tools_unused' | 'run_failed';
 
 /** The code a run whose worker reported this error is recorded under: its diagnostic's reader code, or `run_failed`. */
@@ -30,6 +31,14 @@ export function runErrorCode(error: string | null, storedCode: string | null = n
   if (error.startsWith(LAUNCH_REFUSED_ERROR) || error.startsWith('the runtime refused to start')) return 'task_start_failed';
   if (error.startsWith(RUN_CLOSE_AUDIT_ERROR)) return 'report_without_audit';
   return diagnosticErrorCode(error);
+}
+
+/** Only administrators can read where a runner sourced its sign-in. */
+export function visibleRunErrorCode(code: string | null, includeSignIn: boolean): string | null {
+  if (includeSignIn) return code;
+  if (code === STORED_KEY_READER_CODES.out_of_credit) return diagnosticReaderCode('out_of_credit');
+  if (code === STORED_KEY_READER_CODES.invalid_key) return diagnosticReaderCode('invalid_key');
+  return code;
 }
 
 /** A skipped run's known classifier, or a named fallback for free text. */

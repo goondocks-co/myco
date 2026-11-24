@@ -110,6 +110,16 @@ describe('a harness diagnostic, stored as a coded reason', () => {
     }
   });
 
+  it.each([
+    ['codex', 'HTTP 429: insufficient_quota (credit_balance_exhausted)', 'out_of_credit'],
+    ['codex', 'Quota exceeded. Check your plan and billing details.', 'out_of_credit'],
+    ['codex', '401 Unauthorized: Incorrect API key provided', 'invalid_key'],
+    ['claude-code', '400 invalid_request_error: Your credit balance is too low to access the Anthropic API.', 'out_of_credit'],
+    ['claude-code', '401 authentication_error: invalid x-api-key', 'invalid_key'],
+  ] as const)('classifies %s provider refusals (%s)', (harness, detail, code) => {
+    expect(classifyDiagnostic(harness, { detail, exitCode: 1 })).toEqual({ code, exitCode: 1 });
+  });
+
   it('reads a code from the stream\'s structure first, then its words by the harness\'s own patterns, then its exit status', () => {
     expect(classifyDiagnostic('claude-code', { code: 'tools_unlisted', detail: 'rate_limit', exitCode: 1 })).toEqual({ code: 'tools_unlisted', exitCode: 1 });
     expect(classifyDiagnostic('claude-code', { detail: 'profile_unapplied: it offers no model x' })).toEqual({ code: 'profile_unapplied' });

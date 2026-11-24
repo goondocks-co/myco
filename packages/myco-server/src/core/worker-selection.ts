@@ -18,6 +18,7 @@ import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import { runnerAgentLoginReady, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
+import type { RunnerSecretAvailability } from '../db/settings/runner-secret-health.js';
 import { fixedTaskHarness, PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
 import { enabledCapabilities, settingTexts, type ProjectCapability } from './settings.js';
 import { admissionForTask } from './task-catalogue.js';
@@ -139,8 +140,10 @@ export type LoginStep<L> = (harness: string, plan: Exclude<LoginPlan, { reason: 
 type Selected<L> = { harness: string; profile: ExecutionProfile; login: L };
 
 /** Availability checks return no credential material. */
-export const availableLogin = (available: (harness: string) => Promise<boolean>): LoginStep<true> => async (harness, plan) =>
-  plan.kind === 'worker-login' || await available(harness) ? { login: true } : { reason: credentialUnavailable(harness) };
+export const availableLogin = (available: (harness: string) => Promise<RunnerSecretAvailability>): LoginStep<true> => async (harness, plan) => {
+  const result = plan.kind === 'worker-login' ? true : await available(harness);
+  return result === true ? { login: true } : { reason: credentialUnavailable(harness, result || undefined) };
+};
 
 /** Resolve a task against one worker's offers in preference order. */
 export async function selectExecution<L>(task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, login: LoginStep<L>, choices?: StoredRunnerCredentialChoices): Promise<{ selected: Selected<L> | null; reason: string | null }> {

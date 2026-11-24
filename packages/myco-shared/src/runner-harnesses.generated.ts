@@ -49,8 +49,16 @@ export const RUNNER_HARNESSES = [
     },
     "diagnostics": [
       {
+        "code": "out_of_credit",
+        "pattern": "\\bcredit balance (?:is )?too low\\b"
+      },
+      {
+        "code": "invalid_key",
+        "pattern": "invalid (?:x-api-key|api key)|api key (?:is invalid|(?:has been |was )?revoked)|\\bauthentication_error\\b[^\\n]{0,100}\\binvalid authentication credentials\\b"
+      },
+      {
         "code": "login_missing",
-        "pattern": "\\bauthentication_(?:failed|error)\\b|failed to authenticate|invalid api key|api key is invalid|please run /login|not logged in|oauth token (?:has )?expired|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"
+        "pattern": "\\bauthentication_(?:failed|error)\\b|failed to authenticate|please run /login|not logged in|oauth token (?:has )?expired|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"
       },
       {
         "code": "rate_limited",
@@ -102,8 +110,16 @@ export const RUNNER_HARNESSES = [
     },
     "diagnostics": [
       {
+        "code": "out_of_credit",
+        "pattern": "\\b(?:insufficient_quota|credit_balance_exhausted)\\b|\\bcredit balance exhausted\\b|exceeded (?:your|the) current quota|\\bquota exceeded\\. check your plan and billing details"
+      },
+      {
+        "code": "invalid_key",
+        "pattern": "\\binvalid_api_key\\b|incorrect api key|invalid api key|api key (?:has been |was )?revoked"
+      },
+      {
         "code": "login_missing",
-        "pattern": "\\b401 Unauthorized\\b|\\bunauthorized\\b|not logged in|codex login|missing (?:openai )?api key|invalid_api_key|incorrect api key|\\btoken (?:is |has )?expired"
+        "pattern": "\\b401 Unauthorized\\b|\\bunauthorized\\b|not logged in|codex login|missing (?:openai )?api key|\\btoken (?:is |has )?expired"
       },
       {
         "code": "rate_limited",
