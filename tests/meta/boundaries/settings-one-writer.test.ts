@@ -33,6 +33,11 @@ describe('settings one writer', () => {
       ])],
       [family + 'secret-rows.ts', new Set([moduleKey(join(SRC, 'core', 'secrets.ts'))])],
       [family + 'machines.ts', new Set([moduleKey(join(SRC, 'core', 'machine-settings.ts'))])],
+      [family + 'runner-secret-health.ts', new Set([
+        moduleKey(join(SRC, 'core', 'worker-claim.ts')),
+        moduleKey(join(SRC, 'db', 'schema-steps-runner-secret-health.ts')),
+        family + 'secret-rows.ts',
+      ])],
     ]);
     // The admission SQL other batches read through is shared on purpose: it holds no write.
     const shared = family + 'admission.ts';
