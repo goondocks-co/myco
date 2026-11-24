@@ -1,3 +1,4 @@
+import { ranSinceHookRepair } from '@goondocks/myco-shared/harness-health';
 import { interruptionWords } from '@goondocks/myco-shared/run-control';
 /**
  * Today's words: every sentence the page shows, built from the numbers the
@@ -473,6 +474,7 @@ export function harnessHealthWords(fact: MachineHarnessHealth): string {
   const machine = fact.machineName ?? 'a machine';
   if (fact.state === 'held_elsewhere') return harnessToolsElsewhere(harness, machine, fact.toolsDeployment);
   if (fact.state === 'ready') return `${harness}'s Myco tools on ${machine} are set up`;
+  if (fact.state === 'trust_required' && !ranSinceHookRepair(fact)) return `${harness}'s Myco tools on ${machine} are set up and waiting for its first run`;
   return `${harness} on ${machine}: ${fact.action!}`;
 }
 

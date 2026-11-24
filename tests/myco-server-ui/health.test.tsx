@@ -17,6 +17,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { rawIdsIn } from '../helpers/raw-ids';
 
 const NOW = Date.now();
+const HOUR = 3_600_000;
 const ADMIN = { sub: '583231', login: 'octocat', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 const MEMBER = { sub: '770001', login: 'lin', member: { id: 'mem_Hn5-pC0dJfA9sE_u', label: 'mem_Hn5-pC0dJfA9sE_u', role: 'member' as const } };
 const MYCO = 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11';
@@ -590,12 +591,16 @@ it('names the machine for private held destinations and for repair states', asyn
     '/api/status': () => Response.json({ ...STATUS, harnesses: [
       { id: 'claude-code', provisioned: true, state: 'held_elsewhere', machineId: 'ada_5a2d54af', machineName: 'Personal laptop' },
       { id: 'codex', provisioned: true, state: 'unwritable', action: 'Allow Myco to write Codex configuration', machineId: 'work', machineName: 'Work laptop' },
+      { id: 'codex', provisioned: true, state: 'trust_required', hookRepairAt: NOW - HOUR, ranAt: NOW - 2 * HOUR, action: "Restart Codex and trust Myco's hooks", machineId: 'idle', machineName: 'Spare laptop' },
+      { id: 'codex', provisioned: true, state: 'trust_required', hookRepairAt: NOW - 2 * HOUR, ranAt: NOW - HOUR, action: "Restart Codex and trust Myco's hooks", machineId: 'used', machineName: 'Desk laptop' },
     ] }),
   }));
   mount();
   const status = await screen.findByRole('region', { name: 'Status' });
   expect(await within(status).findByText("Claude Code's Myco tools on Personal laptop use another Myco")).toBeTruthy();
   expect(await within(status).findByText('Codex on Work laptop: Allow Myco to write Codex configuration')).toBeTruthy();
+  expect(within(status).getByText("Codex's Myco tools on Spare laptop are set up and waiting for its first run")).toBeTruthy();
+  expect(within(status).getByText("Codex on Desk laptop: Restart Codex and trust Myco's hooks")).toBeTruthy();
 });
 
 it('keeps a readable database distinct from failed learning and backup setting reads with no live export', async () => {
