@@ -11,7 +11,7 @@ import { todaySchedules, curationDispositions } from '../db/learning/curation-no
 import { todayMarks } from '../db/meta/marks.js';
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
-import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
+import { QUEUE_REASON_WORDS, storedKeyFailureTitle, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { HELD_BY_WORDS, holdSentence, visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { stepWords } from '@goondocks/myco-shared/step-words';
 import { callWords } from '@goondocks/myco-shared/call-words';
@@ -310,7 +310,12 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
     ...fleet.flatMap((row): NowNeed[] => {
       const runner = row.runnerDetails;
       const code = runner?.readiness.code;
-      if (runner === undefined || row.runner?.state !== 'enabled' || (code !== 'not_signed_in' && code !== 'credential_unavailable' && !isStoredKeyFailure(code))) return [];
+      if (runner === undefined || row.runner?.state !== 'enabled') return [];
+      if (runner.storedKeyFailures?.length) return runner.storedKeyFailures.map(({ agent, slot, failure }) => ({
+        key: `sign-in:${runner.id}:${agent}`, projectId: null, what: storedKeyFailureTitle(failure, slot),
+        why: storedKeyFailureWords(failure, slot), at: runner.readiness.observedAt ?? now, runId: null, retryAt: null,
+      }));
+      if (code !== 'not_signed_in' && code !== 'credential_unavailable') return [];
       return [{ key: `sign-in:${row.runner.id}`, projectId: null, what: `${row.runner.name} can’t sign in to a coding agent`,
         why: runner.readiness.reason, at: runner.readiness.observedAt ?? now, runId: null, retryAt: null }];
     }),

@@ -27,7 +27,7 @@ import { ROUTES } from '@myco-server-worker/routes.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID, PROJECT_HEADER, SERVER_SCHEMA_VERSION, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { RUNNER_TOKEN_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/runners.js';
-import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
+import { claimNextRun, expireLeases, selectWorkerExecution } from '@myco-server-worker/core/harness.js';
 import { QUEUE_MAX_AGE_MS, runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { workerLiveness } from '@myco-server-worker/db/runs/status.js';
@@ -1285,7 +1285,7 @@ describe('runner agent sign-in choice', () => {
       expect((await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'claude-code', choice: 'stored' })).status).toBe(200);
       await r.queueTitling();
       const first = (await r.claim(token)).run;
-      const end = (run: Json, fields: Json) => r.json(r.asRunner(token, '/worker/end', {
+      const end = (run: Json, fields: Json, owner = token) => r.json(r.asRunner(owner, '/worker/end', {
         projectId: 'proj_1', runId: run.id, attemptId: run.attemptId, ...fields,
       }));
       await end(first, { status: 'failed', error: 'Your credit balance is too low to access the Anthropic API.',
@@ -1297,25 +1297,60 @@ describe('runner agent sign-in choice', () => {
       expect((await r.claim(token)).claimed).toBe(false);
       const fleet = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
       expect(fleet.runners[0].readiness.code).toBe('out_of_credit');
-      expect(fleet.runners[0].readiness.reason).toContain('Work is still waiting.');
+      expect(fleet.runners[0].readiness.reason).toContain('The Anthropic key ran out of API credit.');
       const health = await r.json(r.asSession('/api/status', {}, OWNER_SUB, 'GET'));
-      expect(health.workers.queue.reasons).toContainEqual({ reason: 'out_of_credit', count: 1 });
+      expect(health.workers.queue.reasons).toContainEqual({ reason: 'out_of_credit', keySlot: 'anthropic', count: 1 });
       const waiting = await r.json(r.asSession('/api/projects/proj_1/runs?status=queued', {}, OWNER_SUB, 'GET'));
       expect(holdSentence(waiting.rows[0].waitReason)).toBe(fleet.runners[0].readiness.reason);
-      r.advance(QUEUE_MAX_AGE_MS);
-      await runStaleSweep(r.env, r.now());
-      const probe = (await r.claim(token)).run;
-      expect(probe.id).toBe(waiting.rows[0].id);
-      await end(probe, { status: 'completed' });
+      const models = await claimSettings(r.e.serverEnv);
+      models.set('worker.harness', '"opencode"');
+      models.set('agent.reasoning_map.opencode.low', '"openrouter/~anthropic/claude-haiku-latest"');
+      models.set('agent.harnesses.opencode.credential', '"deployment"');
+      const openrouter = await fleetExecution(r.e.serverEnv, 'title-summary', [{ offers: [offeredHarness('opencode')],
+        capabilities: WORKER_CAPABILITIES, runner: true, credentialChoices: { opencode: 'stored' } }], models);
+      expect(openrouter.selected).toMatchObject({ harness: 'opencode', profile: { model: 'openrouter/~anthropic/claude-haiku-latest' } });
+      const execution = await selectWorkerExecution(r.e.serverEnv, 'title-summary', [offeredHarness('opencode')], models);
+      expect(execution.selected?.credentialEnv).toEqual({});
+      await r.asRunner(token, '/worker/claim', { harnesses: [...OFFERED, offeredHarness('codex')], capabilities: WORKER_CAPABILITIES });
+      const mixed = (await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0];
+      expect(mixed).toMatchObject({ display: 'Online', storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'out_of_credit' }] });
+      const now = await r.json(r.asSession('/api/work/now', {}, OWNER_SUB, 'GET'));
+      expect(now.needsYou).toContainEqual(expect.objectContaining({ what: 'The Anthropic key ran out of API credit' }));
+      const second = await r.register('second');
+      const setChoice = (id: string, choice: 'own' | 'stored') => r.asSession(`/api/runners/${id}/sign-in`, { agent: 'claude-code', choice });
+      expect((await setChoice(second.runnerId, 'stored')).status).toBe(200);
       await r.queueTitling();
+      r.advance(55 * 60_000);
+      const tokens = [token, second.token];
+      const claims = await Promise.all(tokens.map(r.claim));
+      expect(claims.filter(claim => claim.claimed)).toHaveLength(1);
+      const winner = claims.findIndex(claim => claim.claimed);
+      expect(claims[winner].run.id).toBe(waiting.rows[0].id);
+      await end(claims[winner].run, { status: 'completed' }, tokens[winner]);
       const resumed = await r.claim(token);
       expect(resumed.claimed).toBe(true);
       await end(resumed.run, { status: 'failed', error: '401 authentication_error: invalid x-api-key' });
       await r.queueTitling();
       expect((await r.claim(token)).claimed).toBe(false);
       expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0].readiness.code).toBe('invalid_key');
+      expect((await setChoice(second.runnerId, 'own')).status).toBe(200);
+      const own = await r.claim(second.token);
+      expect(own).toMatchObject({ claimed: true, run: { credentialEnv: {} } });
+      await end(own.run, { status: 'completed' }, second.token);
+      await r.asSession(`/api/runners/${second.runnerId}/remove`, {});
+      await r.queueTitling();
+      expect((await r.claim(token)).claimed).toBe(false);
+      const held = await r.json(r.asSession('/api/projects/proj_1/runs?status=queued', {}, OWNER_SUB, 'GET'));
+      expect(holdSentence(held.rows[0].waitReason)).toContain('The Anthropic key was rejected.');
+      await r.asSession(`/api/runners/${runnerId}/pause`, {});
+      r.advance(QUEUE_MAX_AGE_MS);
+      await runStaleSweep(r.env, r.now());
+      const expired = await r.json(r.asSession(`/api/projects/proj_1/runs/${held.rows[0].id}`, {}, OWNER_SUB, 'GET'));
+      expect(expired.run).toMatchObject({ status: 'failed', errorCode: 'machine_did_not_start' });
+      await r.queueTitling();
       await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
         .put('anthropic', 'sk-ant-api-fixture-replacement', OWNER, r.now());
+      await r.asSession(`/api/runners/${runnerId}/resume`, {});
       expect((await r.claim(token)).claimed).toBe(true);
     } finally { r.e.sqlite.close(); }
   });

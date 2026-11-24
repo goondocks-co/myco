@@ -10,6 +10,7 @@ export interface HarnessCredential {
   provider: HarnessProvider;
   /** The Deployment secret slot the harness's runs read, or null where the Deployment holds none for it. */
   slot: SecretSlotName | null;
+  modelProvider?: string;
   /** The variables the harness reads, in the order a value is matched to one. */
   variables: readonly string[];
   /** Credential kinds this harness can use from its Deployment slot. Omitted means API keys only. */

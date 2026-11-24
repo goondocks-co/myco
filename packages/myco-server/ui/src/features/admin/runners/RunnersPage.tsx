@@ -1,4 +1,4 @@
-import { harnessSignInFailureWords } from '@goondocks/myco-shared/runner-fleet';
+import { harnessSignInFailureWords, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -160,7 +160,8 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
       {allowed && [...new Set([...(runner.offers?.map(offer => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])].map(agent => <AgentSignIn key={agent} runner={runner} agent={agent}
         allowed={allowed && runner.state !== 'removed'} storedAvailable={storedCredentials[agent] === true} />)}
       {runner.offers?.map(offer => { const failure = harnessSignInFailureWords(offer); return failure === null ? null : <p key={offer.id} className="mt-s2 t-small text-bad">{failure}</p>; })}
-      {isStoredKeyFailure(runner.readiness.code) && <p className="mt-s2 t-small text-bad">{runner.readiness.reason}</p>}
+      {allowed && runner.storedKeyFailures?.map(({ agent, slot, failure }) =>
+        <p key={agent} className="mt-s2 t-small text-bad">{harnessLabel(agent)} · {storedKeyFailureWords(failure, slot)}</p>)}
       {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
       <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
         <div className="mt-s3 flex flex-col gap-s2 break-words">
@@ -222,7 +223,7 @@ function AgentSignIn({ runner, agent, allowed, storedAvailable }: { runner: Runn
     {allowed && <div className="mt-s2 flex flex-wrap items-center gap-s2">
       <Button size="sm" variant="secondary" disabled={choice === 'own' || change.isPending} onClick={() => change.mutate('own')}>Use this machine’s sign-in</Button>
       <Button size="sm" variant="secondary" disabled={!storedAvailable || choice === 'stored' || change.isPending} onClick={() => change.mutate('stored')}>Use the server’s stored key</Button>
-      {!storedAvailable && <span className="text-muted">No stored key this agent can use.</span>}
+      {!storedAvailable && !runner.storedKeyFailures?.some(failure => failure.agent === agent) && <span className="text-muted">No stored key this agent can use.</span>}
     </div>}
     {change.isError && <ErrorState error={change.error} onRetry={() => change.reset()} />}
   </div>;

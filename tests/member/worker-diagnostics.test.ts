@@ -187,7 +187,7 @@ describe('a worker driving a harness that fails', () => {
 });
 
 describe('first Claude Code login recovery', () => {
-  for (const mode of ['recovers', 'logged-out', 'still-missing', 'later-run', 'tool-called'] as const) {
+  for (const mode of ['recovers', 'logged-out', 'still-missing', 'later-run', 'tool-called', 'stored-key'] as const) {
     it(`rechecks readiness and bounds retries: ${mode}`, async () => {
       const scratch = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-first-login-')));
       const count = join(scratch, 'starts');
@@ -223,7 +223,8 @@ describe('first Claude Code login recovery', () => {
         if (url.endsWith('/worker/claim')) {
           claims++;
           return Response.json({ persisted: true, claimed: true, heartbeatMs: 60_000,
-            run: { id: `run_${claims}`, attemptId: `attempt_${claims}`, projectId: 'proj_1', task: 'title-summary', instruction: 'do it', harness: 'claude-code', runToken: 'tok_run', credentialEnv: { ANTHROPIC_API_KEY: secret }, profile: STUB_PROFILE, timeoutSeconds: 60 },
+            run: { id: `run_${claims}`, attemptId: `attempt_${claims}`, projectId: 'proj_1', task: 'title-summary', instruction: 'do it', harness: 'claude-code', runToken: 'tok_run',
+              credentialEnv: mode === 'stored-key' ? { ANTHROPIC_API_KEY: secret } : {}, profile: STUB_PROFILE, timeoutSeconds: 60 },
           });
         }
         if (url.endsWith('/worker/end')) {
@@ -237,8 +238,8 @@ describe('first Claude Code login recovery', () => {
         signal: stopping.signal, log: () => {}, fetchImpl: profileWorkerServer(fetchImpl),
       }));
       expect(ends.map((end) => end.status)).toEqual(mode === 'later-run' ? ['completed', 'failed'] : [mode === 'recovers' ? 'completed' : 'failed']);
-      expect(readFileSync(count, 'utf8').trim().split('\n')).toHaveLength(mode === 'logged-out' || mode === 'tool-called' ? 1 : 2);
-      if (mode !== 'later-run' && mode !== 'tool-called') expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(2);
+      expect(readFileSync(count, 'utf8').trim().split('\n')).toHaveLength(mode === 'logged-out' || mode === 'tool-called' || mode === 'stored-key' ? 1 : 2);
+      if (mode !== 'later-run') expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(mode === 'tool-called' || mode === 'stored-key' ? 1 : 2);
       if (mode === 'recovers') {
         const directories = readFileSync(join(scratch, 'directories'), 'utf8').trim().split('\n');
         const configs = readFileSync(join(scratch, 'configs'), 'utf8').trim().split('\n');
@@ -248,9 +249,8 @@ describe('first Claude Code login recovery', () => {
         expect(directories.every((dir) => !existsSync(dir))).toBe(true);
         expect(ends[0]!.usage).toMatchObject({ inputTokens: 28, outputTokens: 8, estimatedCostUsd: 0.5 });
       }
-      if (mode === 'tool-called') expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(1);
       const kept = readFileSync(diagnosticLogPath(join(scratch, 'diagnostics')), 'utf8');
-      expect(kept).toContain('keychain is not ready');
+      expect(kept).toContain('the harness stopped: error (invalid_key)');
       expect(kept).not.toContain(secret);
       expect(kept).not.toContain(OPENAI_KEY);
       expect(kept).not.toContain('tok_run');

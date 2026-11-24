@@ -34,6 +34,7 @@ export const SECRET_SLOTS: readonly SecretSlot[] = [
 ];
 
 export const SECRET_SLOT_NAMES: readonly SecretSlotName[] = SECRET_SLOTS.map((slot) => slot.name);
+export const secretSlotLabel = (name: SecretSlotName): string => SECRET_SLOTS.find(slot => slot.name === name)!.label;
 
 export const isSecretSlotName = (value: string): value is SecretSlotName => (SECRET_SLOT_NAMES as readonly string[]).includes(value);
 

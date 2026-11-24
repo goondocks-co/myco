@@ -216,9 +216,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }
-  for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH, {
-    forExpiry: true, excludeAutomaticTasks: activation.active ? [] : BUDGET_WORKER_TASKS,
-  })) {
+  for (const queued of await listQueuedAcrossProjects(env.db, JOB_BATCH, activation.active ? [] : BUDGET_WORKER_TASKS)) {
     const automatic = queued.origin === 'automatic' && queued.task !== null && BUDGET_WORKER_TASKS.includes(queued.task);
     const budgetHeld=queued.heldBy==='budget';
     const quote=queued.budgetQuoteUsd;

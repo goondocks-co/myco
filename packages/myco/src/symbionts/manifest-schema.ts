@@ -898,6 +898,8 @@ const RunnerManifestSchema = z.object({
      */
     slot: z.enum([...PROVIDER_SLOT_NAMES, 'own']).nullable(),
     ownSlotLabel: z.string().min(1).optional(),
+    /** When present, the stored key serves only model IDs under this provider prefix. */
+    modelProvider: z.string().min(1).optional(),
     /** The variables the harness reads its credential from, in the order a value is matched to one. */
     variables: z.array(z.string().min(1)).min(1),
     /** Credential kinds it can use from its slot; absent means API keys only. */

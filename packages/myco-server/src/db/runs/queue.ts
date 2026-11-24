@@ -2,8 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import type { ClaimCandidate, QueuedRunRef } from '../../core/runs.js';
 import type { ReadScope } from '../../read/scope.js';
 import { BUDGET_WORKER_TASKS } from '../../core/budget-policy.js';
-import { CREDENTIAL_HOLD_PREFIX, PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
-import { STORED_KEY_FAILURES } from '@goondocks/myco-shared/run-diagnostic';
+import { PROFILE_HOLD_PREFIXES } from '@goondocks/myco-shared/run-holds';
 import { commit, read, readSet, write } from '../index.js';
 import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { runOriginSql, contextValue, BUDGET_QUOTE_USD_KEY, BUDGET_QUOTE_AT_KEY } from '../run-context.js';
@@ -118,19 +117,13 @@ export async function readTaskBudgetHolds(db: RelationalStore): Promise<BudgetHo
   }) : null };
 }
 
-const withoutKeyHold = (project: string, task: string, origin: string) => `NOT EXISTS (
-  SELECT 1 FROM task_runtime h WHERE h.project_id=${project} AND h.task=${task} AND h.origin=${origin}
-    AND (${STORED_KEY_FAILURES.map(failure => `h.hold_reason GLOB '${CREDENTIAL_HOLD_PREFIX}*:${failure}'`).join(' OR ')}))`;
-
-const queuedRuns = read<[string, number, number], QueuedRunRef>({ name: 'runs.queuedAcrossProjects', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.queued_at AS queuedAt,
+const queuedRuns = read<[string, number], QueuedRunRef>({ name: 'runs.queuedAcrossProjects', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.queued_at AS queuedAt,
   ${taskHoldSql('d.source_hold', 'd.origin')} AS heldBy,r.dispatch_spec AS dispatchSpec,r.dispatched_by AS dispatchedBy,d.origin,${contextValue(BUDGET_QUOTE_USD_KEY)} AS budgetQuoteUsd
   FROM task_due d JOIN agent_runs r ON r.project_id=d.project_id AND r.id=d.run_id
-  WHERE (d.origin<>'automatic' OR r.task IS NULL OR d.task NOT IN (SELECT value FROM json_each(?1)))
-    AND (?3=0 OR ${withoutKeyHold('d.project_id', 'd.task', 'd.origin')})
+  WHERE d.origin<>'automatic' OR r.task IS NULL OR d.task NOT IN (SELECT value FROM json_each(?1))
   ORDER BY d.queued_at,d.run_id,d.project_id LIMIT ?2` });
-export async function listQueuedAcrossProjects(db: RelationalStore, limit: number,
-  options: { excludeAutomaticTasks?: readonly string[]; forExpiry?: boolean } = {}): Promise<QueuedRunRef[]> {
-  const [rows] = await readSet(db, queuedRuns.bind(JSON.stringify(options.excludeAutomaticTasks ?? []), limit, Number(options.forExpiry === true)));
+export async function listQueuedAcrossProjects(db: RelationalStore, limit: number, excludeAutomaticTasks: readonly string[] = []): Promise<QueuedRunRef[]> {
+  const [rows] = await readSet(db, queuedRuns.bind(JSON.stringify(excludeAutomaticTasks), limit));
   return rows;
 }
 const hasQueued = read<[holder: string], { queued: number }>({ name: 'runs.hasQueued', sql: `SELECT CASE WHEN ${RUN_ADMISSION_READY_SQL} THEN EXISTS(SELECT 1 FROM task_runtime WHERE queued_count>0
@@ -147,7 +140,6 @@ const failures = [false,true].map(guarded => [false,true].map(automatic => [fals
     sql: `UPDATE agent_runs SET status='failed',completed_at=?,error=?,error_code=?,held_by=NULL
       WHERE project_id=? AND id=? AND status='queued'
       ${guarded ? `AND ${taskHoldSql('held_by', runOriginSql())} IS ? AND queued_at IS ?
-        AND ${withoutKeyHold('agent_runs.project_id', "COALESCE(agent_runs.task,'')", runOriginSql('agent_runs'))}
         ${automatic ? `AND EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') AND ${BUDGET_QUEUE_OPENED_SQL} IS ?` : ''}
         ${quoted ? `AND ${contextValue(BUDGET_QUOTE_USD_KEY)} IS ? AND ${contextValue(BUDGET_QUOTE_USD_KEY)}>${effectiveBudgetSql()}` : ''}` : ''}
       RETURNING dispatched_by AS displaced` }))));

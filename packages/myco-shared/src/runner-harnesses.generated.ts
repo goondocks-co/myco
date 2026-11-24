@@ -54,7 +54,7 @@ export const RUNNER_HARNESSES = [
       },
       {
         "code": "invalid_key",
-        "pattern": "invalid (?:x-api-key|api key)|api key (?:is invalid|(?:has been |was )?revoked)|\\bauthentication_error\\b[^\\n]{0,100}\\binvalid authentication credentials\\b"
+        "pattern": "invalid (?:x-api-key|api key)|api key (?:is invalid|(?:has been |was )?revoked)|\\bauthentication_error\\b[^\\n]{0,100}\\binvalid authentication\\b"
       },
       {
         "code": "login_missing",
@@ -155,6 +155,7 @@ export const RUNNER_HARNESSES = [
     "credential": {
       "provider": "anthropic",
       "slot": "anthropic",
+      "modelProvider": "anthropic",
       "variables": [
         "ANTHROPIC_API_KEY"
       ],
@@ -199,6 +200,14 @@ export const RUNNER_HARNESSES = [
       ]
     },
     "diagnostics": [
+      {
+        "code": "out_of_credit",
+        "pattern": "\\bcredit balance (?:is )?too low\\b"
+      },
+      {
+        "code": "invalid_key",
+        "pattern": "invalid (?:x-api-key|api key)|api key (?:is invalid|(?:has been |was )?revoked)|\\bauthentication_error\\b[^\\n]{0,100}\\binvalid authentication\\b"
+      },
       {
         "code": "login_missing",
         "pattern": "ProviderAuthError|LoadAPIKeyError|api key is missing|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)|not authenticated|authentication required"
@@ -251,6 +260,14 @@ export const RUNNER_HARNESSES = [
       "modelHint": "Model selection is unavailable for this agent."
     },
     "diagnostics": [
+      {
+        "code": "out_of_credit",
+        "pattern": "\\b(?:insufficient|out of) (?:prepaid )?credits\\b|\\b(?:prepaid )?credit(?:s| balance) (?:is |are |has been )?exhausted\\b"
+      },
+      {
+        "code": "invalid_key",
+        "pattern": "\\binvalid api key\\b|\\b(?:the provided )?api key is invalid\\b"
+      },
       {
         "code": "login_missing",
         "pattern": "authentication required|not logged in|\\blogin\\b[^\\n]{0,40}\\brequired\\b|agent login|\\bunauthorized\\b|(?:HTTP|status|status code|error_status)[ :=\"]*401\\b|\\b401 Unauthorized\\b|\\(401\\)"

@@ -125,6 +125,7 @@ runner:
   credential:
     provider: anthropic
     slot: anthropic
+    modelProvider: anthropic
     variables: [ANTHROPIC_API_KEY]
     accepts: [api-key]
   profile:
@@ -150,6 +151,8 @@ runner:
   # How a stop it explains in its own words reads as a coded reason: a protocol error's message and what it writes to
   # stderr. The first pattern that matches decides; the words are read on the worker and never stored.
   diagnostics:
+    - { code: out_of_credit, pattern: '\bcredit balance (?:is )?too low\b' }
+    - { code: invalid_key, pattern: 'invalid (?:x-api-key|api key)|api key (?:is invalid|(?:has been |was )?revoked)|\bauthentication_error\b[^\n]{0,100}\binvalid authentication\b' }
     - { code: login_missing, pattern: 'ProviderAuthError|LoadAPIKeyError|api key is missing|\bunauthorized\b|(?:HTTP|status|status code|error_status)[ :="]*401\b|\b401 Unauthorized\b|\(401\)|not authenticated|authentication required' }
     - { code: rate_limited, pattern: '(?:HTTP|status|status code|error_status)[ :="]*429\b|\b429 Too Many\b|\(429\)|too many requests|rate[_ -]?limit|usage limit|\bquota\b' }
     - { code: model_refused, pattern: 'ModelNotFound|\bmodel\b[^\n]{0,80}\b(?:not found|not supported|does not exist|not available)\b' }

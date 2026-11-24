@@ -15,7 +15,8 @@
  * while no worker heard from lately reports it.
  */
 import { isStoredKeyFailure, type StoredKeyFailure } from './run-diagnostic.js';
-import { STORED_KEY_FAILURE_WORDS } from './runner-fleet.js';
+import { storedKeyFailureWords } from './runner-fleet.js';
+import { HARNESS_CREDENTIALS } from './harness-providers.js';
 import { harnessName, PROFILE_HARNESSES } from './execution-profile.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from './repository.js';
 
@@ -74,7 +75,7 @@ const credentialUnavailableHold = {
   key: 'credential_unavailable',
   words: (value: string) => {
     const [harness = '', failure] = value.split(':');
-    return isStoredKeyFailure(failure) ? STORED_KEY_FAILURE_WORDS[failure]
+    return isStoredKeyFailure(failure) ? storedKeyFailureWords(failure, HARNESS_CREDENTIALS[harness]?.slot ?? undefined)
       : `${harnessName(harness)} has no sign-in this server can use. Add one in Settings.`;
   },
 };
@@ -104,6 +105,11 @@ export function credentialHoldReason(holder: string | null): 'credential_unavail
   if (!holder?.startsWith(CREDENTIAL_HOLD_PREFIX)) return null;
   const failure = holder.split(':')[2];
   return isStoredKeyFailure(failure) ? failure : 'credential_unavailable';
+}
+
+export function credentialHoldSlot(holder: string | null) {
+  if (!isStoredKeyFailure(credentialHoldReason(holder))) return undefined;
+  return HARNESS_CREDENTIALS[holder!.split(':')[1] ?? '']?.slot ?? undefined;
 }
 
 /** Stored sign-in holds are visible only to readers allowed to administer agent sign-in. */

@@ -18,6 +18,7 @@ import {
   WORKER_START_CODES, workerFailedError, workerStartError,
 } from '@goondocks/myco-shared/run-text';
 import { RUNNER_HARNESSES } from '../../packages/myco-shared/src/runner-harnesses.generated.ts';
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import {
   AWS_KEY_ID, AWS_SECRET, BARE_JWT, BASE64_SECRET, CORPUS, FREE_TEXT, GITHUB_FINE, GITHUB_PAT, GITHUB_SHORT, GITLAB_PAT, GITLAB_SHORT, GOOGLE_KEY,
   OPENAI_KEY, OPENAI_LETTERS, PROSE, SLACK_BOT, SLACK_USER, STRIPE_LIVE, STRIPE_SHORT, UUID_KEY, type Leak,
@@ -116,6 +117,9 @@ describe('a harness diagnostic, stored as a coded reason', () => {
     ['codex', '401 Unauthorized: Incorrect API key provided', 'invalid_key'],
     ['claude-code', '400 invalid_request_error: Your credit balance is too low to access the Anthropic API.', 'out_of_credit'],
     ['claude-code', '401 authentication_error: invalid x-api-key', 'invalid_key'],
+    ['opencode', '400 invalid_request_error: Your credit balance is too low to access the Anthropic API.', 'out_of_credit'],
+    ['cursor', 'The provided API key is invalid.', 'invalid_key'],
+    ['cursor', 'The prepaid credit balance is exhausted.', 'out_of_credit'],
   ] as const)('classifies %s provider refusals (%s)', (harness, detail, code) => {
     expect(classifyDiagnostic(harness, { detail, exitCode: 1 })).toEqual({ code, exitCode: 1 });
   });
@@ -134,9 +138,10 @@ describe('a harness diagnostic, stored as a coded reason', () => {
     expect(classifyDiagnostic('claude-code', { detail: 'x', exitCode: 0, signal: 'hunter22', names: ['Read'] })).toEqual({ code: 'harness_error' });
   });
 
-  it('declares, for every harness a worker runs, a pattern for each reason its words are read as', () => {
+  it('declares the required diagnostics and reserves stored-key diagnostics for agents with a stored slot', () => {
     for (const harness of RUNNER_HARNESSES) {
-      expect([...new Set(harness.diagnostics.map((rule) => rule.code))].sort()).toEqual([...PATTERNED_DIAGNOSTIC_CODES].sort());
+      const required = PATTERNED_DIAGNOSTIC_CODES.filter(code => harness.credential.slot !== null || !isStoredKeyFailure(code));
+      expect([...new Set(harness.diagnostics.map((rule) => rule.code))].sort()).toEqual(required.sort());
     }
   });
 

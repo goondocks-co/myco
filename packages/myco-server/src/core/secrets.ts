@@ -98,9 +98,8 @@ export interface SecretStore {
   /**
    * The plaintext, or null when nothing is stored.
    *
-   * This is the only function that returns a credential. Its callers are the
-   * ones that must actually authenticate something — never a display surface —
-   * and a gate holds it to them.
+   * The store opens plaintext through this method and `runnerKey` for callers
+   * that need to authenticate.
    */
   get(name: string): Promise<string | null>;
   /** Open a runner key with the sealed generation and its current provider observation. */

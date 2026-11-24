@@ -122,7 +122,7 @@ export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ pr
  */
 type LoginPlan = { kind: 'worker-login' } | { kind: 'deployment'; slot: SecretSlotName } | { reason: string };
 
-function loginPlan(harness: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices): LoginPlan {
+function loginPlan(harness: string, model: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices): LoginPlan {
   const configured = profileSetting(settings.get(`agent.harnesses.${harness}.credential`));
   if (choices?.[harness] === null) return { reason: credentialUnavailable(harness) };
   const source = choices === undefined ? configured ?? 'worker-login' : choices[harness] === 'stored' ? 'deployment' : 'worker-login';
@@ -131,6 +131,7 @@ function loginPlan(harness: string, settings: ReadonlyMap<string, string>, choic
   if (source !== 'deployment') return unavailable;
   const declared = HARNESS_CREDENTIALS[harness];
   if (declared === undefined || declared.slot === null || declared.variables.length === 0) return unavailable;
+  if (declared.modelProvider !== undefined && !model.startsWith(`${declared.modelProvider}/`)) return { kind: 'worker-login' };
   return { kind: 'deployment', slot: declared.slot };
 }
 
@@ -161,10 +162,10 @@ export async function selectExecution<L>(task: string, offers: readonly OfferedH
     const offer = remaining.find((entry) => entry.id === harness)!;
     const resolved = resolveExecutionProfile(task, harness, offer.profile, settings);
     if ('profile' in resolved) {
-      const plan = loginPlan(harness, settings, choices);
-      const opened = 'reason' in plan ? plan : await login(harness, plan);
-      if ('login' in opened) return { selected: { harness, profile: resolved.profile, login: opened.login }, reason: null };
-      reason ??= opened.reason;
+      const plan = loginPlan(harness, resolved.profile.model, settings, choices);
+      const opened = 'reason' in plan ? plan : plan.kind === 'worker-login' && !offer.authenticated ? null : await login(harness, plan);
+      if (opened !== null && 'login' in opened) return { selected: { harness, profile: resolved.profile, login: opened.login }, reason: null };
+      reason ??= opened?.reason ?? null;
     } else reason ??= resolved.reason;
     remaining = remaining.filter((entry) => entry.id !== harness);
   }

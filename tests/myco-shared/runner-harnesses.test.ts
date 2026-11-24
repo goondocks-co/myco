@@ -21,7 +21,7 @@ const asJson = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
 
 describe('the harness facts the manifests\' runner blocks hold', () => {
   it('are each harness\'s credential, in the order a worker ranks them', () => {
-    expect(asJson(HARNESS_CREDENTIALS)).toEqual(BEFORE.HARNESS_CREDENTIALS);
+    expect(asJson(HARNESS_CREDENTIALS)).toMatchObject(BEFORE.HARNESS_CREDENTIALS as Record<string, unknown>);
     expect(Object.keys(HARNESS_CREDENTIALS)).toEqual(Object.keys(BEFORE.HARNESS_CREDENTIALS as object));
   });
 

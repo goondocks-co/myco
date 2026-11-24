@@ -11,8 +11,7 @@ import { backlogWords, capabilityWords, lastLearningWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { EmbeddingSwitchPanel, PassedOverSources } from '../settings/EmbeddingSwitch';
 import { agoWords } from '@goondocks/myco-shared/time-words';
-import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
-import { STORED_KEY_FAILURE_WORDS } from '@goondocks/myco-shared/runner-fleet';
+import { storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -75,7 +74,8 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
   const schema = schemaLine(data.schema);
   const backlog = backlogWords(data.transcriptBacklog);
   const queue = data.workers.available ? data.workers.queue : undefined;
-  const keyFailures = new Set((data.workers.fleet ?? []).map(worker => worker.runnerDetails?.readiness.code).filter(isStoredKeyFailure));
+  const keyFailures = new Map((data.workers.fleet ?? []).flatMap(worker =>
+    (worker.runnerDetails?.storedKeyFailures ?? []).map(failure => [failure.slot, failure] as const)));
   const projects = [...data.projects].sort((a, b) => (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1));
   return (
     <div className="flex flex-col gap-s4">
@@ -108,8 +108,8 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         </RowCard>
       </div>}
       <QueueWarning queue={queue} />
-      {[...keyFailures].filter(code => !queue?.reasons.some(reason => reason.reason === code))
-        .map(code => <Card key={code}>{STORED_KEY_FAILURE_WORDS[code]}</Card>)}
+      {[...keyFailures.values()].filter(({ slot }) => !queue?.reasons.some(reason => reason.keySlot === slot))
+        .map(({ slot, failure }) => <Card key={slot}>{storedKeyFailureWords(failure, slot)}</Card>)}
       <SearchByMeaning now={now} />
 
       <div className="flex flex-col gap-s2">
