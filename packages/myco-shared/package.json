@@ -98,6 +98,10 @@
       "import": "./dist/harness-health.js",
       "types": "./dist/harness-health.d.ts"
     },
+    "./hook-trust": {
+      "import": "./dist/hook-trust.js",
+      "types": "./dist/hook-trust.d.ts"
+    },
     "./capture-rule-schema": {
       "import": "./dist/capture-rule-schema.js",
       "types": "./dist/capture-rule-schema.d.ts"

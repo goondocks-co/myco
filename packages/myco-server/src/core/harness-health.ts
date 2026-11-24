@@ -2,8 +2,9 @@ import type { RelationalStore } from './adapters.js';
 import {
   HARNESS_HEALTH_STATES, MAX_HARNESS_ACTION_CHARS, MAX_HARNESS_ID_CHARS, MAX_PROVISIONED_HARNESSES, MAX_HARNESS_DEPLOYMENT_CHARS,
   type ProvisionedHarnessFact, type ProvisionedHarnessReport,
-  HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS, ranSinceHookRepair,
+  HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS,
 } from '@goondocks/myco-shared/harness-health';
+import { ranSinceHookRepair } from '@goondocks/myco-shared/hook-trust';
 import {
   commitHarnessReport,
   harnessAttentionRows,

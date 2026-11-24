@@ -1,4 +1,4 @@
-import { ranSinceHookRepair } from '@goondocks/myco-shared/harness-health';
+import { ranSinceHookRepair } from '@goondocks/myco-shared/hook-trust';
 import { interruptionWords } from '@goondocks/myco-shared/run-control';
 /**
  * Today's words: every sentence the page shows, built from the numbers the

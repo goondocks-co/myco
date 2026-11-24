@@ -21,7 +21,8 @@ import { listRegistryEntriesResult, listDeploymentMembershipsResult, deploymentP
 import { ServerClient, classifyEventAnswer, type FetchLike } from '@myco/member/transport.js';
 import { deploymentHarnessRanAt } from '@myco/symbionts/harness-attribution.js';
 import { readHarnessActivity } from '@myco/symbionts/harness-activity.js';
-import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE, ranSinceHookRepair } from '@goondocks/myco-shared/harness-health';
+import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
+import { ranSinceHookRepair } from '@goondocks/myco-shared/hook-trust';
 
 export { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 const REPORT_CAP_MS = 2_000;

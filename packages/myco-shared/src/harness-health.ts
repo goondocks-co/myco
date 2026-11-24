@@ -34,13 +34,6 @@ export interface ProvisionedHarnessFact {
   toolsDeployment?: string;
 }
 
-/**
- * The harness ran on its machine after the hook repair its trust waits on, as its report says; a fact naming no repair
- * needs any reported use. Only such a harness is asked to trust Myco's hooks.
- */
-export const ranSinceHookRepair = (fact: Pick<ProvisionedHarnessFact, 'ranAt' | 'hookRepairAt'>): boolean =>
-  fact.ranAt !== undefined && (fact.hookRepairAt === undefined || fact.ranAt > fact.hookRepairAt);
-
 export interface ProvisionedHarnessReport {
   harnesses: ProvisionedHarnessFact[];
 }
