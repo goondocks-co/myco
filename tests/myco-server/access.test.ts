@@ -153,15 +153,15 @@ describe('members and invitations', () => {
     const { members } = await res.json() as { members: { id: string; linked: boolean; liveCredentials: number }[] };
     for (const member of members) {
       expect(Object.keys(member).sort()).toEqual([
-        'awaitingAdmission', 'createdAt', 'effectiveRole', 'id', 'label', 'linked', 'liveCredentials',
+        'awaitingAdmission', 'createdAt', 'effectiveRole', 'id', 'label', 'linked', 'liveCredentials', 'liveMachines',
         'revokedAt', 'revokedBy', 'role', 'roleRevision', 'runtimeFreshness', 'system',
       ]);
       for (const [field, value] of Object.entries(member)) {
         if (field !== 'createdAt' && field !== 'revokedAt') expect(String(value)).not.toContain(LINKED_SUB);
       }
     }
-    expect(members.find((m) => m.id === 'mem_machine_1')).toMatchObject({ linked: true, liveCredentials: 1 });
-    expect(members.find((m) => m.id === 'mem_machine_2')).toMatchObject({ linked: false, liveCredentials: 0 });
+    expect(members.find((m) => m.id === 'mem_machine_1')).toMatchObject({ linked: true, liveCredentials: 1, liveMachines: 1 });
+    expect(members.find((m) => m.id === 'mem_machine_2')).toMatchObject({ linked: false, liveCredentials: 0, liveMachines: 0 });
   });
 
   it('mints an attributed invitation once, bounds its life, validates its member, lists it live, and revokes it naming who', async () => {

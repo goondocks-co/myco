@@ -117,16 +117,17 @@ describe('credential lineage heads', () => {
     });
   });
 
-  it('counts a member\'s runtimes from the heads: one per rotating lineage, ending at expiry with no write', async () => {
+  it('counts a member\'s runtimes from the heads: one per rotating lineage, and machines once each, ending at expiry with no write', async () => {
     await withStore('native', async db => {
       const first = await issueMemberToken(db, { memberId: ADA, machineId: 'machine_1' }, NOW);
       await issueMemberToken(db, { memberId: ADA, machineId: 'machine_1' }, NOW + 5, { predecessorId: first.tokenId, lineageRoot: first.tokenId, lineageStartedAt: NOW });
       await issueMemberToken(db, { memberId: ADA, machineId: 'machine_2' }, NOW + 1);
+      await issueMemberToken(db, { memberId: ADA, machineId: 'machine_2' }, NOW + 1);
       const row = await countOf(db, ADA, NOW + 10);
-      expect(row.liveCredentials).toBe(2);
+      expect({ runtimes: row.liveCredentials, machines: row.liveMachines }).toEqual({ runtimes: 3, machines: 2 });
       expect(row.runtimeFreshness).toEqual({ state: 'ready', asOf: NOW + 10 });
       const later = await countOf(db, ADA, NOW + 2 + MEMBER_TOKEN_TTL_MS);
-      expect(later.liveCredentials).toBe(1);
+      expect({ runtimes: later.liveCredentials, machines: later.liveMachines }).toEqual({ runtimes: 1, machines: 1 });
       expect((await countOf(db, ADA, NOW + 10 + MEMBER_TOKEN_TTL_MS)).liveCredentials).toBe(0);
     });
   });

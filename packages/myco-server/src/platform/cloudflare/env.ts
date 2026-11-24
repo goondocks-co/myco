@@ -33,12 +33,19 @@ function embeddingPlatform(bindings: Pick<CloudflareBindings, 'AI'>): EmbeddingP
   return { target: 'cloudflare', ...(ai === undefined ? {} : { bindingProvider: (selection) => cloudflareEmbeddingProvider(ai, selection) }) };
 }
 
+/** The edge's asset store, read through its binding. */
+export interface DashboardAssets {
+  fetch(request: Request): Promise<Response>;
+}
+
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
 export interface CloudflareBindings extends OwnerBindings {
   VECTORIZE?: VectorIndex;
   AI?: EmbeddingBinding & CompletionBinding;
   MYCO_DB: RelationalStore;
   BUCKET: BlobStore;
+  /** The edge's dashboard build: the shell a page request no route serves is answered with. Absent where the configuration serves no dashboard. */
+  ASSETS?: DashboardAssets;
   SOURCE_LIMIT: RateLimiter;
   TOKEN_LIMIT: RateLimiter;
   /**

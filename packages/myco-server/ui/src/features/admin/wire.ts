@@ -27,7 +27,9 @@ export interface MemberRow {
   awaitingAdmission?: boolean;
   /** How many of this member's own runtimes authenticate now; null while the server is still counting. */
   liveCredentials: number | null;
-  /** The instant the count describes and whether it is counted yet. */
+  /** How many of this member's machines may write now; null while the server is still counting. */
+  liveMachines: number | null;
+  /** The instant the counts describe and whether it is counted yet. */
   runtimeFreshness?: { state: 'ready' | 'building'; asOf: number };
   /**
    * The account Myco's own work signs in as, which is no person. The server

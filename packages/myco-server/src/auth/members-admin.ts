@@ -44,7 +44,9 @@ export interface MemberRow {
   awaitingAdmission: boolean;
   /** How many of this member's own runtimes authenticate now, null while it is still being counted. Run credentials are counted under their purpose, not here. */
   liveCredentials: number | null;
-  /** The instant `liveCredentials` describes and whether it is counted yet. */
+  /** How many of this member's machines hold a live credential and so may write now, null while it is still being counted. */
+  liveMachines: number | null;
+  /** The instant `liveCredentials` and `liveMachines` describe and whether it is counted yet. */
   runtimeFreshness: RuntimeFreshness;
   /** Whether this member is the Deployment's own, the account the runs it starts sign in as, rather than a person. */
   system: boolean;
@@ -63,6 +65,7 @@ function memberRowOf(r: MemberPageRow, now: number, countsReady: boolean): Membe
     revokedBy: r.revoked_by,
     awaitingAdmission: r.revoked_at !== null && r.revoked_by === FOREIGN_LINEAGE_REVOKER,
     liveCredentials: countsReady ? r.live_lineages : null,
+    liveMachines: countsReady ? r.live_machines : null,
     runtimeFreshness: { state: countsReady ? 'ready' : 'building', asOf: now },
     system: isSystemMember(r.id),
   };

@@ -35,6 +35,7 @@
       "@goondocks/myco-shared/repository": ["../myco-shared/src/repository.ts"],
       "@goondocks/myco-shared/worker-usage": ["../myco-shared/src/worker-usage.ts"],
       "@goondocks/myco-shared/harness-health": ["../myco-shared/src/harness-health.ts"],
+      "@goondocks/myco-shared/hook-trust": ["../myco-shared/src/hook-trust.ts"],
       "@goondocks/myco-shared/worker-steps": ["../myco-shared/src/worker-steps.ts"],
       "@goondocks/myco-shared/turn-card": ["../myco-shared/src/turn-card.ts"],
       "@goondocks/myco-shared/command-shape": ["../myco-shared/src/command-shape.ts"],

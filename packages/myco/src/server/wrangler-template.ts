@@ -60,9 +60,11 @@ simple = { limit = 300, period = 60 }
 # Worker runs. \`run_worker_first\` names every path the Worker owns — live routes,
 # retired prefixes and reserved protocol paths — and is held equal to
 # \`ownedPathPatterns()\` in src/routes.ts by tests/myco-server/gates.test.ts.
-# No binding: the Worker never fetches an asset itself.
+# The Worker reads the shell through ASSETS only for a page request no route
+# serves, so a browser gets the dashboard rather than an API refusal.
 [assets]
 directory = "ui/dist"
+binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = [ "/.well-known/*", "/api/*", "/auth/*", "/blobs/*", "/context/*", "/events", "/events/*", "/health", "/import/*", "/mcp", "/members/*", "/register", "/routed-capture/*", "/runners/*", "/runs/*", "/sessions/*", "/spores/*", "/tokens/*", "/v1/*", "/worker/*" ]
 

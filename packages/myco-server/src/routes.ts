@@ -473,6 +473,20 @@ export function isOwnedPath(pathname: string, patterns: readonly string[] = owne
   return patterns.some((p) => (p.endsWith('/*') ? pathname.startsWith(p.slice(0, -1)) : pathname === p));
 }
 
+/** A browser opening an address as a page: a GET that asks for HTML. */
+function asksForPage(request: Request): boolean {
+  return request.method === 'GET' && (request.headers.get('accept') ?? '').includes('text/html');
+}
+
+/**
+ * True when the dashboard shell answers a request on a path the server owns: a page request that no route serves,
+ * outside the reserved protocol paths. The browser then shows the dashboard's not-found page, or sign-in, instead of
+ * an API refusal. A request that does not ask for a page gets the server's own answer.
+ */
+export function shellAnswers(request: Request, pathname: string): boolean {
+  return asksForPage(request) && matchRoute(request.method, pathname) === null && !isOwnedPath(pathname, UNSERVED_PATHS);
+}
+
 /** Every route that admits an External Agent grant, as `METHOD path`. */
 export function grantRoutes(): string[] {
   return ROUTES.filter((r) => r.auth === 'member' && r.bodyMode === 'json' && r.grant !== undefined).map((r) => `${r.method} ${r.path}`).sort();
