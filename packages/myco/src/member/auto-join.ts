@@ -482,7 +482,7 @@ export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
   return [...byRoute.values()].sort((a, b) => b.attemptAt - a.attemptAt);
 }
 
-/** Resume report maintenance after the last route examined, even when its state was removed. */
+/** Report maintenance continues from the route after the cursor, whether or not that route still holds a state record. */
 export function reportMaintenance(mycoHome: string): { states: AutoJoinState[]; checked: (state: AutoJoinState) => void } {
   const file = path.join(autoJoinDir(mycoHome), 'report-maintenance.json');
   assertMemberPathContained(file, mycoHome);
