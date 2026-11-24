@@ -1,4 +1,7 @@
 import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
+import worker from '@myco-server-worker/index.js';
+import { asOwner, asOwnerPost, OWNER_ENV } from '../myco-server/helpers/owner.js';
+import { pathToFileURL } from 'node:url';
 /**
  * Auto-join (#1547): a git repository this machine meets with no connection of its own joins the machine's default
  * Deployment by itself, through the real hooks, the member helper's join bucket and `myco member auto-join` against the
@@ -458,6 +461,45 @@ describe('myco member auto-join', () => {
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'outside_folders' });
     expect(uncaptured()).toEqual([{ root_key: rootKeyFor(root, mycoHome), label: 'gadget', reason: 'outside_folders', misses: 1 }]);
     expect(readRegistryEntry(root, mycoHome)).toBeNull();
+  });
+
+  it('withdraws a gone repository from Needs you once and keeps its held capture', async () => {
+    const root = repository(base, 'gone', null);
+    const active = repository(path.join(base, 'Repos'), 'active', 'https://github.com/acme/active.git');
+    await join(['--root', active]);
+    await runHook('session-start', { session_id: 'sess-gone', hook_event_name: 'SessionStart', transcript_path: transcript(root, 'sess-gone'), cwd: root }, { fetch: rig.fetch });
+    expect((await join(['--root', root]))[0]).toMatchObject({ result: 'outside_folders' });
+    const listed = async () => (await worker.fetch(await asOwner(rig.env.db, '/api/uncaptured'), { ...rig.env.env, ...OWNER_ENV })).json();
+    expect(await listed()).toMatchObject({ items: [{ label: 'gone' }] });
+    fs.rmSync(root, { recursive: true });
+    const { fetch, requests } = recordingFetch(rig.fetch);
+    await runHook('session-start', { session_id: 'sess-active', hook_event_name: 'SessionStart', transcript_path: transcript(active, 'sess-active'), cwd: active }, { helpers: 'run', fetch });
+    await joinPass(mycoHome, { fetch })(Date.now() + 60_000, { force: false });
+    expect(await listed()).toMatchObject({ items: [] });
+    expect(requests.filter(r => r.path.startsWith('/members/uncaptured'))).toHaveLength(1);
+    expect(listPending({ mycoHome, now: Date.now() })).toMatchObject([{ root, records: 1 }]);
+  });
+
+  it('captures a local clone in its connected origin’s Project, leaving an unconnected origin alone', async () => {
+    const source = repository(path.join(base, 'Repos'), 'source repo', 'https://github.com/acme/source.git');
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial', '--allow-empty'], { cwd: source });
+    const clone = path.join(base, 'copy');
+    execFileSync('git', ['clone', '-q', pathToFileURL(source).href, clone]);
+    execFileSync('git', ['checkout', '-qb', 'clone-branch'], { cwd: clone });
+    expect((await join(['--root', clone]))[0]).toMatchObject({ result: 'outside_folders' });
+    const dismissed = path.join(base, 'dismissed');
+    execFileSync('git', ['clone', '-q', source, dismissed]);
+    await join(['--root', dismissed]);
+    const decision = await asOwnerPost(rig.env.db, `/api/uncaptured/${TEST_MACHINE_ID}/${rootKeyFor(dismissed, mycoHome)}/dismiss`, {});
+    expect((await worker.fetch(decision, { ...rig.env.env, ...OWNER_ENV })).status).toBe(200);
+    const [joined] = await join(['--root', source]);
+    expect((await join(['--root', dismissed]))[0]).toMatchObject({ result: 'outside_folders' });
+    const now = () => Date.now() + AUTO_JOIN_RETRY_MS;
+    await runHook('session-start', { session_id: 'sess-clone', hook_event_name: 'SessionStart', transcript_path: transcript(clone, 'sess-clone'), cwd: clone }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn, now });
+    await joinPass(mycoHome, { fetch: rig.fetch, now })(now() + 60_000, { force: false });
+    expect(rig.env.sqlite.query('SELECT project_id, origin_path, branch FROM sessions WHERE session_id = ?').get('sess-clone'))
+      .toEqual({ project_id: (joined as { projectId: string }).projectId, origin_path: clone, branch: 'clone-branch' });
+    expect(uncaptured()).toEqual([]);
   });
 
   it('has the Deployment forget a repository under a folder never asked about, says when an older one refuses, and asks again', async () => {

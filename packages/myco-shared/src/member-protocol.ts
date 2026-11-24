@@ -423,7 +423,8 @@ export const REPORT_UNCAPTURED_PATH = '/members/uncaptured';
  * (a `myco member join` connected it); `left` forgets it and stops the machine being told to connect it (`myco member
  * leave` opted it out); `quiet` forgets it, as it lies under a folder the machine never asks about
 (`capture.quiet_roots`) or dismissed, and is accepted (`persisted: true`, `changed` saying whether a report was
-waiting) even when none was; `full` and `expired` record that the machine stopped holding its capture.
+waiting) even when none was; `withdrawn` does the same for a missing folder or a locally connected clone;
+ * `full` and `expired` record that the machine stopped holding its capture.
  *
  * Every report and resolve also carries `held` (what the machine holds of the repository's capture now) and
  * `sessions` (how many sessions met it after the machine last reported it).

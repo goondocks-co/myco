@@ -152,10 +152,10 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
   }
   const successor = result.successor === undefined ? '' : `; successor ${result.successor}`;
   process.stderr.write(`[myco] helper: ${result.passes} pass(es) in ${now() - started} ms, ended ${result.endedBy}${successor}\n`);
-  // The other projects this home holds work for: their helpers start on this hook, not on their own next session.
+  // Wake other buckets that have capture or uncaptured reports to reconcile.
   if (result.endedBy !== 'busy') {
     for (const { projectId: other, outcome } of kickWaitingProjects(mycoHome, serverUrl === undefined ? projectId : { projectId, serverUrl }, { now, spawn: deps.spawn })) {
-      process.stderr.write(`[myco] helper: kicked ${other}, which holds undelivered work (${outcome.kind})\n`);
+      process.stderr.write(`[myco] helper: kicked ${other} (${outcome.kind})\n`);
     }
   }
   return result;

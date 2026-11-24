@@ -161,7 +161,7 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
  * `POST /members/uncaptured/state` with `{ rootKey, state }`: what became of a repository the machine reported.
  * `connected` forgets it, as a `myco member join` there connected it; `left` forgets it and stops telling the machine
  * to connect it, as `myco member leave` opted it out; `full` and `expired` record that the machine no longer holds its
- * capture; `quiet` forgets it, as it lies under a folder the member's machine never asks about, and is accepted
+ * capture; `quiet` and `withdrawn` forget it, and are accepted
  * (`persisted: true`, with `changed` saying whether a report was waiting) even when none was. Otherwise a repository the
  * machine never reported changes nothing.
  */
@@ -170,8 +170,8 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
   const rootKey = typeof body?.rootKey === 'string' ? body.rootKey : '';
   if (!ROOT_KEY.test(rootKey)) return ok({ persisted: false, code: 'invalid_field', reason: 'rootKey must be a repository key' });
   const state = body?.state;
-  if (state !== 'connected' && state !== 'left' && state !== 'quiet' && state !== 'full' && state !== 'expired') {
-    return ok({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, quiet, full or expired' });
+  if (state !== 'connected' && state !== 'left' && state !== 'quiet' && state !== 'withdrawn' && state !== 'full' && state !== 'expired') {
+    return ok({ persisted: false, code: 'invalid_field', reason: 'state must be connected, left, quiet, withdrawn, full or expired' });
   }
   if (state === 'left') {
     // Left on the machine: nothing is asked of "Needs you", and the machine is no longer told to connect it.
@@ -180,7 +180,7 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: cleared.results.length > 0 || untold.changed });
   }
-  if (state === 'quiet') {
+  if (state === 'quiet' || state === 'withdrawn') {
     // Accepted whether or not a report was waiting: a report cleared already (dismissed, pruned) is forgotten all the same.
     const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: true, changed: cleared.results.length > 0 });
