@@ -44,8 +44,8 @@ export interface CloudflareBindings extends OwnerBindings {
   AI?: EmbeddingBinding & CompletionBinding;
   MYCO_DB: RelationalStore;
   BUCKET: BlobStore;
-  /** The edge's dashboard build: the shell a page request no route serves is answered with. */
-  ASSETS: DashboardAssets;
+  /** The edge's dashboard build: the shell a page request no route serves is answered with. Absent where the configuration serves no dashboard. */
+  ASSETS?: DashboardAssets;
   SOURCE_LIMIT: RateLimiter;
   TOKEN_LIMIT: RateLimiter;
   /**

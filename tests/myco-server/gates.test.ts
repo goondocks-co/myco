@@ -623,7 +623,7 @@ describe('gates', () => {
     const bound = [...toml.matchAll(/^(?:binding|name) = "(\w+)"$/gm)].map((m) => m[1]).filter((name) => name !== 'myco-server' && name !== 'CLOCK').sort();
     expect(bound.filter((name) => !optional.includes(name))).toEqual(keys);
     expect(bound.filter((name) => !optional.includes(name) && !keys.includes(name))).toEqual([]);
-    expect(bound.filter((name) => optional.includes(name))).toEqual(['RECOVERY', 'RECOVERY_BUCKET']);
+    expect(bound.filter((name) => optional.includes(name))).toEqual(['ASSETS', 'RECOVERY', 'RECOVERY_BUCKET']);
     expect(/^migrations_dir = "([^"]*)"$/m.exec(toml)?.[1]).toBe(MIGRATIONS_DIR);
   });
 

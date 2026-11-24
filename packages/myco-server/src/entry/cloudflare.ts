@@ -2,8 +2,8 @@
  * The Cloudflare entry point: wiring only.
  *
  * It maps bindings to a `ServerEnv` and hands the request to the one shared
- * handler, or to the edge's dashboard shell where `shellAnswers` says the
- * shell answers. Every behavior lives in the core; nothing here decides anything.
+ * handler, or, where a dashboard is bound, to its shell when `shellAnswers`
+ * says the shell answers. Every behavior lives in the core; nothing here decides anything.
  */
 import { createServer } from '../pipeline.js';
 import { shellAnswers } from '../routes.js';
@@ -14,7 +14,7 @@ const server = createServer({ now: () => Date.now(), sourceOf: cloudflareSourceO
 
 export async function handleRequest(request: Request, bindings: CloudflareBindings, deferred?: DeferredWork): Promise<Response> {
   const url = new URL(request.url);
-  if (shellAnswers(request, url.pathname)) return bindings.ASSETS.fetch(new Request(new URL('/', url), { headers: request.headers }));
+  if (bindings.ASSETS !== undefined && shellAnswers(request, url.pathname)) return bindings.ASSETS.fetch(new Request(new URL('/', url), { headers: request.headers }));
   return server.handleRequest(request, serverEnvFromBindings(bindings, deferred));
 }
 
