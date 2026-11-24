@@ -35,7 +35,7 @@ import { helperPass } from '@myco/cli/member-helper.js';
 import { helperLogPath, kickHelper, runHelper, type HelperPass } from '@myco/member/helper.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { defaultDeploymentPath } from '@myco/member/default-deployment.js';
-import { RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
+import { RESOLVE_PROJECT_PATH, UNCAPTURED_STATE_PATH } from '@goondocks/myco-shared/member-protocol';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { autoJoinHold } from '@myco/member/auto-join-hook.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
@@ -480,25 +480,36 @@ describe('myco member auto-join', () => {
     expect(listPending({ mycoHome, now: Date.now() })).toMatchObject([{ root, records: 1 }]);
   });
 
-  it('captures a local clone in its connected origin’s Project, leaving an unconnected origin alone', async () => {
+  it('connects an idle clone and delivers held capture once its origin joins, while honoring a dismissal', async () => {
     const source = repository(path.join(base, 'Repos'), 'source repo', 'https://github.com/acme/source.git');
     execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'initial', '--allow-empty'], { cwd: source });
     const clone = path.join(base, 'copy');
     execFileSync('git', ['clone', '-q', pathToFileURL(source).href, clone]);
     execFileSync('git', ['checkout', '-qb', 'clone-branch'], { cwd: clone });
     expect((await join(['--root', clone]))[0]).toMatchObject({ result: 'outside_folders' });
+    const at = Date.now();
+    const route = { root: clone, rootKey: rootKeyFor(clone, mycoHome), serverUrl: SERVER_URL };
+    const stage = pendingSpool(route, { mycoHome, now: at })!.stagerFor('sess-clone');
+    const event = sessionStartEvent({ agent: 'claude-code', sessionId: 'sess-clone', stage, now: () => at },
+      { startedAt: at, originPath: clone, branch: 'clone-branch' });
+    expect(appendPending(route, 'sess-clone', [event], undefined, { mycoHome, now: at })).toBe('pending');
     const dismissed = path.join(base, 'dismissed');
     execFileSync('git', ['clone', '-q', source, dismissed]);
     await join(['--root', dismissed]);
     const decision = await asOwnerPost(rig.env.db, `/api/uncaptured/${TEST_MACHINE_ID}/${rootKeyFor(dismissed, mycoHome)}/dismiss`, {});
     expect((await worker.fetch(decision, { ...rig.env.env, ...OWNER_ENV })).status).toBe(200);
     const [joined] = await join(['--root', source]);
-    expect((await join(['--root', dismissed]))[0]).toMatchObject({ result: 'outside_folders' });
-    const now = () => Date.now() + AUTO_JOIN_RETRY_MS;
-    await runHook('session-start', { session_id: 'sess-clone', hook_event_name: 'SessionStart', transcript_path: transcript(clone, 'sess-clone'), cwd: clone }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn, now });
-    await joinPass(mycoHome, { fetch: rig.fetch, now })(now() + 60_000, { force: false });
+    expect(listJoinRequests(mycoHome)).toEqual([]);
+    const offlineWithdrawal: typeof rig.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      return new URL(request.url).pathname === UNCAPTURED_STATE_PATH ? Response.json({ message: 'Try again' }, { status: 503 }) : rig.fetch(request);
+    };
+    await joinPass(mycoHome, { fetch: offlineWithdrawal })(Date.now() + 60_000, { force: false });
     expect(rig.env.sqlite.query('SELECT project_id, origin_path, branch FROM sessions WHERE session_id = ?').get('sess-clone'))
       .toEqual({ project_id: (joined as { projectId: string }).projectId, origin_path: clone, branch: 'clone-branch' });
+    expect(readRegistryEntry(dismissed, mycoHome)).toBeNull();
+    expect(uncaptured().map(row => row.label)).toEqual(['copy']);
+    await joinPass(mycoHome, { fetch: rig.fetch })(Date.now() + 60_000, { force: false });
     expect(uncaptured()).toEqual([]);
   });
 

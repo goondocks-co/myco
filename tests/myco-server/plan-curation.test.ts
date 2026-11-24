@@ -12,6 +12,7 @@ import { RUN_CLOSE_ARTIFACT_ERROR } from '@myco-server-worker/core/run-postcondi
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -80,6 +81,18 @@ async function rig() {
 }
 
 describe('plan curation', () => {
+  it('skips a hand-started run when its project has no stale plans at claim', async () => {
+    const { e } = await rig();
+    const now = STALE + 10;
+    const dispatch = await dispatchTask(e.serverEnv, PLAN_CURATION_TASK, scope.projectId, { serverUrl: ORIGIN, actor: 'mem_worker' }, now);
+    if (!dispatch.dispatched) throw new Error(dispatch.refusal);
+    const token = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, now);
+    await claimNextRun(e.serverEnv, { principal: legacyWorker(token.tokenId, 'm1'), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: now + 1 });
+    const request = await asOwner(e.db, `/api/projects/${scope.projectId}/runs/${dispatch.runId}`);
+    const response = await worker.fetch(request, { ...e.env, ...OWNER_ENV });
+    expect(await response.json()).toMatchObject({ run: { status: 'skipped', skipReason: 'no_stale_plans' } });
+  });
+
   it('completes a plan only on an outcome of its own, supersedes one by a later plan, keeps a plan with no evidence open, and the board can revert it', async () => {
     const r = await rig();
     const run = await r.claimCuration();

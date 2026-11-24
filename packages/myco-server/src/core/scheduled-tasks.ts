@@ -19,7 +19,7 @@ import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { repositoryReady } from './repositories.js';
 import type { ServerEnv } from './adapters.js';
 import { AlreadyRunning, DispatchAdmissionRefused, dispatchPrepared, HARNESS_AGENT_ID, prepareDispatch, repositoryWorkerAvailable, type LaunchSpec } from './harness.js';
-import { buildTaskInput } from './task-inputs.js';
+import { buildTaskInput, inputBuilderFor } from './task-inputs.js';
 import type { PowerState } from './power.js';
 import { ensureAgent } from '../db/runs/state.js';
 import { INPUT_UNCHANGED } from '../db/schedule-entry.js';
@@ -263,6 +263,10 @@ export async function runScheduledTasks(env: ServerEnv, state: PowerState, now: 
         // it last wrote: a Project that has not moved leaves a skipped row naming
         // that, and no model is called.
         const built = await buildTaskInput(env, task, project.projectId, now);
+        if (built === null && inputBuilderFor(task)?.emptySkip !== undefined) {
+          await emitScheduleSkip(env, project.projectId, task, 'precondition', now);
+          continue;
+        }
         if (built !== null && built.unchanged) {
           await recordClockSkip(env, project.projectId, task, INPUT_UNCHANGED, `${RUN_ID_PREFIX}${crypto.randomUUID()}`, now);
           emit({ kind: 'task_skipped', task, projectId: project.projectId, skip: INPUT_UNCHANGED });

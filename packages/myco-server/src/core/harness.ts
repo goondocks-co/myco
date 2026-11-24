@@ -982,6 +982,8 @@ export async function claimNextRun(
   const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params, dryRun: candidate.task === CURATION_TASK && (await getRun(env.db, scope, candidate.id))?.dryRun === 1 });
   if (built === null && candidate.task === CURATION_TASK && stored?.options?.dryRun === true) return skipRefused('no_qualifying_group');
   if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
+  const builder = inputBuilderFor(candidate.task);
+  if (built === null && builder?.emptySkip !== undefined) return skipRefused(builder.emptySkip);
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: INPUT_UNCHANGED });
@@ -990,7 +992,7 @@ export async function claimNextRun(
   // A run with nothing to say to its harness is ended here, before anything is
   // minted: handed out, it would end its turn having called nothing, and the
   // worker would report a run that did nothing as a run that finished.
-  const instruction = instructionFor(built, candidate.instruction, inputBuilderFor(candidate.task) !== null);
+  const instruction = instructionFor(built, candidate.instruction, builder !== null);
   if (instruction === null) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task), errorCode: 'task_start_failed' });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: 'uninstructed' });
