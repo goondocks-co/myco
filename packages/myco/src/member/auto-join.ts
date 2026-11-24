@@ -193,6 +193,8 @@ export interface AutoJoinState {
   quietAt?: number;
   /** The last attempt suppressed a connection through a local origin. */
   quietOrigin?: true;
+  /** A connection through a local origin requires acknowledgment from the reporting Deployment. */
+  originReportPending?: true;
   mcpReady?: string[];
 }
 
@@ -480,10 +482,35 @@ export function listAutoJoinStates(mycoHome: string): AutoJoinState[] {
   return [...byRoute.values()].sort((a, b) => b.attemptAt - a.attemptAt);
 }
 
-/** A missing folder or an unacknowledged quiet placement can withdraw a report. */
+/** Report maintenance continues from the route after the cursor, whether or not that route still holds a state record. */
+export function reportMaintenance(mycoHome: string): { states: AutoJoinState[]; checked: (state: AutoJoinState) => void } {
+  const file = path.join(autoJoinDir(mycoHome), 'report-maintenance.json');
+  assertMemberPathContained(file, mycoHome);
+  const read = readPrivateJson<{ after: string }>(file);
+  if (!read.ok && read.reason !== 'missing') reportSkippedPrivateFile('auto-join report maintenance', file, read);
+  const after = read.ok && typeof read.value?.after === 'string' ? read.value.after : '';
+  const key = (state: AutoJoinState) => `${deploymentKeyFor(state.serverUrl)}/${state.rootKey}`;
+  const ordered = listAutoJoinStates(mycoHome).filter(needsReportMaintenance)
+    .sort((a, b) => key(a).localeCompare(key(b)));
+  const next = ordered.findIndex(state => key(state).localeCompare(after) > 0);
+  return {
+    states: next <= 0 ? ordered : [...ordered.slice(next), ...ordered.slice(0, next)],
+    checked: state => {
+      ensureMemberDir(path.dirname(file), mycoHome);
+      writePrivateFileAtomic(file, `${JSON.stringify({ after: key(state) })}\n`);
+    },
+  };
+}
+
+export const needsReportMaintenance = (state: AutoJoinState): boolean =>
+  state.outcome !== 'joined' || state.originReportPending === true;
+
+/** A gone folder, a joined local clone, or a quiet placement can withdraw an outstanding report. */
 export function uncapturedWithdrawal(state: AutoJoinState, mycoHome: string): 'withdrawn' | 'quiet' | null {
-  if (state.outcome === 'joined') return null;
+  if (!needsReportMaintenance(state)) return null;
   if (pathIsAbsent(state.root)) return 'withdrawn';
+  if (state.originReportPending && readRegistryEntryResult(state.root, mycoHome).status === 'present') return 'withdrawn';
+  if (state.outcome === 'joined') return null;
   return state.quietAt === undefined && (state.reportedAt !== undefined || state.placement === 'quiet')
     && readRegistryEntryResult(state.root, mycoHome).status === 'missing'
     && placeRepository(state, machineAutoJoinLeaves(state.serverUrl, mycoHome), { connectedOrigin: state.quietOrigin }) === 'quiet' ? 'quiet' : null;

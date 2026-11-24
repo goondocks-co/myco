@@ -34,7 +34,7 @@ const PREVIEW = (url: URL): TaskStartPreview => ({
   live: false, capability: null, allowance: null,
 });
 
-function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PROJECTS; failProjects?: boolean; sent?: Array<{ path: string; body: unknown }>; week?: Promise<void>; preview?: Promise<void>; fleetWait?: TaskStartPreview['fleetWait'] } = {}) {
+function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PROJECTS; failProjects?: boolean; sent?: Array<{ path: string; body: unknown }>; week?: Promise<void>; preview?: Promise<void>; fleetWait?: TaskStartPreview['fleetWait']; startError?: string } = {}) {
   const asked: URL[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
@@ -49,6 +49,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
     if (url.pathname === '/api/settings/agent.tasks') { expect(new Headers(init?.headers).get('if-match')).toBe('5'); tasks[0] = { ...tasks[0]!, tier: 'low', profiles: [{ harness: 'codex', model: 'changed-model', effort: 'low', note: null }] }; return Response.json({ applied: true }); }
     if (url.pathname === '/api/tasks') return Response.json({ tasks });
     if (url.pathname === `/api/projects/${P}/runs`) return Response.json({ rows: [], cursor: null });
+    if (url.pathname.endsWith('/runs/run_hand0000001') && options.startError) return Response.json({ run: { status: 'failed', errorCode: 'task_start_failed', error: options.startError } });
     return new Response(null, { status: 404 });
   }) as typeof fetch;
   return asked;
@@ -226,6 +227,17 @@ describe('starting a task from the Tasks view', () => {
     const started = await waitFor(() => { const line = document.querySelector('[data-started]'); if (line === null) throw new Error('not yet'); return line as HTMLElement; });
     expect(started.textContent).toBe('The code map update is queued. Waiting for a machine to pick it up.Open the run →');
     expect(within(started).getByRole('link', { name: 'Open the run →' }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_hand0000001`);
+  });
+
+  it('shows the reason on the Tasks view when a hand-started run cannot start', async () => {
+    server(TASK_DESCRIPTIONS, { startError: 'The machine could not open the repository.' });
+    mount(`/p/${P}/work/tasks`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Run now: Curate stale plans' }));
+    const confirm = await screen.findByRole('button', { name: 'Curate plans now' });
+    await waitFor(() => expect(confirm.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(confirm);
+    const failure = await screen.findByText('Plan curation couldn’t start. The machine could not open the repository.');
+    expect(failure.closest('[role="alert"]')).not.toBeNull();
   });
 
   it('starts nothing, and says no spend, until it has read where the run would go and what this week spent', async () => {

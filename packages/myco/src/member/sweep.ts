@@ -13,7 +13,7 @@ import { kickHelper, type KickOutcome } from './helper.js';
 import { listRoutingEntries, routingKey, type MemberRoutingIdentity } from './routing.js';
 import { MemberSpool } from './spool.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
-import { autoJoinDir, JOIN_BUCKET, listAutoJoinStates } from './auto-join.js';
+import { autoJoinDir, JOIN_BUCKET, listAutoJoinStates, needsReportMaintenance } from './auto-join.js';
 import { assertMemberPathContained } from './store.js';
 
 /** The least time between two sweeps' kicks of one project. */
@@ -62,7 +62,7 @@ export function kickWaitingProjects(mycoHome: string, self: MemberRoutingIdentit
   if (typeof self !== 'string' && fs.existsSync(joinDir) && !sweptRecently(joinDir, now())) {
     assertMemberPathContained(joinDir, mycoHome);
     markSwept(joinDir, now());
-    if (listAutoJoinStates(mycoHome).some(state => state.outcome !== 'joined')) {
+    if (listAutoJoinStates(mycoHome).some(needsReportMaintenance)) {
       kicked.push({ projectId: JOIN_BUCKET, outcome: kickHelper({ projectId: JOIN_BUCKET, mycoHome, spawn: opts.spawn, now }) });
     }
   }

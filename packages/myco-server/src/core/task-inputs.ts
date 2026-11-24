@@ -68,6 +68,8 @@ interface TaskInputBuilder {
   template(patterns: readonly string[]): TaskTemplate;
   /** The instruction, or null when what the run carries is not enough to write one. */
   build(env: ServerEnv, projectId: string, now: number, options: TaskInputOptions): Promise<TaskInput | null>;
+  /** The skip reason when there is no material to build a prompt from. */
+  emptySkip?: string;
   /**
    * The hash on the artifact this task last wrote, or null where it has written
    * none. A builder that offers none is never deduped. No retained task offers
@@ -100,6 +102,7 @@ export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   },
   [PLAN_CURATION_TASK]: {
     build: (env, projectId, now) => buildPlanCurationInput(env, projectId, now),
+    emptySkip: 'no_stale_plans',
     template: () => ({ promptTemplate: planCurationPrompt('{{plans.with_evidence}}'), standingRules: null, templateVariants: [] }),
   },
   [MAP_TASK]: {

@@ -26,7 +26,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import {
   clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, pendingImportWork, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, requestJoin, sweepDone, takeRepositoryLock,
-  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, forgetUncapturedReport, listAutoJoinStates, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, rootKeysFor, silentRepository, uncapturedWithdrawal, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
+  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, forgetUncapturedReport, markLeft, markSessionsReported, needsReportMaintenance, nextAttemptAfter, reportMaintenance, rootKeyFor, rootKeyMatches, rootKeysFor, silentRepository, uncapturedWithdrawal, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import type { HelperPass } from '../member/helper.js';
@@ -64,6 +64,17 @@ async function settleAutoJoin(entry: RegistryEntry, deps: MemberCliDeps & { myco
     return { moved, toolsPending: true };
   }
   return { moved };
+}
+
+async function deliverAutoJoin(entry: RegistryEntry, deps: AttemptRun): Promise<{ moved: number; toolsPending?: true }> {
+  const settled = await settleAutoJoin(entry, deps);
+  // Session leases keep this drain apart from the project's own helper.
+  try {
+    await drainEntryBacklog(entry, { mycoHome: deps.mycoHome, fetch: deps.fetch, now: deps.now, machineId: entry.machineId });
+  } catch (error) {
+    (deps.stderr ?? console.error)(`Myco connected ${entry.root}, but capture is still spooled: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return settled;
 }
 
 /** How long one request of a join waits for the Deployment. */
@@ -159,7 +170,7 @@ export async function settleConnection(entry: RegistryEntry, opts: { mycoHome: s
 }
 
 /** What an attempt runs with: `importNow` brings the past sessions in the attempt (by hand); the helper queues them. */
-type AttemptRun = MemberCliDeps & { mycoHome: string; now: () => number; importNow: boolean };
+type AttemptRun = MemberCliDeps & { mycoHome: string; now: () => number; importNow: boolean; idle?: true };
 
 /** Join one repository, or record why it did not. The caller holds the repository's lock. */
 async function joinRepository(root: string, membership: DeploymentMembership, deps: AttemptRun): Promise<AutoJoinResult> {
@@ -170,6 +181,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   if (binding.status === 'present') {
     const connected = binding.entry;
     if (deploymentUrl(connected.serverUrl) !== deploymentUrl(membership.serverUrl)) return { root, result: 'connected-elsewhere' };
+    if (deps.idle) return { root, result: 'connected' };
     // Connected already: by `myco member join`, or by a join that stopped before moving the held capture.
     const { toolsPending } = await settleAutoJoin(connected, deps);
     return { root, result: 'connected', ...(toolsPending ? { toolsPending } : {}) };
@@ -177,11 +189,13 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   if (silentRepository(root, { mycoHome, env: deps.env })) return { root, result: 'silent' };
   const repo: Repository = repositoryAt(root, mycoHome);
   const previous = readAutoJoinState(repo.rootKey, mycoHome, membership.serverUrl);
+  const localOrigin = deps.idle ? connectedOrigin(repo.root, mycoHome) : undefined;
+  if (deps.idle && localOrigin === null) return { root, result: 'silent' };
 
   await seedMachineSettings({ serverUrl: membership.serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
   const leaves = autoJoinLeavesFor(repo.rootKey, membership.serverUrl, mycoHome);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, repo.rootKey) ? leaves.connectRoots[repo.rootKey]! : null;
-  const candidate = connectTo === null ? connectedOrigin(repo.root, mycoHome) : null;
+  const candidate = connectTo === null ? localOrigin ?? connectedOrigin(repo.root, mycoHome) : null;
   const placement = placeRepository(repo, leaves, { connectedOrigin: candidate !== null });
   const origin = placement === 'connected' ? candidate : null;
   // Ordinary leave markers accept a new dashboard connection; logout markers require an explicit local join.
@@ -266,6 +280,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
       ...currentMembership, version: REGISTRY_VERSION, projectId, serverUrl, root,
       machineId: currentMembership.machineId ?? getMachineId(), joinedAt: now(), updatedAt: now(),
     };
+    if (origin !== null && previous !== null) writeAutoJoinState({ ...previous, originReportPending: true }, mycoHome);
     writeRegistryEntry(written, { mycoHome, locked: true });
     return { status: 'written' as const, entry: written };
   }, mycoHome);
@@ -278,22 +293,20 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   }
   const entry = committed.entry;
   clearMissingMembership(root, mycoHome);
-  if (origin !== null && previous !== null) {
-    const refusal = await withdrawReport(client, repo.rootKey, 'withdrawn');
-    if (refusal !== null) process.stderr.write(`[myco] auto-join ${repo.root}: ${refusal}\n`);
-    if (serverUrl !== membership.serverUrl && refusal === null) forgetUncapturedReport(previous, mycoHome);
-  }
+  const sameDeployment = deploymentUrl(serverUrl) === deploymentUrl(membership.serverUrl);
+  const originReportPending = origin !== null && previous !== null && sameDeployment ? true : undefined;
   markSessionsReported(repo.rootKey, sessions, mycoHome, membership.serverUrl);
-  writeAutoJoinState({ root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl, attemptAt: now(), outcome: 'joined', projectId, placement, connectTo }, mycoHome);
+  writeAutoJoinState({ root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl, attemptAt: now(), outcome: 'joined', projectId, placement, connectTo, originReportPending }, mycoHome);
 
-  // The report is withdrawn by the remote resolve or the local connection.
-  const { moved, toolsPending } = await settleAutoJoin(entry, deps);
-  // What moved is delivered here, in the process making the join (the helper's join bucket, or a run by hand): the
-  // session leases keep it apart from the project's own helper.
-  try {
-    await drainEntryBacklog(entry, { mycoHome, fetch: deps.fetch, now, machineId: entry.machineId });
-  } catch {
-    // The moved capture stays spooled; the project's helper delivers it at the repository's next hook.
+  const { moved, toolsPending } = await deliverAutoJoin(entry, deps);
+  if (origin !== null && previous !== null) {
+    const refusal = await withdrawReport(client, previous.rootKey, 'withdrawn');
+    if (refusal !== null) {
+      (deps.stderr ?? console.error)(`[myco] auto-join ${repo.root}: ${refusal}`);
+    } else {
+      if (sameDeployment) clearOriginReport(repo.rootKey, mycoHome, serverUrl);
+      if (!sameDeployment || previous.rootKey !== repo.rootKey) forgetUncapturedReport(previous, mycoHome);
+    }
   }
   // The past sessions come last, once the connection is settled: the helper brings them a step at a time in later
   // passes, so one repository's history never holds another's first join.
@@ -367,40 +380,65 @@ async function withdrawReport(client: { post: (path: string, body: Record<string
   return told.value.persisted === true ? null : `the Deployment did not forget its report: ${String(told.value.reason ?? told.value.code ?? 'acknowledgment missing')}`;
 }
 
-/** Maximum report withdrawals per join pass. */
-const WITHDRAWAL_LIMIT = 32;
+function clearOriginReport(rootKey: string, mycoHome: string, serverUrl: string): void {
+  const state = readAutoJoinState(rootKey, mycoHome, serverUrl);
+  if (state?.originReportPending) writeAutoJoinState({ ...state, originReportPending: undefined }, mycoHome);
+}
+
+/** Maximum uncaptured records reconsidered per join pass. */
+const REPORT_MAINTENANCE_LIMIT = 32;
 
 /**
- * Withdraw reports for gone and quiet repositories without waiting for another hook in those folders.
+ * Withdraw stale reports and retry clones of connected origins without waiting for another hook in those folders.
  */
-async function withdrawUncapturedReports(run: AttemptRun, err: (line: string) => void, deadline: number): Promise<boolean> {
-  let remaining = WITHDRAWAL_LIMIT;
-  for (const candidate of listAutoJoinStates(run.mycoHome)) {
-    if (run.now() >= deadline) return true;
-    if (uncapturedWithdrawal(candidate, run.mycoHome) === null) continue;
-    const membership = readDeploymentMembership(candidate.serverUrl, run.mycoHome);
-    if (membership === null) continue;
-    await isolateRepository(candidate.root, err, async () => {
-      const lock = takeRepositoryLock(candidate.rootKey, run.mycoHome);
-      if (lock === null) return;
-      try {
-        const opened = await openDeploymentRequests('registry', { fetch: run.fetch, mycoHome: run.mycoHome, requestTimeoutMs: REQUEST_TIMEOUT_MS }, membership.serverUrl);
-        // Read again under the lock, after the credential is ready: a connection or settings that moved since send nothing.
-        const state = readAutoJoinState(candidate.rootKey, run.mycoHome, candidate.serverUrl);
-        const withdrawal = state === null ? null : uncapturedWithdrawal(state, run.mycoHome);
-        if (state === null || withdrawal === null) return;
-        const refusal = opened.ok ? await withdrawReport(opened.value, state.rootKey, withdrawal) : opened.error.message;
-        if (withdrawal === 'withdrawn') {
-          if (refusal === null) forgetUncapturedReport(state, run.mycoHome);
-        } else {
-          writeAutoJoinState({ ...state, placement: 'quiet', detail: refusal ?? undefined, ...(refusal === null ? { quietAt: run.now() } : {}) }, run.mycoHome);
-        }
-        if (refusal !== null) err(`auto-join ${state.root}: ${refusal}`);
-      } finally { lock.release(); }
-    });
-    if (--remaining === 0) break;
+async function maintainUncapturedReports(run: AttemptRun, err: (line: string) => void, deadline: number): Promise<boolean> {
+  const { mycoHome } = run;
+  const { states, checked } = reportMaintenance(mycoHome);
+  let last: AutoJoinState | undefined;
+  try {
+    for (const candidate of states.slice(0, REPORT_MAINTENANCE_LIMIT)) {
+      if (run.now() >= deadline) return true;
+      last = candidate;
+      await isolateRepository(candidate.root, err, async () => {
+        const membership = readDeploymentMembership(candidate.serverUrl, mycoHome);
+        if (membership === null) return;
+        const exists = fs.existsSync(candidate.root);
+        if (exists && !rootKeyMatches(candidate.rootKey, candidate.root, mycoHome)) return;
+        const key = exists ? rootKeyFor(candidate.root, mycoHome) : candidate.rootKey;
+        const lock = takeRepositoryLock(key, mycoHome);
+        if (lock === null) return;
+        try {
+          const state = readAutoJoinState(candidate.rootKey, mycoHome, candidate.serverUrl);
+          if (state === null || !needsReportMaintenance(state)) return;
+          const withdrawal = uncapturedWithdrawal(state, mycoHome);
+          if (withdrawal === null) {
+            if (state.outcome !== 'joined' && exists && state.root === candidate.root) await joinRepository(state.root, membership, { ...run, idle: true });
+            return;
+          }
+          if (exists && state.originReportPending) {
+            const binding = readRegistryEntryResult(state.root, mycoHome);
+            if (binding.status === 'present') await deliverAutoJoin(binding.entry, run);
+          }
+          const opened = await openDeploymentRequests('registry', { fetch: run.fetch, mycoHome, requestTimeoutMs: REQUEST_TIMEOUT_MS }, membership.serverUrl);
+          const current = readAutoJoinState(candidate.rootKey, mycoHome, candidate.serverUrl);
+          if (current === null || current.root !== state.root || uncapturedWithdrawal(current, mycoHome) !== withdrawal) return;
+          const refusal = opened.ok ? await withdrawReport(opened.value, current.rootKey, withdrawal) : opened.error.message;
+          if (withdrawal === 'withdrawn') {
+            if (refusal === null) {
+              if (current.outcome === 'joined') clearOriginReport(current.rootKey, mycoHome, current.serverUrl);
+              else forgetUncapturedReport(current, mycoHome);
+            }
+          } else {
+            writeAutoJoinState({ ...current, placement: 'quiet', detail: refusal ?? undefined, ...(refusal === null ? { quietAt: run.now() } : {}) }, mycoHome);
+          }
+          if (refusal !== null) err(`auto-join ${state.root}: ${refusal}`);
+        } finally { lock.release(); }
+      });
+    }
+    return false;
+  } finally {
+    if (last !== undefined) checked(last);
   }
-  return false;
 }
 
 /** One attempt at `root`, holding its lock: busy where another attempt holds it. */
@@ -435,7 +473,7 @@ async function sweep(membership: DeploymentMembership, run: AttemptRun, err: (li
  * 1. each repository a hook asked about, oldest first, using the request's Deployment membership; busy or unavailable
  *    bindings keep their request, and left or no-longer-due repositories are dropped;
  * 2. the past sessions of each repository joined, a step at a time;
- * 3. reports for gone and quiet repositories, a bounded few;
+ * 3. uncaptured reports, a bounded few;
  * 4. the sweep, once per machine.
  */
 export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () => number } = {}): HelperPass {
@@ -476,7 +514,7 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
       if (remaining) return { more: true };
     }
 
-    if (await withdrawUncapturedReports(run, err, deadline)) return { more: true };
+    if (await maintainUncapturedReports(run, err, deadline)) return { more: true };
     if (membership !== null && !sweepDone(mycoHome) && !(await sweep(membership, run, err, deadline)).done) return { more: true };
   };
 }

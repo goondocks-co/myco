@@ -2,6 +2,7 @@ import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { Fragment, useRef, useState } from 'react';
 import { Play } from 'lucide-react';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { ActionLink, ActionMenu, Button, Dialog, DialogContent, DialogFooter, ErrorState, LoadingState, Skeleton, Switch } from '../../design';
 import { useTaskDescriptions, useTaskStartPreview } from '../../hooks/use-tasks';
 import { useCapabilities } from '../../hooks/use-settings';
@@ -19,7 +20,7 @@ import { OnwardLink } from './OutcomeCard';
 import type { DispatchAnswer } from './wire';
 import { workBounds } from './window';
 import {
-  agentWords, allowanceWords, atWords, capabilityOffWords, dailyLimitWords, executionWords, isCapabilityOff, isDailyLimit, isFreshNeedsAdmin, ranOn, readinessWords, spendWords, waitWords,
+  agentWords, allowanceWords, atWords, capabilityOffWords, dailyLimitWords, executionWords, isCapabilityOff, isDailyLimit, isFreshNeedsAdmin, ranOn, readinessWords, skipWords, spendWords, waitWords,
 } from './words';
 
 /** What the page calls a task started by hand: its menu line, its confirming button, its runs and its started line. Which tasks may be started is the server's answer (`TaskDescription.startable`). */
@@ -331,11 +332,19 @@ function StartedRunLine({ started, runId, queued, className }: { started: Starte
   const run = detail.data?.run;
   const status = run?.status ?? (queued ? 'queued' : 'running');
   const noun = startableEntry(started.task, null).started;
-  const state = status === 'queued' ? 'queued' : runIsLive(status) ? 'running' : 'finished';
+  const startFailed = status === 'failed' && run?.errorCode === 'task_start_failed';
+  const state = startFailed ? 'start-failed' : status === 'skipped' ? 'skipped' : status === 'queued' ? 'queued' : runIsLive(status) ? 'running' : 'finished';
   const held = holdSentence(run?.heldBy ?? 'worker') ?? holdSentence('worker')!;
-  const words = state === 'queued' ? `${noun} is queued. ${held}` : state === 'running' ? `${noun} has started.` : `${noun} has finished.`;
+  const reason = startFailed ? (run?.errorReason ?? run?.error)?.trim() : undefined;
+  const words = {
+    'start-failed': `${noun} couldn’t start.${reason ? ` ${redactSecrets(reason)}` : ''}`,
+    skipped: `${noun} was skipped because ${skipWords(run?.skipReasonCode ?? run?.skipReason ?? null)}.`,
+    queued: `${noun} is queued. ${held}`,
+    running: `${noun} has started.`,
+    finished: `${noun} has finished.`,
+  }[state];
   return (
-    <p role="status" className={className} data-started={state}>
+    <p role={startFailed ? 'alert' : 'status'} className={startFailed ? className.replace('bg-ok-bg', 'bg-warn-bg') : className} data-started={state}>
       <span>{words}</span>
       <OnwardLink to={runPath(started.projectId, runId)}>Open the run</OnwardLink>
     </p>

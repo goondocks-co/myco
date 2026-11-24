@@ -214,6 +214,7 @@ const SKIP_WORDS: Readonly<Record<string, string>> = {
   input_unchanged: 'nothing new since the last run',
   capability_off: 'it was switched off for this project',
   already_running: 'one was already running',
+  no_stale_plans: 'there are no stale plans to review',
 };
 
 /** Who started a run, as its panel says it; null where the run names no one. `name` turns a member id into a name. */
@@ -436,6 +437,10 @@ export function failureDetail(failure: WorkRun['failure'] | undefined): string |
 
 /** What a task's own condition for running says about a run started now, met or not, by the condition's name. */
 const READINESS_WORDS: Readonly<Record<string, { met: string; unmet: string }>> = {
+  'has-stale-plans': {
+    met: 'There are plans ready for review.',
+    unmet: 'There are no stale plans to review.',
+  },
   'has-capture-since-map': {
     met: 'New sessions have arrived since the code map was last updated.',
     unmet: 'The code map is current: no new sessions have arrived since it was last updated, so it will likely change nothing.',

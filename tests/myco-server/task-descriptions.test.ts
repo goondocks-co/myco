@@ -53,7 +53,7 @@ describe('task description registry gates', () => {
           expect(task.budget?.timeoutSeconds).toBeGreaterThan(0);
         }
         expect(task.done.length).toBeGreaterThan(0);
-        if (Object.hasOwn(TASK_TIERS, task.task)) expect(task.promptTemplate?.length).toBeGreaterThan(0);
+        if (task.startable || Object.hasOwn(TASK_TIERS, task.task)) expect(task.promptTemplate?.trim().length).toBeGreaterThan(0);
       }
     } finally { f.sqlite.close(); }
   });
