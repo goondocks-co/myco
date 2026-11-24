@@ -26,7 +26,7 @@ import { resolveMycoHome } from '../paths/home.js';
 import {
   clearJoinRequest, clearPendingImport, dropJoinRequest, isLeft, leftForConnection, joinStanding, listJoinRequests, listPendingImports, pendingImportWork, markSweepDone, placeRepository, queueImport,
   readAutoJoinState, repositoryAt, requestJoin, sweepDone, takeRepositoryLock,
-  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, markLeft, markSessionsReported, nextAttemptAfter, quietCandidates, rootKeyFor, stillQuietUntold, rootKeysFor, silentRepository, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
+  autoJoinLeavesFor, clearLeft, forgetAutoJoinState, forgetUncapturedReport, listAutoJoinStates, markLeft, markSessionsReported, nextAttemptAfter, rootKeyFor, rootKeysFor, silentRepository, uncapturedWithdrawal, UNCAPTURED_REPORT_INTERVAL_MS, unreportedSessions, writeAutoJoinState, type AutoJoinState, type Repository,
 } from '../member/auto-join.js';
 import { drainEntryBacklog } from '../member/backlog.js';
 import type { HelperPass } from '../member/helper.js';
@@ -48,6 +48,9 @@ import { refreshMemberCredential } from '@myco/member/refresh.js';
 import { deadlineBudget, unboundedBudget } from '@myco/member/budget.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { folderTranscriptDiscovery } from '../symbionts/settings-folders.js';
+import { localOriginPath } from '../utils/git.js';
+import { canonicalRootIdentity } from '../utils/git-files.js';
+import { resolveRepositoryProjectRoot } from '../project-root.js';
 
 async function settleAutoJoin(entry: RegistryEntry, deps: MemberCliDeps & { mycoHome: string; now: () => number }): Promise<{ moved: number; toolsPending?: true }> {
   let mcpReady: string[] | undefined;
@@ -74,6 +77,18 @@ export type AutoJoinResult =
   | { root: string; result: AutoJoinState['outcome']; reason?: string };
 
 interface AutoJoinArgs { root?: string; sweep: boolean; error?: string }
+
+/** Follow origin once. Only the exact root of a connected repository can supply a binding. */
+function connectedOrigin(root: string, mycoHome: string): RegistryEntry | null {
+  const origin = localOriginPath(root);
+  if (origin === null) return null;
+  const repository = resolveRepositoryProjectRoot(origin);
+  if (repository === null) return null;
+  const identity = canonicalRootIdentity(repository);
+  if (identity !== canonicalRootIdentity(origin) || identity === canonicalRootIdentity(root)) return null;
+  const binding = readRegistryEntryResult(repository, mycoHome);
+  return binding.status === 'present' ? binding.entry : null;
+}
 
 function parseArgs(args: readonly string[]): AutoJoinArgs {
   const parsed: AutoJoinArgs = { sweep: false };
@@ -165,8 +180,10 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
 
   await seedMachineSettings({ serverUrl: membership.serverUrl, token: membership.token }, { mycoHome, fetch: deps.fetch });
   const leaves = autoJoinLeavesFor(repo.rootKey, membership.serverUrl, mycoHome);
-  const placement = placeRepository(repo, leaves);
   const connectTo = Object.prototype.hasOwnProperty.call(leaves.connectRoots, repo.rootKey) ? leaves.connectRoots[repo.rootKey]! : null;
+  const candidate = connectTo === null ? connectedOrigin(repo.root, mycoHome) : null;
+  const placement = placeRepository(repo, leaves, { connectedOrigin: candidate !== null });
+  const origin = placement === 'connected' ? candidate : null;
   // Ordinary leave markers accept a new dashboard connection; logout markers require an explicit local join.
   const left = leftForConnection(repo.rootKey, mycoHome, connectTo);
   if (left !== 'ready') return { root, result: left };
@@ -190,7 +207,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     const repeats = same ? (previous!.repeats ?? 1) + 1 : 1;
     writeAutoJoinState({
       root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl: membership.serverUrl, attemptAt: now(),
-      nextAttemptAt: nextAttemptAfter(now(), repeats), repeats, placement, connectTo,
+      nextAttemptAt: nextAttemptAfter(now(), repeats), repeats, placement, connectTo, quietOrigin: candidate !== null && placement === 'quiet' ? true : undefined,
       reportedAt: previous?.reportedAt, reportedHeld: previous?.reportedHeld, ...state,
     }, mycoHome);
   };
@@ -198,7 +215,7 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   if (placement === 'quiet') {
     // Never asked about: the Deployment forgets any report of it once it takes that, and nothing more is said.
     const acknowledged = previous?.placement === 'quiet' ? previous.quietAt : undefined;
-    const refusal = acknowledged !== undefined ? null : await tellQuiet(client, repo.rootKey);
+    const refusal = acknowledged !== undefined ? null : await withdrawReport(client, repo.rootKey, 'quiet');
     recordMiss({ outcome: 'outside_folders', reason: 'outside_folders',
       ...(acknowledged !== undefined ? { quietAt: acknowledged } : refusal === null ? { quietAt: now() } : { detail: refusal }) });
     return { root, result: 'outside_folders', ...(refusal === null ? {} : { reason: refusal }) };
@@ -216,8 +233,8 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
     return { root, result: 'outside_folders' };
   }
 
-  const answer = await client.post(RESOLVE_PROJECT_PATH, { ...named, rootKey: leaves.connectionRootKey ?? repo.rootKey });
-  if (!answer.ok) {
+  const answer = origin === null ? await client.post(RESOLVE_PROJECT_PATH, { ...named, rootKey: leaves.connectionRootKey ?? repo.rootKey }) : null;
+  if (answer?.ok === false) {
     const reason = isUncapturedReason(answer.error.code) ? answer.error.code : undefined;
     // An answer naming why is the Deployment's decision, and recorded it with the sessions; anything else is a
     // Deployment not reached, tried again later.
@@ -227,18 +244,27 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
       : { outcome: 'unreachable', detail: answer.error.message });
     return { root, result: reason !== undefined ? 'missed' : 'unreachable', reason: reason ?? answer.error.code };
   }
-  const projectId = String(answer.value.projectId);
+  const projectId = origin?.projectId ?? String(answer?.value.projectId);
+  const serverUrl = origin?.serverUrl ?? membership.serverUrl;
 
   // A connection written while this asked (`myco member join`, another attempt) is the one that stands.
   const committed = withRegistryLock(() => {
     const held = readRegistryEntryResult(root, mycoHome);
     if (held.status !== 'missing') return held;
     if (isLeft(repo.rootKey, mycoHome)) return { status: 'left' as const };
-    const currentMembership = readDeploymentMembership(membership.serverUrl, mycoHome);
+    if (origin !== null) {
+      const source = readRegistryEntryResult(origin.root, mycoHome);
+      if (source.status !== 'present' || source.entry.projectId !== projectId || source.entry.serverUrl !== serverUrl) return { status: 'unavailable' as const };
+      const current = autoJoinLeavesFor(repo.rootKey, membership.serverUrl, mycoHome);
+      if (current.connectionRootKey !== null || placeRepository(repo, current, { connectedOrigin: true }) === 'quiet') {
+        return { status: 'unavailable' as const };
+      }
+    }
+    const currentMembership = readDeploymentMembership(serverUrl, mycoHome);
     if (currentMembership === null) return { status: 'unavailable' as const };
     const written: RegistryEntry = {
-      ...currentMembership, version: REGISTRY_VERSION, projectId, serverUrl: membership.serverUrl, root,
-      machineId: membership.machineId ?? getMachineId(), joinedAt: now(), updatedAt: now(),
+      ...currentMembership, version: REGISTRY_VERSION, projectId, serverUrl, root,
+      machineId: currentMembership.machineId ?? getMachineId(), joinedAt: now(), updatedAt: now(),
     };
     writeRegistryEntry(written, { mycoHome, locked: true });
     return { status: 'written' as const, entry: written };
@@ -252,10 +278,15 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   }
   const entry = committed.entry;
   clearMissingMembership(root, mycoHome);
+  if (origin !== null && previous !== null) {
+    const refusal = await withdrawReport(client, repo.rootKey, 'withdrawn');
+    if (refusal !== null) process.stderr.write(`[myco] auto-join ${repo.root}: ${refusal}\n`);
+    if (serverUrl !== membership.serverUrl && refusal === null) forgetUncapturedReport(previous, mycoHome);
+  }
   markSessionsReported(repo.rootKey, sessions, mycoHome, membership.serverUrl);
-  writeAutoJoinState({ root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl: membership.serverUrl, attemptAt: now(), outcome: 'joined', projectId, placement, connectTo }, mycoHome);
+  writeAutoJoinState({ root: repo.root, rootKey: repo.rootKey, label: repo.label, serverUrl, attemptAt: now(), outcome: 'joined', projectId, placement, connectTo }, mycoHome);
 
-  // The Deployment cleared its row as it answered; nothing more to tell it.
+  // The report is withdrawn by the remote resolve or the local connection.
   const { moved, toolsPending } = await settleAutoJoin(entry, deps);
   // What moved is delivered here, in the process making the join (the helper's join bucket, or a run by hand): the
   // session leases keep it apart from the project's own helper.
@@ -267,10 +298,10 @@ async function joinRepository(root: string, membership: DeploymentMembership, de
   // The past sessions come last, once the connection is settled: the helper brings them a step at a time in later
   // passes, so one repository's history never holds another's first join.
   if (!deps.importNow) {
-    queueImport({ root, rootKey: repo.rootKey, projectId, serverUrl: membership.serverUrl, at: now() }, mycoHome);
+    queueImport({ root, rootKey: repo.rootKey, projectId, serverUrl, at: now() }, mycoHome);
     return { root, result: 'joined', projectId, moved, imported: 0, ...(toolsPending ? { toolsPending } : {}) };
   }
-  const pending = { root, rootKey: repo.rootKey, projectId, serverUrl: membership.serverUrl, at: now() };
+  const pending = { root, rootKey: repo.rootKey, projectId, serverUrl, at: now() };
   queueImport(pending, mycoHome);
   const report = await bringHistory(pending, { ...deps, mycoHome, now });
 
@@ -328,25 +359,25 @@ async function isolateRepository<T>(root: string, err: (line: string) => void, w
 }
 
 /**
- * Tell the Deployment to forget its report of a repository never to be asked about: null once it takes it, else why
- * not, in its own words; a Deployment that predates `quiet` says so, and the machine asks again at a later attempt.
+ * Tell the Deployment to forget the report. A refusal leaves the report eligible for retry.
  */
-async function tellQuiet(client: { post: (path: string, body: Record<string, unknown>) => Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; error: { message: string } }> }, rootKey: string): Promise<string | null> {
-  const told = await client.post(UNCAPTURED_STATE_PATH, { rootKey, state: 'quiet' });
+async function withdrawReport(client: { post: (path: string, body: Record<string, unknown>) => Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; error: { message: string } }> }, rootKey: string, state: 'quiet' | 'withdrawn'): Promise<string | null> {
+  const told = await client.post(UNCAPTURED_STATE_PATH, { rootKey, state });
   if (!told.ok) return `the Deployment did not forget its report: ${told.error.message}`;
-  return typeof told.value.code === 'string' ? `the Deployment did not forget its report: ${String(told.value.reason ?? told.value.code)}` : null;
+  return told.value.persisted === true ? null : `the Deployment did not forget its report: ${String(told.value.reason ?? told.value.code ?? 'acknowledgment missing')}`;
 }
 
-/** How many reported repositories one pass tells the Deployment to forget, after its settings put them under a quiet folder. */
-const QUIET_RECHECK_LIMIT = 32;
+/** Maximum report withdrawals per join pass. */
+const WITHDRAWAL_LIMIT = 32;
 
 /**
- * Repositories this machine reported that its settings now place under a folder never asked about: each is forgotten
- * on the Deployment and its state recorded quiet, without waiting for an agent to work there again. Bounded per pass.
+ * Withdraw reports for gone and quiet repositories without waiting for another hook in those folders.
  */
-async function forgetQuieted(run: AttemptRun, err: (line: string) => void, deadline: number): Promise<boolean> {
-  for (const candidate of quietCandidates(run.mycoHome).slice(0, QUIET_RECHECK_LIMIT)) {
+async function withdrawUncapturedReports(run: AttemptRun, err: (line: string) => void, deadline: number): Promise<boolean> {
+  let remaining = WITHDRAWAL_LIMIT;
+  for (const candidate of listAutoJoinStates(run.mycoHome)) {
     if (run.now() >= deadline) return true;
+    if (uncapturedWithdrawal(candidate, run.mycoHome) === null) continue;
     const membership = readDeploymentMembership(candidate.serverUrl, run.mycoHome);
     if (membership === null) continue;
     await isolateRepository(candidate.root, err, async () => {
@@ -355,13 +386,19 @@ async function forgetQuieted(run: AttemptRun, err: (line: string) => void, deadl
       try {
         const opened = await openDeploymentRequests('registry', { fetch: run.fetch, mycoHome: run.mycoHome, requestTimeoutMs: REQUEST_TIMEOUT_MS }, membership.serverUrl);
         // Read again under the lock, after the credential is ready: a connection or settings that moved since send nothing.
-        const state = stillQuietUntold(candidate, run.mycoHome);
-        if (state === null) return;
-        const refusal = opened.ok ? await tellQuiet(opened.value, state.rootKey) : opened.error.message;
-        writeAutoJoinState({ ...state, placement: 'quiet', detail: refusal ?? undefined, ...(refusal === null ? { quietAt: run.now() } : {}) }, run.mycoHome);
+        const state = readAutoJoinState(candidate.rootKey, run.mycoHome, candidate.serverUrl);
+        const withdrawal = state === null ? null : uncapturedWithdrawal(state, run.mycoHome);
+        if (state === null || withdrawal === null) return;
+        const refusal = opened.ok ? await withdrawReport(opened.value, state.rootKey, withdrawal) : opened.error.message;
+        if (withdrawal === 'withdrawn') {
+          if (refusal === null) forgetUncapturedReport(state, run.mycoHome);
+        } else {
+          writeAutoJoinState({ ...state, placement: 'quiet', detail: refusal ?? undefined, ...(refusal === null ? { quietAt: run.now() } : {}) }, run.mycoHome);
+        }
         if (refusal !== null) err(`auto-join ${state.root}: ${refusal}`);
       } finally { lock.release(); }
     });
+    if (--remaining === 0) break;
   }
   return false;
 }
@@ -398,7 +435,7 @@ async function sweep(membership: DeploymentMembership, run: AttemptRun, err: (li
  * 1. each repository a hook asked about, oldest first, using the request's Deployment membership; busy or unavailable
  *    bindings keep their request, and left or no-longer-due repositories are dropped;
  * 2. the past sessions of each repository joined, a step at a time;
- * 3. the repositories it reported that its settings now place under a folder never asked about, a bounded few;
+ * 3. reports for gone and quiet repositories, a bounded few;
  * 4. the sweep, once per machine.
  */
 export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () => number } = {}): HelperPass {
@@ -439,7 +476,7 @@ export function joinPass(mycoHome: string, deps: { fetch?: FetchLike; now?: () =
       if (remaining) return { more: true };
     }
 
-    if (await forgetQuieted(run, err, deadline)) return { more: true };
+    if (await withdrawUncapturedReports(run, err, deadline)) return { more: true };
     if (membership !== null && !sweepDone(mycoHome) && !(await sweep(membership, run, err, deadline)).done) return { more: true };
   };
 }

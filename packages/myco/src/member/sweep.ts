@@ -13,6 +13,8 @@ import { kickHelper, type KickOutcome } from './helper.js';
 import { listRoutingEntries, routingKey, type MemberRoutingIdentity } from './routing.js';
 import { MemberSpool } from './spool.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
+import { autoJoinDir, JOIN_BUCKET, listAutoJoinStates } from './auto-join.js';
+import { assertMemberPathContained } from './store.js';
 
 /** The least time between two sweeps' kicks of one project. */
 export const SWEEP_INTERVAL_MS = 10 * 60_000;
@@ -24,16 +26,25 @@ function holdsWork(spool: MemberSpool): boolean {
   return spool.sessionIds().length > 0 || spool.transcriptBacklogIds().length > 0;
 }
 
-function sweptRecently(spool: MemberSpool, now: number): boolean {
+function sweptRecently(dir: string, now: number): boolean {
   try {
-    const at = fs.statSync(path.join(spool.dir, HELPER_SWEPT_FILE)).mtimeMs;
+    const at = fs.statSync(path.join(dir, HELPER_SWEPT_FILE)).mtimeMs;
     return now - at >= 0 && now - at < SWEEP_INTERVAL_MS;
   } catch {
     return false;
   }
 }
 
-/** Kick every other project's helper that has work waiting; answers each project kicked, with what its kick did. */
+function markSwept(dir: string, now: number): void {
+  try {
+    const file = path.join(dir, HELPER_SWEPT_FILE);
+    fs.writeFileSync(file, '', { mode: 0o600 });
+    const at = new Date(now);
+    fs.utimesSync(file, at, at);
+  } catch { /* the mark only spares a second kick */ }
+}
+
+/** Wake other Project helpers with undelivered capture and the join helper for report maintenance. */
 export function kickWaitingProjects(mycoHome: string, self: MemberRoutingIdentity | string, opts: { now?: () => number; spawn?: DetachedSpawn } = {}): Array<{ projectId: string; outcome: KickOutcome }> {
   const now = opts.now ?? Date.now;
   const kicked: Array<{ projectId: string; outcome: KickOutcome }> = [];
@@ -42,13 +53,18 @@ export function kickWaitingProjects(mycoHome: string, self: MemberRoutingIdentit
     if (typeof self !== 'string' && key === routingKey(self)) continue;
     const { projectId, serverUrl } = route;
     const spool = new MemberSpool(route, { mycoHome });
-    if (!fs.existsSync(spool.dir) || !holdsWork(spool) || !spool.shouldDial(now(), false) || sweptRecently(spool, now())) continue;
-    try {
-      fs.writeFileSync(path.join(spool.dir, HELPER_SWEPT_FILE), '', { mode: 0o600 });
-      const at = new Date(now());
-      fs.utimesSync(path.join(spool.dir, HELPER_SWEPT_FILE), at, at);
-    } catch { /* the mark only spares a second kick */ }
+    if (!fs.existsSync(spool.dir) || !holdsWork(spool) || !spool.shouldDial(now(), false) || sweptRecently(spool.dir, now())) continue;
+    markSwept(spool.dir, now());
     kicked.push({ projectId, outcome: kickHelper({ projectId, serverUrl, mycoHome, reason: 'capture', spawn: opts.spawn, now }) });
+  }
+  // An active Project's detached helper also wakes the join bucket for report maintenance.
+  const joinDir = autoJoinDir(mycoHome);
+  if (typeof self !== 'string' && fs.existsSync(joinDir) && !sweptRecently(joinDir, now())) {
+    assertMemberPathContained(joinDir, mycoHome);
+    markSwept(joinDir, now());
+    if (listAutoJoinStates(mycoHome).some(state => state.outcome !== 'joined')) {
+      kicked.push({ projectId: JOIN_BUCKET, outcome: kickHelper({ projectId: JOIN_BUCKET, mycoHome, spawn: opts.spawn, now }) });
+    }
   }
   return kicked;
 }

@@ -18,6 +18,7 @@ import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 let cachedGitBinary: { key: string; binary: string } | undefined;
 
@@ -166,6 +167,18 @@ export function gitExitStatusAsync(args: string[], cwd: string, budget: GitQuery
 
 function gitAnswer(root: string, args: string[], budget: GitQueryBudget): string | null {
   try { return runGitAnswer(args, root, (args, cwd) => runGit(args, cwd, budget)); } catch { return null; }
+}
+
+/** The local path named by origin, resolved relative to the checkout as Git resolves it. */
+export function localOriginPath(root: string): string | null {
+  const origin = gitAnswer(root, ['config', '--local', '--includes', '--get-all', 'remote.origin.url'], {})?.split(/\r?\n/, 1)[0];
+  if (!origin) return null;
+  if (/^file:\/\//i.test(origin)) {
+    try { return fileURLToPath(origin); } catch { return null; }
+  }
+  if (path.isAbsolute(origin)) return path.resolve(origin);
+  // A colon before the first path separator denotes a scheme or an SCP remote.
+  return /^[^/:]*:/.test(origin) ? null : path.resolve(root, origin);
 }
 
 /** The normalized origin, or first remote, when Git can read one. */
