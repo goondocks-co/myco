@@ -798,11 +798,11 @@ describe('gates', () => {
     }
   });
 
-  it('serves the shell from the edge store in the platform\'s own shape, and declares no asset binding the server never reads', () => {
+  it('serves the shell from the edge store in the platform\'s own shape, bound as the ASSETS the server reads', () => {
     const assets = assetsBlock();
     expect(assets).toMatch(/^directory = "ui\/dist"$/m);
     expect(assets).toMatch(/^not_found_handling = "single-page-application"$/m);
-    expect(assets).not.toMatch(/^binding = /m);
+    expect([...assets.matchAll(/^binding = "(\w+)"$/gm)].map((m) => m[1])).toEqual(['ASSETS']);
   });
 
   it('keeps every live and retired route in one reviewed ledger', () => {

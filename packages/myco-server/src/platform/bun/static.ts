@@ -1,7 +1,8 @@
 /**
  * The dashboard's static build, served beside the self-hosted server.
  *
- * Paths the server owns — `ownedPathPatterns()` — go to the server untouched.
+ * Paths the server owns — `ownedPathPatterns()` — go to the server untouched,
+ * except a page request no route serves (`shellAnswers`), which gets the shell.
  * Every other GET or HEAD answers a file from the build when one exists, and
  * the shell's `index.html` when none does, which is what a single-page
  * application needs on a hard refresh of a deep route. Any other method on a
@@ -17,7 +18,7 @@
  */
 import { statSync } from 'node:fs';
 import { extname, posix, resolve, sep } from 'node:path';
-import { isOwnedPath, ownedPathPatterns } from '../../routes.js';
+import { isOwnedPath, ownedPathPatterns, shellAnswers } from '../../routes.js';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -67,7 +68,7 @@ export function withStaticAssets(uiDir: string, next: Fetch): Fetch {
 
   return async (request) => {
     const url = new URL(request.url);
-    if (isOwnedPath(url.pathname, patterns)) return next(request);
+    if (isOwnedPath(url.pathname, patterns) && !shellAnswers(request, url.pathname)) return next(request);
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response(null, { status: 405, headers: { allow: 'GET, HEAD' } });
     }
@@ -117,7 +118,7 @@ export function withStaticMap(assets: StaticAssets, next: Fetch): Fetch {
 
   return async (request) => {
     const url = new URL(request.url);
-    if (isOwnedPath(url.pathname, patterns)) return next(request);
+    if (isOwnedPath(url.pathname, patterns) && !shellAnswers(request, url.pathname)) return next(request);
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response(null, { status: 405, headers: { allow: 'GET, HEAD' } });
     }

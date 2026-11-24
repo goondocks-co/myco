@@ -37,8 +37,8 @@ const ADA = 'mem_q3Vb8xRk2LmT7wYz';
 const LIN = 'mem_Hn5-pC0dJfA9sE_u';
 const ME = { sub: '583231', login: 'octocat', member: { id: ADA, label: 'Ada', role: 'admin' as const } };
 const MEMBERS = { members: [
-  { id: ADA, label: 'Ada', role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 2 },
-  { id: LIN, label: 'Lin', role: 'member', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 0 },
+  { id: ADA, label: 'Ada', role: 'admin', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 2, liveMachines: 2 },
+  { id: LIN, label: 'Lin', role: 'member', linked: false, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 0, liveMachines: 0 },
 ] };
 const NOW_MS = Date.now();
 
@@ -121,8 +121,8 @@ describe('members', () => {
     expect(within(list).getByText('Ada')).toBeTruthy();
     expect(within(list).getByText('You')).toBeTruthy();
     expect(within(list).getByText('Admin')).toBeTruthy();
-    expect(list.textContent).toContain('GitHub connected');
-    expect(list.textContent).toContain('No GitHub account yet');
+    expect(list.textContent).toContain('GitHub connected · 2 machines');
+    expect(list.textContent).toContain('No GitHub account yet · 0 machines');
     const menu = await openMenu('More for Ada');
     expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
     fireEvent.keyDown(menu, { key: 'Escape' });

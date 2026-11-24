@@ -64,6 +64,7 @@ beforeAll(async () => {
     compatibilityDate: JSON.parse(tomlValue('compatibility_date')) as string,
     assets: {
       directory: dir,
+      binding: 'ASSETS',
       routerConfig: { has_user_worker: true },
       run_worker_first: RUN_WORKER_FIRST,
       assetConfig: { not_found_handling: JSON.parse(tomlValue('not_found_handling')) as 'single-page-application' },
@@ -126,6 +127,20 @@ describe('the paths the server owns, read the same way on both targets', () => {
         expect(response.headers.get('content-type')).toContain('text/html');
         expect(await response.text()).toBe(SHELL);
       }
+    });
+  }
+
+  for (const target of ['cloudflare', 'selfhosted'] as const) {
+    it(`[${target}] answers a page request no route serves with the shell, and an API client with the server's refusal`, async () => {
+      const request = (path: string, accept: string) => target === 'cloudflare'
+        ? protocolMf!.dispatchFetch(`http://localhost${path}`, { headers: { accept } })
+        : fetch(`${native!.url}${path}`, { headers: { accept } });
+      const page = await request('/sessions/ses_1?tab=lineage', 'text/html,application/xhtml+xml');
+      expect({ status: page.status, body: await page.text() }).toEqual({ status: 200, body: SHELL });
+      const api = await request('/sessions/ses_1', 'application/json');
+      expect({ type: api.headers.get('content-type')?.split(';')[0], shell: (await api.text()) === SHELL }).toEqual({ type: 'application/json', shell: false });
+      const route = await request('/health', 'text/html');
+      expect(await route.json()).toEqual({ ok: true });
     });
   }
 

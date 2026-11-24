@@ -21,11 +21,13 @@ export interface MemberPageRow {
   revoked_at: number | null;
   revoked_by: string | null;
   live_lineages: number;
+  live_machines: number;
 }
 
 const LIVE_HEADS = `FROM credential_lineages l INDEXED BY idx_credential_lineages_member_live WHERE l.member_id=m.id AND l.live_tokens>0 AND l.live_until>?1`;
 const memberColumns = `m.id,m.label,m.role,m.role_revision,${deploymentOwnerSql('m.id')} AS owner,m.github_id IS NOT NULL AS linked,m.created_at,m.revoked_at,m.revoked_by,
-  CASE WHEN m.revoked_at IS NULL THEN (SELECT COUNT(*) ${LIVE_HEADS}) ELSE 0 END AS live_lineages`;
+  CASE WHEN m.revoked_at IS NULL THEN (SELECT COUNT(*) ${LIVE_HEADS}) ELSE 0 END AS live_lineages,
+  CASE WHEN m.revoked_at IS NULL THEN (SELECT COUNT(DISTINCT l.machine_id) ${LIVE_HEADS}) ELSE 0 END AS live_machines`;
 const membersFirst = read<[now: number, limit: number], MemberPageRow>({
   name: 'memberPage.first', sql: `SELECT ${memberColumns} FROM members m INDEXED BY idx_members_created ORDER BY m.created_at ASC,m.id ASC LIMIT ?2`,
 });
@@ -35,7 +37,7 @@ const membersAfter = read<[now: number, limit: number, createdAt: number, id: st
 
 interface MemberPage extends Page<MemberPageRow> { readonly countsReady: boolean }
 
-/** One page of members, each with a key-bounded runtime count over its live heads, read beside the heads' readiness. */
+/** One page of members, each with key-bounded runtime and machine counts over its live heads, read beside the heads' readiness. */
 export async function memberPage(db: RelationalStore, now: number, opts: { limit?: number; cursor?: string } = {}): Promise<MemberPage> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
