@@ -1,11 +1,13 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
+import { RUN_FAILURE_WORDS, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, CURATION_TASK, SEEDING_TASK } from '../../core/task-catalogue.js';
 import { producedSql } from './run-output.js';
 import { contextValue, FAILURE_REASON_KEY } from '../run-context.js';
 import { FAILED_CALL_INDEX, FAILED_CALL_SQL } from '../schema-v701.js';
 import { read, readSet } from '../index.js';
+import { visibleRunErrorCode } from '../../core/reader-codes.js';
+import { STORED_KEY_READER_CODES } from '@goondocks/myco-shared/run-diagnostic';
 
 const FAILURE_STREAK_SHOWN = 5;
 export const NOW_WATCHED_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK, CURATION_TASK, SEEDING_TASK];
@@ -39,15 +41,20 @@ export async function unresolvedFailures(db: RelationalStore, pairs: readonly Ou
     return latest ? [{ ...pair, runId: latest.id, at: latest.at, failures: Math.min(rows.length, FAILURE_STREAK_SHOWN), hasMore: rows.length > FAILURE_STREAK_SHOWN }] : [];
   });
 }
-const reasons = read<[string], { projectId: string; runId: string; error_code: string | null; error: string | null; reason: string | null; refusal: string | null }>({
-  name: 'runs.failureReasons', sql: `SELECT r.project_id AS projectId,r.id AS runId,r.error_code,r.error,${contextValue(FAILURE_REASON_KEY)} AS reason,
+const reasons = read<[string], { projectId: string; runId: string; harness: string | null; error_code: string | null; error: string | null; reason: string | null; refusal: string | null }>({
+  name: 'runs.failureReasons', sql: `SELECT r.project_id AS projectId,r.id AS runId,r.harness,r.error_code,r.error,${contextValue(FAILURE_REASON_KEY)} AS reason,
     (SELECT CASE WHEN json_valid(e.payload) THEN CASE WHEN json_type(e.payload,'$.failure.message')='text'
       THEN json_extract(e.payload,'$.failure.message') END END FROM agent_run_events e INDEXED BY ${FAILED_CALL_INDEX}
       WHERE e.project_id=r.project_id AND e.run_id=r.id AND ${FAILED_CALL_SQL} ORDER BY e.recorded_at DESC LIMIT 1) AS refusal
     FROM json_each(?) k JOIN agent_runs r ON r.project_id=json_extract(k.value,'$.projectId') AND r.id=json_extract(k.value,'$.runId')`,
 });
-export async function failureReasons(db: RelationalStore, runs: ReadonlyArray<{ projectId: string; runId: string }>): Promise<Map<string, string>> {
+export async function failureReasons(db: RelationalStore, runs: ReadonlyArray<{ projectId: string; runId: string }>, includeSignIn: boolean): Promise<Map<string, string>> {
   const [rows] = await readSet(db, reasons.bind(JSON.stringify(runs)));
-  return new Map(rows.map(row => [`${row.projectId}\0${row.runId}`, [row.refusal, row.reason, row.error].find(value => value?.trim())
-    ?? (row.error_code === null ? 'Myco didn’t record why.' : RUN_FAILURE_WORDS[row.error_code] ?? RUN_FAILURE_WORDS.run_failed!)]));
+  return new Map(rows.map(row => {
+    const code = visibleRunErrorCode(row.error_code, includeSignIn);
+    const words = code === null ? 'Myco didn’t record why.' : RUN_FAILURE_WORDS[code] ?? RUN_FAILURE_WORDS.run_failed!;
+    const credentialFailure = row.error_code === STORED_KEY_READER_CODES.out_of_credit || row.error_code === STORED_KEY_READER_CODES.invalid_key;
+    const detail = credentialFailure ? storedRunFailureWords(code, row.harness) ?? words : [row.refusal, row.reason, row.error].find(value => value?.trim()) ?? words;
+    return [`${row.projectId}\0${row.runId}`, detail];
+  }));
 }

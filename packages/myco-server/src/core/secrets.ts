@@ -1,5 +1,7 @@
 import { commit, type Bound } from '../db/index.js';
-import { listSecrets, readSecret, type SecretRow } from '../db/settings/secret-rows.js';
+import { listSecrets, readRunnerSecret, readSecret, type SecretRow } from '../db/settings/secret-rows.js';
+import type { RunnerSecretAvailability, RunnerSecretVersion } from '../db/settings/runner-secret-health.js';
+import type { StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { putSecret, removeRetiredSecrets, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
@@ -96,11 +98,14 @@ export interface SecretStore {
   /**
    * The plaintext, or null when nothing is stored.
    *
-   * This is the only function that returns a credential. Its callers are the
-   * ones that must actually authenticate something — never a display surface —
-   * and a gate holds it to them.
+   * The store opens plaintext through this method and `runnerKey` for callers
+   * that need to authenticate.
    */
   get(name: string): Promise<string | null>;
+  /** Open a runner key with the sealed generation and its current provider observation. */
+  runnerKey(name: string, now: number): Promise<{
+    key: string; version: RunnerSecretVersion; failure: StoredKeyFailure | null; probeDue: boolean;
+  } | null>;
   /** What a settings surface may show. Never returns the value. */
   describe(name: string): Promise<SecretDescription>;
   /** Every stored secret's description, including the private slots recovery has to carry. */
@@ -220,6 +225,17 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
       return r === null ? null : openRow(r);
     },
 
+    async runnerKey(name, now) {
+      const r = await readRunnerSecret(db, name, now);
+      if (r === null) return null;
+      try {
+        return { key: await openRow(r), version: { slot: name, generation: r.iv }, failure: r.failure, probeDue: r.probeDue === 1 };
+      } catch (error) {
+        if (error instanceof SecretOpenError || error instanceof SecretValueError) return null;
+        throw error;
+      }
+    },
+
     async describe(name) {
       const r = await row(name);
       if (r === null) return { configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null };
@@ -251,29 +267,25 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
 }
 
 /** One request opens each stored slot at most once and receives only agent usability. */
-export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: SecretWrappingKey): (harness: string) => Promise<boolean> {
+export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: SecretWrappingKey): (harness: string) => Promise<RunnerSecretAvailability> {
   const store = deploymentSecretStore(db, wrappingKey);
-  const slots = new Map<string, Promise<string | null>>();
+  const slots = new Map<string, ReturnType<SecretStore['runnerKey']>>();
   return async harness => {
     const slot = HARNESS_CREDENTIALS[harness]?.slot;
     if (slot == null) return false;
     let opened = slots.get(slot);
     if (opened === undefined) {
-      opened = store.get(slot);
+      opened = store.runnerKey(slot, 0);
       slots.set(slot, opened);
     }
-    try {
-      const key = await opened;
-      return key !== null && Object.keys(credentialEnvFor(harness, key)).length > 0;
-    } catch (error) {
-      if (error instanceof SecretOpenError || error instanceof SecretValueError) return false;
-      throw error;
-    }
+    const key = await opened;
+    if (key === null || Object.keys(credentialEnvFor(harness, key.key)).length === 0) return false;
+    return key.failure ?? true;
   };
 }
 
-/** A read surface receives only whether the agent's stored login is usable. */
-export function harnessCredentialAvailable(db: RelationalStore, wrappingKey: SecretWrappingKey, harness: string): Promise<boolean> {
-  return harnessCredentialAvailability(db, wrappingKey)(harness);
+/** A stored choice can name a locally usable key while its provider is refusing it. */
+export async function harnessCredentialAvailable(db: RelationalStore, wrappingKey: SecretWrappingKey, harness: string): Promise<boolean> {
+  return await harnessCredentialAvailability(db, wrappingKey)(harness) !== false;
 }
 

@@ -1,4 +1,4 @@
-import { harnessSignInFailureWords } from '@goondocks/myco-shared/runner-fleet';
+import { harnessSignInFailureWords, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -14,6 +14,7 @@ import { machineOfWorker, useMachines } from '../machines';
 import { LEGACY_WORKER_LABEL, REASON_WORDS, taskWords } from '../workers';
 import { LegacyWorker, refreshFleet } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { live } from '../../../lib/live';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 import { sinceWords } from '../../today/words';
@@ -90,7 +91,9 @@ function outcome(runner: RunnerRow): string {
       case 'registration': return 'Waiting for registration approval';
       case 'user_active': return 'Waiting until the machine is idle';
       case 'incompatible': return 'Agent needs an update';
-      case 'credential_unavailable': return 'The chosen stored key is unavailable';
+      case 'credential_unavailable': return 'Waiting for a usable key';
+      case 'out_of_credit': return 'Waiting for API credit';
+      case 'invalid_key': return 'Waiting for a valid key';
       case 'not_signed_in': return 'No signed-in agent';
     }
     if (runner.offers?.length === 0 || runner.offers?.every(offer => !offer.authenticated)) return 'No signed-in agent';
@@ -157,6 +160,8 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
       {allowed && [...new Set([...(runner.offers?.map(offer => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])].map(agent => <AgentSignIn key={agent} runner={runner} agent={agent}
         allowed={allowed && runner.state !== 'removed'} storedAvailable={storedCredentials[agent] === true} />)}
       {runner.offers?.map(offer => { const failure = harnessSignInFailureWords(offer); return failure === null ? null : <p key={offer.id} className="mt-s2 t-small text-bad">{failure}</p>; })}
+      {allowed && runner.storedKeyFailures?.map(({ agent, slot, failure }) =>
+        <p key={agent} className="mt-s2 t-small text-bad">{harnessLabel(agent)} · {storedKeyFailureWords(failure, slot)}</p>)}
       {update.isError && <ErrorState error={update.error} onRetry={() => update.mutate()} />}
       <details className="mt-s3 border-t border-line pt-s3 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
         <div className="mt-s3 flex flex-col gap-s2 break-words">
@@ -170,7 +175,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
           {runner.models?.map(model => <p key={model.harness}>{harnessLabel(model.harness)} models: {model.available ? model.source ?? 'source unavailable' : 'listing unavailable'} · listed {agoWords(model.fetchedAt)} · received {agoWords(model.receivedAt)} · {model.fresh ? 'recent listing' : 'stale listing'}</p>)}
           {(runner.capabilities?.length || runner.labels?.length || runner.preference) && <p>{runner.capabilities?.length ? `Capabilities: ${runner.capabilities.join(', ')}. ` : ''}{runner.labels?.length ? `Labels: ${runner.labels.join(', ')}. ` : ''}{runner.preference ? `Preference: ${runner.preference}.` : ''}</p>}
           {runner.lastReason !== null && runner.lastReason in REASON_WORDS && <p>Last check for work: {REASON_WORDS[runner.lastReason as keyof typeof REASON_WORDS]}.</p>}
-          {runner.display === 'Not ready' && <p>Readiness: {runner.readiness.reason}</p>}
+          {runner.display === 'Not ready' && !isStoredKeyFailure(runner.readiness.code) && <p>Readiness: {runner.readiness.reason}</p>}
           {runner.offers !== null && runner.offersObservedAt != null && <p>Agent status reported {agoWords(runner.offersObservedAt)}.</p>}
           {runner.os && <p>Operating system: {runner.os}{runner.arch ? ` · ${runner.arch}` : ''}.</p>}
           {runner.channel && <p>Release channel: {runner.channel}.</p>}
@@ -218,7 +223,7 @@ function AgentSignIn({ runner, agent, allowed, storedAvailable }: { runner: Runn
     {allowed && <div className="mt-s2 flex flex-wrap items-center gap-s2">
       <Button size="sm" variant="secondary" disabled={choice === 'own' || change.isPending} onClick={() => change.mutate('own')}>Use this machine’s sign-in</Button>
       <Button size="sm" variant="secondary" disabled={!storedAvailable || choice === 'stored' || change.isPending} onClick={() => change.mutate('stored')}>Use the server’s stored key</Button>
-      {!storedAvailable && <span className="text-muted">No stored key this agent can use.</span>}
+      {!storedAvailable && !runner.storedKeyFailures?.some(failure => failure.agent === agent) && <span className="text-muted">No stored key this agent can use.</span>}
     </div>}
     {change.isError && <ErrorState error={change.error} onRetry={() => change.reset()} />}
   </div>;

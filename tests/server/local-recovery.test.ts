@@ -2,7 +2,7 @@ import { prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { run as serverCommand } from '@myco/cli/server.js';
 import { storedConnection } from '../myco-server/helpers/github-app.js';
 import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
-import { providerCredentialReady, openHarnessCredential, openCompletionCredential } from '@myco-server-worker/core/provider-credentials.js';
+import { providerCredentialReady, openCompletionCredential } from '@myco-server-worker/core/provider-credentials.js';
 import { harnessCredentialAvailable } from '@myco-server-worker/core/secrets.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
@@ -526,7 +526,7 @@ it('restores without held wrapping material, starts the server and names each cr
       expect(await prepareDispatch(server.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_unavailable' });
       expect((await releaseProvenance(server.env.db).describe('proj_1')).repository).toEqual({ url: 'https://github.com/example/source', branch: 'main' });
       expect(await providerCredentialReady(server.env.db, key, 'openai')).toBe(false);
-      expect(await openHarnessCredential(server.env.db, key, 'anthropic')).toBeNull();
+      expect(await store.runnerKey('anthropic', Date.now())).toBeNull();
       expect(await harnessCredentialAvailable(server.env.db, key, 'claude-code')).toBe(false);
       expect(await openCompletionCredential(server.env.db, key)).toBeNull();
       expect(lines.join('\n')).toContain('OpenAI: Settings → Models and keys');

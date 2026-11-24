@@ -22,7 +22,7 @@ import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/wo
  * drown every other run, so the read answers when the index last succeeded, how many of its runs failed in the window,
  * and how many have failed after that success. A failure a later success followed is a retry, not a failure.
  */
-import { runErrorCode, type RunErrorCode } from '../core/reader-codes.js';
+import { runErrorCode, visibleRunErrorCode, type RunErrorCode } from '../core/reader-codes.js';
 import { auditRows, awaitingRow, currentMaps, failingRows, holdRows, supportedUtcWindow, upkeepRows, workHistoryReady, workSummary, workTimeline, WORK_TIMELINE_PAGE, DAY_MS, type TimelineCursor, type UtcWindow } from '../db/runs/history.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
@@ -230,14 +230,14 @@ async function summaryOf(db: RelationalStore, set: ProjectSet, window: UtcWindow
 }
 
 /** A row of the timeline as the page lists it. */
-function workRunOf(row: Record<string, unknown>): WorkRun {
+function workRunOf(row: Record<string, unknown>, includeSignIn: boolean): WorkRun {
   const task = String(row.task);
   const kind = OUTCOME_KINDS[task]!;
   const produced = num(row.produced) === 1;
   const failed = String(row.status) === 'failed';
   const titled = row.titled_session == null ? null : String(row.titled_session);
   const error = typeof row.error === 'string' && row.error.trim() !== '' ? row.error : null;
-  const code = runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null);
+  const code = visibleRunErrorCode(runErrorCode(error, typeof row.error_code === 'string' ? row.error_code : null), includeSignIn);
   const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
   return {
     ...runAccounting(row.usage_data, row.cost_provenance),
@@ -267,7 +267,7 @@ function workRunOf(row: Record<string, unknown>): WorkRun {
 }
 
 /** What the Deployment's runs produced in the set's Projects over the window, its end excluded. */
-export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number, cursor?: TimelineCursor, now = Date.now()): Promise<WorkAnswer> {
+export async function readWork(db: RelationalStore, set: ProjectSet, since: number, until: number, cursor?: TimelineCursor, now = Date.now(), includeSignIn = false): Promise<WorkAnswer> {
   const window = supportedUtcWindow(since, until);
   const [summary, timeline, maps, upkeep, ready] = await Promise.all([
     window === null || cursor !== undefined ? Promise.resolve(null) : summaryOf(db, set, window, now),
@@ -276,7 +276,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     readUpkeep(db, set, since, until),
     window === null || cursor !== undefined ? workHistoryReady(db) : Promise.resolve(true),
   ]);
-  const runs = timeline.rows.map(workRunOf);
+  const runs = timeline.rows.map(row => workRunOf(row, includeSignIn));
   const last = runs.at(-1);
   const state: WorkState = (window !== null && cursor === undefined && summary === null) || !ready ? 'building' : 'ready';
   return {

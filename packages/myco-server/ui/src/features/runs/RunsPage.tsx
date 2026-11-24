@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { Button, Card, ErrorState, FilterPills, HealthDot, Link, ListRow, Select, ShowMore, Sparkline, StackedBars, StatusChip, type HealthTone } from '../../design';
@@ -158,7 +159,7 @@ export function RunsPage() {
               <li key={`${run.projectId}\u0000${run.runId}`} className="flex items-center" data-runs-run={outcomeOf(run.result)}>
                 <ListRow className="flex-1" to={runPath(run.projectId, run.runId)} leading={<HealthDot tone={outcome.tone} label={outcome.words} />}
                   title={`${capital(taskWords(run.task))}${run.projectName === null ? '' : ` · ${run.projectName}`}`}
-                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || !['failed','interrupted'].includes(outcomeOf(run.result)) ? null : runErrorWords(run.errorCode, null, null, run.interruptionMachine ?? run.runner?.name ?? null, run.result === 'interrupted' ? 'skipped' : 'failed'), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
+                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || !['failed','interrupted'].includes(outcomeOf(run.result)) ? null : storedRunFailureWords(run.errorCode, run.harness) ?? runErrorWords(run.errorCode, null, null, run.interruptionMachine ?? run.runner?.name ?? null, run.result === 'interrupted' ? 'skipped' : 'failed'), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
                 {run.runner !== null && <Link to={runnerPath(run.runner.id)} className="shrink-0 px-s3 t-small">{run.runner.name ?? 'Its runner'}</Link>}
               </li>
             );

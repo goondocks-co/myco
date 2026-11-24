@@ -1,4 +1,4 @@
-import { interruptionWords } from '@goondocks/myco-shared/run-control';
+import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
@@ -252,7 +252,7 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 }
 
 function causeOf({ run }: RunDetailAnswer): string {
-  return runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
+  return storedRunFailureWords(run.errorCode, run.harness) ?? runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -346,7 +346,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
           {run.status === 'failed' && (run.error !== null || run.errorCode === 'repository_unprepared') && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>
-              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null)}</p>
+              <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{causeOf(answer)}</p>
               {run.errorCode === 'repository_unprepared'
                 ? run.repositoryFailure?.summary?.trim() && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{redactSecrets(run.repositoryFailure.summary)}</p>
                 : !inferredEnd(run.errorCode) && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>}

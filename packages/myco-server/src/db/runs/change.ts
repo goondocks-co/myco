@@ -11,6 +11,7 @@ import { runCallerGuard } from './claim.js';
 import type { RunLease } from './leases.js';
 import { isTerminalRunStatus, RUN_UPDATE_COLUMNS, type RunCaller, type RunUpdate } from './lifecycle.js';
 import { RUN_CONTEXT_OBJECT_SQL } from './queue.js';
+import type { RunnerSecretOutcome } from '../settings/runner-secret-health.js';
 
 const runChanges = composedStatements<{ id: string }, 'write'>('runs.runUpdate');
 
@@ -34,6 +35,7 @@ export interface RunUpdateOptions {
   errorCode?: RunErrorCode;
   context?: Readonly<Record<string, string>>;
   caller?: RunCaller;
+  runnerSecretOutcome?: RunnerSecretOutcome;
 }
 
 /**
@@ -83,7 +85,9 @@ export function runUpdateStatement(scope: ReadScope, runId: string, update: RunU
   const hasContext = context !== undefined && Object.keys(context).length > 0;
   const contextJson = hasContext ? JSON.stringify(context) : null;
   const contextSet = contextJson === null ? '' : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
-  return runChangeStatement(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`, [...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? [update.status] : []),
+  const keyOutcome = lease === undefined ? undefined : options.runnerSecretOutcome;
+  const keySet = keyOutcome === undefined ? '' : ', runner_secret_outcome = ?';
+  return runChangeStatement(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${keySet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`, [...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), ...(keyOutcome === undefined ? [] : [keyOutcome]), scope.projectId, runId, ...(guarded ? [update.status] : []),
       ...(authority?.params ?? []), ...callerGuard.params]);
 }
 

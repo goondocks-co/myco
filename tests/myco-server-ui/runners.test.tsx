@@ -279,12 +279,13 @@ describe('runner sign-in controls', () => {
 });
 
 it('shows a failed agent sign-in while another agent keeps the runner online', async () => {
-  mount('admin', { ...RUNNER, offers: [
+  mount('admin', { ...RUNNER, storedKeyFailures: [{ agent: 'cursor', slot: 'cursor', failure: 'invalid_key' }], offers: [
     { id: 'claude-code', authenticated: false, unavailableReason: 'login_missing',
       signInFailure: { name: 'Claude Code', source: 'own', hint: 'Open a GUI Terminal on this Mac, run claude, then /login.' } },
     { id: 'codex', authenticated: true },
   ] });
   const failure = await screen.findByText('Claude Code could not sign in at launch. Open a GUI Terminal on this Mac, run claude, then /login.');
+  expect(await screen.findByText(/^Cursor · The Cursor key was rejected\./)).toBeTruthy();
   expect(failure.closest('details')).toBeNull();
   expect((await screen.findByText('homelab-mini')).closest('article')?.textContent).toContain('Online');
 });

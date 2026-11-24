@@ -11,6 +11,7 @@ import { backlogWords, capabilityWords, lastLearningWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { EmbeddingSwitchPanel, PassedOverSources } from '../settings/EmbeddingSwitch';
 import { agoWords } from '@goondocks/myco-shared/time-words';
+import { storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -72,6 +73,9 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
   const harnesses = data.harnesses ?? [];
   const schema = schemaLine(data.schema);
   const backlog = backlogWords(data.transcriptBacklog);
+  const queue = data.workers.available ? data.workers.queue : undefined;
+  const keyFailures = new Map((data.workers.fleet ?? []).flatMap(worker =>
+    (worker.runnerDetails?.storedKeyFailures ?? []).map(failure => [failure.slot, failure] as const)));
   const projects = [...data.projects].sort((a, b) => (b.lastActivityAt ?? -1) - (a.lastActivityAt ?? -1));
   return (
     <div className="flex flex-col gap-s4">
@@ -103,7 +107,9 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
           {harnesses.map((fact) => <p key={`${fact.machineId}/${fact.id}`} className="px-s4 py-s2 t-body text-ink-2">{harnessHealthWords(fact)}</p>)}
         </RowCard>
       </div>}
-      <QueueWarning queue={data.workers.available ? data.workers.queue : undefined} />
+      <QueueWarning queue={queue} />
+      {[...keyFailures.values()].filter(({ slot }) => !queue?.reasons.some(reason => reason.keySlot === slot))
+        .map(({ slot, failure }) => <Card key={slot}>{storedKeyFailureWords(failure, slot)}</Card>)}
       <SearchByMeaning now={now} />
 
       <div className="flex flex-col gap-s2">

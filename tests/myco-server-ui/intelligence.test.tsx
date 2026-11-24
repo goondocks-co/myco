@@ -574,6 +574,7 @@ for (const [code, sentence] of [
   ['report_without_audit', 'The agent didn’t account for the steps it took, so its work couldn’t be checked.'],
   ['agent_not_signed_in', 'The agent isn’t signed in on the machine that ran it.'],
   ['agent_rate_limited', 'The agent’s provider limited how often it could ask, so it stopped.'],
+  ['stored_key_out_of_credit', 'The Anthropic key ran out of API credit. This run ended. Add credit with the provider, replace the key in Settings, or switch the runner to its own sign-in on Runners. Start a new run when ready.'],
   ['agent_model_refused', 'The agent’s model refused to carry on with the task.'],
   ['agent_timed_out', 'The agent ran out of time before it finished.'],
   ['agent_crashed', 'The agent quit unexpectedly before it finished.'],
@@ -590,7 +591,7 @@ for (const [code, sentence] of [
   it(`words a ${code ?? 'legacy'} failure with its specific reason available in details`, async () => {
     const prose = code === 'unknown_code' ? 'runtime output reported a missing file' : 'The saved output could not be read.';
     server(routes({ detail: { [`/api/projects/${P}/runs/run_5e0b1c2d3f`]: () => Response.json(runDetail(mapRuns[0]!, {
-      reports: [], run: { errorCode: code, error: prose },
+      reports: [], run: { errorCode: code, error: prose, ...(code === 'stored_key_out_of_credit' ? { harness: 'claude-code' } : {}) },
     })) } }));
     mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
     const open = await panel();

@@ -442,12 +442,14 @@ const claimDefinitions = Object.fromEntries(budgetVariants.flatMap(budgetKind =>
     const name = `${pulled ? 'pulled' : 'queued'}${budgetKind}${runner ? 'Runner' : 'Member'}${quiet ? 'Quiet' : 'Any'}${settings ? 'Observed' : 'Current'}`;
     return [name,{guard:assertion<readonly unknown[]>({name:`runs.${name}Admission`,refusal:CLAIM_SELECTION_REFUSED,when:authority}),credential:write<readonly unknown[]>({name:`runs.${name}Credential`,sql:CREDENTIAL_INSERT_SQL+` AND ${authority} RETURNING id`}),run:write<readonly unknown[],ClaimedRunRow>({name:`runs.${name}`,sql: pulled ?
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject, dispatch_spec, started_at, dispatched_by,
-        leased_by,leased_runner_id,leased_runner_credential_id,lease_expires_at,harness,reasoning_level,model,execution_overrides)
-      SELECT ?,?,'myco-agent',?,'running','automatic',?,?,?,?,?,?,?,?,?,?,?,? WHERE ${authority}
+        leased_by,leased_runner_id,leased_runner_credential_id,lease_expires_at,harness,reasoning_level,model,execution_overrides,
+        runner_secret_slot,runner_secret_generation)
+      SELECT ?,?,'myco-agent',?,'running','automatic',?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${authority}
       RETURNING project_id AS projectId,id,task,instruction,run_context AS runContext,dry_run AS dryRun` :
       `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, leased_runner_id = ?, leased_runner_credential_id = ?,
-        lease_expires_at=?,harness=?,waited_for=held_by,held_by=NULL,last_renewed_at=NULL,reasoning_level=?,model=?,execution_overrides=?,subject=COALESCE(?,subject)
+        lease_expires_at=?,harness=?,waited_for=held_by,held_by=NULL,last_renewed_at=NULL,reasoning_level=?,model=?,execution_overrides=?,
+        runner_secret_slot=?,runner_secret_generation=?,runner_secret_outcome=NULL,subject=COALESCE(?,subject)
       WHERE project_id=? AND id=? AND ${authority}
         AND (? IS NULL OR NOT EXISTS(SELECT 1 FROM agent_runs flight INDEXED BY idx_agent_runs_task_live
           WHERE flight.task=agent_runs.task AND flight.${IN_FLIGHT_RUN_STATUSES} AND flight.subject=? AND flight.id!=agent_runs.id))
@@ -469,11 +471,12 @@ function claimBinding(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmis
 export function workerClaimWrite(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmission, dispatchedBy: string): Bound<ClaimedRunRow,'write'> {
   const {definition,candidate,authority}=claimBinding(form,claim,admission), owner=leaseOwnerColumns(claim.worker);
   const profile = [claim.profile.tier,claim.profile.model,JSON.stringify({requested:claim.profile,harness:claim.harness})];
+  const key = [claim.storedKey?.slot ?? null, claim.storedKey?.generation ?? null];
   const subject = claim.input?.subject ?? null;
   return definition.run.bind(...(form.kind === 'pulled'
     ? [candidate.projectId,candidate.id,candidate.task,form.pull.subject,JSON.stringify({actor:'deployment'}),claim.now,dispatchedBy,
-      owner.leasedBy,owner.runnerId,owner.runnerCredentialId,claim.leaseExpiresAt,claim.harness,...profile,...authority]
-    : [claim.now,dispatchedBy,owner.leasedBy,owner.runnerId,owner.runnerCredentialId,claim.leaseExpiresAt,claim.harness,...profile,
+      owner.leasedBy,owner.runnerId,owner.runnerCredentialId,claim.leaseExpiresAt,claim.harness,...profile,...key,...authority]
+    : [claim.now,dispatchedBy,owner.leasedBy,owner.runnerId,owner.runnerCredentialId,claim.leaseExpiresAt,claim.harness,...profile,...key,
       subject,candidate.projectId,candidate.id,...authority,subject,subject]));
 }
 export function workerCredentialGate(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmission) {

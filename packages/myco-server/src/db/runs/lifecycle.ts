@@ -84,13 +84,14 @@ export async function getRun(db: RelationalStore, scope: ReadScope, runId: strin
   return rows[0] ?? null;
 }
 
-const requestedProfileRead = read<[project: string, run: string, attempt: string], { execution_overrides: string | null }>({ name: 'runs.requestedProfile', sql:
-  `SELECT execution_overrides FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND status = 'running' AND dispatched_by = ?3` });
+const workerExecution = read<[project: string, run: string, attempt: string], { execution_overrides: string | null; stored: number }>({ name: 'runs.workerExecution', sql:
+  `SELECT execution_overrides, runner_secret_slot IS NOT NULL AS stored
+    FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND status = 'running' AND dispatched_by = ?3` });
 
 /** Read the requested profile only for the dispatched attempt ending its lease. */
-export async function getRequestedWorkerProfile(db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string): Promise<ExecutionProfile | null> {
-  const [[row]] = await readSet(db, requestedProfileRead.bind(scope.projectId, runId, dispatchedBy));
-  return requestedProfile(row?.execution_overrides);
+export async function getWorkerExecution(db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string): Promise<{ profile: ExecutionProfile | null; stored: boolean }> {
+  const [[row]] = await readSet(db, workerExecution.bind(scope.projectId, runId, dispatchedBy));
+  return { profile: requestedProfile(row?.execution_overrides), stored: row?.stored === 1 };
 }
 
 /** A run row with the Project it belongs to: what a read keyed by credential answers; a credential spans every Project of its Deployment. */

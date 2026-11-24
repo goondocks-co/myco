@@ -410,6 +410,7 @@ export function runErrorWords(code: string | null | undefined, reason: string | 
 /** The failures a machine's agent explained in its own words, which the machine keeps in its worker log. */
 const DIAGNOSED_RUN_CODES: ReadonlySet<string> = new Set([
   'agent_not_signed_in', 'agent_rate_limited', 'agent_model_refused', 'agent_timed_out', 'agent_crashed',
+  'agent_out_of_credit', 'agent_invalid_key', 'stored_key_out_of_credit', 'stored_key_invalid',
   'agent_failed', 'agent_launch_failed', 'agent_protocol_error', 'agent_permission_refused', 'agent_tools_unlisted',
 ]);
 

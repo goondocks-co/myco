@@ -2,13 +2,15 @@ import { parseWorkerAccounting, type WorkerUsage, type ExecutionIdentity } from 
 import { MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { resolveWorkerCost } from './cost/worker.js';
 import { decideRunEnd, runEndingContext } from './run-postconditions.js';
-import { getRequestedWorkerProfile, type RunUpdate } from '../db/runs/lifecycle.js';
+import { getWorkerExecution, type RunUpdate } from '../db/runs/lifecycle.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
 import { profileModelVerdict, MODEL_MISMATCH, MODEL_UNCONFIRMED, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../db/run-context.js';
+import type { RunnerSecretOutcome } from '../db/settings/runner-secret-health.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from './reader-codes.js';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { parseRepositoryFailure, parseRunError, shapeRunError, type HarnessStop } from '@goondocks/myco-shared/run-text';
+import { parseRepositoryFailure, parseRunError, runErrorDiagnostic, shapeRunError, type HarnessStop } from '@goondocks/myco-shared/run-text';
+import { isStoredKeyFailure, STORED_KEY_READER_CODES } from '@goondocks/myco-shared/run-diagnostic';
 
 interface WorkerEnd extends WorkerRunIdentity {
   status: 'completed' | 'failed';
@@ -42,7 +44,7 @@ function runError(status: 'completed' | 'failed', unmet: string | null, reported
 /** Close evidence and accounting are prepared under the same dispatched attempt. */
 export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEnd, row) => {
   const { usage = null, attemptId, accountingVersion, identity: reportedIdentity } = parseWorkerAccounting(run);
-  const requested = await getRequestedWorkerProfile(env.db, { projectId: run.projectId }, run.runId, row.dispatchedBy);
+  const { profile: requested, stored } = await getWorkerExecution(env.db, { projectId: run.projectId }, run.runId, row.dispatchedBy);
   const verdict = requested !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
     ? profileModelVerdict(row.harness ?? '', requested, reportedIdentity.primary) : 'match';
   const warning = verdict === 'mismatch' ? MODEL_MISMATCH : verdict === 'unconfirmed' ? MODEL_UNCONFIRMED : null;
@@ -65,7 +67,11 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
   const update: RunUpdate = { status, error, ...accounting };
   // A worker's profile refusal is a failure the Deployment did not overrule: its code, and its reason for the run's page.
   const refused = run.refusal != null && status === 'failed' && unmet === null;
-  const errorCode: RunErrorCode = refused ? 'model_not_applied' : unmet === null ? diagnosticErrorCode(reported) : closeErrorCode(unmet);
+  const diagnostic = runErrorDiagnostic(reported);
+  const keyFailure = stored && run.status === 'failed' && isStoredKeyFailure(diagnostic) ? diagnostic : null;
+  const runnerSecretOutcome: RunnerSecretOutcome | undefined = keyFailure ?? (stored && run.status === 'completed' ? 'accepted' : undefined);
+  const errorCode: RunErrorCode = keyFailure !== null ? STORED_KEY_READER_CODES[keyFailure]
+    : refused ? 'model_not_applied' : unmet === null ? diagnosticErrorCode(reported) : closeErrorCode(unmet);
   const repositoryFailed = status === 'failed' && REPOSITORY_TASKS.includes(row.task ?? '') && parseRunError(reported ?? '')?.code === 'repository_unprepared';
   const repositoryFailure = repositoryFailed ? parseRepositoryFailure(run.repositoryFailure) : null;
   const context: Record<string, string> = {
@@ -76,5 +82,5 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
       ...(repositoryFailure.summary === undefined ? {} : { [REPOSITORY_FAILURE_SUMMARY_KEY]: repositoryFailure.summary }),
     }),
   };
-  return { row, unmet, status, update, errorCode, context };
+  return { row, unmet, status, update, errorCode, context, runnerSecretOutcome };
 });

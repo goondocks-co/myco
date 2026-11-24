@@ -224,7 +224,7 @@ const TIER_TASK: Readonly<Record<ReasoningTier, Array<[string, unknown]>>> = {
   default: [['agent.tasks', { 'title-summary': { reasoningLevel: 'default' } }]],
   high: [['agent.tasks', { 'title-summary': { reasoningLevel: 'high' } }]],
 };
-const MODEL_SAMPLES: Readonly<Record<string, string>> = { 'claude-code': 'claude-contract-test', codex: 'gpt-5-contract', opencode: 'openai/gpt-5-contract' };
+const MODEL_SAMPLES: Readonly<Record<string, string>> = { 'claude-code': 'claude-contract-test', codex: 'gpt-5-contract', opencode: 'anthropic/claude-contract-test' };
 const workerLogin = (harness: string): Array<[string, unknown]> => [[`agent.harnesses.${harness}.credential`, 'worker-login']];
 const modelFor = (harness: string, tier: ReasoningTier): Array<[string, unknown]> =>
   PROFILE_HARNESSES[harness]!.models[tier] === null ? [[`agent.reasoning_map.${harness}.${tier}`, MODEL_SAMPLES[harness]!]] : [];

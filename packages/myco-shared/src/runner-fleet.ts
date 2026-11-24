@@ -1,4 +1,6 @@
+import type { StoredKeyFailure } from './run-diagnostic.js';
 import { HARNESS_CREDENTIALS } from './harness-providers.js';
+import { secretSlotLabel, type SecretSlotName } from './secret-slots.js';
 import type { RunnerBlockedVersion, RunnerUpdateRequest, RunnerUpdateResult, RunnerUpdateState } from './runner-update.js';
 
 export type RunnerCredentialChoice = 'own' | 'stored';
@@ -66,9 +68,10 @@ export interface RunnerFleetRecord {
   offers: Array<{ id: string; installed?: boolean; authenticated: boolean; unavailableReason?: 'login_missing'; signInFailure?: HarnessSignInFailure; profile?: { model: string; efforts: readonly string[] } }> | null;
   offersObservedAt: number | null;
   credentialChoices?: StoredRunnerCredentialChoices;
+  storedKeyFailures?: StoredKeyFailureNotice[];
   capabilities: string[] | null; labels: string[] | null; preference: string | null;
   os: string | null; arch: string | null; version: string | null;
-  readiness: { state: RunnerAvailability; code?: RunnerAvailability | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'registration'; reason: string; observedAt: number | null };
+  readiness: { state: RunnerAvailability; code?: RunnerAvailability | StoredKeyFailure | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'registration'; reason: string; observedAt: number | null };
   lastReason: string | null;
   models: Array<{ harness: string; source: string | null; fetchedAt: number; receivedAt: number; fresh: boolean; available: boolean }>;
   channel: 'stable' | 'beta' | 'alpha' | null; latestVersion: string | null; lastCheckAt: number | null;
@@ -76,11 +79,25 @@ export interface RunnerFleetRecord {
   updateState: RunnerUpdateState | null; updateRequest: RunnerUpdateRequest | null;
 }
 
-export type QueueReason = 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building' | 'queue_building';
+export interface StoredKeyFailureNotice { agent: string; slot: SecretSlotName; failure: StoredKeyFailure }
+
+export function storedKeyFailureTitle(failure: StoredKeyFailure, slot?: SecretSlotName): string {
+  const key = slot === undefined ? 'The stored key' : `The ${secretSlotLabel(slot)} key`;
+  return failure === 'out_of_credit' ? `${key} ran out of API credit` : `${key} was rejected`;
+}
+
+export function storedKeyFailureWords(failure: StoredKeyFailure, slot?: SecretSlotName, runEnded = false): string {
+  const next = failure === 'out_of_credit' ? 'Add credit with the provider, replace the key in Settings, or' : 'Replace the key in Settings or';
+  const remedy = `${next} switch the runner to its own sign-in on Runners.`;
+  const outcome = runEnded ? 'This run ended.' : 'Work that needs this key waits.';
+  return `${storedKeyFailureTitle(failure, slot)}. ${outcome} ${remedy}${runEnded ? ' Start a new run when ready.' : ''}`;
+}
+
+export type QueueReason = StoredKeyFailure | 'capacity' | 'no_runner' | 'model_profile' | 'credential_unavailable' | 'settling' | 'dispatch_ceiling' | 'not_signed_in' | 'updating' | 'paused' | 'registration' | 'ready' | 'unavailable' | 'admission_building' | 'queue_building';
 export interface FleetQueue {
   state?: 'building';
   observedAt: number; count: number | null; oldestAt: number | null;
-  reasons: Array<{ reason: QueueReason; count: number | null }>;
+  reasons: Array<{ reason: QueueReason; count: number | null; keySlot?: SecretSlotName }>;
   nativeNeedsRunner: boolean;
 }
 
@@ -95,6 +112,8 @@ export function runnerDisplay(row: Pick<RunnerFleetRecord, 'state' | 'busy' | 'l
 }
 
 export const QUEUE_REASON_WORDS: Readonly<Record<QueueReason, string>> = {
+  out_of_credit: storedKeyFailureWords('out_of_credit'),
+  invalid_key: storedKeyFailureWords('invalid_key'),
   capacity: 'Waiting for capacity.',
   no_runner: 'No recently seen runner can currently take this work.',
   credential_unavailable: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change its sign-in on Runners.',

@@ -17,7 +17,7 @@ import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from '../db/runs/reads.js';
 import { attemptsReceived, runEvidenceHead } from '../db/runs/evidence.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
-import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
+import { runErrorCode, visibleRunErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { servedPromptCount } from '../db/runs/served-prompts.js';
 import { type RunResult } from '../db/runs/run-output.js';
@@ -319,7 +319,7 @@ function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string,
     reasoningLevel: text(row.reasoning_level),
     resumeMode: text(row.resume_mode),
     resumeAttempts: (row.resume_attempts as number | null) ?? 0,
-    errorCode: runErrorCode(text(row.error), text(row.error_code)),
+    errorCode: visibleRunErrorCode(runErrorCode(text(row.error), text(row.error_code)), includeSignIn),
     lastRenewedAt: num(row.last_renewed_at),
     errorReason: text(row.error_reason),
     ...(repositoryFailure === null ? {} : { repositoryFailure }),

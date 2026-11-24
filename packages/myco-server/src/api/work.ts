@@ -44,7 +44,7 @@ export async function handleWork(env: ServerEnv, ctx: OwnerContext): Promise<Res
   if (cursor instanceof Response) return cursor;
   const set = await resolveProjectSet(env.db, ctx.member, named);
   if (set === null) return notFound();
-  return ok(await readWork(env.db, set, start, end, cursor, ctx.now));
+  return ok(await readWork(env.db, set, start, end, cursor, ctx.now, isAdmin(ctx.member.role)));
 }
 
 /**

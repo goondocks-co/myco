@@ -145,6 +145,17 @@ describe('Health', () => {
       cleanup();
     }
   });
+  it('names each refused stored key even when they failed for the same reason', async () => {
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { ...STATUS.workers, fleet: [{
+      runnerDetails: { storedKeyFailures: [
+        { agent: 'claude-code', slot: 'anthropic', failure: 'out_of_credit' },
+        { agent: 'codex', slot: 'codex', failure: 'out_of_credit' },
+      ] },
+    }] } }) }));
+    mount('/status/health#status');
+    expect(await screen.findByText(/^The Anthropic key ran out of API credit\./)).toBeTruthy();
+    expect(await screen.findByText(/^The Codex \(OpenAI\) key ran out of API credit\./)).toBeTruthy();
+  });
   it('shows learning progress, its last outcome and daily spend, and surfaces a failed read', async () => {
     server(routes());
     mount('/status/health#status');

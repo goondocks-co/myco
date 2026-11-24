@@ -29,7 +29,8 @@ import {
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { NOTHING_DUE } from './learning-sessions.js';
-import { harnessCredentialAvailability } from './secrets.js';
+import { deploymentSecretStore, harnessCredentialAvailability } from './secrets.js';
+import type { RunnerSecretVersion } from '../db/settings/runner-secret-health.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
 import type { HarnessStop } from '@goondocks/myco-shared/run-text';
@@ -93,7 +94,6 @@ import { ensureAgent } from '../db/runs/state.js';
 import { recordDispatch, launchQueued, recordQueued, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, NO_LIMITS } from '../db/runs/claim.js';
 import { dispatchLoad } from '../db/runs/live.js';
 import { INPUT_UNCHANGED } from '../db/schedule-entry.js';
-import { openHarnessCredential } from './provider-credentials.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
 import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
@@ -769,11 +769,22 @@ type ClaimOutcome =
  * else its one slot in this server's store, opened here and nowhere else, or
  * the holder when the slot holds nothing the agent can use.
  */
-const claimLogin = (env: ServerEnv): LoginStep<Record<string, string>> => async (harness, plan) => {
-  if (plan.kind === 'worker-login') return { login: {} };
-  const key = await openHarnessCredential(env.db, env.wrappingKey, plan.slot);
-  const credentialEnv = key === null ? {} : credentialEnvFor(harness, key);
-  return Object.keys(credentialEnv).length === 0 ? { reason: credentialUnavailable(harness) } : { login: credentialEnv };
+type ClaimLogin = { credentialEnv: Record<string, string>; storedKey?: RunnerSecretVersion };
+
+const claimLogin = (env: ServerEnv, now: number): LoginStep<ClaimLogin> => {
+  const store = deploymentSecretStore(env.db, env.wrappingKey);
+  const opened = new Map<string, ReturnType<typeof store.runnerKey>>();
+  return async (harness, plan) => {
+    if (plan.kind === 'worker-login') return { login: { credentialEnv: {} } };
+    const pending = opened.get(plan.slot) ?? store.runnerKey(plan.slot, now);
+    opened.set(plan.slot, pending);
+    const key = await pending;
+    if (key === null) return { reason: credentialUnavailable(harness) };
+    const credentialEnv = credentialEnvFor(harness, key.key);
+    if (Object.keys(credentialEnv).length === 0) return { reason: credentialUnavailable(harness) };
+    if (key.failure !== null && !key.probeDue) return { reason: credentialUnavailable(harness, key.failure) };
+    return { login: { credentialEnv, storedKey: key.version } };
+  };
 };
 
 /** The executor a telemetry event names: a legacy worker's member credential, or a runner. */
@@ -809,20 +820,21 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
   for (const [hold, tasks] of held) await recordTaskHolder(env.db, tasks, ['worker','budget', ...CAPABILITY_HOLDS.filter((other) => other !== hold)], hold, true);
 }
 
-type SelectedExecution = { harness: string; profile: ExecutionProfile; credentialEnv: Record<string, string> };
+type SelectedExecution = { harness: string; profile: ExecutionProfile } & ClaimLogin;
 
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
-  return (await workerSelector(env, offers, worker))(task, settings);
+  return workerSelector(env, offers, Date.now(), worker)(task, settings);
 }
 
 /** Selects executions for one worker's claim, reading a runner's credential choices at the first selection and only then. */
-async function workerSelector(env: ServerEnv, offers: readonly OfferedHarness[], worker?: WorkerPrincipal) {
+function workerSelector(env: ServerEnv, offers: readonly OfferedHarness[], now: number, worker?: WorkerPrincipal) {
   let choices: Promise<Awaited<ReturnType<typeof runnerCredentialChoices>> | undefined> | undefined;
+  const login = claimLogin(env, now);
   return async (task: string, settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> => {
     choices ??= worker?.kind === 'runner' ? runnerCredentialChoices(env.db, worker.runnerId) : Promise.resolve(undefined);
-    const { selected, reason } = await selectExecution(task, offers, settings, claimLogin(env), await choices);
-    return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, credentialEnv: selected.login }, reason };
+    const { selected, reason } = await selectExecution(task, offers, settings, login, await choices);
+    return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, ...selected.login }, reason };
   };
 }
 
@@ -870,7 +882,7 @@ export async function claimNextRun(
   const unmet = REPOSITORY_TASKS.filter((task) => !capabilitiesRequiredBy(task).every((c) => reported.includes(c)));
   const policy=await observedSettingsGuard(env.db,[...CLAIM_SETTING_LEAVES,...Object.values(LIMIT_LEAVES)],true);
   const settings = await claimSettings({...env,db:policy.view});
-  const select = await workerSelector(env, worker.harnesses, worker.principal);
+  const select = workerSelector(env, worker.harnesses, worker.now, worker.principal);
   // Holds name why queued rows wait, so a claim with no unclaimed queued row records none and seeks no head.
   const queued = await unclaimedQueued(env.db);
   if (queued) {
@@ -1004,7 +1016,7 @@ export async function claimNextRun(
   const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
   const claimed = await claimQueuedRun(env, candidate, {
     worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, agentVersion: reportedAgentVersion(worker.harnesses, harness), profile, now: worker.now, capabilities:worker.capabilities,
-    settingsGuard:policy.revisions,
+    settingsGuard:policy.revisions, storedKey: chosen.storedKey,
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   });
   const row=claimed?.row ?? null;
@@ -1103,7 +1115,7 @@ async function pullAtClaim(
           projectId: item.projectId, runId, attemptId: dispatchedBy }),
       ] }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, agentVersion: reportedAgentVersion(worker.harnesses, chosen.harness), profile, now: worker.now, capabilities:worker.capabilities,
-      settingsGuard:policy.revisions,
+      settingsGuard:policy.revisions, storedKey: chosen.storedKey,
     });
     if (claimed === null) {
       if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
@@ -1163,11 +1175,11 @@ export async function endLeasedRun(
   const clock = worker.clock ?? (() => worker.now);
   const prepared = await prepareWorkerEnd(env, { worker: worker.principal, clock }, run);
   if ('held' in prepared) return { ended: false, reason: prepared.reason };
-  const { row, unmet, status, update, errorCode, context } = prepared;
+  const { row, unmet, status, update, errorCode, context, runnerSecretOutcome } = prepared;
   const now = clock();
   const statement = runUpdateStatement({ projectId: run.projectId }, run.runId, {
     ...update, completed_at: now,
-  }, { lease: { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context });
+  }, { lease: { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context, runnerSecretOutcome });
   if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
   const accounting = settleAttemptCostStatement({projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
     typeof update.cost_usd==='number'?update.cost_usd:null,typeof update.cost_source==='string'?update.cost_source:null);

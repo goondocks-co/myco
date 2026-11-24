@@ -1,5 +1,8 @@
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
-import { runnerAgentLoginReady, runnerDisplay, type FleetQueue, type QueueReason } from '@goondocks/myco-shared/runner-fleet';
+import { QUEUE_REASON_WORDS, runnerAgentLoginReady, runnerDisplay, storedKeyFailureWords, type FleetQueue, type QueueReason, type StoredKeyFailureNotice } from '@goondocks/myco-shared/runner-fleet';
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
+import { credentialHoldReason, credentialHoldSlot } from '@goondocks/myco-shared/run-holds';
+import type { RunnerSecretAvailability } from '../settings/runner-secret-health.js';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import type { ServerEnv } from '../../core/adapters.js';
 import { readWorkerFleet, fleetReports, type WorkerFleetRow } from '../../core/worker-contacts.js';
@@ -28,41 +31,44 @@ export function previewFleet(env: ServerEnv, task: string, fleet: readonly Worke
 export async function fleetTaskReason(env: ServerEnv, task: string, fleet: readonly WorkerFleetRow[], now: number,
   settings: ReadonlyMap<string, string>, limits: DispatchLimits, exclude?: PreviewRunKey, selection = fleetSelectionContext(env)): Promise<QueueReason> {
   const load = await previewDispatchLoad(env.db, task, now, limits.task_runs_per_hour, exclude);
-  return fleetReasonFromLoad(env, task, fleet, settings, limits, load, selection);
+  return (await fleetReasonFromLoad(env, task, fleet, settings, limits, load, selection)).reason;
 }
 
 async function fleetReasonFromLoad(env: ServerEnv, task: string, fleet: readonly WorkerFleetRow[], settings: ReadonlyMap<string, string>,
-  limits: DispatchLimits, load: DispatchLoad, selection: ReturnType<typeof fleetSelectionContext>): Promise<QueueReason> {
+  limits: DispatchLimits, load: DispatchLoad, selection: ReturnType<typeof fleetSelectionContext>): Promise<Omit<FleetQueue['reasons'][number], 'count'>> {
   const ceiling = heldBy(load, limits);
-  let reason: QueueReason;
-  if (ceiling === 'queue_building') reason = 'queue_building';
-  else if (ceiling !== null) reason = 'dispatch_ceiling';
-  else if ((await previewFleet(env, task, fleet, settings, false, selection)).executions.length > 0) reason = 'ready';
-  else if ((await previewFleet(env, task, fleet, settings, true, selection)).executions.length > 0) reason = 'capacity';
-  else if (selection.includeSignIn && (await previewFleet(env, task, fleet, settings, false, selection)).heldBy?.startsWith('credential_unavailable:')) reason = 'credential_unavailable';
-  else {
-    const recent = fleet.filter(row => row.recent && (row.runner === null ? row.eligible : row.runner.state !== 'removed'));
-    const potential = async (candidate: WorkerFleetRow) => (await previewFleet(env, task, [{ ...candidate, eligible: true,
-      offers: candidate.offers?.map(offer => ({ ...offer, authenticated: true })) ?? null,
-      runnerDetails: candidate.runnerDetails === undefined ? undefined : { ...candidate.runnerDetails,
-        readiness: { ...candidate.runnerDetails.readiness, state: 'ready' } },
-    }], settings, true, selection)).executions.length > 0;
-    reason = 'no_runner';
-    for (const row of recent) {
-      const code = row.runnerDetails?.readiness.code;
-      const blocked: QueueReason | null = row.runner?.state === 'paused' ? 'paused'
-        : code === 'settling' ? 'settling' : code === 'updating' ? 'updating'
-        : code === 'registration' ? 'registration' : row.offers !== null && !row.offers.some(offer => offer.authenticated) ? 'not_signed_in' : null;
-      if (blocked !== null && (await potential(row) || (blocked === 'not_signed_in' && row.offers?.length === 0 && row.capabilities !== null
-        && capabilitiesRequiredBy(task).every(capability => row.capabilities!.includes(capability))))) {
-        reason = blocked;
-        break;
-      }
-      if (row.offers === null || row.capabilities === null || code === 'unknown') reason = 'unavailable';
-      else if (reason === 'no_runner') reason = 'model_profile';
-    }
+  if (ceiling !== null) return { reason: ceiling === 'queue_building' ? 'queue_building' : 'dispatch_ceiling' };
+  const idle = await previewFleet(env, task, fleet, settings, false, selection);
+  if (idle.executions.length > 0) return { reason: 'ready' };
+  const busy = await previewFleet(env, task, fleet, settings, true, selection);
+  if (busy.executions.length > 0) return { reason: 'capacity' };
+  const keyHold = credentialHoldReason(idle.heldBy) === null ? busy.heldBy : idle.heldBy;
+  const credential = selection.includeSignIn ? credentialHoldReason(keyHold) : null;
+  if (credential !== null) {
+    const keySlot = credentialHoldSlot(keyHold);
+    return { reason: credential, ...(keySlot === undefined ? {} : { keySlot }) };
   }
-  return reason;
+  const recent = fleet.filter(row => row.recent && (row.runner === null ? row.eligible : row.runner.state !== 'removed'));
+  const potential = async (candidate: WorkerFleetRow) => (await previewFleet(env, task, [{ ...candidate, eligible: true,
+    offers: candidate.offers?.map(offer => ({ ...offer, authenticated: true })) ?? null,
+    runnerDetails: candidate.runnerDetails === undefined ? undefined : { ...candidate.runnerDetails,
+      readiness: { ...candidate.runnerDetails.readiness, state: 'ready' } },
+  }], settings, true, selection)).executions.length > 0;
+  let reason: QueueReason = 'no_runner';
+  for (const row of recent) {
+    const code = row.runnerDetails?.readiness.code;
+    const blocked: QueueReason | null = row.runner?.state === 'paused' ? 'paused'
+      : code === 'settling' ? 'settling' : code === 'updating' ? 'updating'
+      : code === 'registration' ? 'registration' : row.offers !== null && !row.offers.some(offer => offer.authenticated) ? 'not_signed_in' : null;
+    if (blocked !== null && (await potential(row) || (blocked === 'not_signed_in' && row.offers?.length === 0 && row.capabilities !== null
+      && capabilitiesRequiredBy(task).every(capability => row.capabilities!.includes(capability))))) {
+      reason = blocked;
+      break;
+    }
+    if (row.offers === null || row.capabilities === null || code === 'unknown') reason = 'unavailable';
+    else if (reason === 'no_runner') reason = 'model_profile';
+  }
+  return { reason };
 }
 
 /**
@@ -99,30 +105,40 @@ async function queueProjection(env: ServerEnv, fleet: readonly WorkerFleetRow[],
   const [[groups], settings, limits] = await Promise.all([
     readSet(env.db, queuedHeads.bind()), claimSettings(env), readDispatchLimits(env),
   ]);
-  const reasons = new Map<QueueReason, number>();
+  const reasons = new Map<string, FleetQueue['reasons'][number]>();
   let oldestAt: number | null = null;
   let count = 0;
   const loads = await previewDispatchLoads(env.db, groups.map(group => ({ projectId: group.projectId, runId: group.id, task: group.task })), now, limits.task_runs_per_hour);
   for (const [index, group] of groups.entries()) {
     count += group.count;
     if (group.oldest !== null) oldestAt = oldestAt === null ? group.oldest : Math.min(oldestAt, group.oldest);
-    const reason = await fleetReasonFromLoad(env, group.task, fleet, settings, limits, loads[index]!, selection);
-    reasons.set(reason, (reasons.get(reason) ?? 0) + group.count);
+    const wait = await fleetReasonFromLoad(env, group.task, fleet, settings, limits, loads[index]!, selection);
+    const key = `${wait.reason}:${wait.keySlot ?? ''}`;
+    reasons.set(key, { ...wait, count: (reasons.get(key)?.count ?? 0) + group.count });
   }
-  return { observedAt: now, count, oldestAt, reasons: [...reasons].map(([reason, count]) => ({ reason, count })),
+  return { observedAt: now, count, oldestAt, reasons: [...reasons.values()],
     nativeNeedsRunner: count > 0 && env.platform?.name === 'bun' && !fleet.some(row => row.runner?.state === 'enabled') };
 }
 
 /** Chosen stored sources affect readiness only through their slot's current usability. */
-export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRow[], now: number, available: (agent: string) => Promise<boolean>): Promise<void> {
-  const agents = new Set(fleet.flatMap(row => row.runnerDetails?.readiness.state === 'ready'
-    ? row.offers?.filter(offer => row.runnerDetails?.credentialChoices?.[offer.id] === 'stored').map(offer => offer.id) ?? [] : []));
-  const storedCredentials = Object.fromEntries(await Promise.all([...agents].map(async agent => [agent, await available(agent)] as const)));
+export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRow[], now: number, available: (agent: string) => Promise<RunnerSecretAvailability>): Promise<void> {
   for (const row of fleet) {
     const runner = row.runnerDetails;
-    if (runner === undefined || runner.readiness.state !== 'ready' || runner.offers === null
-      || runner.offers.some(offer => runnerAgentLoginReady(offer, runner.credentialChoices, storedCredentials))) continue;
-    runner.readiness = { state: 'unknown', code: 'credential_unavailable', reason: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change its sign-in on Runners.', observedAt: now };
+    if (runner === undefined || runner.state !== 'enabled' || runner.offers === null) continue;
+    const choices = runner.credentialChoices;
+    const stored = runner.offers.filter(offer => offer.installed !== false && choices?.[offer.id] === 'stored');
+    const states = await Promise.all(stored.map(async offer => [offer.id, await available(offer.id)] as const));
+    const failures = states.flatMap(([agent, failure]): StoredKeyFailureNotice[] => {
+      const slot = HARNESS_CREDENTIALS[agent]?.slot;
+      return slot != null && isStoredKeyFailure(failure) ? [{ agent, slot, failure }] : [];
+    });
+    if (failures.length > 0) runner.storedKeyFailures = failures;
+    const usable = Object.fromEntries(states.map(([agent, state]) => [agent, state === true]));
+    if (runner.readiness.state !== 'ready' || runner.offers.some(offer => runnerAgentLoginReady(offer, choices, usable))) continue;
+    const first = failures[0];
+    const code = first?.failure ?? 'credential_unavailable';
+    runner.readiness = { state: 'unknown', code, reason: first === undefined ? QUEUE_REASON_WORDS[code]
+      : storedKeyFailureWords(first.failure, first.slot), observedAt: now };
     runner.display = runnerDisplay(runner);
   }
 }
@@ -132,7 +148,7 @@ export async function readFleetProjection(env: ServerEnv, now: number, includeSt
   const selection = fleetSelectionContext(env, includeStoredCredentials);
   const fleet = await fleetAvailability(env, now, selection.includeSignIn);
   const storedCredentials = includeStoredCredentials ? Object.fromEntries(await Promise.all(Object.keys(HARNESS_CREDENTIALS)
-    .map(async agent => [agent, await selection.available(agent)] as const))) : undefined;
+    .map(async agent => [agent, await selection.available(agent) === true] as const))) : undefined;
   if (includeStoredCredentials) await applyFleetSignInAvailability(fleet, now, selection.available);
   const queue = await queueProjection(env, fleet, now, selection);
   return { observedAt: now, fleet, queue, ...(includeStoredCredentials ? { storedCredentials } : {}),

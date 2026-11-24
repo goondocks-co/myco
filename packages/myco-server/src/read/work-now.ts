@@ -1,3 +1,4 @@
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { queuedWorkExists } from '../db/runs/queue.js';
 import { admissionReady } from '../db/runs/live.js';
 import { todayProjects, todayRunning, todayQueued, type ProjectCursor } from '../db/runs/now.js';
@@ -10,7 +11,7 @@ import { todaySchedules, curationDispositions } from '../db/learning/curation-no
 import { todayMarks } from '../db/meta/marks.js';
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
-import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
+import { QUEUE_REASON_WORDS, storedKeyFailureTitle, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { HELD_BY_WORDS, holdSentence, visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { stepWords } from '@goondocks/myco-shared/step-words';
 import { callWords } from '@goondocks/myco-shared/call-words';
@@ -252,7 +253,7 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
     const task = learning.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK;
     const waits = await fleetWaits(env, [task], now, includeSignIn, fleet);
     const reason = [...waits.values()][0]?.reason;
-    const line = learningStatusLine(learning, null, reason === 'not_signed_in' || reason === 'credential_unavailable',
+    const line = learningStatusLine(learning, null, reason === 'not_signed_in' || reason === 'credential_unavailable' || isStoredKeyFailure(reason),
       held.some((head) => head.task === task));
     waiting.push({ key: 'learning', projectId, what: 'Learning from sessions', count: learning.dueSessions, why: line[0]!.toUpperCase() + line.slice(1), since: null, nextAt: null });
   }
@@ -269,7 +270,7 @@ const MINUTE_MS = 60_000;
 /** A wait as a reader says it: minutes under two hours, else hours. */
 const waitedWords = (ms: number): string => ms < 120 * MINUTE_MS ? plural(Math.floor(ms / MINUTE_MS), 'minute') : plural(Math.floor(ms / (60 * MINUTE_MS)), 'hour');
 
-async function readNeeds(env: ServerEnv, projects: readonly string[], failingGroups: readonly FailingGroup[], fleet: readonly WorkerFleetRow[], now: number): Promise<NowNeed[]> {
+async function readNeeds(env: ServerEnv, projects: readonly string[], failingGroups: readonly FailingGroup[], fleet: readonly WorkerFleetRow[], now: number, includeSignIn: boolean): Promise<NowNeed[]> {
   const unclaimed = await unclaimedDue(env.db, projects, now - UNCLAIMED_WAIT_MS);
   const pulled = await readPulledWaiting(env, { projects, now, cutoff: now - UNCLAIMED_WAIT_MS });
   const pairs = projects.flatMap((projectId) => NOW_WATCHED_TASKS.map((task) => ({ projectId, task })));
@@ -286,7 +287,7 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
     else stopped.set(f.runId, String(group.reason ?? ''));
   });
   const groups = failingGroups.filter(({ group }) => group.run_id !== null);
-  const reasons = await failureReasons(env.db, [...failing, ...groups.map(({ projectId, group }) => ({ projectId, runId: String(group.run_id) }))]);
+  const reasons = await failureReasons(env.db, [...failing, ...groups.map(({ projectId, group }) => ({ projectId, runId: String(group.run_id) }))], includeSignIn);
   const refusal = (raw: unknown): string | null => {
     if (typeof raw !== 'string') return null;
     try { const error = (JSON.parse(raw) as { error?: unknown }).error; return typeof error === 'string' && error.trim() !== '' ? error.trim() : null; } catch { return null; }
@@ -309,7 +310,12 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
     ...fleet.flatMap((row): NowNeed[] => {
       const runner = row.runnerDetails;
       const code = runner?.readiness.code;
-      if (runner === undefined || row.runner?.state !== 'enabled' || (code !== 'not_signed_in' && code !== 'credential_unavailable')) return [];
+      if (runner === undefined || row.runner?.state !== 'enabled') return [];
+      if (runner.storedKeyFailures?.length) return runner.storedKeyFailures.map(({ agent, slot, failure }) => ({
+        key: `sign-in:${runner.id}:${agent}`, projectId: null, what: storedKeyFailureTitle(failure, slot),
+        why: storedKeyFailureWords(failure, slot), at: runner.readiness.observedAt ?? now, runId: null, retryAt: null,
+      }));
+      if (code !== 'not_signed_in' && code !== 'credential_unavailable') return [];
       return [{ key: `sign-in:${row.runner.id}`, projectId: null, what: `${row.runner.name} can’t sign in to a coding agent`,
         why: runner.readiness.reason, at: runner.readiness.observedAt ?? now, runId: null, retryAt: null }];
     }),
@@ -353,7 +359,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
     settle('waiting', () => readScheduled(env, projects.read, 'projectId' in scope, live, now), { waiting: [], failingGroups: [] as FailingGroup[] }),
     settle('waiting', () => readHolds(env, scope, fleet, live, now, includeSignIn, recovery), [] as NowWaiting[]),
   ]);
-  const needsYou = await settle('needsYou', () => readNeeds(env, projects.read, scheduled.failingGroups, fleet, now), [] as NowNeed[]);
+  const needsYou = await settle('needsYou', () => readNeeds(env, projects.read, scheduled.failingGroups, fleet, now, includeSignIn), [] as NowNeed[]);
   const waiting = [...holds, ...queued, ...scheduled.waiting];
   return {
     observedAt: now, scope: 'projectId' in scope ? 'project' : 'deployment', running, waiting, needsYou, unavailable,

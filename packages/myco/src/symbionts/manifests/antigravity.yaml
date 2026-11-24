@@ -114,6 +114,7 @@ runner:
   # How a stop it explains in its own words reads as a coded reason: a protocol error's message and what it writes to
   # stderr. The first pattern that matches decides; the words are read on the worker and never stored.
   diagnostics:
+    # This agent uses the runner's sign-in and has no stored key slot.
     - { code: login_missing, pattern: '\bunauthenticated\b|\bunauthorized\b|(?:HTTP|status|status code|error_status)[ :="]*401\b|\b401 Unauthorized\b|\(401\)|not logged in|authentication required' }
     - { code: rate_limited, pattern: '(?:HTTP|status|status code|error_status)[ :="]*429\b|\b429 Too Many\b|\(429\)|resource_exhausted|too many requests|rate[_ -]?limit|\bquota\b' }
     - { code: model_refused, pattern: '\bmodel\b[^\n]{0,80}\b(?:not found|not supported|does not exist|not available)\b' }
