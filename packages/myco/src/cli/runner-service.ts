@@ -3,9 +3,10 @@ import { resolveHomeDir, resolveMycoHome } from '../paths/home.js';
 import path from 'node:path';
 import { listDeploymentMemberships } from '@myco/member/registry.js';
 import { codexInstallationRefusal } from '@goondocks/myco-shared/setup-guidance';
-import { isLiveRunner, listRunnerRecords, readRunnerRecord, runnerDir } from '../runner/runner-registry.js';
+import { isLiveRunner, listRunnerRecords, readRunnerRecord, removeRunnerRecord, runnerDir, withRunnerLock } from '../runner/runner-registry.js';
 import { unclassifiedWorkerHolders, workerHolder, workerLockDir } from '../runner/instance.js';
-import { runnerRenewer } from '../runner/runner-rotation.js';
+import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
+import { rotateRunnerCredential } from '../runner/runner-rotation.js';
 import { contactRunner, parseContact, type RunnerMetadata } from '../runner/runner-routes.js';
 import { listWorkerUnits, harnessDirectories, installWorkerService, uninstallWorkerService, workerServiceSpec, workerServiceStatus, type WorkerServiceTarget } from '../runner/service.js';
 import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
@@ -22,7 +23,12 @@ const contactStalled = (at: number | undefined, now: number): boolean => at !== 
   && now - at > STALLED_CONTACT_MS;
 
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
-export const RUNNER_IDENTITY_REMAINS = 'The Deployment identity remains; remove it on the dashboard.';
+const DASHBOARD_REMOVAL = 'Remove this machine as a runner on the dashboard to clear its local registration.';
+
+export function runnerRemovalWords(url: string, at: number | null = null): string {
+  const when = at === null ? '' : ` on ${new Date(at).toISOString()}`;
+  return `This machine was removed as a runner${when} and takes no work. Clear its local registration with \`myco runner uninstall --server ${url}\`. To register again, run that command, then \`myco runner register ${url}\`.`;
+}
 
 export interface LegacyExecutor {
   serverUrl: string | null;
@@ -102,11 +108,20 @@ export async function runnerServiceContact(serverUrl: string, deps: RunnerServic
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const record = readRunnerRecord(serverUrl, mycoHome);
   if (!isLiveRunner(record)) throw new Error(`not enrolled with ${serverUrl}; run \`myco runner register ${serverUrl}\``);
-  const renew = runnerRenewer(serverUrl, { ...deps, mycoHome, notify: deps.stdout });
-  if (deps.renew !== false) await renew(false);
+  const renew = async (force: boolean) => {
+    const report = await rotateRunnerCredential(serverUrl, { ...deps, mycoHome, force });
+    if (report.detail !== undefined && report.status !== 'too-early') deps.stdout?.(`credential rotation ${report.status}: ${report.detail}`);
+    return report;
+  };
+  const before = deps.renew === false ? undefined : await renew(false);
+  if (before?.status === RUNNER_REMOVED_CODE) return { class: 'unauthorized', status: 401, runnerRemoved: before.runnerRemoved } as const;
   const contact = () => contactRunner(serverUrl, readRunnerRecord(serverUrl, mycoHome)?.token ?? record.token, metadata, deps.fetch);
   let answer = await contact();
-  if (deps.renew !== false && answer.class === 'unauthorized' && await renew(true) === 'refreshed') answer = await contact();
+  if (deps.renew !== false && answer.class === 'unauthorized' && answer.runnerRemoved === undefined) {
+    const after = await renew(true);
+    if (after.status === RUNNER_REMOVED_CODE) return { class: 'unauthorized', status: 401, runnerRemoved: after.runnerRemoved } as const;
+    if (after.status === 'refreshed') answer = await contact();
+  }
   return answer;
 }
 
@@ -140,8 +155,23 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
     const options = { ...(deps.runner === undefined ? {} : { runner: deps.runner }), ...(deps.lockDir === undefined ? {} : { lockDir: deps.lockDir }) };
     try {
       if (verb === 'uninstall') {
-        const removed = uninstallWorkerService(target, options);
-        if (removed.removed || !deps.silentAbsentUninstall) out(`${url}: ${removed.removed ? 'runner service stopped and removed' : 'no runner service was installed'}. ${RUNNER_IDENTITY_REMAINS}`);
+        const result = await withRunnerLock(url, async lock => {
+          const held = readRunnerRecord(url, mycoHome);
+          const answer = isLiveRunner(held) ? await contactRunner(url, held.token, {}, deps.fetch) : null;
+          const removed = answer?.class === 'unauthorized' && answer.runnerRemoved !== undefined;
+          const service = uninstallWorkerService(target, options);
+          const serviceWords = service.removed ? 'runner service stopped and removed' : 'no runner service was installed';
+          if (removed) {
+            removeRunnerRecord(lock);
+            out(`${url}: ${serviceWords}. Cleared the local runner registration and its credential. Register again with \`myco runner register ${url}\`.`);
+          } else if (service.removed || !deps.silentAbsentUninstall) {
+            const registration = held === null ? '' : answer?.class === 'acked'
+              ? ` The runner is still registered. ${DASHBOARD_REMOVAL}`
+              : ` Kept the local registration because the server did not confirm removal (${answer?.class ?? 'registration pending'}).`;
+            out(`${url}: ${serviceWords}.${registration}`);
+          }
+        }, mycoHome);
+        if (!result.held) ok = fail(`${url}: another process is changing the runner registration. Try again shortly.`);
         continue;
       }
       if (verb === 'install') {
@@ -155,11 +185,6 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
         if (legacy.some((state) => state?.installed === true) || (!workerServiceStatus(target, options).installed && legacy.some((state) => state?.serving != null))) {
           ok = fail(`${LEGACY_WORKER_WORDS} or another executor already serves ${url}; let its active run finish, then stop it explicitly with \`myco worker uninstall --server ${url}\`. No service changed.`); continue;
         }
-        if (contactStalled(record.lastContactAt, (deps.now ?? Date.now)()) && workerServiceStatus(target, options).running) {
-          out(`${url}: restarting stalled runner service.`);
-          stopService(workerServiceSpec(target, []), { platform: target.platform, ...options });
-          if (workerServiceStatus(target, options).running) throw new ServiceStopFailed('runner service did not stop');
-        }
         const harnessDirs = (deps.harnessDirs ?? harnessDirectories)();
         out('  Coding agents (preview in the service PATH; confirmed by its acknowledged offer):');
         const preview = await preflightRunnerService(target, harnessDirs, deps);
@@ -167,7 +192,20 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
           out(`  ${harness.id}: ${harness.id === 'codex' && !preview.codex.ok ? codexInstallationRefusal(preview.codex.directory, preview.codex.rule)
             : !harness.installed ? 'not installed' : harness.authenticated ? 'signed in' : 'not signed in'}`);
         }
-        const installed = installWorkerService(target, harnessDirs, options);
+        const installing = await withRunnerLock(url, lock => {
+          const current = readRunnerRecord(url, lock.mycoHome);
+          if (!isLiveRunner(current) || current.runnerId !== record.runnerId) { fail(`the runner registration for ${url} changed. Run status and try again.`); return null; }
+          if (current.removed === true) { fail(runnerRemovalWords(url)); return null; }
+          if (contactStalled(current.lastContactAt, (deps.now ?? Date.now)()) && workerServiceStatus(target, options).running) {
+            out(`${url}: restarting stalled runner service.`);
+            stopService(workerServiceSpec(target, []), { platform: target.platform, ...options });
+            if (workerServiceStatus(target, options).running) throw new ServiceStopFailed('runner service did not stop');
+          }
+          return installWorkerService(target, harnessDirs, options);
+        }, mycoHome);
+        if (!installing.held) { ok = fail(`${url}: another process is changing the runner registration. Try again shortly.`); continue; }
+        const installed = installing.value;
+        if (installed === null) { ok = false; continue; }
         const state = workerServiceStatus(target, options);
         if (!installed.loaded || !state.installed || !state.loaded || !state.running) {
           ok = fail(`the runner service is written but is not running (${state.detail ?? installed.detail ?? 'check its logs'}); run \`myco runner doctor --server ${url}\``); continue;
@@ -175,15 +213,23 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
         out(`${url}: runner service ${installed.changed ? 'installed and started' : 'already running'}. Logs: ${state.outLog}`);
         continue;
       }
-      out(`${url}: ${isLiveRunner(record) ? `registered runner ${record.name} (${record.runnerId})` : record === null ? `not registered; run \`myco runner register ${url}\`` : 'registration pending'}`);
       const update = runnerUpdater(url, scoped, line => out(`  ${line}`));
       const updateStatus = update.statusPayload();
+      const answer = isLiveRunner(record)
+        ? await runnerServiceContact(url, { ...scoped, ...(record.removed === true ? { renew: false } : {}), stdout: (line) => out(`  ${line}`) }, { update: updateStatus })
+        : null;
+      const removed = answer?.class === 'unauthorized' ? answer.runnerRemoved : undefined;
+      if (removed !== undefined || record?.removed === true) {
+        out(`${url}: ${runnerRemovalWords(url, removed?.at)}`);
+      } else {
+        out(`${url}: ${isLiveRunner(record) ? `registered runner ${record.name} (${record.runnerId})` : record === null ? `not registered; run \`myco runner register ${url}\`` : 'registration pending'}`);
+      }
       out(`  version: ${updateStatus.currentVersion}; channel: ${updateStatus.channel ?? 'unavailable'}`);
       out(`  last update check: ${updateStatus.lastCheckAt === null ? 'never' : new Date(updateStatus.lastCheckAt).toISOString()}`);
       const lastUpdate = updateStatus.lastResult;
       out(`  last update result: ${lastUpdate === undefined ? 'none' : `${lastUpdate.result}: ${lastUpdate.fromVersion} → ${lastUpdate.toVersion}${lastUpdate.reason === undefined ? '' : ` (${lastUpdate.reason})`}`}`);
       const state = workerServiceStatus(target, options);
-      const stalled = state.running && contactStalled(record?.lastContactAt, (deps.now ?? Date.now)());
+      const stalled = removed === undefined && record?.removed !== true && state.running && contactStalled(record?.lastContactAt, (deps.now ?? Date.now)());
       const updating = state.running && update.hasLiveDownload();
       const service = updating ? `updating (${updateStatus.updateState?.reason ?? 'applying release'})` : stalled ? `stalled since ${new Date(record!.lastContactAt!).toISOString()}; restart it with myco runner install --server ${url}` : !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, not running' : 'running at login';
       out(`  runner service: ${service}${state.detail === undefined ? '' : ` (${state.detail})`}`);
@@ -196,8 +242,7 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
         ? '  harnesses offered: unknown (no acknowledged service offer); observation time: unknown'
         : `  harnesses offered: ${offer.offered.join(', ') || 'none'}; withheld: ${offer.withheld.join(', ') || 'none'}; observed: ${new Date(offer.observedAt).toISOString()}`);
       out(`  last contact: ${record?.lastContactAt === undefined ? 'never recorded by the service' : new Date(record.lastContactAt).toISOString()}`);
-      if (!isLiveRunner(record)) { ok = false; continue; }
-      const answer = await runnerServiceContact(url, { ...scoped, stdout: (line) => out(`  ${line}`) }, { update: updateStatus });
+      if (removed !== undefined || record?.removed === true || answer === null) { ok = false; continue; }
       if (answer.class === 'acked') {
         const contact = parseContact(answer.body);
         if (contact === null) { ok = fail('unreadable contact response'); continue; }

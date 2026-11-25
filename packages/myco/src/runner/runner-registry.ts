@@ -73,6 +73,7 @@ export interface RunnerRecord {
   tokenExpiresAt?: number;
   refreshAfter?: number;
   lastContactAt?: number;
+  removed?: true;
   lastOffer?: { offered: string[]; withheld: string[]; observedAt: number };
   pending?: RunnerPending;
 }
@@ -156,6 +157,7 @@ function parseRecord(file: string, value: unknown, serverUrl?: string): RunnerRe
       || !Array.isArray(offer.offered) || !offer.offered.every(isString)
       || !Array.isArray(offer.withheld) || !offer.withheld.every(isString)) throw new RunnerRecordError(file, 'lastOffer is not an acknowledged harness offer');
   }
+  if (record.removed !== undefined && record.removed !== true) throw new RunnerRecordError(file, 'removed is not true');
   if (record.token !== undefined && !isRunnerBearer(record.token)) throw new RunnerRecordError(file, 'token is not a runner bearer');
   return { ...(record as unknown as RunnerRecord), ...(record.pending === undefined ? {} : { pending: parsePending(file, record.pending) }) };
 }
@@ -293,6 +295,14 @@ export function stagePending(lock: RunnerLock, pending: RunnerPending, name: str
   const staged: RunnerRecord = { ...(held ?? { version: RUNNER_RECORD_VERSION, serverUrl: deploymentUrl(lock.serverUrl), name }), pending };
   publishRunnerRecord(lock, staged);
   return staged;
+}
+
+export async function rememberRunnerRemoval(serverUrl: string, runnerId: string, mycoHome: string): Promise<boolean> {
+  const result = await withRunnerLock(serverUrl, (lock) => {
+    const record = readRunnerRecord(serverUrl, mycoHome);
+    if (record?.runnerId === runnerId && record.removed !== true) publishRunnerRecord(lock, { ...record, removed: true });
+  }, mycoHome);
+  return result.held;
 }
 
 /** Remove the record outright, bearer included. */

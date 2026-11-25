@@ -3,7 +3,7 @@ import { machineBlockFor } from './core/machine-settings.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { CARD_WRITE_BOUND } from './core/turn-card-prompt.js';
 import { sessions_projectExists as projectExists } from './read/catalog/sessions.js';
-import { AUTH_SETUP_CODES, MEMBER_SENT_AT_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { AUTH_SETUP_CODES, MEMBER_SENT_AT_HEADER, RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
 import { credentialWriteStore } from './auth/write-authority-store.js';
@@ -46,7 +46,7 @@ import { classify, emit, SchemaMismatchError, UNAVAILABLE, type Classifier } fro
 import { ownerConfig } from './auth/owner/config.js';
 import { readCookie, verifySession } from './auth/owner/cookie.js';
 import { memberByGithubId } from './auth/identity-link.js';
-import { activateRunnerSuccessor, authenticateRunner, detectRunnerReplay, revokeRunnerLineage, RUNNER_LINEAGE_IDLE_MS, RUNNER_TOKEN_PATTERN, runnerSubject, runnerWriteStore, RunnerWriteRefused, type RunnerAuth } from './auth/runners.js';
+import { activateRunnerSuccessor, authenticateRunner, detectRunnerReplay, readRunner, revokeRunnerLineage, RUNNER_LINEAGE_IDLE_MS, RUNNER_TOKEN_PATTERN, runnerSubject, runnerWriteStore, RunnerWriteRefused, type RunnerAuth } from './auth/runners.js';
 import type { WorkerPrincipal } from './core/worker-lease.js';
 
 /**
@@ -93,7 +93,7 @@ function withProtocol(res: Response): Response {
 }
 
 const RETRY_AFTER = { 'retry-after': String(RETRY_AFTER_SECONDS) };
-const unauthorized = () => Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
+const unauthorized = (details?: { code: typeof RUNNER_REMOVED_CODE; removedAt: number | null }) => Response.json({ error: 'unauthorized', ...details }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
 /** A 401 to a credential a replay revocation ended, naming why. Like every 401 before authentication it carries no protocol header, so a member reads it as a refusal of its credential. */
 const replayRevoked = () => Response.json({ error: 'unauthorized', code: LINEAGE_REPLAYED_CODE }, { status: 401, headers: { 'www-authenticate': 'Bearer realm="myco"' } });
 const unavailable = () => Response.json({ error: UNAVAILABLE }, { status: 503, headers: RETRY_AFTER });
@@ -818,13 +818,18 @@ export function createServer(deps: ServerDeps) {
   ): Promise<Response> {
     const digest = await sha256Hex(token);
     const rotation = matched?.route.auth === 'runner' && matched.route.admitsLapsed === true;
-    let auth: RunnerAuth | null;
+    let auth: Awaited<ReturnType<typeof authenticateRunner>>;
     try {
       auth = await authenticateRunner(env.db, digest, now, rotation ? 'lapsed' : 'live');
     } catch (err) {
       if (!(err instanceof SchemaMismatchError)) throw err;
       emit({ kind: 'schema_mismatch', expected: err.expected, found: err.found });
       return matched && admitsRunner(matched.route) ? runnerUnavailable() : unavailable();
+    }
+    if (auth?.state === 'removed') {
+      if (matched === null || !admitsRunner(matched.route)) return anonymous();
+      if (!(await env.sourceLimit.limit({ key: source })).success) return limited();
+      return unauthorized({ code: RUNNER_REMOVED_CODE, removedAt: auth.removedAt });
     }
     if (auth === null) {
       emit({ kind: 'auth_failed', credential: 'runner', matched: matched !== null, source: (await sha256Hex(source)).slice(0, 16) });
@@ -863,7 +868,15 @@ export function createServer(deps: ServerDeps) {
     if (!body.ok) return refuseRunner(body.reason, 'body_cap');
     const expiry = route.auth === 'runner' && route.admitsLapsed === true ? 'lapsed' : 'live';
     const subject = await runnerSubject(env.db, auth, now, expiry);
+    const removalRefusal = async (): Promise<Response | null> => {
+      const runner = await readRunner(env.db, auth.runnerId);
+      return runner?.state === 'removed' ? unauthorized({ code: RUNNER_REMOVED_CODE, removedAt: runner.removedAt }) : null;
+    };
     if (!await authorizeHttp(env, route.authorization, subject, { body: body.text, params })) {
+      if (!subject.live) {
+        const removed = await removalRefusal();
+        if (removed !== null) return removed;
+      }
       if (!subject.live && route.path.startsWith('/worker/')) return workerLivenessAnswer(route.path);
       return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
     }
@@ -873,7 +886,7 @@ export function createServer(deps: ServerDeps) {
       if (route.auth === 'runner') return await route.runner(guarded, { auth, body: body.text, now, origin: url.origin });
       return await route.deployment(guarded, { worker, body: body.text, now, clock: deps.now });
     } catch (err) {
-      if (err instanceof RunnerWriteRefused) return refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
+      if (err instanceof RunnerWriteRefused) return (await removalRefusal()) ?? refuseRunner(RUNNER_SCOPE_REFUSAL, 'refused');
       throw err;
     }
   }

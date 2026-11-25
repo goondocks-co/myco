@@ -76,7 +76,7 @@ for (const mode of ['member-only', 'runner-only', 'both']) {
       expect(doctor.status).toBe(0);
       expect(doctor.stdout).toContain('harnesses offered: unknown');
       expect(doctor.stdout).not.toContain('mycorun_');
-      expect(run('runner', 'uninstall').stdout).toContain('The Deployment identity remains');
+      expect(run('runner', 'uninstall').stdout).toContain('The runner is still registered');
       expect(run('runner', 'status').stdout).toContain('runner service: not installed');
     }
     expect(fs.readFileSync(path.join(env.MYCO_HOME!, 'member', 'capture-sentinel'), 'utf8')).toBe('capture');

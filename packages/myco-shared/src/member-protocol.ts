@@ -496,3 +496,6 @@ export const ENROLLMENT_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MEMBER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_TTL_MS / 4;
 export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
+
+/** A known runner bearer whose registration was removed. */
+export const RUNNER_REMOVED_CODE = 'runner_removed';

@@ -111,6 +111,8 @@ An owner or administrator approves the printed device code. Check contact and ag
 
 **Context for sessions**, **Code map** and **Learning** default on per project. Enable **Work on its own** in **Settings** for automatic work. **Runs of one task at once** defaults to 2 across projects; a large initial history has a separate first-extraction ramp. See [Runners](https://myco.sh/runners).
 
+To retire a runner, remove it from its machine page under **Settings › People and machines**. On the runner machine, check `myco runner status --server <address>`, then run `myco runner uninstall --server <address>`. Once the server confirms removal, uninstall clears the local registration and credential as well as the service. To enroll it again, run `myco runner register <address>` and get its new device code approved.
+
 Existing legacy worker services stay until explicitly retired. `myco worker status` prints the retirement command. Let active work finish first; retiring a worker preserves capture and membership.
 
 ## 6. Verify or leave

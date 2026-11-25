@@ -465,7 +465,8 @@ describe('capacity, pause and removal', () => {
       r.arm((sql) => { if (/SET status = 'running', started_at = \?, dispatched_by = \?, leased_by = \?, leased_runner_id/.test(sql)) r.e.sqlite.run(`UPDATE runners SET state = 'removed', removed_at = ?, credential_epoch = credential_epoch + 1, revision = revision + 1 WHERE id = ?`, [r.now(), runnerId]); });
       const refused = await r.asRunner(token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES });
       r.arm(undefined);
-      expect(await refused.json()).toMatchObject({ persisted: false, code: 'refused' });
+      expect(refused.status).toBe(401);
+      expect(await refused.json()).toEqual({ error: 'unauthorized', code: 'runner_removed', removedAt: r.now() });
       expect(r.row(`SELECT status, dispatched_by, leased_runner_id FROM agent_runs WHERE task = 'title-summary'`)).toEqual({ status: 'queued', dispatched_by: null, leased_runner_id: null });
       expect(r.row('SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ?', HARNESS_MEMBER_ID)).toEqual({ n: 0 });
       expect(r.row('SELECT COUNT(*) AS n FROM agent_run_attempts')).toEqual({ n: 0 });
@@ -738,7 +739,9 @@ describe('the review corrections', () => {
         r.e.sqlite.run(`UPDATE runners SET state = 'removed', removed_at = ?, credential_epoch = credential_epoch + 1, revision = revision + 1 WHERE id = ?`, [r.now(), runnerId]);
         r.e.sqlite.run(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'test' WHERE runner_id = ?`, [r.now(), runnerId]);
       });
-      expect(await r.json(r.asRunner(token, '/runners/contact', { machineId: 'revoked-machine' }))).toMatchObject({ persisted: false, code: 'refused' });
+      const contact = await r.asRunner(token, '/runners/contact', { machineId: 'revoked-machine' });
+      expect(contact.status).toBe(401);
+      expect(await contact.json()).toEqual({ error: 'unauthorized', code: 'runner_removed', removedAt: r.now() });
       expect(r.row('SELECT COUNT(*) AS n FROM runner_contacts WHERE machine_id = ?', 'revoked-machine')).toEqual({ n: 0 });
       // Paused after admission: the answer is the state the write left, not the one authentication read.
       const s = rig();

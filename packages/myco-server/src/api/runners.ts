@@ -11,7 +11,7 @@ import type { OwnerContext, RunnerContext } from '../context.js';
 import { SERVER_SCHEMA_VERSION, WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
 import { deploymentIdentity } from '../auth/authorization.js';
-import { controlRunner, renameRunner, registerRunner, RUNNER_NAME_PATTERN, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
+import { RunnerWriteRefused, controlRunner, renameRunner, registerRunner, RUNNER_NAME_PATTERN, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
 import { commit } from '../db/index.js';
 import { readRemovedRunners, readWorkerFleet, runnerContactWrite, runnerObservation } from '../core/worker-contacts.js';
 import { readFleetProjection } from '../db/runs/fleet.js';
@@ -55,6 +55,7 @@ export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): P
   await commit(env.db, ...contactStatements, ...(update === null ? [] : await runnerUpdateReportStatements(ctx.auth.runnerId, update)));
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
+  if (runner.state === 'removed') throw new RunnerWriteRefused();
   const receipt = update === null ? null : await readRunnerUpdateReceipt(env.db, ctx.auth.runnerId, update);
   const storedSchema = await schemaVersion(env.db);
   return ok({

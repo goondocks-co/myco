@@ -8,7 +8,7 @@ import type { SignInHistory } from '@myco/cli/signin-capture.js';
 import { runJoin, runDrain, provisionDetectedAgents, detectedProvisionLines, recordNoAgents, type MemberCliDeps } from '@myco/cli/member.js';
 import { registerRunner } from '@myco/cli/runner-register.js';
 import { defaultRunnerName, runnerServerUrl } from '@myco/cli/runner-deps.js';
-import { legacyWorkerInventory, preflightRunnerService, runnerServiceContact, runRunnerService, type RunnerServiceDeps } from '@myco/cli/runner-service.js';
+import { legacyWorkerInventory, preflightRunnerService, runnerRemovalWords, runnerServiceContact, runRunnerService, type RunnerServiceDeps } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { harnessDirectories, workerServiceStatus, workerServiceUnit, workerServiceSpec } from '@myco/runner/service.js';
 import { servicePaths } from '@myco/server/service.js';
@@ -588,9 +588,10 @@ const STEPS: readonly SetupStep[] = [
     id: 'runner.authority', requires: ['deployment.health', 'runner.enrollment'], applies: isRunner,
     act: async (ctx) => {
       const answer = await runnerServiceContact(chosen(ctx).url, { ...runnerDeps(ctx), renew: false });
+      if (answer.class === 'unauthorized' && answer.runnerRemoved !== undefined) throw new Error(runnerRemovalWords(chosen(ctx).url, answer.runnerRemoved.at));
       const runner = answer.class === 'acked' ? answer.body.runner : null;
       const state = runner !== null && typeof runner === 'object' ? Reflect.get(runner, 'state') : undefined;
-      if (state !== 'enabled') throw new Error(`Runner authority is ${typeof state === 'string' ? state : answer.class}; resume it on the dashboard’s Runners page, or use myco runner register ${chosen(ctx).url} --replace to replace removed access with explicit approval.`);
+      if (state !== 'enabled') throw new Error(`Runner authority is ${typeof state === 'string' ? state : answer.class}; resume it on the dashboard’s Runners page, or use myco runner register ${chosen(ctx).url} --replace to request new access with explicit approval.`);
       const legacy = await legacyWorkerInventory(runnerDeps(ctx));
       if (legacy.length > 0) throw new Error(`This machine runs Myco’s work the older way. Let it become idle (see the dashboard’s Runners page), then retire it:\n${legacy.join('\n')}\nRun myco setup again. No service was changed.`);
     },

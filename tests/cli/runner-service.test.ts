@@ -5,7 +5,7 @@ import path from 'node:path';
 import { run } from '@myco/cli/runner.js';
 import { run as updateMachine } from '@myco/cli/update.js';
 import { run as worker } from '@myco/cli/worker.js';
-import { legacyExecutors, legacyWorkerInventory, preflightRunnerService, runnerServiceContact, LEGACY_WORKER_WORDS, RUNNER_IDENTITY_REMAINS } from '@myco/cli/runner-service.js';
+import { legacyExecutors, legacyWorkerInventory, preflightRunnerService, runnerServiceContact, LEGACY_WORKER_WORDS } from '@myco/cli/runner-service.js';
 import { publishRunnerRecord, readRunnerRecord, recordRunnerContact, withRunnerLock, RUNNER_RECORD_VERSION } from '@myco/runner/runner-registry.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
@@ -42,7 +42,7 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 const enroll = () => withRunnerLock(SERVER, (lock) => publishRunnerRecord(lock, { version: RUNNER_RECORD_VERSION, serverUrl: SERVER, deploymentId: 'dep-one', runnerId: 'runner-one', name: 'mini', token: TOKEN, refreshAfter: 8888888 }), mycoHome);
 const member = () => writeDeploymentMembership({ serverUrl: SERVER, token: MEMBER_TOKEN, machineId: 'machine-one', joinedAt: 1, updatedAt: 1 }, { mycoHome });
-const contact = (refuse = false, state: 'enabled' | 'paused' | 'removed' = 'enabled'): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
+const contact = (refuse = false, state: 'enabled' | 'paused' = 'enabled'): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
   const request = new Request(input, init);
   expect(['/runners/contact', '/runners/rotate']).toContain(new URL(request.url).pathname);
   authorizations.push(request.headers.get('authorization')!);
@@ -561,7 +561,40 @@ describe('explicit runner service opt-in', () => {
     expect(await run(['uninstall', '--server', SERVER], deps())).toBe(true);
     expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
     expect(fs.readFileSync(spool, 'utf8')).toBe('capture');
-    expect(output.join('\n')).toContain(RUNNER_IDENTITY_REMAINS);
+    expect(output.join('\n')).toContain('The runner is still registered');
+  });
+
+  it('stops taking work after removal and clears the local registration for a fresh enrollment', async () => {
+    await enroll();
+    await run(['install', '--server', SERVER], deps());
+    let workerRequests = 0, contacts = 0;
+    const scoped = { ...deps(), signal: AbortSignal.timeout(2000), machineId: 'machine-test', hostname: () => 'mini',
+      sleep: async () => {}, fetch: (async (input, init) => {
+        const request = new Request(input, init);
+        switch (new URL(request.url).pathname) {
+          case '/runners/contact': contacts++; return Response.json({ error: 'unauthorized', code: 'runner_removed', removedAt: 500 }, { status: 401 });
+          case '/auth/runner/start': return Response.json({ device_code: 'd'.repeat(43), user_code: 'BCDF-2345', expires_in: 600, interval: 5 });
+          case '/auth/runner/poll': return Response.json({ registered: true, runnerId: 'runner-two', name: 'mini', deploymentId: 'dep-one' });
+          default: workerRequests++; throw new Error('unexpected runner request');
+        }
+      }) as typeof fetch };
+    expect(await run(['status'], scoped)).toBe(false);
+    const status = output.join('\n');
+    expect(status).toContain('This machine was removed as a runner on 1970-01-01T00:00:00.500Z and takes no work');
+    expect(status).toContain(`myco runner uninstall --server ${SERVER}`);
+    expect(status).toContain(`myco runner register ${SERVER}`);
+    output.length = 0;
+    expect(await run(['run'], scoped)).toBe(true);
+    expect(await run(['run'], scoped)).toBe(true);
+    expect(contacts).toBe(2);
+    expect(workerRequests).toBe(0);
+    expect(output.join('\n').match(/removed as a runner/g)).toHaveLength(1);
+    expect(await run(['uninstall'], scoped)).toBe(true);
+    expect(output.join('\n')).toContain('runner service stopped and removed. Cleared the local runner registration and its credential');
+    expect(platform.loaded.size).toBe(0);
+    expect(readRunnerRecord(SERVER, mycoHome)).toBeNull();
+    expect(await run(['register', SERVER], scoped)).toBe(true);
+    expect(readRunnerRecord(SERVER, mycoHome)?.runnerId).toBe('runner-two');
   });
 
   it('keeps a legacy service and refuses handover without stopping it', async () => {
@@ -737,7 +770,7 @@ describe('explicit runner service opt-in', () => {
 it('status shows the service offer and one service contact time while reporting the Deployment state without CLI detection', async () => {
   await enroll();
   await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 500, mycoHome, { offered: ['claude-code', 'codex'], withheld: [] });
-  for (const state of ['enabled', 'paused', 'removed'] as const) {
+  for (const state of ['enabled', 'paused'] as const) {
     output.length = 0;
     const different = { ...deps(), detect: () => { throw new Error('status must not detect in the CLI environment'); }, fetch: contact(false, state) };
     expect(await run(['status'], different)).toBe(true);
@@ -762,5 +795,5 @@ it('legacy uninstall prints only its removal even when this Deployment also has 
   expect(await worker(['uninstall', '--server', SERVER], deps())).toBe(true);
   expect(output.join('\n')).toContain('legacy worker service stopped and removed');
   expect(output.join('\n')).not.toContain('no runner service');
-  expect(output.join('\n')).not.toContain(RUNNER_IDENTITY_REMAINS);
+  expect(output.join('\n')).not.toContain('The runner is still registered');
 });
