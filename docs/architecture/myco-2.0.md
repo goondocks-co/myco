@@ -490,11 +490,12 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/people` | NEW | UI, Core | Blk | People & machines, for an admin: members, invitations, and the machines that write here | #1162 |
 | `/runners` | NEW | UI, Core | Blk | Registered execution machines and their version, release channel, update availability and last result; owner/admin Update now is applied at the next idle point | #1594, #1144 |
 | `/me/machines` | NEW | UI, Core | Blk | My machines, for every member: their machines, each one's settings and name | #1393 |
+| `/settings/people` | NEW | UI, Core | Blk | Settings' people and machines section: who can sign in and the viewer's machines, each leading to its page | #1518 |
+| `/settings/repositories` | NEW | UI, Core | Blk | Settings' repositories section: the GitHub App and every project's repository | #1518 |
 | `/settings/models` | NEW | UI, Core | Blk | Settings' models section | #1518 |
 | `/settings/connections` | NEW | UI, Core | Blk | Settings' connections section | #1518 |
-| `/settings/capture` | NEW | UI, Core | Blk | Settings' capture and retention section, new repositories among it | #1518 |
-| `/settings/backups` | NEW | UI, Core | Blk | Settings' backups section | #1518 |
-| `/settings/access` | NEW | UI, Core | Blk | Settings' sign-in and access section | #1518 |
+| `/settings/advanced` | NEW | UI, Core | Blk | Settings' advanced section: every setting that works untouched, in seven folded groups | #1518 |
+| `/settings/capture`, `/settings/backups`, `/settings/access` | REPLACE | UI | Blk | Lead to Advanced, Advanced and People and machines, at the anchor they name | #1518 |
 | `/p/:projectId/settings` | NEW | UI, Core | Blk | A project's settings: capabilities, repository, access keys and release tracking | #1518 |
 | `/status/health` | NEW | UI, Core | Blk | Health: status, workers, backups, upkeep, measures and what needs an admin | #1518 |
 
@@ -1194,18 +1195,18 @@ The leaf registry (`core/settings.ts`) and this table are held equal in both dir
 
 **Settings write revisions.** `If-Match` is optional on every settings mutation route: Deployment and Project leaf sets, resets, task-document repair, task-tier patches, titling switches, Project capabilities and whole embedding selections. When supplied, it is a precondition: a stale revision returns HTTP 409 with `applied: false`, `reason: "conflict"` and the current revision, and saves nothing. Leaf and task edits use the leaf's numeric revision; `PUT /api/embedding` uses a JSON object mapping all three embedding leaf names to their numeric revisions. A malformed supplied header returns 400. Without the header, the admitted writer reads the current value and revision itself and asserts that revision inside the mutation batch. Whole-leaf PUT replaces only the named leaf atomically; the last successful replacement wins for that leaf and leaves other settings intact. Task-tier PATCH and titling-switch PUT patch only their own field in `agent.tasks`, preserving sibling task entries and fields, and retry once against a fresh document only when the caller supplied no revision. The dashboard sends its read revisions and reloads current values after a 409 before the user saves again.
 
-**What the dashboard exposes.** Admitted Deployment leaves have controls in the five Settings sections, grouped by `packages/myco-server/ui/src/features/admin/settings/catalogue.ts`. The catalogue gate holds editable fields equal to `DEPLOYMENT_LEAVES`.
+**What the dashboard exposes.** Admitted Deployment leaves have controls on Settings: Myco’s work, Models and the groups folded under Advanced, grouped by `packages/myco-server/ui/src/features/admin/settings/catalogue.ts`. The catalogue gate holds editable fields equal to `DEPLOYMENT_LEAVES`.
 
 | Leaves | Section / address | Control |
 |---|---|---|
-| `instructions.template` | Myco’s work, `/settings` | Session-start Markdown, bounded at 4 KB of UTF-8 |
-| `worker.harness`, `worker.harness_fallback` | Myco’s work, `/settings` | Preferred agent and ordered fallback list |
-| `retention.raw_days` | Capture and retention, `/settings/capture` | Hot raw window, 1–3650 days; default 90. The effective policy surfaces an explicit legacy zero hold |
-| `import.spores_enabled`, `import.enabled`, `import.window_days`, `import.max_sessions_per_harness` | Capture and retention, `/settings/capture` | Import switch, history window and per-agent cap |
-| `agent.limits.concurrent_runs`, `agent.limits.task_concurrent_runs`, `agent.limits.task_runs_per_hour` | Myco’s work, `/settings` | Deployment and per-task run ceilings |
-| `agent.reasoning_map.*`, `agent.effort_map.*` | Models › Advanced, `/settings/models` | Per-harness tier profiles |
-| `backup.retention.keep_daily`, `backup.retention.keep_weekly` | Backups, `/settings/backups` | Newest manual relational exports and the newest export of each of the N most recent UTC weeks containing exports |
-| `backup.recovery.keep_stagings` | Backups, `/settings/backups` | Full recovery copies; 2 by default on hosted and native targets |
+| `instructions.template` | Advanced › What sessions are given, `/settings/advanced` | Session-start Markdown, bounded at 4 KB of UTF-8 |
+| `worker.harness`, `worker.harness_fallback` | Models, `/settings/models`, and Advanced › Model sizes | Preferred agent and ordered fallback list |
+| `retention.raw_days` | Advanced › How long things are kept, `/settings/advanced` | Hot raw window, 1–3650 days; default 90. The effective policy surfaces an explicit legacy zero hold |
+| `import.spores_enabled`, `import.enabled`, `import.window_days`, `import.max_sessions_per_harness` | Advanced › New repositories and past sessions, `/settings/advanced` | Import switch, history window and per-agent cap |
+| `agent.limits.concurrent_runs`, `agent.limits.task_concurrent_runs`, `agent.limits.task_runs_per_hour` | Advanced › Pace, `/settings/advanced` | Deployment and per-task run ceilings |
+| `agent.reasoning_map.*`, `agent.effort_map.*` | Advanced › Model sizes, `/settings/advanced` | Per-harness tier profiles |
+| `backup.retention.keep_daily`, `backup.retention.keep_weekly` | Advanced › Backups, `/settings/advanced` | Newest manual relational exports and the newest export of each of the N most recent UTC weeks containing exports |
+| `backup.recovery.keep_stagings` | Advanced › Backups, `/settings/advanced` | Full recovery copies; 2 by default on hosted and native targets |
 
 **There is no document write, so there are no siblings to drop.** A change on the page is one `PUT /api/settings/{leaf}` carrying one `value`, applied by the single validated operation in `core/settings.ts`. The form holds no copy of the Deployment's settings to write back, which is what makes the classic silent-data-loss shape — one field edited, every sibling overwritten with whatever the form happened to hold — unreachable rather than merely avoided. Held by `tests/myco-server/settings-leaves-round-trip.test.ts` (each leaf written in turn over the route, every sibling read back intact, a refused value changing nothing) and by `tests/myco-server-ui/settings.test.tsx` (one edit, one request, one leaf, one key in the body).
 

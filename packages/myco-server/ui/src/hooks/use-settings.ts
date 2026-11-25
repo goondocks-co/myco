@@ -209,7 +209,7 @@ const repositoryPath = (projectId: string) => `/api/projects/${encodeURIComponen
 /** Everything that reads a Project's repository connection, read again once it changes. */
 const refreshRepository = (client: ReturnType<typeof useQueryClient>, projectId: string) => Promise.all([
   client.invalidateQueries({ queryKey: ['repository', projectId] }),
-  ...['attention', 'setup-progress', 'task-start'].map(key => client.invalidateQueries({ queryKey: [key] })),
+  ...['attention', 'setup-progress', 'task-start', 'project-repositories'].map(key => client.invalidateQueries({ queryKey: [key] })),
 ]);
 
 export function useRepositoryActions(projectId: string) {

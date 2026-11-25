@@ -326,7 +326,7 @@ describe('durable registration recovery', () => {
     for (const words of ['This server’s App is Myco (setup.invalid), owned by setup-org (an organization)',
       '1. Permissions: https://github.com/organizations/setup-org/settings/apps/myco-setup-invalid/permissions',
       'myco server github-app --target cloudflare --url https://setup.invalid --private-key-file <downloaded.pem>',
-      '3. Install: https://github.com/apps/myco-setup-invalid/installations/new', '4. Connect: https://setup.invalid/settings/connections#github-app']) expect(printed).toContain(words);
+      '3. Install: https://github.com/apps/myco-setup-invalid/installations/new', '4. Connect: https://setup.invalid/settings/repositories#github-app']) expect(printed).toContain(words);
     expect(printed).not.toContain('<local|cloudflare>');
     expect(f.installs).toHaveLength(0);
     expect(result.verified).toMatchObject({ ok: false, notChecked: true });

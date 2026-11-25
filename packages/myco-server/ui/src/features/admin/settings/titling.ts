@@ -54,7 +54,7 @@ export function progressWords(p: TitlingBackfillProgress, now: number = Date.now
       ? 'No imported session is waiting for a title.'
       : `${plural(p.remaining, 'imported session is', 'imported sessions are')} waiting for a title.`;
   const imported = !p.backfillEnabled ? `${left} Titling imported sessions is off.`
-    : !p.scheduledTasksEnabled ? `${left} Titling them is on, but runs only while Work on a schedule is on.`
+    : !p.scheduledTasksEnabled ? `${left} Titling them is on, but runs only while Work on its own is on.`
     : left;
   const ceiling = p.runsPerDay === null ? `${p.usedToday} started` : `${p.usedToday} of ${p.runsPerDay} started`;
   const waiting = waitingWords(p, now);

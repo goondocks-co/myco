@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES } from '@goondocks/myco-shared/member-protocol';
 import {
-  Avatar, Button, Card, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, EmptyState, ErrorState, Input, LoadingState, MoreMenu,
+  Avatar, Button, Card, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, EmptyState, ErrorState, Input, Link, LoadingState, MoreMenu,
   ShowMore, StatusChip, type MoreMenuItem,
 } from '../../../design';
 import { refusalText, useAccessActions, useInvitations, useMembers } from '../../../hooks/use-access';
@@ -9,16 +9,17 @@ import { permissionOf, useMe } from '../../../hooks/use-me';
 import { usePaged } from '../../../hooks/use-paged';
 import { ApiError } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
+import { SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { useMachines } from '../machines';
 import { memberName, peopleOf, useMemberNames } from '../members';
 import type { CredentialRow, InvitationRow, MemberRow } from '../wire';
 import { InviteDialog, type InviteTarget } from './InviteDialog';
 import { MachineList } from './MachineList';
-import { RawClaims } from './RawClaims';
-import { Ownership } from './Ownership';
 import { invitationExpiry, machinesCount } from './words';
 import { agoWords, dayWords, isInstant } from '@goondocks/myco-shared/time-words';
+
+const OWNER_ACTIONS = `${SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to}#owner-actions`;
 
 /** Where each part of People & machines sits on its page. */
 export const PEOPLE_ANCHORS = { people: 'people', invitations: 'invitations', machines: 'machines', runs: 'runs' } as const;
@@ -119,8 +120,11 @@ export function PeoplePage() {
 
       <InviteDialog target={invite} onClose={() => setInvite(null)} people={choices} />
       </>}
-      {isOwner && <RawClaims />}
-      {isAdmin && me.data?.owner !== undefined && <Ownership isOwner={me.data.owner} nameOfCandidate={(candidate) => nameOfPerson({ id: candidate.memberId, label: candidate.label })} />}
+      {isAdmin && (
+        <p className="t-small text-muted" data-owner-actions="">
+          Transferring ownership and claiming raw data with no recorded uploader are under <Link to={OWNER_ACTIONS}>Settings › Advanced › Owner actions</Link>.
+        </p>
+      )}
     </AdminPage>
   );
 }

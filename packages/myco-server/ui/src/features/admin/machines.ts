@@ -31,6 +31,10 @@ export interface Machine {
   stopReason: string | null;
   credentialCount: number;
   bytesWritten: number;
+  /** The agents it captured lately, newest first, by the agent each event named. */
+  capturedAgents: string[];
+  /** When it last captured anything, or null when it has not lately. */
+  lastCaptureAt: number | null;
 }
 
 /** The machine a worker names. */
@@ -61,6 +65,8 @@ export function useMachines(options: { enabled?: boolean } = {}) {
       standing: row.standing, stoppedBy: row.stoppedBy, firstSeenAt: row.firstSeenAt,
       liveCredentialCount: row.liveCredentialCount, credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
       canStop: row.canStop === true, stopReason: row.stopReason ?? null,
+      capturedAgents: [...new Set((row.capture ?? []).map((entry) => entry.agent).filter((agent): agent is string => agent !== null))],
+      lastCaptureAt: row.lastCaptureAt ?? null,
     }));
   }, [rows]);
   return {

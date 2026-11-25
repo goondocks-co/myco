@@ -107,11 +107,11 @@ The server pages sit at the foot of the menu. **People & machines** is readable 
 **Settings** holds everything that applies to the whole server, in six sections:
 
 - Myco's work
+- People and machines
+- Repositories
 - Models
 - Connections
-- Capture and retention
-- Backups
-- Sign-in and access
+- Advanced
 
 [Configuration](configuration.md) walks through each one.
 

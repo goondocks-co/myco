@@ -4,48 +4,55 @@ An administrator changes server settings in the dashboard. Each member sets thei
 
 ## Settings
 
-**Settings** has six sections for the whole server.
+**Settings** has six sections for the whole server. The first five hold the few things an administrator decides; everything else is under **Advanced**, with defaults that work untouched.
 
 ### Myco’s work
 
-- **When Myco works** controls **Work on a schedule**, how long projects count as active, and when a quiet session is ready for a title. Scheduled work starts off. **Title imported sessions** separately enables titling older sessions.
-- **How much at once** controls **Tasks at once**, **Runs of one task at once** and **Runs of one task per hour**. The default for runs of one task at once is **2 across all projects**. Further runs queue. Clear an override to restore the default, or choose **No limit**.
-- **What sessions receive** controls **Session-start instructions**, injection at session or subagent start, spores and plans with prompts, and the planning reminder. The instructions are one shared template for all projects, up to 4 KB. **Items per prompt** shares its count between spores and plans; a 300-token budget can serve fewer.
-- **Code map** controls **Update every** and **Paths left out**. Projects with Code map on keep their map current after new capture, including during active work; the default interval is six hours. Automatic updates need scheduled work, a connected repository and a ready runner, and task limits apply.
+**Should Myco work on its own?** holds **Work on its own** and the **Daily budget**, each saying who changed it and when; the budget also says what was spent in the last 24 hours. Work on its own starts off. Work started by hand is never held by the budget, and its spend counts.
 
-First extraction of a large history ramps at two automatic runs a day until the initial history drains or the active window expires. The normal automatic ceiling is 12 learning runs per project per day, with three slots reserved for recent live sessions. [How Myco learns](how-myco-learns.md) explains the four kinds of work.
+**Where the work runs** lists each registered runner: what it last ran and when, how it pays for the agent it uses, whether it is online, and **Manage**, which opens that runner's page. **Add a runner** shows the commands to run on the new machine.
+
+### People and machines
+
+**Who can sign in?** lists each person with their role, how they sign in and how many machines write for them, with **Manage** leading to **People & machines** and **Invite a teammate**. **Your machines** lists your own machines: the agents each captures, how it updates, whether it is also a runner and whether it has captured lately, with **Manage** leading to **My machines** and **Add a machine**. Transferring ownership and claiming raw data with no recorded uploader are under **Advanced › Owner actions**.
+
+### Repositories
+
+**What can Myco read?** is one row for this server's GitHub App: which App it is, who owns it, which accounts it is installed on and whether it works, with **Test** and **Install on another account**. Until every setup step is done, the setup checklist is open under the row; afterwards it stays folded there with the accounts approved here.
+
+**Projects and their repositories** lists every live project, most recently active first, with its repository and branch, or **Connect**, which opens that project's **Repository** setting. The first five show; **Show all** shows the rest. Where projects have no repository, Myco can propose the repository named like each one.
 
 ### Models
 
-Two decisions, then Advanced.
+Two decisions, then search.
 
 **Quick jobs** (session titles and summaries) are **Answered by** one of the answerers this server offers: Cloudflare's included model on a Cloudflare server, **My own model address** (any OpenAI-compatible address, its model name and an optional key), or, on a local server, **A runner's agent**. The words under the choice say what it costs and needs.
 
 **Work that needs an agent** is three steps. **Agent** picks the coding agent runners try first, from the agents your registered runners offer, or **No preference**, where each runner uses the first agent it is signed in to; the line under it says which agent each runner uses today. **Paid by** sets, in one change on every runner offering that agent, whether it pays with **each runner's own sign-in** (the default) or **a stored key**; every runner changes or none does, and one line per runner says what it uses now. Choosing a stored key when none is usable saves nothing and offers to add one. A stored Claude Code value says whether it is a subscription token or an API key (billed to the API account, including any monthly credit). If a chosen stored key stops working, the work waits; it never falls back to a runner's own sign-in. **Check** asks whether learning from sessions could start now, by the same rules a runner's claim follows, the daily work budget included, and names the runner that would take it or the one thing in the way.
 
-**Advanced** folds away the model each agent uses for small, medium and large jobs (one group per agent a runner offers, or whose sizes were changed), **Size of each job**, **Agents tried next**, **Overrides for each task** and **Search by meaning**, each with a line saying whether it was changed. Unset Codex or OpenCode models hold that work until configured. **Overrides for each task** can choose a different agent, size, model, effort or schedule for one task; a model named there needs an agent beside it. **Search by meaning** sets the embedding provider and model; Cloudflare servers default to Workers AI, a local server matches words until one is configured, and changing the model rebuilds search in the background while it stays available.
+**Search** sets the embedding provider and model that finding things by meaning reads with. Cloudflare servers default to Workers AI, a local server matches words until one is configured, and changing the model rebuilds search in the background while it stays available. The model each agent uses for small, medium and large jobs is under **Advanced › Model sizes**.
 
 Runners use agents already signed in on their machines. Registering a runner is separate from member sign-in; choosing an agent does not register one.
 
 ### Connections
 
-One list of everything Myco holds a credential for: **GitHub** (this server's App, with its setup checklist under it and **Test** to check it again), each stored model key, and each telemetry key. Each row says what it is for, whether it works and since when, and its actions. **Add a connection** first asks what kind (a model key, a launcher that reports activity, or an agent that reads one project from outside) and then shows only that kind's fields. A telemetry key's row shows how a launcher uses it; see [Telemetry from a launcher](agents.md#telemetry-from-a-launcher-opentelemetry).
+One list of everything Myco holds a credential for: **GitHub** (whether this server's App works, **Test**, and a link to **Repositories**, where it is set up), each stored model key, and each telemetry key. Each row says what it is for, whether it works and since when, and its actions. **Add a connection** first asks what kind (a model key, a launcher that reports activity, or an agent that reads one project from outside) and then shows only that kind's fields. A telemetry key's row shows how a launcher uses it; see [Telemetry from a launcher](agents.md#telemetry-from-a-launcher-opentelemetry).
 
-### Capture and retention
+### Advanced
 
-**New repositories › Create a project for it** controls whether a repository inside a machine's capture folders can create a project when none holds its remote. If off, it waits for an administrator to connect it. Repositories whose remote already belongs to a project can still join that project.
+Seven folded groups, each with one line on what it holds and whether anything in it was changed, by whom and when. A link to a group, or to a setting inside one, opens it.
 
-**Importing past sessions** controls **Import past sessions on join**, how far back to reach and how many sessions to bring per agent. Turning import off also refuses manual import.
+- **Model sizes**: the model and effort each agent a runner offers uses for small, medium and large jobs, **Size of each job**, **Agents tried next** and **Overrides for each task**. Unset Codex or OpenCode models hold that work until configured. **Overrides for each task** can choose a different agent, size, model, effort or schedule for one task; a model named there needs an agent beside it.
+- **Pace**: how long projects count as active, when a quiet session is ready for a title, how often release tracking checks what shipped; **Tasks at once**, **Runs of one task at once** (2 across all projects by default) and **Runs of one task per hour**, where further runs queue; and the code map's **Update every** and **Paths left out**. Automatic code map updates need Myco to work on its own, a connected repository and a ready runner.
+- **What sessions are given**: **Session-start instructions** (one shared template, up to 4 KB), injection at session or subagent start, spores and plans with prompts, and the planning reminder. **Items per prompt** shares its count between spores and plans; a 300-token budget can serve fewer.
+- **New repositories and past sessions**: **Create a project for it** (whether a repository inside a machine's capture folders gets a project when none holds its remote; off, it waits for an administrator), **Importing past sessions** (turning it off also refuses manual import) and **Title imported sessions**.
+- **How long things are kept**: **Keep raw content hot for** (90 days by default; older raw bytes move into verified archive storage) and how long task records are kept. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely.
+- **Backups**: the interval and retained recovery copies, and **Store checks** (automatic optimization and integrity checks, whose results appear on **Health**). A local server writes verified recovery copies while it keeps serving; on a Cloudflare server a scheduled backup pauses the dashboard while it runs, so automatic backups start off there. For operator commands, see [Run your own Myco](self-hosting.md).
+- **Owner actions**: transferring ownership of the server, and, for the owner, claiming raw data with no recorded uploader.
 
-**What Myco keeps** controls raw content and task record retention. **Keep raw content hot for** defaults to 90 days; older raw bytes move into verified archive storage. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely.
+Access keys for external agents are in each project's settings; see [External agents](external-agents.md).
 
-### Backups
-
-**Backups** controls the interval and retained recovery copies. A local server writes verified recovery copies; a Cloudflare server stages a copy for an operator to complete. **Store checks** controls automatic optimization and integrity checks. Their results appear on **Health**. For operator commands, see [Run your own Myco](self-hosting.md).
-
-### Sign-in and access
-
-This section points to **People & machines** for membership and machine access, and **Project settings › Access keys** for external agents. Keys are scoped to one project; see [External agents](external-agents.md).
+First extraction of a large history ramps at two automatic runs a day until the initial history drains or the active window expires. The normal automatic ceiling is 12 learning runs per project per day, with three slots reserved for recent live sessions. [How Myco learns](how-myco-learns.md) explains the four kinds of work.
 
 ## What Myco does in each project
 

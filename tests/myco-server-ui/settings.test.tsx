@@ -1,8 +1,9 @@
 /**
- * Settings: what the server holds for every member, in five sections, each
+ * Settings: what the server holds for every member, in six sections, each
  * change written to its own leaf, the provider keys never shown after they are
- * stored, titling imported sessions as a switch, and Sign-in and access as the
- * way to the pages that hold people, machines and access keys.
+ * stored, titling imported sessions as a switch, the short lists of people,
+ * machines and repositories leading to their pages, and everything else folded
+ * under Advanced.
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { beforeAll, afterEach, describe, expect, it } from 'bun:test';
@@ -12,7 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
+import { ADVANCED_FOLDS, LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
 import { agentListRefusal, deadlineWords, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
 import { effectiveSettings } from '../../packages/myco-server/src/core/settings-policies';
@@ -156,6 +157,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/api/titling-backfill': () => Response.json(TITLING),
   '/api/runners/agents': () => Response.json(ONE_RUNNER),
   '/api/telemetry/keys': () => Response.json({ endpoint: 'https://myco.example', keys: [] }),
+  '/api/repositories': () => Response.json({ projects: [{ projectId: P_X, name: 'Project X', repository: null }], more: false }),
   ...extra,
 });
 
@@ -186,17 +188,29 @@ function mount(path: string, client = new QueryClient({ defaultOptions: { querie
 }
 
 const location = () => screen.getByTestId('location').textContent;
+/** Opens Advanced with every group unfolded. */
+async function mountAdvanced(hash = '') {
+  mount(`/settings/advanced${hash}`);
+  await waitFor(() => expect(document.querySelectorAll('[data-fold]')).toHaveLength(ADVANCED_FOLDS.length));
+  for (const fold of document.querySelectorAll<HTMLElement>('[data-fold] > div > button[aria-expanded="false"]')) fireEvent.click(fold);
+}
 const sectionsNav = () => screen.findByRole('navigation', { name: 'Settings sections' });
 /** Opens a section from the tab strip. */
 async function section(label: string) {
   fireEvent.click(within(await sectionsNav()).getByRole('link', { name: label }));
   await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Settings sections' })).getByRole('link', { name: label }).getAttribute('aria-current')).toBe('page'));
 }
+/** The Advanced group each folded settings group sits in, by label. */
+const FOLD_OF = new Map<string, string>([
+  ...LEAF_GROUPS.flatMap((g) => (g.fold === undefined ? [] : [[g.label, ADVANCED_FOLDS.find((f) => f.id === g.fold)!.label] as [string, string]])),
+  ['Size of each job', 'Model sizes'],
+]);
 /** A settings group's card by its label, opening its fold under Advanced first where it is folded. */
 const group = (label: string) => waitFor(() => {
   const open = screen.queryByRole('group', { name: label });
   if (open !== null) return open;
-  const fold = screen.queryAllByRole('button').find((button) => button.getAttribute('aria-expanded') === 'false' && button.textContent?.startsWith(label));
+  const names = [label, FOLD_OF.get(label)].filter((name): name is string => name !== undefined);
+  const fold = screen.queryAllByRole('button').find((button) => button.getAttribute('aria-expanded') === 'false' && names.some((name) => button.textContent?.startsWith(name)));
   if (fold !== undefined) fireEvent.click(fold);
   throw new Error(`${label} is not open yet`);
 });
@@ -209,9 +223,9 @@ const connection = (label: string): HTMLElement => {
 const statusOf = (leaf: string) => document.querySelector(`[data-setting-status="${leaf}"]`)?.textContent;
 const SECTION_LABEL = Object.fromEntries(SETTINGS_SECTIONS.map((s) => [s.id, s.label])) as Record<string, string>;
 /** The groups Models shows through its own steps rather than as a card of fields: quick jobs and the agent. */
-const OWN_GROUPS = groupsOf('models').filter((g) => g.advanced !== true);
+const OWN_GROUPS = groupsOf('models').filter((g) => g.id !== 'embedding');
 
-describe('Settings, in five sections', () => {
+describe('Settings, in six sections', () => {
   it('names tasks in user words and offers a repair for a stored invalid tier', async () => {
     const { sent } = server(base({
       '/api/settings': () => Response.json({
@@ -222,7 +236,7 @@ describe('Settings, in five sections', () => {
       }),
       '/api/settings/agent.tasks': () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const editor = within(await group('Size of each job'));
     const labels = OUTCOME_TASKS.map((task) => editor.getByRole('combobox', { name: new RegExp(`^${taskName(task)} size(?::|$)`) }));
     expect(labels).toHaveLength(OUTCOME_TASKS.length);
@@ -233,7 +247,7 @@ describe('Settings, in five sections', () => {
     fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions size' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: null } });
-    expect(groupsOf('models').filter((g) => g.advanced)[0]?.id).toBe('claude-profile');
+    expect(LEAF_GROUPS.filter((g) => g.fold === 'model-sizes')[0]?.id).toBe('claude-profile');
     expect(LEAF_GROUPS.findIndex((group) => group.id === 'claude-profile')).toBeLessThan(LEAF_GROUPS.findIndex((group) => group.id === 'codex-profile'));
   });
 
@@ -245,7 +259,7 @@ describe('Settings, in five sections', () => {
       }),
       '/api/settings/agent.tasks': () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const editor = within(await group('Size of each job'));
     expect(editor.queryByRole('button', { name: 'Reset Title and summarize sessions size' })).toBeNull();
     fireEvent.click(editor.getByRole('button', { name: 'Reset task overrides' }));
@@ -263,7 +277,7 @@ describe('Settings, in five sections', () => {
       }),
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     await group('Codex model sizes');
     expect(statusOf(leaf)).toContain('stored value does not apply');
     fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Large jobs effort' }));
@@ -285,18 +299,16 @@ describe('Settings, in five sections', () => {
       }) }),
       '/api/settings/import.window_days': () => Response.json({ applied: true }),
     }));
-    mount('/settings');
+    await mountAdvanced();
     const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
     expect(spores.getAttribute('aria-checked')).toBe('true');
-    for (const [label, leaf, words] of [
-      ['Myco’s work', 'cortex.spores.inject_on_prompt_submit', 'This setting is on'],
-      ['Models', 'agent.reasoning_map.claude-code.low', 'Myco uses haiku'],
-      ['Capture and retention', 'import.window_days', 'When active, Myco uses 7 days'],
-      ['Backups', 'backup.auto_interval_hours', 'Myco uses 6 hours'],
+    expect(screen.getByText(/Each hosted backup pauses database requests/).textContent).toContain('larger databases take longer');
+    for (const [leaf, words] of [
+      ['cortex.spores.inject_on_prompt_submit', 'This setting is on'],
+      ['agent.reasoning_map.claude-code.low', 'Myco uses haiku'],
+      ['import.window_days', 'When active, Myco uses 7 days'],
+      ['backup.auto_interval_hours', 'Myco uses 6 hours'],
     ]) {
-      await section(label!);
-      if (label === 'Models') await group('Claude Code model sizes');
-      if (label === 'Backups') expect(screen.getByText(/Each hosted backup pauses database requests/).textContent).toContain('larger databases take longer');
       await waitFor(() => expect(statusOf(leaf!)).toContain(words!));
       const status = document.querySelector(`[data-setting-status="${leaf}"]`)!;
       expect(status.getAttribute('role')).toBeNull();
@@ -304,7 +316,6 @@ describe('Settings, in five sections', () => {
       const control = within(status.closest('[data-setting]') as HTMLElement);
       expect(control.getAllByRole('button', { name: /Clear the stored value/ })).toHaveLength(1);
     }
-    await section('Capture and retention');
     fireEvent.click(screen.getByRole('button', { name: 'Clear the stored value for Reach back at most' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: '/api/settings/import.window_days' });
@@ -317,7 +328,7 @@ describe('Settings, in five sections', () => {
         ? { ...row, effective: 'deployment', effectiveValue: 'deployment', source: 'default' } : row) }),
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const claude = within(await group('Claude Code model sizes'));
     expect(claude.getByLabelText('Legacy workers sign in with')).toBeTruthy();
     expect(statusOf(leaf)).toBe('Myco uses The server’s stored key (server default).');
@@ -350,7 +361,7 @@ describe('Settings, in five sections', () => {
         return Response.json({ applied: true });
       },
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const editor = within(await group('Size of each job'));
     expect(editor.getByText('Changed for this task')).toBeTruthy();
     document = {
@@ -380,7 +391,7 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json(leaves({ [model]: { value: 'sonnet', updatedBy: ADA, updatedAt: NOW } })),
       [`/api/settings/${model}`]: () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const tiers = within(await group('Claude Code model sizes'));
     const input = tiers.getByLabelText('Small jobs model');
     expect((input as HTMLInputElement).value).toBe('sonnet');
@@ -398,15 +409,15 @@ describe('Settings, in five sections', () => {
     mount('/settings');
     const nav = await sectionsNav();
     const links = within(nav).getAllByRole('link');
-    expect(links.map((a) => a.textContent)).toEqual(['Myco’s work', 'Models', 'Connections', 'Capture and retention', 'Backups', 'Sign-in and access']);
-    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/settings', '/settings/models', '/settings/connections', '/settings/capture', '/settings/backups', '/settings/access']);
+    expect(links.map((a) => a.textContent)).toEqual(['Myco’s work', 'People and machines', 'Repositories', 'Models', 'Connections', 'Advanced']);
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/settings', '/settings/people', '/settings/repositories', '/settings/models', '/settings/connections', '/settings/advanced']);
     expect(links[0]!.getAttribute('aria-current')).toBe('page');
     // The strip never wraps: it scrolls in its own box.
     expect(nav.className).toContain('overflow-x-auto');
-    await section('Backups');
-    expect(location()).toBe('/settings/backups');
+    await section('Advanced');
+    expect(location()).toBe('/settings/advanced');
     expect(await group('Backups')).toBeTruthy();
-    expect(screen.queryByRole('group', { name: 'When Myco works' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Should Myco work on its own?' })).toBeNull();
   });
 
   it('renders a control for every catalogued leaf across the sections, and names who saved a configured one, never by id', async () => {
@@ -430,8 +441,9 @@ describe('Settings, in five sections', () => {
       }
     }
     expect(controls).toBe(LIVE_FIELDS.filter((f) => !OWN_GROUPS.some((g) => g.leaves.includes(f))).length);
-    await section('Myco’s work');
+    await section('Advanced');
     await group('What sessions receive');
+    await group('How much at once');
     // Nothing stored: the field shows the server's default in words, so the status says only that it is the default.
     expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('This setting is on (server default).');
     expect(statusOf('agent.scheduled_tasks_active_window_days')).toBe('Myco uses 14 days (server default).');
@@ -441,17 +453,17 @@ describe('Settings, in five sections', () => {
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
-  it('places every group in exactly one section, and leaves Connections and Sign-in and access to their own rows', () => {
+  it('places every group in exactly one section, each under Advanced in one of its groups, and leaves the lists to their own rows', () => {
     expect(new Set(LEAF_GROUPS.map((g) => g.id)).size).toBe(LEAF_GROUPS.length);
     for (const g of LEAF_GROUPS) expect(SECTION_LABEL[g.section]).toBeDefined();
-    expect(groupsOf('access')).toEqual([]);
-    expect(groupsOf('connections')).toEqual([]);
-    for (const id of ['work', 'models', 'capture', 'backups'] as const) expect(groupsOf(id).length).toBeGreaterThan(0);
+    for (const id of ['people', 'repositories', 'connections'] as const) expect(groupsOf(id)).toEqual([]);
+    for (const id of ['work', 'models', 'advanced'] as const) expect(groupsOf(id).length).toBeGreaterThan(0);
+    for (const g of LEAF_GROUPS) expect({ group: g.id, folded: g.fold !== undefined }).toEqual({ group: g.id, folded: g.section === 'advanced' });
   });
 
   it('saves a toggle on change and a typed leaf on blur, each to its own leaf', async () => {
     const { sent } = server(base({ '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: true }), '/api/settings/agent.scheduled_tasks_active_window_days': () => Response.json({ applied: true }) }));
-    mount('/settings');
+    await mountAdvanced();
     // The server serves spores unless told not to, so with nothing stored the switch reads on, and a flip turns it off.
     const spores = await screen.findByRole('switch', { name: 'Spores on every prompt' });
     expect(spores.getAttribute('aria-checked')).toBe('true');
@@ -671,8 +683,7 @@ describe('Settings, in five sections', () => {
         return Response.json({ applied: false, reason: 'conflict', leaf: 'instructions.template', revision: 8 }, { status: 409 });
       },
     }));
-    mount('/settings');
-    await section('Myco’s work');
+    mount('/settings/advanced#cortex');
     const field = await screen.findByLabelText('Session-start instructions');
     const row = field.closest('[data-setting]') as HTMLElement;
     fireEvent.change(field, { target: { value: 'my stale draft' } });
@@ -690,7 +701,7 @@ describe('Settings, in five sections', () => {
       '/api/settings/cortex.spores.inject_on_prompt_submit': () => Response.json({ applied: false, reason: 'not_deployment_tier', leaf: 'cortex.spores.inject_on_prompt_submit' }, { status: 400 }),
       '/api/settings/agent.scheduled_tasks_active_window_days': () => Response.json({ error: 'nope' }, { status: 503 }),
     }));
-    mount('/settings');
+    await mountAdvanced();
     fireEvent.click(await screen.findByRole('switch', { name: 'Spores on every prompt' }));
     await waitFor(() => expect(statusOf('cortex.spores.inject_on_prompt_submit')).toBe('That setting is not held by the server.'));
     const limit = await screen.findByLabelText('Items per prompt');
@@ -756,7 +767,7 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json(leaves({ 'cortex.canopy.exclude.patterns': { value: ['fixtures'], updatedBy: ADA, updatedAt: NOW } })),
       '/api/settings/cortex.canopy.exclude.patterns': () => Response.json({ applied: true }),
     }));
-    mount('/settings');
+    mount('/settings/advanced#code-map');
     fireEvent.change(await screen.findByLabelText('Add to paths left out'), { target: { value: '**/*.generated.ts' } });
     fireEvent.click(within(screen.getByLabelText('Add to paths left out').closest('[data-setting]') as HTMLElement).getByRole('button', { name: 'Add' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -802,13 +813,13 @@ describe('Settings, in five sections', () => {
     expect(Object.keys(sent[0]!.body as object)).toEqual(['value']);
 
     await waitFor(() => expect((screen.getByLabelText('Keep raw content hot for') as HTMLInputElement).value).toBe('60'));
-    for (const [sectionLabel, label, leaf] of [
-      ['Myco’s work', 'Session-start instructions', 'instructions.template'],
-      ['Capture and retention', 'Reach back at most', 'import.window_days'],
-      ['Capture and retention', 'At most, per agent', 'import.max_sessions_per_harness'],
-      ['Myco’s work', 'Runs of one task per hour', 'agent.limits.task_runs_per_hour'],
+    for (const [groupLabel, label, leaf] of [
+      ['What sessions receive', 'Session-start instructions', 'instructions.template'],
+      ['Importing past sessions', 'Reach back at most', 'import.window_days'],
+      ['Importing past sessions', 'At most, per agent', 'import.max_sessions_per_harness'],
+      ['How much at once', 'Runs of one task per hour', 'agent.limits.task_runs_per_hour'],
     ] as const) {
-      await section(sectionLabel);
+      await group(groupLabel);
       const field = await screen.findByLabelText(label);
       expect({ leaf, value: (field as HTMLInputElement).value }).toEqual({ leaf, value: String(CONFIGURED[leaf]) });
     }
@@ -847,7 +858,7 @@ describe('Settings, in five sections', () => {
   it('offers no retired settings or Older settings surface', async () => {
     expect(RETIRED_LEAVES.size).toBe(0);
     server(base());
-    mount('/settings');
+    mount('/settings/advanced');
     await group('What sessions receive');
     expect(screen.queryByRole('region', { name: 'Older settings' })).toBeNull();
   });
@@ -865,22 +876,21 @@ describe('Settings, in five sections', () => {
 
   it('shows every switch at the value the server applies while nothing is stored', async () => {
     server(base({ '/api/settings': () => Response.json(leaves()) }));
-    mount('/settings');
+    await mountAdvanced();
     for (const [label, on] of [
       ['Instructions at session start', true], ['Instructions when a subagent starts', true], ['Plan nudge on every prompt', true],
-      ['Spores on every prompt', true], ['Work on a schedule', false],
+      ['Spores on every prompt', true],
     ] as const) {
       const toggle = await screen.findByRole('switch', { name: label });
       expect({ label, on: toggle.getAttribute('aria-checked') === 'true' }).toEqual({ label, on });
     }
     expect(screen.queryByRole('switch', { name: 'Update the map on its own' })).toBeNull();
     expect(statusOf('cortex.instructions.inject_on_session_start')).toBe('This setting is on (server default).');
-    expect(statusOf('agent.scheduled_tasks_enabled')).toBe('This setting is off (server default).');
   });
 
   it('says what the server said was wrong with a value it refused', async () => {
     server(base({ '/api/settings/cortex.spores.max_per_prompt': () => Response.json({ applied: false, reason: 'invalid_value', leaf: 'cortex.spores.max_per_prompt', detail: 'expected a whole number' }, { status: 400 }) }));
-    mount('/settings');
+    mount('/settings/advanced#cortex');
     const limit = await screen.findByLabelText('Items per prompt');
     fireEvent.change(limit, { target: { value: '3' } });
     fireEvent.blur(limit);
@@ -901,12 +911,14 @@ describe('older links to a Settings tab', () => {
     expect(oldTabTarget('secrets')).toBe('/settings/connections#credentials');
     expect(oldTabTarget('single-turn')).toBe('/settings/models#single-turn');
     expect(oldTabTarget('workers')).toBe('/settings/models#workers');
-    expect(oldTabTarget('capabilities')).toBe('/settings/access#projects');
-    expect(oldTabTarget('records')).toBe('/settings/capture#records');
+    expect(oldTabTarget('capabilities')).toBe('/settings/repositories#projects');
+    expect(oldTabTarget('records')).toBe('/settings/advanced#records');
     expect(oldTabTarget('agent')).toBe('/settings/models');
-    expect(oldTabTarget('backup')).toBe('/settings/backups#backup');
-    expect(oldTabTarget('maintenance')).toBe('/settings/backups#maintenance');
-    expect(oldTabTarget('cortex')).toBe('/settings#cortex');
+    expect(oldTabTarget('backup')).toBe('/settings/advanced#backup');
+    expect(oldTabTarget('maintenance')).toBe('/settings/advanced#maintenance');
+    expect(oldTabTarget('cortex')).toBe('/settings/advanced#cortex');
+    expect(oldTabTarget('scheduling')).toBe('/settings#scheduling');
+    expect(oldTabTarget('embedding')).toBe('/settings/models#embedding');
     expect(oldTabTarget('nope')).toBe('/settings');
     for (const old of ['scheduling', 'limits', 'cortex', 'code-map', 'embedding', 'workers', 'backup', 'maintenance', 'records', 'import', 'advanced']) {
       expect({ old, group: LEAF_GROUPS.some((g) => g.id === old) }).toEqual({ old, group: true });
@@ -919,7 +931,11 @@ describe('older links to a Settings tab', () => {
     await waitFor(() => expect(location()).toBe('/settings/connections#credentials'));
     expect(await screen.findByRole('group', { name: 'Connections' })).toBeTruthy();
     cleanup();
-    for (const [old, now] of [['/settings/access#github-app', '/settings/connections#github-app'], ['/settings/access#telemetry', '/settings/connections#telemetry'], ['/settings#single-turn', '/settings/models#single-turn']]) {
+    for (const [old, now] of [
+      ['/settings/access#github-app', '/settings/repositories#github-app'], ['/settings/access#telemetry', '/settings/connections#telemetry'], ['/settings#single-turn', '/settings/models#single-turn'],
+      ['/settings/connections#github-app', '/settings/repositories#github-app'], ['/settings/models#agent-order', '/settings/advanced#agent-order'], ['/settings#cortex', '/settings/advanced#cortex'],
+      ['/settings/access', '/settings/people'], ['/settings/capture#import', '/settings/advanced#import'], ['/settings/backups', '/settings/advanced'],
+    ]) {
       server(base());
       mount(old!);
       await waitFor(() => expect(location()).toBe(now));
@@ -927,8 +943,8 @@ describe('older links to a Settings tab', () => {
     }
     server(base());
     mount('/settings?tab=capabilities');
-    await waitFor(() => expect(location()).toBe('/settings/access#projects'));
-    expect(await screen.findByRole('group', { name: 'Projects' })).toBeTruthy();
+    await waitFor(() => expect(location()).toBe('/settings/repositories#projects'));
+    expect(await screen.findByRole('group', { name: 'Projects and their repositories' })).toBeTruthy();
   });
 
   it('land on a list’s place once it has loaded, even when the list is empty, and lead a member who is not an admin there too', async () => {
@@ -1071,19 +1087,32 @@ describe('Models', () => {
     expect(screen.queryByRole('status', { name: 'Claude Code sign-in fallback' })).toBeNull();
   });
 
-  it('folds each tuning group under Advanced with one line on whether it was changed', async () => {
-    server(base({ '/api/settings': () => Response.json(leaves({ 'agent.reasoning_map.codex.low': { value: 'luna', updatedBy: ADA, updatedAt: NOW } })) }));
+  it('points to Advanced for model sizes and keeps search on Models', async () => {
+    server(base());
     mount('/settings/models');
+    expect(await screen.findByRole('group', { name: 'Search' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Advanced › Model sizes' }).getAttribute('href')).toBe('/settings/advanced#model-sizes');
+    expect(document.querySelector('[data-fold]')).toBeNull();
+  });
+});
+
+describe('Advanced', () => {
+  it('folds every group with one line on what it holds and whether it was changed, and lists only the agents runners offer', async () => {
+    server(base({ '/api/settings': () => Response.json(leaves({ 'agent.reasoning_map.codex.low': { value: 'luna', updatedBy: ADA, updatedAt: NOW } })) }));
+    mount('/settings/advanced');
     await waitFor(() => {
       const states = Object.fromEntries([...document.querySelectorAll<HTMLElement>('[data-fold]')].map((fold) => [fold.dataset.fold, fold.querySelector('[data-fold-state]')?.textContent]));
-      expect(states).toMatchObject({ 'claude-profile': 'Default', 'codex-profile': 'Changed by Ada just now', 'task-tiers': 'Default', embedding: 'Default' });
+      expect(states).toEqual({ 'model-sizes': 'Changed by Ada just now', pace: 'All default', 'sessions-given': 'All default', 'new-and-past': 'All default', kept: 'All default', backups: 'Automatic backups off', 'owner-actions': 'Rarely needed' });
     });
+    expect(document.querySelector('[data-fold="backups"]')!.textContent).toContain('A scheduled backup pauses the dashboard while it runs');
+    expect(document.querySelector('[data-fold="kept"]')!.textContent).toContain('Raw transcripts move to archive after 90 days.');
+    expect(screen.queryByLabelText('Small jobs model')).toBeNull();
     cleanup();
     server(base({ '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'own']] }])) }));
-    mount('/settings/models');
-    await waitFor(() => expect(document.querySelector('[data-fold="claude-profile"]')).not.toBeNull());
-    expect([...document.querySelectorAll<HTMLElement>('[data-fold$="-profile"]')].map((fold) => fold.dataset.fold)).toEqual(['claude-profile']);
-    expect(screen.queryByLabelText('Small jobs model')).toBeNull();
+    mount('/settings/advanced#model-sizes');
+    await waitFor(() => expect(document.getElementById('claude-profile')).not.toBeNull());
+    expect([...document.querySelectorAll<HTMLElement>('section[id$="-profile"]')].map((section) => section.id)).toEqual(['claude-profile']);
+    expect(screen.getByRole('group', { name: 'Size of each job' })).toBeTruthy();
   });
 });
 
@@ -1181,7 +1210,7 @@ describe('Title imported sessions', () => {
         return Response.json(progress);
       },
     }));
-    mount('/settings');
+    mount('/settings/advanced#titling');
     const toggle = await screen.findByRole('switch', { name: 'Title imported sessions' });
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
     const words = () => document.querySelector('[data-titling-progress]')!.textContent ?? '';
@@ -1200,7 +1229,7 @@ describe('Title imported sessions', () => {
 
   it('shows it on where the server has it on', async () => {
     server(base());
-    mount('/settings');
+    mount('/settings/advanced#titling');
     const toggle = await screen.findByRole('switch', { name: 'Title imported sessions' });
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
   });
@@ -1216,7 +1245,7 @@ describe('Title imported sessions', () => {
         return reads === 1 ? new Response(null, { status: 503 }) : Response.json(progress);
       },
     }));
-    mount('/settings');
+    mount('/settings/advanced#titling');
     expect(await screen.findByText('Couldn’t read where titling stands just now.')).toBeTruthy();
     fireEvent.click(within(document.querySelector('[data-setting="titling-backfill"]') as HTMLElement).getByRole('button', { name: 'Retry' }));
     const toggle = await screen.findByRole('switch', { name: 'Title imported sessions' });
@@ -1245,7 +1274,7 @@ describe('Title imported sessions', () => {
         : Response.json({ ...TITLING, backfillEnabled: false, enabled: false }),
     }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mount('/settings', client);
+    mount('/settings/advanced#titling', client);
     const toggle = await screen.findByRole('switch', { name: 'Title imported sessions' });
     await waitFor(() => expect(client.getQueryData(['settings'])).toBeDefined());
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
@@ -1265,7 +1294,7 @@ describe('Title imported sessions', () => {
     const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, building: false, remaining: 0, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
     expect(progressWords(base)).toBe('No session that ended here is waiting for a title. No imported session is waiting for a title. Titles start while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in progress, 2 titled, 0 failed.');
     expect(progressWords({ ...base, owed: 4, remaining: 1, runsPerDay: null, runIn: ['idle'], intervalSeconds: 60 })).toBe('4 sessions that ended here are waiting for a title; they are titled on their own within the daily limit. 1 imported session is waiting for a title. Titles start while the server is idle, at most once every 1 min. Today: 3 started, 1 in progress, 2 titled, 0 failed.');
-    expect(progressWords({ ...base, scheduledTasksEnabled: false, enabled: false, owed: 1 })).toBe('1 session that ended here is waiting for a title; they are titled on their own within the daily limit. No imported session is waiting for a title. Titling them is on, but runs only while Work on a schedule is on. Titles start while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in progress, 2 titled, 0 failed.');
+    expect(progressWords({ ...base, scheduledTasksEnabled: false, enabled: false, owed: 1 })).toBe('1 session that ended here is waiting for a title; they are titled on their own within the daily limit. No imported session is waiting for a title. Titling them is on, but runs only while Work on its own is on. Titles start while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in progress, 2 titled, 0 failed.');
     expect(progressWords({ ...base, backfillEnabled: false, enabled: false, remaining: 2 })).toContain('2 imported sessions are waiting for a title. Titling imported sessions is off.');
     expect(policyWords({ runIn: ['active', 'idle', 'sleep'], intervalSeconds: 3600 })).toBe('Titles start while the server is in use, idle or asleep, at most once every 60 min.');
     expect(policyWords({ runIn: [], intervalSeconds: 10 })).toBe('Titles start in no state of the server, at most once every 1 min.');
@@ -1289,7 +1318,7 @@ describe('Title imported sessions', () => {
   });
 });
 
-describe('GitHub on Connections', () => {
+describe('GitHub on Repositories', () => {
   it('carries the App setup as a live checklist with direct links, approves an installation, connects proposed repositories and says set up only once a Project reads one', async () => {
     let state: unknown = SETUP;
     const { sent } = server(base({ '/api/github-app': () => Response.json(state),
@@ -1299,7 +1328,7 @@ describe('GitHub on Connections', () => {
       '/api/github-app/suggestions': () => Response.json({ complete: true, withheld: [], suggestions: ['a', 'b'].map((name, index) => ({ projectId: `proj_${name}`, project: name, installationId: 41, repositoryId: index + 1, fullName: `goondocks-co/${name}`, defaultBranch: 'main' })) }),
       '/api/projects/proj_a/repository': () => Response.json({ repository: null, appConfigured: true }),
       '/api/projects/proj_b/repository': () => Response.json({ repository: null, appConfigured: true }) }));
-    mount('/settings/connections');
+    mount('/settings/repositories');
     await screen.findByText('This server’s App is Myco (app), owned by goondocks-co (an organization).');
     await screen.findByText('In GitHub, open goondocks-co’s organization page → Settings, then Developer settings → GitHub Apps.');
     expect(within(document.querySelector('[data-app-identity]') as HTMLElement).getByRole('link', { name: 'Open the App’s settings' }).getAttribute('href')).toBe('https://github.com/organizations/goondocks-co/settings/apps/myco-app');
@@ -1323,7 +1352,10 @@ describe('GitHub on Connections', () => {
       path: `/api/projects/proj_${name}/repository`, body: { installationId: 41, repositoryId: index + 1, branch: 'main', revision: null } }))));
     state = { ...KEYED, installations: { list: [{ ...INSTALLED, approved: true }], more: false }, connectedProjects: 2, repository: { project: 'a', fullName: 'goondocks-co/a' } };
     fireEvent.click(within(connection('GitHub')).getByRole('button', { name: 'Test' }));
-    await screen.findByText('Repository access is set up: a reads goondocks-co/a.');
+    await waitFor(() => expect(within(connection('GitHub')).getByText('Working')).toBeTruthy());
+    expect(connection('GitHub').textContent).toContain('Myco reads your repositories, read-only, through its own GitHub App: Myco (app), owned by goondocks-co (an organization).');
+    expect(connection('GitHub').textContent).toContain('Installed on goondocks-co.');
+    expect(document.querySelector('[data-setup-headline]')).toBeNull();
     const approved = (await screen.findByText('goondocks-co (an organization)', { selector: '[data-approved-accounts] span' })).parentElement as HTMLElement;
     fireEvent.click(within(approved).getByRole('button', { name: 'Remove approval' }));
     await waitFor(() => expect(sent.filter((request) => request.method === 'DELETE').map(({ method, path }) => ({ method, path }))).toEqual([{ method: 'DELETE', path: '/api/github-app/accounts/9001' }]));
@@ -1336,7 +1368,7 @@ describe('GitHub on Connections', () => {
     server(base({ '/api/github-app': () => { reads += 1; return Response.json(state); },
       '/api/github-app/installations': () => Response.json({ installations: [], accounts: [], page: 1, more: false, app: { slug: 'myco-app', owner: APP_OWNER } }),
       '/api/github-app/suggestions': () => Response.json({ complete: false, suggestions: [], withheld: [{ projectId: 'proj_a', project: 'a' }] }) }));
-    mount('/settings/connections', client);
+    mount('/settings/repositories', client);
     const approved = await waitFor(() => { const step = document.querySelector('[data-step="approved"]') as HTMLElement; expect(step.dataset.state).toBe('done'); return step; });
     expect(within(approved).getByText('Installed by an account this server has not approved: second-org (an organization); has not accepted the new permissions')).toBeTruthy();
     expect(within(approved).getByRole('button', { name: 'Approve' })).toBeTruthy();
@@ -1346,26 +1378,100 @@ describe('GitHub on Connections', () => {
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
     cleanup();
     state = { ...SETUP, key: { state: 'unavailable', reason: 'GitHub refused App verification (HTTP 401).' } };
-    mount('/settings/connections', client);
+    mount('/settings/repositories', client);
     await screen.findByText('GitHub did not accept the imported key: GitHub refused App verification (HTTP 401).');
     expect(reads).toBe(2);
   });
 
 });
 
-describe('Sign-in and access', () => {
-  it('counts the people who can sign in, never Myco, and leads to People & machines, My machines and each live project\'s access keys', async () => {
+describe('Repositories', () => {
+  it('lists every live project with its repository or Connect, five first, and Connections leads to it', async () => {
+    const names = ['myco', 'atlas', 'notes', 'ledger', 'infra', 'blog', 'docs'];
+    server(base({ '/api/repositories': () => Response.json({ more: false, projects: names.map((name, index) => ({ projectId: `proj_${name}`, name,
+      repository: index % 2 === 0 ? { url: `https://github.com/goondocks-co/${name}.git`, branch: 'main' } : null })) }) }));
+    mount('/settings/repositories');
+    const list = await screen.findByRole('group', { name: 'Projects and their repositories' });
+    await waitFor(() => expect(list.querySelectorAll('[data-project-repository]')).toHaveLength(5));
+    expect(list.textContent).toContain('goondocks-co/myco · main');
+    const atlas = within(list).getByText('atlas').closest('[data-project-repository]') as HTMLElement;
+    expect(atlas.textContent).toContain('Not connected');
+    expect(within(atlas).getByRole('link', { name: 'Connect' }).getAttribute('href')).toBe('/p/proj_atlas/settings#repository');
+    fireEvent.click(within(list).getByRole('button', { name: 'Show all' }));
+    expect(list.querySelectorAll('[data-project-repository]')).toHaveLength(7);
+    cleanup();
     server(base());
-    mount('/settings/access');
-    await waitFor(() => expect(document.querySelector('[data-pointer="people"]')?.textContent ?? '').toContain('2 people'));
-    const people = document.querySelector('[data-pointer="people"]') as HTMLElement;
-    expect(people.textContent).toContain('1 with a GitHub account connected; 1 without one yet');
-    expect(within(people).getByRole('link').getAttribute('href')).toBe('/people');
-    expect(within(document.querySelector('[data-pointer="my-machines"]') as HTMLElement).getByRole('link').getAttribute('href')).toBe('/me/machines');
-    const projects = await screen.findByRole('group', { name: 'Projects' });
-    expect(within(projects).getByText('Project X')).toBeTruthy();
-    expect(within(projects).queryByText('Old thing')).toBeNull();
-    expect(within(projects).getByRole('link').getAttribute('href')).toBe(`/p/${P_X}/settings#access-keys`);
+    mount('/settings/connections');
+    await waitFor(() => expect(within(connection('GitHub')).getByRole('link', { name: 'Repositories' }).getAttribute('href')).toBe('/settings/repositories#github-app'));
+    expect(document.querySelector('[data-step]')).toBeNull();
+  });
+});
+
+describe('Myco’s work', () => {
+  it('switches work on its own, sets the budget and its default, says who changed each and what was spent, and lists each runner', async () => {
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves({ 'agent.scheduled_tasks_enabled': { value: true, updatedBy: ADA, updatedAt: NOW }, 'agent.budget.daily_usd': { value: 30, updatedBy: ADA, updatedAt: NOW } })),
+      '/api/settings/agent.scheduled_tasks_enabled': () => Response.json({ applied: true }),
+      '/api/settings/agent.budget.daily_usd': () => Response.json({ applied: true }),
+      '/api/status': () => Response.json({ workers: { available: true, fleet: [] }, budget: { active: true, reason: null, dailyUsd: 30, automaticUsd: 4, manualUsd: 0.56, liveUsd: 0, unconfirmed: null, heldHeads: [], pricedExposure: null, state: 'ready' } }),
+      '/api/runners': () => Response.json({ observedAt: NOW, legacyWorkers: [], queue: { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false }, runners: [
+        { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', display: 'Online', busy: null, lastCompleted: { task: 'canopy-map', at: NOW - 13 * 3_600_000, projectId: P_X, runId: 'run_1', projectName: 'Project X' } },
+      ] }),
+    }));
+    mount('/settings');
+    const own = await screen.findByRole('switch', { name: 'Work on its own' });
+    expect(own.getAttribute('aria-checked')).toBe('true');
+    expect(statusOf('agent.scheduled_tasks_enabled')).toMatch(/^Changed by you on /);
+    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('$4.56 spent in the last 24 hours'));
+    const budget = screen.getByLabelText('Daily budget in dollars') as HTMLInputElement;
+    expect(budget.value).toBe('30');
+    fireEvent.change(budget, { target: { value: '25' } });
+    fireEvent.blur(budget);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.budget.daily_usd', body: { value: 25 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use default ($20)' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toMatchObject({ method: 'DELETE', path: '/api/settings/agent.budget.daily_usd' });
+    fireEvent.click(own);
+    await waitFor(() => expect(sent).toHaveLength(3));
+    expect(sent[2]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.scheduled_tasks_enabled', body: { value: false } });
+    const runner = await waitFor(() => found('[data-runner-row="rn_mini"]'));
+    await waitFor(() => expect(runner.textContent).toContain('Last ran a code map update 13 h ago · pays with its own Claude Code sign-in'));
+    expect(runner.textContent).toContain('Online');
+    expect(within(runner).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/work/runners/rn_mini');
+    fireEvent.click(screen.getByRole('button', { name: 'Add a runner' }));
+    expect(found('[data-add-runner]').textContent).toContain(`myco runner register ${window.location.origin}`);
+  });
+});
+
+describe('People and machines', () => {
+  it('lists who can sign in, never Myco, and the viewer\'s machines with what each captures, how it updates and whether it runs work, each leading to its page', async () => {
+    const machine = { machineId: 'm_ada', name: 'ada-mbp', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false }, claimedAt: 0, credentialCount: 1,
+      liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: NOW, lastRunAt: null, lastCaptureAt: NOW - 60_000,
+      capture: [{ agent: 'claude-code', lastEventAt: NOW - 60_000, projectId: P_X }, { agent: 'codex', lastEventAt: NOW - 120_000, projectId: P_X }] };
+    server(base({
+      '/api/members': () => Response.json({ members: MEMBERS.members.map((member) => ({ ...member, effectiveRole: member.id === ADA ? 'owner' : member.role, liveMachines: member.id === ADA ? 1 : 0 })) }),
+      '/api/machines': () => Response.json({ machines: [machine, { ...machine, machineId: 'm_lin', name: 'lin-pc', member: { id: LIN, label: null, revoked: false } }], cursor: null }),
+      '/api/machines/m_ada/settings': () => Response.json({ leaves: [{ leaf: 'update.automatic', effective: true }, { leaf: 'capture.auto_join_roots', effective: ['~/Repos'] }] }),
+      '/api/status': () => Response.json({ workers: { available: true, fleet: [{ credentialId: 'cred_1', machineId: 'm_ada', runnerDetails: {} }] } }),
+    }));
+    mount('/settings/people');
+    const people = await screen.findByRole('group', { name: 'Who can sign in?' });
+    await waitFor(() => expect(people.querySelectorAll('[data-list-row="person"]')).toHaveLength(2));
+    expect(people.textContent).toContain('Ada · Owner · you');
+    expect(people.textContent).toContain('Signs in with GitHub · 1 machine');
+    expect(people.textContent).toContain('No GitHub account connected yet');
+    expect(people.textContent).not.toContain('harness');
+    expect(within(people).getAllByRole('link', { name: 'Manage' })[0]!.getAttribute('href')).toBe('/people#people');
+    const machines = screen.getByRole('group', { name: 'Your machines' });
+    const row = await waitFor(() => { const element = machines.querySelector<HTMLElement>('[data-list-row="machine"]'); expect(element?.textContent).toContain('updates itself'); return element!; });
+    expect(machines.querySelectorAll('[data-list-row="machine"]')).toHaveLength(1);
+    expect(row.textContent).toContain('Captures Claude Code, Codex · updates itself · captures repositories under ~/Repos · also a runner');
+    expect(row.textContent).toContain('Capturing');
+    expect(within(row).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/me/machines');
+    expect(screen.getByRole('link', { name: 'Advanced › Owner actions' }).getAttribute('href')).toBe('/settings/advanced#owner-actions');
+    fireEvent.click(screen.getByRole('button', { name: 'Invite a teammate' }));
+    expect(await screen.findByRole('button', { name: 'Create invitation' })).toBeTruthy();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 });
@@ -1414,7 +1520,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
   it('picks a listed model and writes its id; an alias the agent resolves reads as the newest of its family, and what it is now', async () => {
     const leaf = 'agent.reasoning_map.claude-code.low';
     const { sent } = server(base({ '/api/settings': withModels([CLAUDE]), [`/api/settings/${leaf}`]: () => Response.json({ applied: true }) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const claude = within(await group('Claude Code model sizes'));
     expect(claude.getAllByText(/^Models listed by your machines/)).toHaveLength(1);
     expect(document.querySelector('[data-model-listing="claude-code"]')?.textContent).toContain('Models listed by your machines 1 h ago, each with its own sign-in to Claude Code.');
@@ -1429,7 +1535,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
   it('says whose login the list came from where runs sign in with the server login instead', async () => {
     const credential = 'agent.harnesses.codex.credential';
     server(base({ '/api/settings': withModels([CODEX], {}, (row) => (row.leaf === credential ? { ...row, effective: 'deployment', effectiveValue: 'deployment', source: 'default' } : row)) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     await group('Codex model sizes');
     expect(document.querySelector('[data-model-listing="codex"]')?.textContent)
       .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.');
@@ -1438,7 +1544,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
   it('keeps a stored model no machine listed, and says so in plain words', async () => {
     const leaf = 'agent.reasoning_map.claude-code.high';
     server(base({ '/api/settings': withModels([CLAUDE], { [leaf]: { value: 'claude-opus-4-1', updatedBy: ADA, updatedAt: NOW } }) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     await group('Claude Code model sizes');
     expect(statusOf(leaf)).toContain('claude-opus-4-1 is not among the models your machines listed for Claude Code.');
     fireEvent.click(within(await group('Claude Code model sizes')).getByLabelText('Large jobs model'));
@@ -1451,7 +1557,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
       '/api/settings': withModels([CODEX], { [leaf]: { value: 'gpt-5.5', updatedBy: ADA, updatedAt: NOW } }),
       [`/api/settings/${leaf}`]: () => Response.json({ applied: true }),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const codex = within(await group('Codex model sizes'));
     expect(statusOf(leaf)).toContain('Codex names GPT-6-Sol as the successor to GPT-5.5.');
     fireEvent.click(codex.getByRole('button', { name: 'Use GPT-6-Sol' }));
@@ -1462,7 +1568,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
   it('narrows a list to one provider by its name, and keeps the stored model shown whichever provider is chosen', async () => {
     const leaf = 'agent.reasoning_map.opencode.default';
     server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'opencode/big-pickle', ...OPENROUTER_LATEST])], { [leaf]: { value: 'openai/gpt-6', updatedBy: ADA, updatedAt: NOW } }) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const opencode = within(await group('OpenCode model sizes'));
     fireEvent.click(opencode.getByLabelText(/^Medium jobs model provider(?::|$)/));
     expect(await optionWords()).toEqual(['All providers', 'OpenAI', 'OpenCode Zen', 'OpenRouter']);
@@ -1475,7 +1581,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
 
   it('marks the model the agent runs when none is named, and says what an unset tier means', async () => {
     server(base({ '/api/settings': withModels([CODEX]) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     await group('Codex model sizes');
     expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
     fireEvent.click(within(await group('Codex model sizes')).getByLabelText('Small jobs model'));
@@ -1484,7 +1590,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
 
   it('says what an unset tier means where the model is typed, too', async () => {
     server(base({ '/api/settings': withModels([]) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     await group('Codex model sizes');
     expect(statusOf('agent.reasoning_map.codex.low')).toContain('Myco uses none');
   });
@@ -1495,7 +1601,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
       '/api/settings': withModels([openCode(['openai/gpt-6', ...OPENROUTER_LATEST])]),
       ...Object.fromEntries(tiers.map((leaf) => [`/api/settings/${leaf}`, () => Response.json({ applied: true })])),
     }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const opencode = within(await group('OpenCode model sizes'));
     expect(opencode.getByText('Newest Claude through OpenRouter')).toBeTruthy();
     expect(opencode.getByText('Haiku, Sonnet and Opus through OpenRouter, always the newest version. Offered because your machines’ OpenCode lists these models from OpenRouter.')).toBeTruthy();
@@ -1509,13 +1615,13 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
 
   it('offers no preset where no machine lists its models', async () => {
     server(base({ '/api/settings': withModels([openCode(['openai/gpt-6', 'github-copilot/claude-opus-5.5'])]) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     expect(within(await group('OpenCode model sizes')).queryByRole('button', { name: 'Use these models' })).toBeNull();
   });
 
   it('types a model where no machine has listed the agent\'s models, or where the person asks to', async () => {
     server(base({ '/api/settings': withModels([CLAUDE]) }));
-    mount('/settings/models');
+    mount('/settings/advanced#model-sizes');
     const codex = within(await group('Codex model sizes'));
     expect(codex.getByLabelText('Small jobs model').tagName).toBe('INPUT');
     expect(document.querySelector('[data-model-listing="codex"]')).toBeNull();
@@ -1563,7 +1669,7 @@ it('keeps blank-input placeholders short and the reason in the status sentence',
   const leaf = 'agent.limits.concurrent_runs';
   const reason = 'No limit applies.';
   server(base({ '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === leaf ? { ...row, effective: null, reason } : row) }) }));
-  mount('/settings');
+  mount('/settings/advanced#limits');
   await waitFor(() => expect(statusOf(leaf)).toContain(reason));
   expect((screen.getByRole('spinbutton', { name: 'Tasks at once' }) as HTMLInputElement).placeholder).toBe('No limit');
   expect(statusOf(leaf)).toContain('Myco uses no limit (not set).');
@@ -1581,7 +1687,7 @@ it('shows the server task concurrency default and saves an explicit unlimited ov
       return Response.json({ applied: true });
     },
   }));
-  mount('/settings');
+  mount('/settings/advanced#limits');
   const input = await screen.findByRole('spinbutton', { name: 'Runs of one task at once' });
   expect((input as HTMLInputElement).placeholder).toBe('2');
   expect(statusOf(leaf)).toContain('Myco uses 2 (server default).');

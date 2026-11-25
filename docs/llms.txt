@@ -4,7 +4,7 @@
 
 Myco captures coding sessions. Its own agent turns them into durable project knowledge (spores), alongside captured plans. Project instructions return to coding agents at session start; relevant spores and plans return with each prompt. Tools let agents search further and record discoveries.
 
-A Deployment is one Myco server on Cloudflare or your own machine. Member machines capture Claude Code, Codex, Cursor, OpenCode, Pi and Cline through global agent configuration. Separately registered runners lend signed-in coding agents to Myco's own work. Learning needs a runner; Work on a schedule starts off. Context for sessions, Code map and Learning are on by default per project.
+A Deployment is one Myco server on Cloudflare or your own machine. Member machines capture Claude Code, Codex, Cursor, OpenCode, Pi and Cline through global agent configuration. Separately registered runners lend signed-in coding agents to Myco's own work. Learning needs a runner; Work on its own starts off. Context for sessions, Code map and Learning are on by default per project.
 
 ## Getting started
 

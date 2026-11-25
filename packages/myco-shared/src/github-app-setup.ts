@@ -13,7 +13,7 @@ const LOOKUP_TIMEOUT_MS = 10_000;
 /** Where an admin finds the App when its owner is not known: their own Apps, and the organizations whose Apps they can open. */
 export const GITHUB_APPS_LISTS = { personal: `${GITHUB}/settings/apps`, organizations: `${GITHUB}/settings/organizations` } as const;
 /** The dashboard section that carries the whole setup. */
-export const GITHUB_APP_SETUP_PATH = '/settings/connections#github-app';
+export const GITHUB_APP_SETUP_PATH = '/settings/repositories#github-app';
 
 /** The operator command's names for a Deployment's targets. */
 export type OperatorTarget = 'local' | 'cloudflare';

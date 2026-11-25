@@ -1,6 +1,6 @@
 /** Recovery words shared by the terminal and dashboard. */
 export const SPORE_IMPORT_GUIDANCE =
-  'An admin can turn on Allow spore import in Settings → Capture and retention → Importing past sessions (off by default), '
+  'An admin can turn on Allow spore import in Settings → Advanced → New repositories and past sessions (off by default), '
   + 'then run myco import --legacy <vault> on the machine that holds the vault.';
 export const LEGACY_CUTOVER_SCOPE = 'Spores stay in the 1.4 vault unless an admin allows spore import.';
 export const LEGACY_AGENT_DEFERRAL =

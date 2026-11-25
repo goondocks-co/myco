@@ -75,7 +75,7 @@ interface SettingPolicy {
   resolve(env: ServerEnv): Promise<Readonly<Record<string, LeafAnswer>>>;
 }
 
-const SCHEDULE_OFF = 'Work on a schedule is off, so this waits until it is turned on.';
+const SCHEDULE_OFF = 'Work on its own is off, so this waits until it is turned on.';
 
 /** The embedding platform a Deployment resolves against. */
 const embeddingPlatformOf = (env: ServerEnv): EmbeddingPlatform => env.embeddingPlatform ?? { target: env.platform.name };

@@ -8,10 +8,11 @@ import { RunsPage } from '../features/runs/RunsPage';
 import { MyMachinesPage } from '../features/admin/people/MyMachinesPage';
 import { PeoplePage } from '../features/admin/people/PeoplePage';
 import { ProjectSettingsPage } from '../features/admin/project/ProjectSettingsPage';
-import { SettingsPage, useSettingsRedirect } from '../features/admin/settings/SettingsPage';
-import { Navigate } from 'react-router-dom';
+import { movedSectionTarget, SettingsPage, useSettingsRedirect } from '../features/admin/settings/SettingsPage';
+import { Navigate, useLocation } from 'react-router-dom';
 import { NotFound } from '../pages/NotFound';
 import {
+  MOVED_SETTINGS_SECTIONS,
   SETTINGS_SECTIONS,
   type SettingsSectionId,
 } from './nav';
@@ -31,7 +32,16 @@ export const adminRoutes: RouteObject[] = routeGroup(adminRoutesPaths, {
   machines: <MyMachinesPage />,
   projectSettings: <ProjectSettingsRoute />,
   health: <AdminOnly title="Health"><HealthPage /></AdminOnly>,
-}).concat(SETTINGS_SECTIONS.map((section) => ({ path: section.to, element: <SettingsRoute section={section.id} /> })));
+}).concat(
+  SETTINGS_SECTIONS.map((section) => ({ path: section.to, element: <SettingsRoute section={section.id} /> })),
+  MOVED_SETTINGS_SECTIONS.map((section) => ({ path: section.from, element: <MovedSettingsSection to={section.to} /> })),
+);
+
+/** A Settings section that no longer has a tab leads to the section that holds its settings now, at the anchor it named. */
+function MovedSettingsSection({ to }: { to: SettingsSectionId }) {
+  const { hash } = useLocation();
+  return <Navigate to={movedSectionTarget(to, hash)} replace />;
+}
 
 function SettingsRoute({ section }: { section: SettingsSectionId }) {
   const moved = useSettingsRedirect(section);

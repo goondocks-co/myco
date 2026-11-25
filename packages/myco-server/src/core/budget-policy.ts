@@ -1,9 +1,10 @@
 import { TASK_TIERS } from './task-catalogue.js';
 import { SERVER_STATE_PREFIX } from '../constants.js';
+import { BUDGET_DEFAULT_USD } from '@goondocks/myco-shared/budget-status';
+export { BUDGET_DEFAULT_USD };
 
 export const BUDGET_ESTIMATE_PREFIX = `${SERVER_STATE_PREFIX}budget.estimate.`;
 export const BUDGET_LEAF = 'agent.budget.daily_usd';
-export const BUDGET_DEFAULT_USD = 20;
 export const BUDGET_MINIMUM_USD = 1;
 export const BUDGET_WINDOW_MS = 86_400_000;
 export const BUDGET_WORKER_TASKS = Object.keys(TASK_TIERS);
