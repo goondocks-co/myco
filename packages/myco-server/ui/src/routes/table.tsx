@@ -5,6 +5,7 @@ import { Join } from '../pages/Join';
 import { LinkPage } from '../pages/Link';
 import { NotFound } from '../pages/NotFound';
 import { Projects } from '../pages/Projects';
+import { MeasuresPage } from '../features/measures/MeasuresPage';
 import { adminRoutes } from './admin';
 import { knowledgeRoutes } from './knowledge';
 import { movedRoutes } from './moved';
@@ -29,6 +30,7 @@ export const ROUTES: RouteObject[] = [
       children: [
         { path: ROUTESPaths.today, element: <Today /> },
         { path: ROUTESPaths.projects, element: <Projects /> },
+        { path: ROUTESPaths.measures, element: <MeasuresPage /> },
         { path: ROUTESPaths.project, element: <Today /> },
         ...sessionRoutes,
         ...knowledgeRoutes,

@@ -316,7 +316,7 @@ describe('Myco’s work', () => {
     // Upkeep is one line; the cost rail discloses estimates and missing costs.
     const rail = screen.getByRole('complementary', { name: 'Upkeep and cost' });
     expect(rail.querySelector('[data-upkeep]')!.textContent).toContain('Search kept up to date · 1 h ago · 1 retry along the way');
-    expect(within(rail).getByRole('link', { name: 'Health →' })).toBeTruthy();
+    expect(within(rail).getByRole('link', { name: 'Upkeep →' }).getAttribute('href')).toBe('/settings/advanced#upkeep');
     const cost = rail.querySelector('[data-cost]') as HTMLElement;
     expect(cost.querySelector('[data-cost-total]')!.textContent).toBe('$3.60');
     expect(cost.textContent).toContain('1.7 million tokens over 7 runs.');

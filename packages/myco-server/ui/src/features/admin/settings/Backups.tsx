@@ -1,38 +1,52 @@
 import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useStatus } from '../../../hooks/use-status';
+import { live } from '../../../lib/live';
 import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { permissionOf, useMe } from '../../../hooks/use-me';
-import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
+import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
 import { useBackups, useRestoreJob, type BackupRow, type RestoreJob, type RestorePreview } from '../../../hooks/use-backups';
 import { useForgetUnsettledExport, useRecovery } from '../../../hooks/use-recovery';
-import type { RecoveryProducerStatus, RecoveryStatus } from './wire';
+import type { RecoveryProducerStatus, RecoveryStatus } from '../health/wire';
 import { cn } from '../../../lib/cn';
-import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
   BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, restoreWords, retiredFormatWords, sizeLabel, verificationWords, whenLabel,
-} from './words';
+} from '../health/words';
 import { ApiError } from '../../../lib/api';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
-const BACKUP_SETTINGS = `${SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to}#backup`;
 
 /** A failed request in words chosen by its status or refusal code, never the server's own sentence. */
 const failure = (error: unknown): string => error instanceof ApiError && error.code === 'artifact_format_retired'
   ? retiredFormatWords(typeof error.body === 'object' && error.body !== null ? Reflect.get(error.body, 'restoresOn') : null)
   : errorWords(error).title;
 
+const FOLLOWED_RESTORE = ['restore-followed'] as const;
+
+/** The restore started, continued or stopped here, held for the dashboard's session so closing Backups never loses it. */
+function useFollowedRestore(): [string | null, (id: string | null) => void] {
+  const client = useQueryClient();
+  const query = useQuery({ queryKey: FOLLOWED_RESTORE, queryFn: () => client.getQueryData<string | null>(FOLLOWED_RESTORE) ?? null, gcTime: Infinity, ...live('still') });
+  return [query.data ?? null, (id) => client.setQueryData(FOLLOWED_RESTORE, id)];
+}
+
+/** The anchor of the backups made here, inside Settings › Advanced › Backups. */
+export const BACKUP_COPIES_ANCHOR = 'backup-copies';
+
 /**
- * Backups: the small additive export an admin makes here, each with its
- * restore behind a preview and a confirm, then automatic recovery, the
- * complete-recovery path the Deployment runs on its own clock.
+ * The backups made here: the small additive export an admin makes, each with its restore behind a preview and a
+ * confirm, then automatic recovery, the complete-recovery path the Deployment runs on its own clock.
  */
-export function BackupsSection({ target }: { target?: string | null }) {
+export function BackupsSection() {
+  const status = useStatus();
+  const target = status.data?.target;
   const backupPermission = permissionOf(useMe().data, 'backups');
   const backups = useBackups();
   const [confirming, setConfirming] = useState<{ row: BackupRow; preview: RestorePreview } | null>(null);
   const [adopt, setAdopt] = useState(false);
   const [adoptAsked, setAdoptAsked] = useState(false);
-  const [startedHere, setStartedHere] = useState<string | null>(null);
+  const [startedHere, setStartedHere] = useFollowedRestore();
 
   const rows = backups.list.data?.pages.flatMap((page) => page.backups) ?? [];
   const retention = backups.create.data?.retention.recordingErrorClass !== undefined
@@ -55,8 +69,9 @@ export function BackupsSection({ target }: { target?: string | null }) {
 
   return (
     <AdminSection
-      id={HEALTH_ANCHORS.backups}
-      title="Backups"
+      nested
+      id={BACKUP_COPIES_ANCHOR}
+      title="Backups made here"
       description="A backup made here holds up to 64 MiB of records for an additive restore. It reads records while the server runs, so it is not a consistent snapshot, and it leaves out attachment and transcript files, settings and secrets."
       actions={<Button variant="primary" disabled={!backupPermission.allowed} pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
     >
@@ -101,7 +116,7 @@ export function BackupsSection({ target }: { target?: string | null }) {
         : backups.list.error !== null ? <ErrorState error={backups.list.error} onRetry={() => void backups.list.refetch()} />
         : rows.length === 0 ? <p className="t-body text-muted">No backups yet. The first one is a click away.</p>
         : (
-          <RowCard label="Backups">
+          <RowCard label="Backups made here">
             {rows.map((row) => (
               <div key={row.id} className="flex flex-wrap items-center gap-x-s3 gap-y-s2 px-s4 py-s3" data-health-backup="">
                 <div className="flex min-w-0 flex-1 flex-col gap-s1">
@@ -253,7 +268,7 @@ function RecoveryCard() {
             {availableWords(schedule.available)}
           </p>
           <p className="max-w-measure t-small text-muted">
-            How often it runs is “Back up every” in <Link to={BACKUP_SETTINGS}>Settings › Advanced › Backups</Link>.
+            How often it runs is “Back up every”, below.
             {form === 'artifact'
               ? ' Restoring from an artifact is an operator command: see the '
               : ' Turning a staging into a verified artifact, and restoring from one, are operator commands: see the '}

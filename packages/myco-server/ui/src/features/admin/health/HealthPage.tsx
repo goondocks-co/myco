@@ -1,44 +1,46 @@
-import { Link as RouterLink } from 'react-router-dom';
-import { ActionLink, focusRing } from '../../../design';
+import { ActionLink, buttonVariants, Card, Link } from '../../../design';
 import { useAttention } from '../../../hooks/use-attention';
-import { useBackups } from '../../../hooks/use-backups';
+import { useAgentPayers } from '../../../hooks/use-fleet';
+import { useHeldRead, type HeldRead } from '../../../hooks/use-held-read';
+import { useWorkNow } from '../../../hooks/use-live';
 import { useNeedsYou } from '../../../hooks/use-needs-you';
 import { useProjects } from '../../../hooks/use-projects';
 import { useStatus } from '../../../hooks/use-status';
 import { useNow } from '../../../hooks/use-today';
 import { cn } from '../../../lib/cn';
-import { HEALTH_ANCHORS, WORK_SUFFIX } from '../../../routes/nav';
+import { BACKUPS_ADDRESS, HEALTH_ANCHORS, MEASURES_PATH, UPKEEP_ADDRESS, WORK_SUFFIX } from '../../../routes/nav';
 import { NeedsYouPanel } from '../../today/NeedsYou';
+import { needsItems } from '../../today/server-items';
 import { AdminPage, useAnchorScroll } from '../AdminFrame';
-import { BackupsSection } from './BackupsSection';
-import { MeasuresSection } from './MeasuresSection';
-import { StatusSection } from './StatusSection';
-import { UpkeepSection } from './UpkeepSection';
-
-/** The parts of Health, in the order the page lists them. */
-const JUMPS: ReadonlyArray<{ anchor: string; label: string }> = [
-  { anchor: HEALTH_ANCHORS.needsYou, label: 'Needs you' },
-  { anchor: HEALTH_ANCHORS.status, label: 'Status' },
-  { anchor: HEALTH_ANCHORS.backups, label: 'Backups' },
-  { anchor: HEALTH_ANCHORS.upkeep, label: 'Upkeep' },
-  { anchor: HEALTH_ANCHORS.measures, label: 'Measures' },
-];
+import { ServerWell } from './ServerWell';
+import type { HealthFacts } from './verdict';
 
 /**
- * `/status/health`: whether this server is well and what needs an admin, on one
- * page. What Myco is doing, and the machines that do it, are on Myco's work. Its
- * status is read again every 30 s while the tab is visible.
+ * `/status/health`: two questions. Is the server well, as one verdict over five lines; and what needs you, each item
+ * with a way to finish it. The diagnostics file for an issue is at the foot. What Myco is doing is on Myco's work;
+ * backups and upkeep are under Settings › Advanced, and whether Myco is helping has its own page.
  */
 export function HealthPage() {
   const now = useNow();
-  const status = useStatus();
-  const attention = useAttention({ enabled: true });
-  const backups = useBackups();
+  const statusQuery = useStatus();
+  const status = useHeldRead(statusQuery);
   const projects = useProjects();
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (projectId: string): string | null => names.get(projectId) ?? null;
   const needsYou = useNeedsYou({ now, projectName });
-  useAnchorScroll(!status.isPending && !attention.isPending && !backups.list.isPending);
+  const attentionQuery = useAttention({ enabled: true });
+  const workQuery = useWorkNow(null);
+  const payersQuery = useAgentPayers();
+  const attention = useHeldRead(attentionQuery);
+  const work = useHeldRead(workQuery);
+  const payers = useHeldRead(payersQuery);
+  const read = <T,>(held: HeldRead<T>) => ({ data: held.data, failed: held.error !== null, pending: held.pending });
+  const facts: HealthFacts = {
+    now, projectName, status: read(status), attention: read(attention), work: read(work), payers: read(payers),
+    server: needsItems((attention.data?.items ?? []), needsYou.server.items).server, unchecked: needsYou.server.unchecked, checking: needsYou.server.checking,
+  };
+  useAnchorScroll(!status.pending && !needsYou.pending);
+  const retry = () => { void statusQuery.refetch(); void attentionQuery.refetch(); void workQuery.refetch(); void payersQuery.refetch(); needsYou.onRetry(); };
 
   return (
     <AdminPage
@@ -48,28 +50,25 @@ export function HealthPage() {
       lede="Whether this server is well, and anything that needs you."
       actions={<ActionLink to={WORK_SUFFIX}>What Myco is doing, and its runners →</ActionLink>}
     >
-      <nav aria-label="Parts of Health" className="-mt-s4 flex gap-s2 overflow-x-auto pb-s1" data-health-jumps="">
-        {JUMPS.map((jump) => (
-          <RouterLink
-            key={jump.anchor}
-            to={`#${jump.anchor}`}
-            className={cn(
-              'inline-flex h-control-sm shrink-0 items-center whitespace-nowrap rounded-pill border border-line bg-surface-1 px-s3 t-small text-ink-2',
-              'transition-colors duration-120 hover:bg-surface-2 hover:text-ink',
-              focusRing,
-            )}
-          >
-            {jump.label}
-          </RouterLink>
-        ))}
-      </nav>
-      <section id={HEALTH_ANCHORS.needsYou} aria-label="Needs you" className="scroll-mt-s6">
-        <NeedsYouPanel {...needsYou} />
+      <ServerWell facts={facts} reading={status.pending} onRetry={retry} />
+      <section id={HEALTH_ANCHORS.needsYou} aria-label="What needs you" className="scroll-mt-s6">
+        <NeedsYouPanel {...needsYou} title="What needs you" />
       </section>
-      <StatusSection status={status} now={now} projectName={projectName} />
-      <BackupsSection target={status.error === null ? status.data?.target : undefined} />
-      <UpkeepSection />
-      <MeasuresSection />
+      <div className="flex flex-col gap-s2">
+        <Card className="flex flex-wrap items-start justify-between gap-s3" data-testid="diagnostics">
+          <div className="flex min-w-0 flex-[1_1_18rem] flex-col gap-s1">
+            <h2 className="t-body font-medium text-ink">Something wrong that isn’t listed?</h2>
+            <p className="max-w-measure t-small text-muted">
+              One file describing this server, to attach to an issue: its schema, what it is set up to run, the machines running its work, the tasks waiting, and what each project last sent.
+              It carries no keys, no captured content and no error messages. On your own machine, <code className="t-mono">myco member export</code> writes the matching half.
+            </p>
+          </div>
+          <a className={cn(buttonVariants({ size: 'sm' }), 'shrink-0')} href="/api/diagnostics" download data-testid="download-diagnostics">Download diagnostics</a>
+        </Card>
+        <p className="t-small text-muted" data-health-moved="">
+          Backups and upkeep are in Settings › Advanced: <Link to={BACKUPS_ADDRESS}>Backups</Link>, <Link to={UPKEEP_ADDRESS}>Upkeep</Link>. How much Myco is used is on <Link to={MEASURES_PATH}>Is Myco helping?</Link>
+        </p>
+      </div>
     </AdminPage>
   );
 }

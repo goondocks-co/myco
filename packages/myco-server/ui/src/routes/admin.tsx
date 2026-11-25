@@ -7,8 +7,8 @@ import { RunnerPage } from '../features/admin/runners/RunnerPage';
 import { RunsPage } from '../features/runs/RunsPage';
 import { MachinePage, RunnerMachinePage } from '../features/admin/machine/MachinePage';
 import { ProjectSettingsPage } from '../features/admin/project/ProjectSettingsPage';
-import { SettingsPage, useSettingsRedirect } from '../features/admin/settings/SettingsPage';
-import { Navigate } from 'react-router-dom';
+import { healthAddress, SettingsPage, useSettingsRedirect } from '../features/admin/settings/SettingsPage';
+import { Navigate, useLocation } from 'react-router-dom';
 import { NotFound } from '../pages/NotFound';
 import {
   MOVED_SETTINGS_SECTIONS,
@@ -30,11 +30,19 @@ export const adminRoutes: RouteObject[] = routeGroup(adminRoutesPaths, {
   machine: <MachinePage />,
   runnerMachine: <RunnerMachinePage />,
   projectSettings: <ProjectSettingsRoute />,
-  health: <AdminOnly title="Health"><HealthPage /></AdminOnly>,
+  health: <HealthRoute />,
 }).concat(
   SETTINGS_SECTIONS.map((section) => ({ path: section.to, element: <SettingsRoute section={section.id} /> })),
   MOVED_SETTINGS_SECTIONS.map((section) => ({ path: section.from, element: <SettingsRoute section={section.to} /> })),
 );
+
+/** Health, or the place a part that left it lives now when a link names that part's old anchor. */
+function HealthRoute() {
+  const { search, hash } = useLocation();
+  const moved = healthAddress(search, hash);
+  if (moved !== null) return <Navigate to={moved} replace />;
+  return <AdminOnly title="Health"><HealthPage /></AdminOnly>;
+}
 
 function SettingsRoute({ section }: { section: SettingsSectionId }) {
   const moved = useSettingsRedirect();

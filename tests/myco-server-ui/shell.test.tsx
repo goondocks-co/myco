@@ -242,7 +242,7 @@ describe('the nav', () => {
 
   it('leads the old addresses to the pages that hold them now, keeping a measures window', async () => {
     for (const [from, to] of [
-      ['/status', '/status/health'], ['/measures?window=7', '/status/health?window=7'], ['/operations', '/status/health'],
+      ['/status', '/status/health'], ['/status/health?window=7#measures', '/measures?window=7'], ['/operations', '/settings/advanced'],
       ['/access', '/settings/people'], ['/p/alpha/access', '/p/alpha/settings'], ['/me/machines', '/settings/people'],
       ['/people#machine-ada_1', '/settings/people/machines/ada_1'],
     ] as const) {

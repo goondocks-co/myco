@@ -2,7 +2,7 @@ import { useLocation } from 'react-router-dom';
 import { ErrorState, LoadingState, Link, TabLinks } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { useSettings } from '../../../hooks/use-settings';
-import { machinePath, MOVED_SETTINGS_SECTIONS, MY_MACHINES_PATH, PEOPLE_PATH, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
+import { anchorOf, HEALTH_ANCHORS, machinePath, MEASURES_PATH, MOVED_SETTINGS_SECTIONS, MY_MACHINES_PATH, PEOPLE_PATH, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { ADVANCED_ANCHOR, ADVANCED_ANCHORS, AdvancedSection, GroupCard } from './AdvancedGroups';
 import { AgentWork } from './AgentWork';
@@ -45,6 +45,22 @@ export function oldTabTarget(tab: string): string {
   return section === undefined ? SETTINGS_PATH : `${sectionPath(section)}#${tab}`;
 }
 
+/** The anchor Health's measures had, which now lead to their own page. */
+const MEASURES_ANCHOR = 'measures';
+const HEALTH_OWN: ReadonlySet<string> = new Set(Object.values(HEALTH_ANCHORS));
+
+/**
+ * Where an address of Health leads now, or null when it is current: an anchor of a part that moved to Settings, under
+ * the section that holds it; the measures to their own page, their window kept.
+ */
+export function healthAddress(search: string, hash: string): string | null {
+  const anchor = anchorOf(hash);
+  if (anchor === MEASURES_ANCHOR) return `${MEASURES_PATH}${search}`;
+  if (anchor === '' || HEALTH_OWN.has(anchor)) return null;
+  const section = ANCHOR_SECTION.get(anchor);
+  return section === undefined ? null : `${sectionPath(section)}${search}#${anchor}`;
+}
+
 /** Anchors an older page named that are now another anchor. */
 const ANCHOR_ALIASES: Readonly<Record<string, string>> = { 'models-advanced': ADVANCED_ANCHOR, people: SIGN_IN_ANCHOR, 'your-machines': PEOPLE_ANCHORS.machines };
 
@@ -69,7 +85,7 @@ export function settingsAddress(pathname: string, search: string, hash: string):
   const section = sectionAt(pathname);
   if (section === null) return null;
   const moved = MOVED_SETTINGS_SECTIONS.find((s) => s.from === pathname.replace(/(.)\/+$/, '$1'));
-  const named = decodeURIComponent(hash.replace(/^#/, '')) || (moved !== undefined && 'anchor' in moved ? moved.anchor : '');
+  const named = anchorOf(hash) || (moved !== undefined && 'anchor' in moved ? moved.anchor : '');
   const machine = MACHINE_ANCHOR.exec(named);
   if (machine !== null && moved !== undefined && MACHINE_LIST_ADDRESSES.includes(moved.from)) return machinePath(machine[1]!);
   const anchor = ANCHOR_ALIASES[named] ?? named;
@@ -95,7 +111,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
   const admin = useIsAdmin();
   const settings = useSettings({ enabled: READS_SETTINGS.has(section) });
   // Connections scrolls to its anchor itself, once its lists have loaded.
-  useAnchorScroll(section === 'people' || section === 'repositories' || (section !== 'connections' && settings.isSuccess));
+  useAnchorScroll(section === 'people' || section === 'repositories' || (section !== 'connections' && !settings.isPending));
 
   const tabs = SETTINGS_SECTIONS.filter((s) => admin || s.id === 'people').map((s) => ({ to: s.to, label: s.label, active: s.id === section }));
   return (
@@ -109,6 +125,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
       {section === 'people' ? <PeopleAndMachines />
         : section === 'repositories' ? <Repositories />
         : section === 'connections' ? <Connections />
+        : section === 'advanced' && settings.isError ? <AdvancedSection answer={null} rows={new Map()} unread={<ErrorState error={settings.error} onRetry={() => void settings.refetch()} />} />
         : settings.isPending ? <LoadingState label="Loading settings" />
         : settings.isError ? <ErrorState error={settings.error} onRetry={() => void settings.refetch()} />
         : section === 'models' ? <ModelsSection answer={settings.data} />

@@ -1,8 +1,6 @@
 /**
- * Health's upkeep and backups, as an admin reads them on `/status/health`:
- * backups made here and their refusals, housekeeping run on demand, the
- * transcripts still waiting to be read, automatic recovery in every state it
- * can be in, and the store's routine checks.
+ * Backups and Upkeep, as an admin reads them under Settings › Advanced: backups made here and their refusals,
+ * automatic recovery in every state it can be in, housekeeping run on demand, and the store's routine checks.
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
@@ -36,6 +34,8 @@ const base: Record<string, Route> = {
   '/api/maintenance': () => Response.json({ checks: [] }),
   '/api/credentials': () => Response.json({ rows: [], cursor: null }),
   '/api/machines': () => Response.json({ machines: [], cursor: null }),
+  '/api/settings': () => Response.json({ leaves: [], taskTiers: [], embedding: null, quickJobs: { answeredBy: 'included', offered: ['included'] } }),
+  '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 0, sources: [] }),
 };
 
 function server(routes: Record<string, Route>): { requested: string[] } {
@@ -50,7 +50,8 @@ function server(routes: Record<string, Route>): { requested: string[] } {
   return { requested };
 }
 
-function mount(path = '/status/health') {
+/** Settings › Advanced, open at Backups; `/operations` leads to Upkeep. */
+function mount(path = '/settings/advanced#backups') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
@@ -62,7 +63,7 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
   return screen.findByRole('menu');
 }
 
-describe('backups on Health', () => {
+describe('backups under Settings › Advanced', () => {
   it('explains the hosted hold on deleted stored data', async () => {
     server({ '/api/status': () => Response.json({ ...STATUS, target: 'cloudflare' }) });
     mount();
@@ -76,7 +77,7 @@ describe('backups on Health', () => {
         ? Response.json({ error: 'bad_request', reason }, { status: 400 })
         : Response.json({ backups: [] }),
     });
-    mount('/operations');
+    mount();
     fireEvent.click(await screen.findByRole('button', { name: 'Create backup' }));
     expect(await screen.findByText('The server refused this')).toBeTruthy();
     expect(screen.queryByText(reason)).toBeNull();
@@ -95,7 +96,7 @@ describe('backups on Health', () => {
       '/api/backups/bk_7f3a9c0e21/pin': (init) => { const body = JSON.parse(String(init!.body)); posts.push({ path: 'pin', body }); pinned = body.pinned ? 1 : 0; return Response.json({ pinned: body.pinned }); },
     });
     mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     expect(list.textContent).toContain('3.0 MB · schema version 57');
     expect(list.textContent).not.toContain('bk_7f3a9c0e21');
     expect(within(list).getByRole('link', { name: 'Download' }).getAttribute('href')).toBe('/api/backups/bk_7f3a9c0e21/artifact');
@@ -116,7 +117,7 @@ describe('backups on Health', () => {
   it('marks a backup whose file is missing, and offers no download or restore for it', async () => {
     server({ '/api/backups': () => Response.json({ backups: [{ id: 'bk_old', key: 'k', created_at: 0, size_bytes: 2048, counts_json: '{}', schema_version: 50, producer: 'selfhosted', pinned: 0, verification: { state: 'failed', checkedAt: 0, detail: 'absent' } }] }) });
     mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     expect(within(list).getByText('File missing')).toBeTruthy();
     expect(within(list).queryByRole('link', { name: 'Download' })).toBeNull();
     const restore = within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' });
@@ -124,7 +125,7 @@ describe('backups on Health', () => {
   });
 });
 
-describe('housekeeping on Health', () => {
+describe('housekeeping under Upkeep', () => {
   it('runs the tick on the button and says what it did in the reader\'s words', async () => {
     const { requested } = server({
       '/api/wake': () => Response.json({ state: 'sleep', heldBy: null, idleMs: 2_000_000, jobs: [{ name: 'agent-run-retention', changed: 3, failed: null }, { name: 'run-stale-sweep', changed: 1, failed: null }], nextWakeMs: 300_000 }),
@@ -137,10 +138,10 @@ describe('housekeeping on Health', () => {
     expect(requested).toContain('POST /api/wake');
   });
 
-  it('says how many transcripts, and how many bytes, are still waiting to be read, from the count the tick reads', async () => {
-    server({ '/api/status': () => Response.json({ ...STATUS, transcriptBacklog: { transcripts: 470, bytes: 2_390_000_000, imported: { transcripts: 460, bytes: 2_380_000_000 } } }) });
-    mount('/operations');
-    expect((await screen.findByTestId('transcript-backlog')).textContent).toBe('470 transcripts (2.2 GB) waiting to be read into sessions.');
+  it('says on Health how many transcripts, and how many bytes, are still waiting to be read, from the count the tick reads', async () => {
+    server({ '/api/status': () => Response.json({ ...STATUS, learning: { line: 'Nothing waits.', lastCompleted: null, dueSessions: 0 }, transcriptBacklog: { transcripts: 470, bytes: 2_390_000_000, imported: { transcripts: 460, bytes: 2_380_000_000 } } }) });
+    mount('/status/health');
+    await waitFor(() => expect(document.querySelector('[data-well-line="learning"]')?.textContent).toContain('470 transcripts (2.2 GB) waiting to be read into sessions.'));
   });
 
   it('says nothing is waiting where nothing is, and words a chained wake in seconds', () => {
@@ -155,7 +156,7 @@ describe('housekeeping on Health', () => {
 
   it('says when the server could not run its housekeeping', async () => {
     server({ '/api/wake': () => new Response(null, { status: 503 }) });
-    mount();
+    mount('/operations');
     fireEvent.click(await screen.findByRole('button', { name: 'Run housekeeping now' }));
     expect(await screen.findByText('The server could not run its housekeeping right now.')).toBeTruthy();
   });
@@ -167,9 +168,9 @@ describe('housekeeping on Health', () => {
       .toBe('The server is in use. Old run records could not be removed; closed 0 runs whose machine stopped answering. Next wake in 1 min.');
   });
 
-  it('offers the diagnostics file from the admin route', async () => {
+  it('offers the diagnostics file from the admin route at the foot of Health', async () => {
     server({});
-    mount();
+    mount('/status/health');
     expect((await screen.findByTestId('download-diagnostics')).getAttribute('href')).toBe('/api/diagnostics');
   });
 });
@@ -179,7 +180,7 @@ describe('housekeeping on Health', () => {
  * matter as much as the state: a complete staging is not a backup an owner
  * can restore from, and Health must never imply it is.
  */
-describe('automatic recovery on Health', () => {
+describe('automatic recovery under Backups', () => {
   const RECOVERY = (schedule: Record<string, unknown>) => ({
     supported: true, attempt: schedule.latest === null ? null : 1, stage: 'idle', recoverable: false, schedule,
   });
@@ -197,7 +198,7 @@ describe('automatic recovery on Health', () => {
     });
     mount();
     expect((await screen.findByTestId('recovery-cadence')).textContent).toContain('Every 6 h');
-    expect(screen.getByText(/Each hosted backup pauses database requests/).textContent).toContain('capture waits on members’ machines for later delivery');
+    expect(within(document.querySelector('[data-health-recovery]')!).getByText(/Each hosted backup pauses database requests/).textContent).toContain('capture waits on members’ machines for later delivery');
     expect(screen.getByTestId('recovery-cadence').textContent).toContain('Next due in 3h');
     expect(screen.getByTestId('recovery-latest').textContent).toContain('Attempt 7');
     const available = screen.getByTestId('recovery-available').textContent ?? '';
@@ -408,7 +409,7 @@ describe('automatic recovery on Health', () => {
   });
 });
 
-describe('store checks on Health', () => {
+describe('store checks under Upkeep', () => {
   const hostedStatus = {
     checks: [
       {
@@ -432,7 +433,7 @@ describe('store checks on Health', () => {
 
   it('shows each check\'s findings, what it could not measure, and an unset schedule as unset', async () => {
     server({ '/api/maintenance': () => Response.json(hostedStatus) });
-    mount();
+    mount('/operations');
     const integrity = await screen.findByTestId('maintenance-integrity');
     expect(within(integrity).getByText('The store check found a problem.')).toBeTruthy();
     expect(integrity.textContent).not.toContain('foreign key: smoke_child row 1 names a missing smoke_parent');
@@ -452,7 +453,7 @@ describe('store checks on Health', () => {
       '/api/maintenance': () => Response.json(hostedStatus),
       '/api/maintenance/optimize/run': () => Response.json({ error: 'refused', refusal: 'already_running', reason: 'an optimize run is already in progress' }, { status: 409 }),
     });
-    mount();
+    mount('/operations');
     const optimize = await screen.findByTestId('maintenance-optimize');
     fireEvent.click(within(optimize).getByRole('button', { name: 'Run now' }));
     expect((await within(optimize).findByRole('alert')).textContent).toBe('That check is already running.');
@@ -470,7 +471,7 @@ describe('store checks on Health', () => {
         ],
       }),
     });
-    mount();
+    mount('/operations');
     const integrity = await screen.findByTestId('maintenance-integrity');
     expect(within(integrity).getByTestId('maintenance-integrity-outcome').textContent).toMatch(/^Interrupted: started .+ \(scheduled\) and ended without recording an outcome\.$/);
     expect(within(integrity).getByRole('button', { name: 'Run now' }).hasAttribute('disabled')).toBe(false);
@@ -487,7 +488,7 @@ describe('store checks on Health', () => {
       '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: supported, cadence: { state: 'off' }, dueAt: null, running, latest: running ? claim : null }] }),
       '/api/maintenance/integrity/run': () => { running = true; return Response.json(claim); },
     });
-    mount();
+    mount('/operations');
     const integrity = await screen.findByTestId('maintenance-integrity');
     expect(within(integrity).getByTestId('maintenance-integrity-outcome').textContent).toBe('Never run.');
     fireEvent.click(within(integrity).getByRole('button', { name: 'Run now' }));
@@ -499,7 +500,7 @@ describe('store checks on Health', () => {
 
   it('offers no run for a check this server cannot perform', async () => {
     server({ '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: false, reason: 'this Deployment has no store maintenance' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: null }] }) });
-    mount();
+    mount('/operations');
     const integrity = await screen.findByTestId('maintenance-integrity');
     expect(within(integrity).getByText('Not available on this server.')).toBeTruthy();
     expect(within(integrity).queryByRole('button')).toBeNull();

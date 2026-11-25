@@ -71,7 +71,7 @@ for (const finding of [1, 2, 3, 6, 7, 9]) {
         await last.scrollIntoViewIfNeeded();
       }
     } else if (finding === 3) await expect(page.getByRole('alert').first()).toBeVisible();
-    else if (finding === 6) await page.locator('[data-health-schema]').scrollIntoViewIfNeeded();
+    else if (finding === 6) await page.locator('[data-well-line="database"]').scrollIntoViewIfNeeded();
     else if (finding === 7) await page.locator('[data-task="canopy-map"]').scrollIntoViewIfNeeded();
     else if (finding === 9) await page.locator('[data-capture]').scrollIntoViewIfNeeded();
     if (finding === 9) await expect(page.getByRole('img', { name: 'Received recently' })).toBeVisible();

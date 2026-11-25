@@ -7,13 +7,13 @@ for (const { viewport, mode } of SHOT_MATRIX) for (const role of ['admin', 'memb
     const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode,
       cookie: screensEnv(role === 'admin' ? 'ownerCookie' : 'memberCookie') });
     try {
-      if (role === 'member') {
-        await page.route('**/api/setup', async (route) => {
-          const response = await route.fetch();
-          await route.fulfill({ json: { ...await response.json(), liveCapture: false, projects: 0 } });
-        });
-        await page.reload();
-      }
+      // The fixture holds ready runners and live capture; each role's checklist is shown part-way, before a runner or a first session.
+      const partWay = role === 'admin' ? { runnersReady: 0 } : { liveCapture: false, projects: 0 };
+      await page.route('**/api/setup', async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ json: { ...await response.json(), ...partWay } });
+      });
+      await page.reload();
       const card = page.locator('[data-get-started]');
       await expect(card.getByRole('heading', { name: 'Get started' })).toBeVisible();
       await expect(card.locator('[data-state="unchecked"]')).toHaveCount(0);

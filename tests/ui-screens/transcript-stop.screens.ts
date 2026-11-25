@@ -5,8 +5,8 @@ import { screensEnv } from './env';
 
 for (const viewport of ['desktop', 'phone'] as const) {
   for (const mode of ['light', 'dark'] as const) {
-    test(`stopped transcript reason at Health Status · ${viewport} · ${mode}`, async ({ browser }) => {
-      const opened = await openPage(browser, { path: '/status/health#status', viewport, mode, cookie: screensEnv('ownerCookie') });
+    test(`stopped transcript reason in Health's What needs you · ${viewport} · ${mode}`, async ({ browser }) => {
+      const opened = await openPage(browser, { path: '/status/health#needs-you', viewport, mode, cookie: screensEnv('ownerCookie') });
       const { page } = opened;
       try {
         const projects = JSON.parse(screensEnv('projects')) as Array<{ projectId: string; name: string }>;
@@ -18,7 +18,7 @@ for (const viewport of ['desktop', 'phone'] as const) {
           }], unavailable: [] } });
         });
         await page.reload();
-        const stopped = page.locator('[data-health-transcripts]');
+        const stopped = page.locator('section#needs-you [data-needs-you-item]').filter({ hasText: 'couldn’t be read' });
         await expect(stopped).toContainText('Reading could not move past a record (tool result).');
         await stopped.scrollIntoViewIfNeeded();
         await expect(stopped).toBeInViewport();

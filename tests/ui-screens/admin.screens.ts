@@ -182,7 +182,7 @@ async function expectAdvanced(page: Page): Promise<void> {
   expect(tab!.x, 'the open tab starts inside the strip').toBeGreaterThanOrEqual(box!.x - 1);
   expect(tab!.x + tab!.width, 'the open tab ends inside the strip').toBeLessThanOrEqual(box!.x + box!.width + 1);
   await expectSection(page, 'Advanced', 'Advanced');
-  await expect(page.locator('[data-fold]')).toHaveCount(7);
+  await expect(page.locator('[data-fold]')).toHaveCount(8);
   await expect(page.getByRole('heading', { name: 'Importing past sessions' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Create a project for it' })).toBeVisible();
   // A stored switch keeps its name readable beside it and its reset inside the card, at every width.
@@ -228,14 +228,27 @@ async function expectProjectSettings(page: Page, name: string): Promise<void> {
 
 async function expectHealth(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { level: 1, name: 'Health' })).toBeInViewport();
-  for (const id of ['needs-you', 'status', 'backups', 'upkeep', 'measures']) await expect(page.locator(`section#${id}`)).toBeVisible();
-  await expect(page.locator('section#needs-you')).toBeInViewport();
+  for (const id of ['status', 'needs-you']) await expect(page.locator(`section#${id}`)).toBeVisible();
+  await expect(page.locator('section#status [data-verdict]')).toBeInViewport();
+  await expect(page.locator('section#status [data-well-line]')).toHaveCount(5);
+  await expect(page.getByTestId('download-diagnostics')).toBeVisible();
+  for (const id of ['backups', 'upkeep', 'measures', 'workers']) await expect(page.locator(`section#${id}`)).toHaveCount(0);
   if (!onFixture()) return;
   await expect(page.locator('section#needs-you')).toContainText('CI deploys');
-  // What Myco is doing, and the machines that do it, are on Myco's work.
-  await expect(page.locator('section#workers')).toHaveCount(0);
-  await expect(page.locator('section#status')).toContainText('Myco');
-  await expect(page.locator('[data-health-search-rebuild]')).toContainText('Rebuilding search with nomic-embed-text');
+  await expect(page.locator('[data-well-line="sessions"]')).toContainText('Last capture received');
+}
+
+async function expectBackups(page: Page): Promise<void> {
+  await expect(page.getByRole('heading', { name: 'Backups made here' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Create backup' })).toBeVisible();
+  await expect(page.locator('[data-health-recovery]')).toBeVisible();
+  await expect(page.getByText('Back up every', { exact: true })).toBeVisible();
+}
+
+async function expectUpkeep(page: Page): Promise<void> {
+  await expect(page.getByRole('button', { name: 'Run housekeeping now' })).toBeVisible();
+  await expect(page.getByTestId('maintenance')).toBeVisible();
+  await expect(page.locator('section#maintenance')).toBeVisible();
 }
 
 const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (page: Page, viewport: ViewportName) => Promise<void> }> = [
@@ -247,6 +260,8 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'settings-advanced', path: () => '/settings/capture#import', rendered: (page) => expectAdvanced(page) },
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
   { name: 'health', path: () => '/status/health', rendered: (page) => expectHealth(page) },
+  { name: 'settings-backups', path: () => '/status/health#backups', rendered: (page) => expectBackups(page) },
+  { name: 'settings-upkeep', path: () => '/status/health#upkeep', rendered: (page) => expectUpkeep(page) },
 ];
 const WORK = 'Does it do Myco’s work?';
 const CAPTURE = 'What does it capture?';
@@ -260,7 +275,10 @@ const MACHINE_PAGES: typeof ADMIN_PAGES = onFixture() ? [
   { name: 'machine-offline', path: () => machinePage(MACHINE_IDS.closet), rendered: (page) => expectMachine(page, 'closet-pc', 'Offline', [WORK, CAPTURE, CURRENT]) },
   { name: 'machine-removed', path: () => machinePage(MACHINE_IDS.retired), rendered: (page) => expectMachine(page, 'old-laptop', 'Removed', [CAPTURE, WORK]) },
 ] : [];
-const OWNER_PAGES = [...ADMIN_PAGES, ...MACHINE_PAGES] as const;
+const OWNER_PAGES = [
+  { name: 'measures', path: () => '/measures', rendered: async (page: Page) => { await expect(page.getByRole('heading', { level: 1, name: 'Is Myco helping?' })).toBeVisible(); } },
+  ...ADMIN_PAGES, ...MACHINE_PAGES,
+] as const;
 
 test.describe('admin pages, as the owner', () => {
   for (const { name, path, rendered } of OWNER_PAGES) for (const { viewport, mode } of SHOT_MATRIX) {
@@ -273,7 +291,7 @@ test.describe('admin pages, as the owner', () => {
         await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
-        if (name === 'health' && onFixture()) {
+        if (name === 'settings-backups' && onFixture()) {
           // A self-hosted server runs no automatic recovery and says so in its answer, which the page reads as unavailable
           // without any request failing.
           await expect(page.getByTestId('recovery-unavailable')).toBeVisible();
@@ -404,8 +422,8 @@ test.describe('People and machines and the admin pages, as a member', () => {
 test.describe('old admin addresses', () => {
   for (const [from, to] of [
     ['/status', /\/status\/health#status$/],
-    ['/measures?window=7', /\/status\/health\?window=7#measures$/],
-    ['/operations', /\/status\/health#upkeep$/],
+    ['/status/health?window=7#measures', /\/measures\?window=7$/],
+    ['/operations', /\/settings\/advanced#upkeep$/],
     ['/access', /\/settings\/people$/],
     ['/me/machines', /\/settings\/people#machines$/],
   ] as const) {

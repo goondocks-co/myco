@@ -13,7 +13,7 @@ import type { RepositoryRow } from './wire';
 import type { TaskDescription } from '../../tasks/wire';
 
 /** What each capability does in a project, in the reader's words. */
-const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
+export const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
   cortex: { label: 'Context for sessions', note: 'Sessions here are handed the instructions at start, and spores and plans on their prompts.' },
   canopy: { label: 'Code map', note: 'Myco keeps a map of where things live in this project’s code, from its repository.' },
   spore_curation: { label: 'Curate overlapping spores', note: 'Review overlapping spores across this Project’s knowledge, starting with new or changed spores, within its daily limit.' },

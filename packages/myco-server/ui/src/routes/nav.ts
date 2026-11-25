@@ -1,5 +1,5 @@
-import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MACHINES_PATH, RUNNER_MACHINES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
-export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, MACHINES_PATH, RUNNER_MACHINES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
+import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MACHINES_PATH, RUNNER_MACHINES_PATH, MEASURES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
+export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, MACHINES_PATH, RUNNER_MACHINES_PATH, MEASURES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
 import {
   Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, type LucideIcon,
 } from 'lucide-react';
@@ -32,7 +32,7 @@ export const PROJECT_SETTINGS_ANCHORS = {
 export const PROJECT_PAGES: readonly ProjectPage[] = [
   { label: 'Today', icon: Sun, suffix: '' },
   { label: 'Sessions', icon: MessageSquare, suffix: '/sessions' },
-  { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX] },
+  { label: 'Knowledge', icon: Sprout, suffix: KNOWLEDGE_SUFFIX, also: [PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX], server: [MEASURES_PATH] },
   { label: 'Myco’s work', icon: Bot, suffix: WORK_SUFFIX, also: [RUN_SUFFIX, TASKS_SUFFIX], server: [RUNS_PATH, RUNNERS_PATH] },
   { label: 'Project settings', icon: SlidersHorizontal, suffix: PROJECT_SETTINGS_SUFFIX, admin: true, unlisted: true },
 ];
@@ -87,19 +87,40 @@ export interface ServerPage {
   to: string;
 }
 
-/** Where each part of Health sits on its page. */
+/** Where each part of Health sits on its page: whether the server is well, and what needs you. */
 export const HEALTH_ANCHORS = {
   needsYou: 'needs-you',
   status: 'status',
-  backups: 'backups',
-  upkeep: 'upkeep',
-  measures: 'measures',
 } as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
 /** Settings › People and machines: who can sign in, and the machines that write here or run Myco's work. */
 export const PEOPLE_SETTINGS_PATH = SETTINGS_SECTIONS.find((section) => section.id === 'people')!.to;
+/** The anchor a location's hash names, decoded; a hash that does not decode names itself as written. */
+export function anchorOf(hash: string): string {
+  const raw = hash.replace(/^#/, '');
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+const ADVANCED_PATH = SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to;
+/** Settings › Advanced › Backups: making, keeping and restoring backups, beside the settings that control them. */
+export const BACKUPS_ADDRESS = `${ADVANCED_PATH}#backups`;
+/** Settings › Advanced › Upkeep: search upkeep, housekeeping and the store checks, each with a way to run it now. */
+export const UPKEEP_ADDRESS = `${ADVANCED_PATH}#upkeep`;
+/** How often this server backs itself up, under Settings › Advanced › Backups. */
+export const BACKUP_SCHEDULE_ADDRESS = `${ADVANCED_PATH}#backup`;
+/** The store check schedule, under Settings › Advanced › Upkeep. */
+export const CHECK_SCHEDULE_ADDRESS = `${ADVANCED_PATH}#maintenance`;
+const STORED_KEYS_ANCHOR = 'credentials';
+/** The stored keys, under Settings › Connections. */
+export const STORED_KEYS_ADDRESS = `${SETTINGS_SECTIONS.find((section) => section.id === 'connections')!.to}#${STORED_KEYS_ANCHOR}`;
+/** Which agent runners use and who pays for it, under Settings › Models. */
+export const AGENT_PAYER_ADDRESS = `${SETTINGS_SECTIONS.find((section) => section.id === 'models')!.to}#workers`;
 /** Every project, listed with its session count. */
 export const PROJECTS_PATH = '/projects';
 
@@ -247,6 +268,7 @@ export function clearProjectHref(
 const SERVER_TITLES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), pageOf(suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
+  [MEASURES_PATH]: 'Is Myco helping?',
   [RUNS_PATH]: 'Myco’s work',
   [RUNNERS_PATH]: 'Myco’s work',
   ...Object.fromEntries(ADMIN_PAGES.map((page) => [page.to, page.label])),

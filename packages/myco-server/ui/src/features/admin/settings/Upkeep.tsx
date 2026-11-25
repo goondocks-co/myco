@@ -1,45 +1,35 @@
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, buttonVariants, Card, Disclosure, ErrorState, LoadingState, errorWords } from '../../../design';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Button, Card, Disclosure, ErrorState, LoadingState, ReadState, errorWords } from '../../../design';
 import { useWork } from '../../../hooks/use-work';
-import { ApiError, fetchJson, postJson } from '../../../lib/api';
-import { cn } from '../../../lib/cn';
-import { formatBytes } from '../../../lib/format';
+import { ApiError, postJson } from '../../../lib/api';
+import { useMaintenance } from '../../../hooks/use-maintenance';
+import { formatBytes, formatCount } from '../../../lib/format';
 import { agoWords } from '@goondocks/myco-shared/time-words';
-import { HEALTH_ANCHORS } from '../../../routes/nav';
+import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { UpkeepLine } from '../../today/Summary';
-import { AdminSection } from '../AdminFrame';
-import type { CheckStatus, MaintenanceAnswer, MaintenanceOutcome, TickReport } from './wire';
-import { CHECK_TITLES, findingWords, groupedFindings, measurementWords, supportWords, checkCadenceWords, measurementName, outcomeWords, reportWords } from './words';
-import { live } from '../../../lib/live';
+import type { CheckStatus, MaintenanceOutcome, TickReport } from '../health/wire';
+import { CHECK_TITLES, findingWords, groupedFindings, measurementWords, supportWords, checkCadenceWords, measurementName, outcomeWords, reportWords } from '../health/words';
+import { EmbeddingSwitchPanel, PassedOverSources } from './EmbeddingSwitch';
 
 const HOUR = 3_600_000;
-/** How often the checks are read again while one runs, so its outcome appears without a reload. */
 
 /**
- * Upkeep: what this server does on its own to stay well. The search index's
- * upkeep over the last day, housekeeping run on demand, the store's routine
- * checks, and the diagnostics file an admin attaches to an issue.
+ * Upkeep, under Settings › Advanced: what this server does on its own to stay well, each with a way to run it now.
+ * The search index's upkeep over the last day and the sources search by meaning passes over, housekeeping, and the
+ * store's routine checks.
  */
-export function UpkeepSection() {
+export function Upkeep() {
   return (
-    <AdminSection id={HEALTH_ANCHORS.upkeep} title="Upkeep" description="What this server does on its own to stay well, and a way to run it now.">
+    <>
       <SearchUpkeep />
       <Housekeeping />
       <Maintenance />
-      <Card className="flex flex-col gap-s2" data-testid="diagnostics">
-        <h3 className="t-h3 text-ink">Diagnostics</h3>
-        <p className="max-w-measure t-small text-muted">
-          One file describing this server: its schema, what it is set up to run, the machines running its work, the tasks waiting, and what each project last sent. Attach it to an issue.
-          It carries no keys, no captured content and no error messages; every failure is named rather than quoted. On your own machine, <code className="t-mono">myco member export</code> writes the matching half.
-        </p>
-        <a className={cn(buttonVariants({ size: 'sm' }), 'w-fit')} href="/api/diagnostics" download data-testid="download-diagnostics">Download diagnostics</a>
-      </Card>
-    </AdminSection>
+    </>
   );
 }
 
-/** The search index's upkeep over the last day across every project, in the one line Today shows. */
+/** The search index's upkeep over the last day across every project, in the one line Today shows, and the sources search by meaning passes over. */
 function SearchUpkeep() {
   const [window] = useState(() => {
     const now = Date.now();
@@ -55,7 +45,42 @@ function SearchUpkeep() {
         : upkeep.lastSuccessAt === null && upkeep.unrecovered === null
           ? <p className="t-small text-muted">The search index has not been updated in the last day.</p>
           : <UpkeepLine upkeep={upkeep} now={Date.now()} statusHref={null} />}
+      {upkeep !== undefined && work.error !== null && <StaleRead onRetry={() => void work.refetch()} />}
+      <ModelSwitch />
+      <PassedOver />
     </Card>
+  );
+}
+
+/** A refresh that failed while an earlier answer is shown: said, with a way to read it again. */
+function StaleRead({ onRetry }: { onRetry: () => void }) {
+  return (
+    <p role="status" className="flex flex-wrap items-center gap-s2 t-small text-warn">
+      <span>Couldn’t refresh this just now; it shows what was read before.</span>
+      <Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button>
+    </p>
+  );
+}
+
+/** A switch of the search model under way, with how far rebuilding search has come; nothing while there is none. */
+function ModelSwitch() {
+  const sw = useEmbeddingSwitch();
+  return (
+    <ReadState data={sw.data} pending={sw.isPending} error={sw.error} onRetry={() => void sw.refetch()} label="a switch of the search model">
+      {(value) => value === null ? null : <EmbeddingSwitchPanel sw={value} now={Date.now()} />}
+    </ReadState>
+  );
+}
+
+/** The sources search by meaning passes over, each named with why; nothing while there is none. */
+function PassedOver() {
+  const passed = usePassedOver();
+  return (
+    <ReadState data={passed.data} pending={passed.isPending} error={passed.error} onRetry={() => void passed.refetch()} label="sources left out of search">
+      {(value) => value.state === 'building' ? <p className="t-small text-muted">Measuring passed-over sources…</p> : value.count === 0 ? null : <div data-passed-over="">
+        <PassedOverSources list={value} lede={`Search by meaning leaves out ${formatCount(value.count, 'source')}. Search by words still finds ${value.count === 1 ? 'it' : 'them'}.`} />
+      </div>}
+    </ReadState>
   );
 }
 
@@ -87,11 +112,7 @@ function Housekeeping() {
 
 /** The store's routine checks: what this server can run, what each last found, and a way to run one now. */
 function Maintenance() {
-  const status = useQuery({
-    queryKey: ['maintenance'],
-    queryFn: ({ signal }) => fetchJson<MaintenanceAnswer>('/api/maintenance', signal),
-    ...live<MaintenanceAnswer>({ whileMoving: (data) => data?.checks.some((c) => c.running) ?? false, quick: true }),
-  });
+  const status = useMaintenance();
   return (
     <Card className="flex flex-col gap-s3" data-testid="maintenance">
       <h3 className="t-h3 text-ink">Store checks</h3>
@@ -103,6 +124,7 @@ function Maintenance() {
             {status.data.checks.map((check) => <CheckRow key={check.check} status={check} />)}
           </div>
         )}
+      {status.data !== undefined && status.error !== null && <StaleRead onRetry={() => void status.refetch()} />}
     </Card>
   );
 }

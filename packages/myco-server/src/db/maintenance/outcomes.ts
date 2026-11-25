@@ -1,6 +1,7 @@
 /**
  * The latest outcome of each store check, one row per check. A check is the only way to name a row, so no caller can
- * reach any other key, and every decision reads a RETURNING row or an in-batch assertion.
+ * reach any other key, and every decision reads a RETURNING row or an in-batch assertion. A running record carries the
+ * last finished outcome as `previous` until its own run finishes, so a finding stays readable while it is checked again.
  */
 import type { RelationalStore } from '../../core/adapters.js';
 import type { MaintenanceCheck, MaintenanceOutcome } from '../../core/store-maintenance.js';
@@ -11,7 +12,9 @@ const OUTCOME_KEY: Readonly<Record<MaintenanceCheck, string>> = { optimize: 'mai
 const stored = read<[key: string], { value: string }>({ name: 'maintenance.outcome', sql: 'SELECT value FROM schema_meta WHERE key=?1' });
 const claim = write<[key: string, record: string, bounded: number, claimedAt: number, notBefore: number | null], { value: string }>({
   name: 'maintenance.claimOutcome',
-  sql: `INSERT OR REPLACE INTO schema_meta(key,value) SELECT ?1,?2 WHERE NOT EXISTS(SELECT 1 FROM schema_meta WHERE key=?1 AND (
+  sql: `INSERT OR REPLACE INTO schema_meta(key,value) SELECT ?1,json_set(?2,'$.previous',json((SELECT CASE
+      WHEN json_extract(value,'$.state')='running' THEN json_extract(value,'$.previous') ELSE json_remove(value,'$.previous') END
+      FROM schema_meta WHERE key=?1))) WHERE NOT EXISTS(SELECT 1 FROM schema_meta WHERE key=?1 AND (
       (?3=1 AND json_extract(value,'$.state')='running' AND CAST(json_extract(value,'$.claimExpiresAt') AS INTEGER)>?4)
       OR (?5 IS NOT NULL AND CAST(json_extract(value,'$.startedAt') AS INTEGER)>?5)))
     RETURNING value`,
@@ -26,6 +29,11 @@ const held = assertion<[key: string, runId: string, at: number]>({
 const replace = write<[record: string, key: string, runId: string], { key: string }>({
   name: 'maintenance.replaceOwnOutcome',
   sql: `UPDATE schema_meta SET value=?1 WHERE key=?2 AND json_extract(value,'$.runId')=?3 RETURNING key`,
+});
+const checkpoint = write<[record: string, key: string, runId: string], { key: string }>({
+  name: 'maintenance.checkpointOwnOutcome',
+  sql: `UPDATE schema_meta SET value=json_set(?1,'$.previous',json(json_extract(value,'$.previous')))
+    WHERE key=?2 AND json_extract(value,'$.runId')=?3 RETURNING key`,
 });
 
 /** The stored outcome text of one check, or null when it never ran. */
@@ -51,7 +59,7 @@ export async function claimMaintenanceOutcome(db: RelationalStore, record: Maint
 /** Records a checkpoint, refused with `maintenance_claim_lost` once this run no longer holds a live claim. */
 export async function recordMaintenanceProgress(db: RelationalStore, record: MaintenanceOutcome, now: number): Promise<void> {
   const key = OUTCOME_KEY[record.check];
-  await commit(db, held.bind(key, record.runId, now), replace.bind(JSON.stringify(record), key, record.runId));
+  await commit(db, held.bind(key, record.runId, now), checkpoint.bind(JSON.stringify(record), key, record.runId));
 }
 
 /** Records a finished run, only over the record that run created. Answers whether it landed. */

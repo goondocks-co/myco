@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react';
-import { TabLinks } from '../../design';
-import { CODE_MAP_SUFFIX, KNOWLEDGE_SUFFIX, PLANS_SUFFIX, projectPath } from '../../routes/nav';
+import { ActionLink, TabLinks } from '../../design';
+import { CODE_MAP_SUFFIX, KNOWLEDGE_SUFFIX, MEASURES_PATH, PLANS_SUFFIX, projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 
 /** Knowledge's sections, each at its own address. */
@@ -20,7 +20,7 @@ const LEDE: Readonly<Record<KnowledgeSection, string>> = {
 };
 
 /**
- * Knowledge: its title, one line on what the section holds, and the tabs
+ * Knowledge: its title, one line on what the section holds, a link to whether Myco is helping, and the tabs
  * between spores, plans and, under a project, its code map. The code map is
  * drawn per project, so the page across every project has no such tab.
  */
@@ -39,6 +39,7 @@ export function KnowledgeFrame({ projectId, section, children }: KnowledgeFrameP
           <PageScope />
         </div>
         <p className="max-w-measure t-body text-muted">{LEDE[section]}</p>
+        <ActionLink to={MEASURES_PATH}>Is Myco helping? →</ActionLink>
       </header>
       <TabLinks label="Knowledge sections" items={tabs} />
       {children}

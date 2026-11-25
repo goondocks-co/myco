@@ -9,6 +9,7 @@ import { Search as SearchPanel } from '../features/search/Search';
 import { useAttention } from '../hooks/use-attention';
 import { useUncaptured } from '../hooks/use-uncaptured';
 import { needsYouCount } from '../features/today/NeedsYou';
+import { useServerItems } from '../hooks/use-needs-you';
 import { LiveRefresh } from '../hooks/use-live';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
@@ -164,7 +165,8 @@ function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
 function NeedsYouCount() {
   const attention = useAttention({ enabled: true });
   const repositories = useUncaptured({ enabled: true });
-  const count = needsYouCount(attention.data, repositories.data?.items);
+  const server = useServerItems({ enabled: true });
+  const count = needsYouCount(attention.data, repositories.data?.items, server.items);
   if (count === 0) return null;
   return (
     <>

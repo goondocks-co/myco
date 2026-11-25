@@ -17,6 +17,8 @@ export const MY_MACHINES_PATH = '/me/machines';
 /** One machine's page, by the machine id its sign-ins claim; a runner that reported no machine id has its page by runner id. */
 export const MACHINES_PATH = `${SETTINGS_PATH}/people/machines`;
 export const RUNNER_MACHINES_PATH = `${SETTINGS_PATH}/people/runners`;
+/** "Is Myco helping?": the measures of what Myco serves and how it is used, across the server. */
+export const MEASURES_PATH = '/measures';
 export const SETTINGS_SECTIONS = [
   { id: 'work', label: 'Myco’s work', to: SETTINGS_PATH },
   { id: 'people', label: 'People and machines', to: `${SETTINGS_PATH}/people` },
@@ -74,6 +76,7 @@ export const ROUTESPaths = {
   join: '/join',
   today: '/',
   projects: '/projects',
+  measures: MEASURES_PATH,
   project: '/p/:projectId',
   missing: '*',
 } as const;
@@ -89,7 +92,6 @@ export const movedPaths = {
   access: '/access',
   projectAccess: '/p/:projectId/access',
   status: '/status',
-  measures: '/measures',
   operations: '/operations',
   serverRuns: '/runs',
   serverRunners: '/runners',

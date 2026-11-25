@@ -65,7 +65,7 @@ export function Lede({ parts }: { parts: readonly Part[] }) {
   );
 }
 
-/** The search index's upkeep in one quiet line, or nothing when it has never run; Health, for an admin, ends the line. */
+/** The search index's upkeep in one quiet line, or nothing when it has never run; a link to Upkeep, for an admin, ends the line. */
 export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: number; statusHref: string | null }) {
   let dot: ReactNode;
   let words: string;
@@ -91,7 +91,7 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
         {statusHref !== null && (
           <>
             {' · '}
-            <RouterLink to={statusHref} className={cn('whitespace-nowrap rounded-chip font-medium text-primary hover:underline', focusRing)}>Health →</RouterLink>
+            <RouterLink to={statusHref} className={cn('whitespace-nowrap rounded-chip font-medium text-primary hover:underline', focusRing)}>Upkeep →</RouterLink>
           </>
         )}
       </span>

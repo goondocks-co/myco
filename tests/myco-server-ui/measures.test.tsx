@@ -55,11 +55,6 @@ function server(routes: Record<string, () => Response>): { requested: string[] }
 const base = (extra: Record<string, () => Response> = {}) => ({
   '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
-  '/api/attention': () => Response.json({ items: [], unavailable: [] }),
-  '/api/backups': () => Response.json({ backups: [] }),
-  '/api/maintenance': () => Response.json({ checks: [] }),
-  '/api/credentials': () => Response.json({ rows: [], cursor: null }),
-  '/api/machines': () => Response.json({ machines: [], cursor: null }),
   ...extra,
 });
 
@@ -132,7 +127,7 @@ async function tiles(): Promise<Array<{ label: string; value: string | null; sam
   });
 }
 
-describe('the measures on Health', () => {
+describe('Is Myco helping?', () => {
   it('shows catch-up progress and the observation window without partial figures', async () => {
     server(base({
       '/api/kpis?window=30': () => Response.json({
@@ -141,7 +136,7 @@ describe('the measures on Health', () => {
         asOf: 1700000000000, metricVersion: 711, progress: { completed: 3, total: 7 },
       }),
     }));
-    mount('/status/health');
+    mount('/measures');
     expect(await screen.findByText('Measuring history (3 of 7)')).toBeTruthy();
     expect(screen.getByText('Last 7 days (UTC), through today · 2023-11-07 – 2023-11-14')).toBeTruthy();
     expect(screen.getByText('11/14/2023, 10:13:20 PM UTC').getAttribute('datetime')).toBe('2023-11-14T22:13:20.000Z');
@@ -160,7 +155,7 @@ describe('the measures on Health', () => {
       } : report({ promptsServed: 8 })),
     }));
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    mount('/status/health', client);
+    mount('/measures', client);
     expect(await screen.findByText('Measuring history (3 of 7)')).toBeTruthy();
     expect(await screen.findByText('8', {}, { timeout: MOVING_MS + 2_000 })).toBeTruthy();
     expect(screen.queryByText('Measuring history (3 of 7)')).toBeNull();
@@ -174,9 +169,9 @@ describe('the measures on Health', () => {
     expect(options.refetchIntervalInBackground).toBe(false);
   }, MOVING_MS + 5_000);
 
-  it('labels an all-time answer with its UTC window and observation time', async () => {
+  it('labels an all-time answer with its UTC window and observation time, reached from Health’s old measures address', async () => {
     server(base({ '/api/kpis?window=all': () => Response.json(report({ windowDays: null, windowStart: null, since: null })) }));
-    mount('/status/health?window=all');
+    mount('/status/health?window=all#measures');
     expect(await screen.findByText('All time (UTC), through today')).toBeTruthy();
     expect(screen.getByText('11/14/2023, 10:13:20 PM UTC')).toBeTruthy();
   });
@@ -335,7 +330,7 @@ describe('the measures on Health', () => {
   it('says the server failed, with a retry, rather than rendering empty measures', async () => {
     server(base({ '/api/kpis?window=30': () => new Response(null, { status: 503 }) }));
     mount('/measures');
-    const measures = await screen.findByRole('region', { name: 'Measures' });
+    const measures = (await screen.findByRole('heading', { name: 'Is Myco helping?' })).closest<HTMLElement>('[data-admin-page]')!;
     expect(await within(measures).findByText(/The server had a problem/)).toBeTruthy();
     expect(within(measures).getByRole('button', { name: 'Retry' })).toBeTruthy();
     expect(screen.queryAllByTestId('measure-tile')).toEqual([]);
