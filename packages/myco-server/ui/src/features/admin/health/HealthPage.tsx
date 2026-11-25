@@ -1,6 +1,7 @@
 import { ActionLink, buttonVariants, Card, Link } from '../../../design';
 import { useAttention } from '../../../hooks/use-attention';
 import { useAgentPayers } from '../../../hooks/use-fleet';
+import { useHeldRead, type HeldRead } from '../../../hooks/use-held-read';
 import { useWorkNow } from '../../../hooks/use-live';
 import { useNeedsYou } from '../../../hooks/use-needs-you';
 import { useProjects } from '../../../hooks/use-projects';
@@ -21,21 +22,25 @@ import type { HealthFacts } from './verdict';
  */
 export function HealthPage() {
   const now = useNow();
-  const status = useStatus();
+  const statusQuery = useStatus();
+  const status = useHeldRead(statusQuery);
   const projects = useProjects();
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (projectId: string): string | null => names.get(projectId) ?? null;
   const needsYou = useNeedsYou({ now, projectName });
-  const attention = useAttention({ enabled: true });
-  const work = useWorkNow(null);
-  const payers = useAgentPayers();
-  const read = <T,>(query: { data: T | undefined; error: unknown }) => ({ data: query.data, failed: query.error !== null });
+  const attentionQuery = useAttention({ enabled: true });
+  const workQuery = useWorkNow(null);
+  const payersQuery = useAgentPayers();
+  const attention = useHeldRead(attentionQuery);
+  const work = useHeldRead(workQuery);
+  const payers = useHeldRead(payersQuery);
+  const read = <T,>(held: HeldRead<T>) => ({ data: held.data, failed: held.error !== null });
   const facts: HealthFacts = {
     now, projectName, status: read(status), attention: read(attention), work: read(work), payers: read(payers),
     server: needsItems((attention.data?.items ?? []), needsYou.server.items).server, unchecked: needsYou.server.unchecked,
   };
-  useAnchorScroll(!status.isPending && !needsYou.pending);
-  const retry = () => { void status.refetch(); void attention.refetch(); void work.refetch(); void payers.refetch(); needsYou.onRetry(); };
+  useAnchorScroll(!status.pending && !needsYou.pending);
+  const retry = () => { void statusQuery.refetch(); void attentionQuery.refetch(); void workQuery.refetch(); void payersQuery.refetch(); needsYou.onRetry(); };
 
   return (
     <AdminPage
@@ -45,7 +50,7 @@ export function HealthPage() {
       lede="Whether this server is well, and anything that needs you."
       actions={<ActionLink to={WORK_SUFFIX}>What Myco is doing, and its runners →</ActionLink>}
     >
-      <ServerWell facts={facts} reading={status.isPending} onRetry={retry} />
+      <ServerWell facts={facts} reading={status.pending} onRetry={retry} />
       <section id={HEALTH_ANCHORS.needsYou} aria-label="What needs you" className="scroll-mt-s6">
         <NeedsYouPanel {...needsYou} title="What needs you" />
       </section>

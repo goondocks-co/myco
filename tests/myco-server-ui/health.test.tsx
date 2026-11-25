@@ -252,13 +252,18 @@ describe('Health', () => {
     expect(verdictOf(withStates('yes', 'yes', 'no', 'attention')).sentence).toBe('Not working: somewhere to run (1 of 2 can work). Needs a look: within budget (yes).');
   });
 
-  it('says on every line that a failed status read failed, and never says Yes', async () => {
-    server(routes({ '/api/status': () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
-    mount();
+  it('says on every line that a failed status read failed, never says Yes, and keeps saying so while it reads again', async () => {
+    let answered = 0;
+    server(routes({ '/api/status': () => (answered++ === 0 ? Response.json({ error: 'unavailable' }, { status: 503 }) : new Promise<Response>(() => undefined) as unknown as Response) }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount('/status/health', client);
     const well = await verdictFor();
     expect(well.querySelector('[data-verdict] p')!.textContent).toBe('Needs attention');
     expect([...well.querySelectorAll('[data-well-state="failed"]')]).toHaveLength(5);
     expect(well.textContent).toContain('Couldn’t read this server’s status just now.');
+    void client.refetchQueries({ queryKey: ['status'] });
+    await waitFor(() => expect(answered).toBe(2));
+    expect([...well.querySelectorAll('[data-well-state="failed"]')]).toHaveLength(5);
   });
 
   it('shows what needs an admin with a way to finish and decline it, and its count beside Health in the nav', async () => {

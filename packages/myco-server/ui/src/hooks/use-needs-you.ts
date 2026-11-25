@@ -4,6 +4,7 @@ import type { MaintenanceOutcome } from '../features/admin/health/wire';
 import { backupFailedItems, backupUnchecked, SERVER_READS, storedKeyItems, storeCheckItems, type ServerItemsRead } from '../features/today/server-items';
 import { isArchived } from '../lib/api';
 import { useAttention } from './use-attention';
+import { useHeldRead } from './use-held-read';
 import { useMaintenance } from './use-maintenance';
 import { permissionOf, useMe } from './use-me';
 import { useProjects } from './use-projects';
@@ -17,9 +18,12 @@ import { useUncaptured } from './use-uncaptured';
  * stays while a new run of it is under way.
  */
 export function useServerItems({ enabled }: { enabled: boolean }): ServerItemsRead & { refetch: () => void } {
-  const status = useStatus({ enabled });
-  const maintenance = useMaintenance({ enabled });
-  const recovery = useRecovery({ enabled });
+  const statusQuery = useStatus({ enabled });
+  const maintenanceQuery = useMaintenance({ enabled });
+  const recoveryQuery = useRecovery({ enabled });
+  const status = useHeldRead(statusQuery);
+  const maintenance = useHeldRead(maintenanceQuery);
+  const recovery = useHeldRead(recoveryQuery);
   const findings = useRef(new Map<string, MaintenanceOutcome>());
   for (const check of maintenance.data?.checks ?? []) {
     if (check.running) continue;
@@ -35,16 +39,16 @@ export function useServerItems({ enabled }: { enabled: boolean }): ServerItemsRe
       ...backupFailedItems(recovery.data),
     ],
     checking: [
-      ...(maintenance.data === undefined && maintenance.isPending ? [SERVER_READS.storeChecks] : []),
-      ...(status.data === undefined && status.isPending ? [SERVER_READS.storedKeys] : []),
-      ...(recovery.data === undefined && recovery.isPending ? [SERVER_READS.backups] : []),
+      ...(maintenance.data === undefined && maintenance.pending ? [SERVER_READS.storeChecks] : []),
+      ...(status.data === undefined && status.pending ? [SERVER_READS.storedKeys] : []),
+      ...(recovery.data === undefined && recovery.pending ? [SERVER_READS.backups] : []),
     ],
     unchecked: [
       ...(maintenance.error === null ? [] : [SERVER_READS.storeChecks]),
       ...(keysUnread ? [SERVER_READS.storedKeys] : []),
       ...(recovery.error !== null || backupUnchecked(recovery.data) ? [SERVER_READS.backups] : []),
     ],
-    refetch: () => { void status.refetch(); void maintenance.refetch(); void recovery.refetch(); },
+    refetch: () => { void statusQuery.refetch(); void maintenanceQuery.refetch(); void recoveryQuery.refetch(); },
   };
 }
 
@@ -56,20 +60,22 @@ export function useNeedsYou({ now, projectName }: { now: number; projectName: (p
   const me = useMe();
   const signedIn = me.data?.member != null;
   const admin = permissionOf(me.data, 'settings').allowed;
-  const attention = useAttention({ enabled: admin });
+  const attentionQuery = useAttention({ enabled: admin });
+  const attention = useHeldRead(attentionQuery);
   const server = useServerItems({ enabled: admin });
-  const repositories = useUncaptured({ enabled: signedIn });
+  const repositoriesQuery = useUncaptured({ enabled: signedIn });
+  const repositories = useHeldRead(repositoriesQuery);
   const projects = useProjects();
   return {
     admin,
     answer: attention.data,
-    pending: attention.isPending,
+    pending: attention.pending,
     error: attention.error,
     onRetry: () => {
-      if (admin) { void attention.refetch(); server.refetch(); }
-      if (signedIn) void repositories.refetch();
+      if (admin) { void attentionQuery.refetch(); server.refetch(); }
+      if (signedIn) void repositoriesQuery.refetch();
     },
-    repositories: { items: repositories.data?.items, pending: signedIn && repositories.isPending, error: repositories.error },
+    repositories: { items: repositories.data?.items, pending: signedIn && repositories.pending, error: repositories.error },
     server,
     viewerId: me.data?.member?.id ?? null,
     projects: (projects.data?.projects ?? []).filter((p) => !isArchived(p)).map((p) => ({ projectId: p.projectId, name: p.name })),
