@@ -96,6 +96,16 @@ export const HEALTH_ANCHORS = {
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
+/** The anchor a location's hash names, decoded; a hash that does not decode names itself as written. */
+export function anchorOf(hash: string): string {
+  const raw = hash.replace(/^#/, '');
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 const ADVANCED_PATH = SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to;
 /** Settings › Advanced › Backups: making, keeping and restoring backups, beside the settings that control them. */
 export const BACKUPS_ADDRESS = `${ADVANCED_PATH}#backups`;

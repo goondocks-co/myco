@@ -1,6 +1,8 @@
 import type { NeedsYouProps } from '../features/today/NeedsYou';
-import { backupFailedItems, storedKeyItems, storeCheckItems, type ServerItemsRead } from '../features/today/server-items';
-import { ApiError, isArchived } from '../lib/api';
+import { useRef } from 'react';
+import type { MaintenanceOutcome } from '../features/admin/health/wire';
+import { backupFailedItems, backupUnchecked, storedKeyItems, storeCheckItems, type ServerItemsRead } from '../features/today/server-items';
+import { isArchived } from '../lib/api';
 import { useAttention } from './use-attention';
 import { useMaintenance } from './use-maintenance';
 import { permissionOf, useMe } from './use-me';
@@ -9,30 +11,39 @@ import { useRecovery } from './use-recovery';
 import { useStatus } from './use-status';
 import { useUncaptured } from './use-uncaptured';
 
-/** A server that runs no automatic backup answers its read with a refusal: there is nothing to ask about, not a failed read. */
-const noProducer = (error: unknown): boolean => error instanceof ApiError && error.status === 400;
-
 /**
  * What needs an admin beside the attention answer: store checks that found a problem, stored keys that were rejected,
- * and a failed automatic backup. A read that failed is named, so its silence is never taken for all clear.
+ * and a failed automatic backup. A failed refresh keeps what was read and names the read; a store check's finding
+ * stays while a new run of it is under way.
  */
 export function useServerItems({ enabled }: { enabled: boolean }): ServerItemsRead & { refetch: () => void } {
   const status = useStatus({ enabled });
   const maintenance = useMaintenance({ enabled });
   const recovery = useRecovery({ enabled });
-  const recoveryFailed = recovery.error !== null && !noProducer(recovery.error);
+  const findings = useRef(new Map<string, MaintenanceOutcome>());
+  for (const check of maintenance.data?.checks ?? []) {
+    if (check.running) continue;
+    if (check.latest?.state === 'findings' || check.latest?.state === 'failed') findings.current.set(check.check, check.latest);
+    else findings.current.delete(check.check);
+  }
+  if (!enabled) return { items: [], checking: [], unchecked: [], refetch: () => undefined };
+  const keysUnread = status.error !== null || status.data?.unavailable?.includes('workers') === true;
   return {
-    items: enabled ? [
-      ...storeCheckItems(maintenance.error === null ? maintenance.data : undefined),
-      ...storedKeyItems(status.error === null ? status.data : undefined),
-      ...backupFailedItems(recovery.error === null ? recovery.data : undefined),
-    ] : [],
-    pending: enabled && (status.isPending || maintenance.isPending || (recovery.isPending && recovery.error === null)),
-    unchecked: enabled ? [
+    items: [
+      ...storeCheckItems(maintenance.data, findings.current),
+      ...storedKeyItems(status.data),
+      ...backupFailedItems(recovery.data),
+    ],
+    checking: [
+      ...(maintenance.data === undefined && maintenance.isPending ? ['store checks'] : []),
+      ...(status.data === undefined && status.isPending ? ['stored keys'] : []),
+      ...(recovery.data === undefined && recovery.isPending ? ['automatic backups'] : []),
+    ],
+    unchecked: [
       ...(maintenance.error === null ? [] : ['store checks']),
-      ...(status.error === null ? [] : ['stored keys']),
-      ...(recoveryFailed ? ['automatic backups'] : []),
-    ] : [],
+      ...(keysUnread ? ['stored keys'] : []),
+      ...(recovery.error !== null || backupUnchecked(recovery.data) ? ['automatic backups'] : []),
+    ],
     refetch: () => { void status.refetch(); void maintenance.refetch(); void recovery.refetch(); },
   };
 }

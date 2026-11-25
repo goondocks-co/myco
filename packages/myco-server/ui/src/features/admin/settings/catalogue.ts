@@ -54,7 +54,7 @@ export const ADVANCED_FOLDS = [
   { id: 'new-and-past', label: 'New repositories and past sessions', summary: 'Whether a new repository gets a project by itself, how much history a new machine brings, and whether that history gets titles.' },
   { id: 'kept', label: 'How long things are kept', summary: 'How long raw transcripts and the record of each task stay before they move or go.' },
   { id: 'backups', label: 'Backups', summary: 'Make, download and restore backups, how often this server backs itself up, and what it keeps.' },
-  { id: 'upkeep', label: 'Upkeep', summary: 'Search upkeep, housekeeping and the routine checks on the database, each with a way to run it now.' },
+  { id: 'upkeep', label: 'Upkeep', summary: 'How search is keeping up, housekeeping and the routine checks on the database; housekeeping and each check can be run now.' },
   { id: 'owner-actions', label: 'Owner actions', summary: 'Transfer ownership of this server. Claim raw data that has no recorded uploader.' },
 ] as const;
 export type AdvancedFoldId = (typeof ADVANCED_FOLDS)[number]['id'];

@@ -12,7 +12,7 @@ import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
-import { BACKUP_SCHEDULE_ADDRESS, BACKUPS_ADDRESS, HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, RUNNERS_PATH, runPath, UPKEEP_ADDRESS } from '../../routes/nav';
+import { BACKUP_SCHEDULE_ADDRESS, BACKUPS_ADDRESS, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, RUNNERS_PATH, runPath, UPKEEP_ADDRESS } from '../../routes/nav';
 import { hasRunOutput } from './timeline';
 import type { MachineHarnessHealth, AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 import { agoWords, clockWords, dayWords } from '@goondocks/myco-shared/time-words';
@@ -214,21 +214,15 @@ export interface NeedsYouWords {
   decline?: Decline;
 }
 
-/** Saying no to an item: a link to the setting that raises it, or turning a capability off for one project, here. */
-export type Decline = { label: string; to: string } | { label: string; turnOff: { projectId: string; capability: string; done: string } };
-
-/** A part of Health, by its anchor. */
-const healthAt = (anchor: string): string => `${HEALTH_PATH}#${anchor}`;
+/**
+ * Saying no to an item: a link to the setting that raises it; turning a named capability off for one project, here; or
+ * turning off, for one project, whichever capability gates a failing task, named for that capability once it is read.
+ */
+export type Decline = { label: string; to: string } | { label: string; turnOff: { projectId: string; capability: string; done: string } }
+  | { turnOffTask: { projectId: string; task: string; projectName: string } };
 
 /** A project's switches for what Myco does there. */
 const capabilitiesOf = (projectId: string): string => `${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`;
-
-/** The capability whose work an outcome is, where turning it off for a project stops that work there. */
-const OUTCOME_CAPABILITY: Readonly<Partial<Record<OutcomeKind, { capability: string; words: string }>>> = {
-  learn: { capability: 'vault_evolution', words: 'learning' },
-  map: { capability: 'canopy', words: 'the code map' },
-};
-
 
 export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
   const inProject = (projectId: string) => {
@@ -254,15 +248,13 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         action: { label: 'Open backups', to: BACKUPS_ADDRESS },
         decline: { label: 'Change how often it runs', to: BACKUP_SCHEDULE_ADDRESS },
       };
-    case 'outcome_failed': {
-      const off = OUTCOME_CAPABILITY[item.outcome];
+    case 'outcome_failed':
       return {
         title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
         detail: item.interruptionMachine !== undefined ? `${inProject(item.projectId)} ${interruptionWords(item.interruptionCode ?? 'run_interrupted_repeated', item.interruptionMachine)}` : `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
-        ...(off === undefined ? {} : { decline: { label: `Turn ${off.words} off here`, turnOff: { projectId: item.projectId, capability: off.capability, done: `${off.words.charAt(0).toUpperCase()}${off.words.slice(1)} is off for ${projectName(item.projectId) ?? 'this project'}.` } } }),
+        decline: { turnOffTask: { projectId: item.projectId, task: item.task, projectName: projectName(item.projectId) ?? 'this project' } },
       };
-    }
     case 'runs_without_audit':
       return {
         title: `${count(item.runs, 'task run')} of ${item.closed} ended without the agent’s account of its steps`,
@@ -276,7 +268,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: item.pendingBlobs > 0
           ? `${count(item.pendingBlobs, 'item')} ${item.pendingBlobs === 1 ? 'is' : 'are'} waiting to be searchable${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`
           : `Its updates have failed${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`,
-        action: { label: 'Open upkeep', to: UPKEEP_ADDRESS },
+        action: { label: 'See search upkeep', to: UPKEEP_ADDRESS },
       };
     }
     case 'transcripts_stopped':
@@ -328,8 +320,8 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         title: 'The server and its database disagree',
         detail: item.found === null
           ? 'The database doesn’t say which version it holds, so some pages may fail.'
-          : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match.`,
-        action: { label: 'See whether the server is well', to: healthAt(HEALTH_ANCHORS.status) },
+          : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match. Whoever runs this server updates it, or its database, so they match.`,
+        action: null,
       };
     case 'harness_needs_repair':
       return {

@@ -178,6 +178,6 @@ For connected projects on a machine with two Deployments, Claude Code uses priva
 
 ## Who sees what
 
-Processed project knowledge is available to members across the Deployment. Raw capture is private to its uploader. Your machine's name appears beside your own work; other members see the member's name. Administrators can see machine names on **People & machines** and **Health**.
+Processed project knowledge is available to members across the Deployment. Raw capture is private to its uploader. Your machine's name appears beside your own work; other members see the member's name. Administrators can see machine names on **People & machines**.
 
 Myco's own work requires a separately registered runner with a signed-in coding agent. Joining or provisioning a capture agent does not start a runner. See [Run your own Myco](self-hosting.md).

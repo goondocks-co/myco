@@ -1,8 +1,7 @@
-import { Card, HealthDot, Skeleton, StatusChip, type HealthTone, type Tone } from '../../../design';
-import type { useStatus } from '../../../hooks/use-status';
+import { Button, Card, HealthDot, Skeleton, StatusChip, type HealthTone, type Tone } from '../../../design';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
-import { unreadLines, verdictOf, wellLines, type LineState, type Verdict, type WellLine } from './verdict';
+import { unreadLines, verdictOf, wellLines, type HealthFacts, type LineState, type Verdict, type WellLine } from './verdict';
 
 const CHIP_TONE: Readonly<Record<LineState, Tone>> = { yes: 'ok', attention: 'warn', no: 'bad', unknown: 'neutral', failed: 'warn' };
 const VERDICT_TONE: Readonly<Record<Verdict, HealthTone>> = { Yes: 'ok', 'Needs attention': 'warn', No: 'bad' };
@@ -34,12 +33,13 @@ function Line({ line }: { line: WellLine }) {
  * "Is the server well?": one verdict with the sentence that explains it, then the five lines it follows from. A failed
  * read of the server's status says so on every line, and is never taken for Yes.
  */
-export function ServerWell({ status, now, projectName }: { status: ReturnType<typeof useStatus>; now: number; projectName: (projectId: string) => string | null }) {
-  const lines = status.data !== undefined && status.error === null ? wellLines({ status: status.data, now, projectName })
-    : status.isPending ? null : unreadLines();
+export function ServerWell({ facts, reading, onRetry }: { facts: HealthFacts; reading: boolean; onRetry: () => void }) {
+  const lines = facts.status.data !== undefined ? wellLines(facts) : reading ? null : unreadLines();
   const verdict = lines === null ? null : verdictOf(lines);
+  const unread = lines?.some((line) => line.state === 'failed') === true || facts.status.failed;
   return (
-    <AdminSection id={HEALTH_ANCHORS.status} title="Is the server well?">
+    <AdminSection id={HEALTH_ANCHORS.status} title="Is the server well?"
+      actions={unread ? <Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button> : undefined}>
       <Card padding="flush" className="flex flex-col" data-server-well={verdict?.verdict ?? 'reading'}>
         {verdict === null || lines === null ? (
           <div role="status" aria-label="Reading this server’s status" className="flex flex-col gap-s3 p-s4">

@@ -16,6 +16,7 @@ import {
   MOVED_SETTINGS_SECTIONS,
   SETTINGS_SECTIONS,
   type SettingsSectionId,
+  anchorOf,
 } from './nav';
 import { useRouteProject } from './route-project';
 
@@ -43,7 +44,7 @@ const MOVED_FROM_PEOPLE = new Set(ADVANCED_ANCHORS.filter(([, fold]) => fold ===
 
 function PeopleRoute() {
   const { hash } = useLocation();
-  const anchor = decodeURIComponent(hash.replace(/^#/, ''));
+  const anchor = anchorOf(hash);
   if (MOVED_FROM_PEOPLE.has(anchor)) return <Navigate to={`${SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to}#${anchor}`} replace />;
   return <PeoplePage />;
 }

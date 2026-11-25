@@ -1,4 +1,7 @@
 import { ActionLink, buttonVariants, Card, Link } from '../../../design';
+import { useAttention } from '../../../hooks/use-attention';
+import { useAgentPayers } from '../../../hooks/use-fleet';
+import { useWorkNow } from '../../../hooks/use-live';
 import { useNeedsYou } from '../../../hooks/use-needs-you';
 import { useProjects } from '../../../hooks/use-projects';
 import { useStatus } from '../../../hooks/use-status';
@@ -6,8 +9,10 @@ import { useNow } from '../../../hooks/use-today';
 import { cn } from '../../../lib/cn';
 import { BACKUPS_ADDRESS, HEALTH_ANCHORS, MEASURES_PATH, UPKEEP_ADDRESS, WORK_SUFFIX } from '../../../routes/nav';
 import { NeedsYouPanel } from '../../today/NeedsYou';
+import { needsItems } from '../../today/server-items';
 import { AdminPage, useAnchorScroll } from '../AdminFrame';
 import { ServerWell } from './ServerWell';
+import type { HealthFacts } from './verdict';
 
 /**
  * `/status/health`: two questions. Is the server well, as one verdict over five lines; and what needs you, each item
@@ -21,7 +26,16 @@ export function HealthPage() {
   const names = new Map((projects.data?.projects ?? []).map((p) => [p.projectId, p.name]));
   const projectName = (projectId: string): string | null => names.get(projectId) ?? null;
   const needsYou = useNeedsYou({ now, projectName });
+  const attention = useAttention({ enabled: true });
+  const work = useWorkNow(null);
+  const payers = useAgentPayers();
+  const read = <T,>(query: { data: T | undefined; error: unknown }) => ({ data: query.data, failed: query.error !== null });
+  const facts: HealthFacts = {
+    now, projectName, status: read(status), attention: read(attention), work: read(work), payers: read(payers),
+    server: needsItems((attention.data?.items ?? []), needsYou.server.items).server,
+  };
   useAnchorScroll(!status.isPending && !needsYou.pending);
+  const retry = () => { void status.refetch(); void attention.refetch(); void work.refetch(); void payers.refetch(); needsYou.onRetry(); };
 
   return (
     <AdminPage
@@ -31,7 +45,7 @@ export function HealthPage() {
       lede="Whether this server is well, and anything that needs you."
       actions={<ActionLink to={WORK_SUFFIX}>What Myco is doing, and its runners →</ActionLink>}
     >
-      <ServerWell status={status} now={now} projectName={projectName} />
+      <ServerWell facts={facts} reading={status.isPending} onRetry={retry} />
       <section id={HEALTH_ANCHORS.needsYou} aria-label="What needs you" className="scroll-mt-s6">
         <NeedsYouPanel {...needsYou} title="What needs you" />
       </section>

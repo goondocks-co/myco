@@ -1,4 +1,6 @@
 import type { ReactNode } from 'react';
+import { useStatus } from '../../../hooks/use-status';
+import { anchorOf } from '../../../routes/nav';
 import { useLocation } from 'react-router-dom';
 import { HOSTED_BACKUP_PAUSE_NOTICE, NATIVE_BACKUP_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { agoWords } from '@goondocks/myco-shared/time-words';
@@ -48,6 +50,8 @@ export function GroupCard({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
 }
 
 const ALL_DEFAULT = 'All default';
+/** The groups that hold what the server keeps and runs, beside the settings that control it. */
+const OPERATIONS: ReadonlySet<AdvancedFoldId> = new Set(['backups', 'upkeep']);
 
 /** Whether groups are as the server ships them, or what was changed, by whom and when. */
 export function changedWords(groups: readonly LeafGroup[], rows: ReadonlyMap<string, LeafRow>, nameOf: (id: string | null) => string | null, now: number): string {
@@ -63,7 +67,7 @@ export function changedWords(groups: readonly LeafGroup[], rows: ReadonlyMap<str
 /** One folded group: its name, one line on what it holds and whether it was changed, opened where a link points at it or into it. */
 function Fold({ id, label, summary, state, inside, children }: { id: string; label: string; summary: string; state: string; inside: readonly string[]; children: ReactNode }) {
   const { hash } = useLocation();
-  const anchor = decodeURIComponent(hash.replace(/^#/, ''));
+  const anchor = anchorOf(hash);
   return (
     <div id={id} className="scroll-mt-s6 px-s4 py-s2" data-fold={id}>
       <Disclosure
@@ -122,7 +126,7 @@ function keptSummary(rows: ReadonlyMap<string, LeafRow>): string {
  * keeps and runs, beside the settings that control it. Each fold says in one line what it holds and
  * whether anything in it was changed, by whom and when; a link to a fold, or to a group inside one, opens it.
  */
-export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows: ReadonlyMap<string, LeafRow> }) {
+export function AdvancedSection({ answer, rows, unread }: { answer: SettingsAnswer | null; rows: ReadonlyMap<string, LeafRow>; unread?: ReactNode }) {
   const nameOf = useMemberNames();
   const payers = useAgentPayers();
   const me = useMe();
@@ -134,16 +138,18 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
   const offered = new Set((payers.data?.agents ?? []).map((entry) => entry.agent));
   const shown = (group: LeafGroup) => group.harness === undefined || offered.has(group.harness)
     || group.leaves.some((field) => rows.get(field.leaf)?.configured === true);
-  const changedTasks = answer.taskTiers.filter((row) => row.source !== 'task').length;
-  const target = answer.embedding?.target ?? null;
+  const changedTasks = (answer?.taskTiers ?? []).filter((row) => row.source !== 'task').length;
+  const status = useStatus();
+  const target = status.data?.target ?? answer?.embedding?.target ?? null;
 
-  const folds = ADVANCED_FOLDS.map((fold) => {
-    const groups = groupsIn(fold.id).filter(shown);
+  // Backups and Upkeep read what the server keeps and runs on their own, so they stay when the settings cannot be read.
+  const folds = ADVANCED_FOLDS.filter((fold) => answer !== null || OPERATIONS.has(fold.id)).map((fold) => {
+    const groups = answer === null ? [] : groupsIn(fold.id).filter(shown);
     const inside = [...groups.map((group) => group.id), ...ADVANCED_ANCHORS.filter(([, home]) => home === fold.id).map(([anchor]) => anchor)];
     const backups = fold.id === 'backups' ? backupSummary(rows, target) : null;
     const summary = backups?.summary ?? (fold.id === 'kept' ? keptSummary(rows) : fold.summary);
-    const changes = changedWords(groups, rows, nameOf, now);
-    const extra = fold.id === 'backups' ? backups!.cadence
+    const changes = answer === null ? 'Settings unavailable' : changedWords(groups, rows, nameOf, now);
+    const extra = answer === null ? null : fold.id === 'backups' ? backups!.cadence
       : fold.id === 'model-sizes' && changedTasks > 0 ? `${plural(changedTasks, 'job size')} changed`
       : fold.id === 'new-and-past' && titling.data !== undefined ? `imported sessions ${titling.data.backfillEnabled ? 'get' : 'don’t get'} titles`
       : null;
@@ -156,10 +162,10 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
       <Fold key={fold.id} id={fold.id} label={fold.label} summary={summary} state={state} inside={inside}>
         {fold.id === 'model-sizes' ? <>
           {subgroups.slice(0, sizesAt)}
-          <AdminSection id={TASK_SIZES_ANCHOR} nested title="Size of each job" description={TASK_SIZES_NOTE}><TaskTiers tiers={answer.taskTiers} /></AdminSection>
+          <AdminSection id={TASK_SIZES_ANCHOR} nested title="Size of each job" description={TASK_SIZES_NOTE}><TaskTiers tiers={answer?.taskTiers ?? []} /></AdminSection>
           {subgroups.slice(sizesAt)}
         </> : fold.id === 'backups' ? <>
-          <BackupsSection target={target} />
+          <BackupsSection />
           {subgroups}
         </> : fold.id === 'upkeep' ? <>
           <Upkeep />
@@ -176,6 +182,7 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
   });
   return (
     <AdminSection id={ADVANCED_ANCHOR} title="Advanced" description="Defaults that work untouched. Open a group only if you have a reason to.">
+      {unread}
       <RowCard label="Advanced">{folds}</RowCard>
     </AdminSection>
   );

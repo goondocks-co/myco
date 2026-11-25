@@ -1,7 +1,7 @@
 import { useLocation } from 'react-router-dom';
 import { ErrorState, LoadingState, Link, TabLinks } from '../../../design';
 import { useSettings } from '../../../hooks/use-settings';
-import { HEALTH_ANCHORS, MEASURES_PATH, MOVED_SETTINGS_SECTIONS, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
+import { anchorOf, HEALTH_ANCHORS, MEASURES_PATH, MOVED_SETTINGS_SECTIONS, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { ADVANCED_ANCHOR, ADVANCED_ANCHORS, AdvancedSection, GroupCard } from './AdvancedGroups';
 import { AgentWork } from './AgentWork';
@@ -53,11 +53,11 @@ const HEALTH_OWN: ReadonlySet<string> = new Set(Object.values(HEALTH_ANCHORS));
  * the section that holds it; the measures to their own page, their window kept.
  */
 export function healthAddress(search: string, hash: string): string | null {
-  const anchor = decodeURIComponent(hash.replace(/^#/, ''));
+  const anchor = anchorOf(hash);
   if (anchor === MEASURES_ANCHOR) return `${MEASURES_PATH}${search}`;
   if (anchor === '' || HEALTH_OWN.has(anchor)) return null;
   const section = ANCHOR_SECTION.get(anchor);
-  return section === undefined ? null : `${sectionPath(section)}#${anchor}`;
+  return section === undefined ? null : `${sectionPath(section)}${search}#${anchor}`;
 }
 
 /** Anchors an older page named that are now another anchor. */
@@ -80,7 +80,7 @@ export function settingsAddress(pathname: string, search: string, hash: string):
   const section = sectionAt(pathname);
   if (section === null) return null;
   const moved = MOVED_SETTINGS_SECTIONS.find((s) => s.from === pathname.replace(/(.)\/+$/, '$1'));
-  const named = decodeURIComponent(hash.replace(/^#/, '')) || (moved !== undefined && 'anchor' in moved ? moved.anchor : '');
+  const named = anchorOf(hash) || (moved !== undefined && 'anchor' in moved ? moved.anchor : '');
   const anchor = ANCHOR_ALIASES[named] ?? named;
   const target = `${sectionPath(ANCHOR_SECTION.get(anchor) ?? section)}${anchor === '' ? '' : `#${anchor}`}`;
   return target === `${pathname}${hash}` ? null : target;
@@ -99,7 +99,7 @@ export function useSettingsRedirect(): string | null {
 export function SettingsPage({ section }: { section: SettingsSectionId }) {
   const settings = useSettings();
   // Connections scrolls to its anchor itself, once its lists have loaded.
-  useAnchorScroll(section === 'people' || section === 'repositories' || (section !== 'connections' && settings.isSuccess));
+  useAnchorScroll(section === 'people' || section === 'repositories' || (section !== 'connections' && !settings.isPending));
 
   const tabs = SETTINGS_SECTIONS.map((s) => ({ to: s.to, label: s.label, active: s.id === section }));
   return (
@@ -113,6 +113,7 @@ export function SettingsPage({ section }: { section: SettingsSectionId }) {
       {section === 'people' ? <PeopleAndMachines />
         : section === 'repositories' ? <Repositories />
         : section === 'connections' ? <Connections />
+        : section === 'advanced' && settings.isError ? <AdvancedSection answer={null} rows={new Map()} unread={<ErrorState error={settings.error} onRetry={() => void settings.refetch()} />} />
         : settings.isPending ? <LoadingState label="Loading settings" />
         : settings.isError ? <ErrorState error={settings.error} onRetry={() => void settings.refetch()} />
         : section === 'models' ? <ModelsSection answer={settings.data} />

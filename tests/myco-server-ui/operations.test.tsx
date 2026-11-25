@@ -65,7 +65,7 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 
 describe('backups under Settings › Advanced', () => {
   it('explains the hosted hold on deleted stored data', async () => {
-    server({ '/api/settings': () => Response.json({ leaves: [], taskTiers: [], embedding: { target: 'cloudflare' }, quickJobs: { answeredBy: 'included', offered: ['included'] } }) });
+    server({ '/api/status': () => Response.json({ ...STATUS, target: 'cloudflare' }) });
     mount();
     expect((await screen.findByTestId('stored-data-hold')).textContent).toContain('Deleted session data, attachments and backups are kept for 30 days before they are removed. Released full recovery copies are not kept.');
   });

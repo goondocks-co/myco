@@ -1,5 +1,6 @@
 import { backlogWords } from '../../packages/myco-server/ui/src/features/admin/health/words.js';
-import { verdictOf, wellLines, type LineState, type WellLine } from '../../packages/myco-server/ui/src/features/admin/health/verdict';
+import { verdictOf, wellLines, type HealthFacts, type LineState, type WellLine } from '../../packages/myco-server/ui/src/features/admin/health/verdict';
+import { backupFailedItems, backupUnchecked, storeCheckItems, storedKeyItems } from '../../packages/myco-server/ui/src/features/today/server-items';
 import { harnessHealthWords } from '../../packages/myco-server/ui/src/features/today/words';
 import type { StatusResponse } from '../../packages/myco-server/ui/src/lib/api';
 /**
@@ -82,6 +83,8 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
     waiting: [{ key: 'budget', projectId: null, what: 'Automatic work', count: null, why: 'Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.', since: null, nextAt: null }],
     needsYou: [{ key: 'sign-in:rn_mini', projectId: null, what: 'homelab-mini can’t sign in to a coding agent', why: 'Sign in to a coding agent on this runner.', at: NOW, runId: null, retryAt: null }] }),
   '/api/settings': () => Response.json({ leaves: [], taskTiers: [], embedding: null, quickJobs: { answeredBy: 'included', offered: ['included'] } }),
+  '/api/uncaptured': () => Response.json({ items: [], cursor: null }),
+  '/api/runners/agents': () => Response.json({ agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: 'claude-code' }, { id: 'studio', name: 'studio', agent: 'claude-code' }] }),
   '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 0, sources: [] }),
   '/api/kpis': () => Response.json({
     state: 'ready', windowStart: 1697328000000, windowEnd: 1700006399999, asOf: 1700000000000, metricVersion: 711, windowDays: 30, since: 0, promptsServed: 2, deliveries: { placed: 2, unplaced: 1 }, servedShare: { value: 0.5, sampleSize: 4 }, sporeServeRate: { value: null, sampleSize: 0 }, sessionStartPresent: { value: null, sampleSize: 0 }, callsPerPrompt: { value: null, sampleSize: 0 },
@@ -113,8 +116,7 @@ function Where() {
   return null;
 }
 
-function mount(path = '/status/health') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mount(path = '/status/health', client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><Where /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
@@ -126,9 +128,16 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 const BACKUPS = '/settings/advanced#backups';
 const UPKEEP = '/settings/advanced#upkeep';
 
-/** The status `STATUS` answers, changed by `over`, read into lines as Health reads it. */
-const linesOf = (over: Partial<StatusResponse> = {}): WellLine[] =>
-  wellLines({ status: { ...STATUS, ...over } as unknown as StatusResponse, now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null) });
+const WORK = { running: [{ runId: 'r', projectId: MYCO, task: 'extract-curate' }], waiting: [] } as unknown as NonNullable<HealthFacts['work']['data']>;
+const PAYERS = { agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: 'claude-code' }, { id: 'studio', name: 'studio', agent: 'claude-code' }] };
+const QUIET = { '/api/attention': () => Response.json({ items: [], unavailable: [] }) };
+/** The lines Health reads from `STATUS` changed by `over`, with every other fact well unless `facts` says otherwise. */
+const linesOf = (over: Partial<StatusResponse> = {}, facts: Partial<HealthFacts> = {}): WellLine[] => wellLines({
+  now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null), server: [],
+  status: { data: { ...STATUS, ...over } as unknown as StatusResponse, failed: false },
+  attention: { data: { items: [], unavailable: [] }, failed: false },
+  work: { data: WORK, failed: false }, payers: { data: PAYERS, failed: false }, ...facts,
+});
 const stateOf = (lines: readonly WellLine[]): Record<string, LineState> => Object.fromEntries(lines.map((line) => [line.key, line.state]));
 const verdictFor = async (): Promise<HTMLElement> => {
   const well = await screen.findByRole('region', { name: 'Is the server well?' });
@@ -153,41 +162,74 @@ describe('Health', () => {
   });
 
   it('says Yes when every line is, each from its own read, by machine and project name', async () => {
-    server(routes());
+    server(routes(QUIET));
     mount();
     const well = await verdictFor();
-    expect(well.querySelector('[data-verdict]')!.textContent).toBe('YesSessions are arriving, Myco is learning from them, and 1 of 2 runners is online.');
+    await waitFor(() => expect(well.querySelector('[data-verdict]')!.textContent).toBe('YesSessions are arriving, Myco is learning from them, and 1 of 2 runners can work.'));
     const line = (key: string) => well.querySelector(`[data-well-line="${key}"]`)!.textContent;
-    expect(line('sessions')).toBe('Sessions arrivingLast one 1 min ago, from Ada’s studio Mac for Myco.Yes');
+    expect(line('sessions')).toBe('Sessions arrivingLast capture received 1 min ago, from Ada’s studio Mac for Myco.Yes');
     expect(line('learning')).toContain('Last learning completed 2 min ago.');
     expect(line('learning')).toContain(STATUS.learning.line);
     expect(line('learning')).toContain('3 transcripts (4.0 KB) waiting to be read into sessions.');
-    expect(line('runners')).toBe('Somewhere to runhomelab-mini is working. studio is offline, last seen yesterday.1 of 2 online');
+    expect(line('learning')).toContain('Running now: learning.');
+    expect(line('runners')).toBe('Somewhere to runhomelab-mini can work and is working. studio is offline, last seen yesterday.1 of 2 can work');
     expect(line('budget')).toContain('$2.00 counts against it now');
-    expect(line('database')).toBe('Database and storageAnswering, at the version this server expects (57).Yes');
+    expect(line('database')).toBe('Database and storageAnswering, at the version this server expects (57). Its storage is set up; stored files are not read back here.Yes');
     expect(well.textContent).not.toContain('MYCO_BLOBS');
   });
 
-  it('reads each line to the state its facts give', () => {
+  it('reads each line to the worst of its facts, failures Myco retries and items that need you included', () => {
     expect(stateOf(linesOf())).toEqual({ sessions: 'yes', learning: 'yes', runners: 'yes', budget: 'yes', database: 'yes' });
-    const cases: Array<[string, Partial<StatusResponse>, Record<string, LineState>]> = [
-      ['no person’s session lately', { capture: [STATUS.capture[1]!] } as Partial<StatusResponse>, { sessions: 'attention' }],
-      ['sessions waiting a day for learning', { learning: { ...STATUS.learning, lastCompleted: { at: NOW - 2 * 86_400_000, reason: 'learned' } } }, { learning: 'attention' }],
-      ['no runner online', { workers: { ...STATUS.workers, fleet: [runner('studio', 'Offline')] } } as unknown as Partial<StatusResponse>, { runners: 'no' }],
-      ['no runner at all', { workers: { ...STATUS.workers, fleet: [] } } as unknown as Partial<StatusResponse>, { runners: 'no' }],
-      ['runs blocked on a key', { workers: { ...STATUS.workers, queue: { ...STATUS.workers.queue, reasons: [{ reason: 'invalid_key', count: 1 }] } } } as unknown as Partial<StatusResponse>, { runners: 'attention' }],
-      ['the budget reached', { budget: { ...STATUS.budget, automaticUsd: 20 } } as Partial<StatusResponse>, { budget: 'attention' }],
-      ['spend still measuring', { budget: { ...STATUS.budget, state: 'building' } } as Partial<StatusResponse>, { budget: 'unknown' }],
-      ['the database not answering', { database: { readable: false } }, { database: 'no' }],
-      ['the wrong database version', { schema: { expected: 57, found: 56, matches: false } }, { database: 'no' }],
-      ['something not set up', { capabilities: [{ capability: 'blob-store', label: 'Blobs', present: false, operatorNames: [] }] }, { database: 'attention' }],
-      ['failed reads', { unavailable: ['capture', 'learning', 'workers', 'budget', 'schema'] }, { sessions: 'failed', learning: 'failed', runners: 'failed', budget: 'failed', database: 'failed' }],
+    const attention = (...items: unknown[]): Partial<HealthFacts> => ({ attention: { data: { items, unavailable: [] } as never, failed: false } });
+    const finding = { runId: 'c', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['x'], findingsOmitted: 0, measurements: [] } as const;
+    const work = (data: unknown): Partial<HealthFacts> => ({ work: { data: data as never, failed: false } });
+    const cases: Array<[string, Partial<StatusResponse>, Partial<HealthFacts>, Record<string, LineState>]> = [
+      ['nothing from a person lately', { capture: [STATUS.capture[1]!] } as Partial<StatusResponse>, {}, { sessions: 'unknown' }],
+      ['the last receipt two days old', { capture: [{ ...STATUS.capture[0]!, lastEventAt: NOW - 2 * 86_400_000 }] } as Partial<StatusResponse>, {}, { sessions: 'unknown' }],
+      ['a transcript that stopped being read', {}, attention({ kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 1, latestAt: NOW, reasons: {} }), { sessions: 'attention' }],
+      ['learning counts still building', { learning: { ...STATUS.learning, state: 'building' } } as Partial<StatusResponse>, {}, { learning: 'unknown' }],
+      ['a backlog held, nothing running', {}, work({ running: [], waiting: [{ key: 'b', what: 'Automatic work', why: 'Paused for the budget.' }] }), { learning: 'attention' }],
+      ['a learning failure Myco is retrying', {}, attention({ kind: 'outcome_failed', tone: 'bad', projectId: MYCO, outcome: 'learn', task: 'extract-curate', failures: 3, since: NOW, latestAt: NOW, runId: 'r', retrying: true }), { learning: 'attention' }],
+      ['no runner online', { workers: { ...STATUS.workers, fleet: [runner('studio', 'Offline')] } } as unknown as Partial<StatusResponse>, {}, { runners: 'no' }],
+      ['an online runner with no agent it can use', {}, { payers: { data: { agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: null }] }, failed: false } }, { runners: 'no' }],
+      ['work waiting on a rejected key', {}, { server: storedKeyItems({ ...STATUS, workers: { ...STATUS.workers, fleet: [runner('homelab-mini', 'Busy', { storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'invalid_key' }] })] } } as unknown as StatusResponse) }, { runners: 'attention' }],
+      ['runners on their own sign-in after a rejected key', {}, { server: storedKeyItems({ ...STATUS, workers: { ...STATUS.workers, fleet: [runner('homelab-mini', 'Busy', { fallbackNotices: [{ agent: 'claude-code', slot: 'anthropic', reason: 'invalid_key', since: NOW }] })] } } as unknown as StatusResponse) }, {}],
+      ['no queue fact', { workers: { ...STATUS.workers, queue: undefined } } as unknown as Partial<StatusResponse>, {}, { runners: 'unknown' }],
+      ['the budget reached', { budget: { ...STATUS.budget, automaticUsd: 20 } } as Partial<StatusResponse>, {}, { budget: 'attention' }],
+      ['a task held for the budget', { budget: { ...STATUS.budget, heldHeads: [{ projectId: MYCO, runId: 'r', task: 'extract-curate', reason: 'budget_too_small', requiredUsd: 25, quotedAt: NOW }] } } as Partial<StatusResponse>, {}, { budget: 'attention' }],
+      ['the database not answering', { database: { readable: false } }, {}, { database: 'no' }],
+      ['no storage reported', { capabilities: [] }, {}, { database: 'unknown' }],
+      ['an integrity finding', {}, { server: storeCheckItems({ checks: [{ check: 'integrity', support: { supported: true, label: 'x' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }) }, { database: 'attention' }],
+      ['failed reads', { unavailable: ['capture', 'learning', 'workers', 'budget', 'schema'] }, {}, { sessions: 'failed', learning: 'failed', runners: 'failed', budget: 'failed', database: 'failed' }],
     ];
-    for (const [name, over, changed] of cases) {
-      expect({ name, states: stateOf(linesOf(over)) }).toEqual({ name, states: { ...stateOf(linesOf()), ...changed } });
+    for (const [name, over, facts, changed] of cases) {
+      expect({ name, states: stateOf(linesOf(over, facts)) }).toEqual({ name, states: { ...stateOf(linesOf()), ...changed } });
     }
-    expect(linesOf({ capabilities: [{ capability: 'blob-store', label: 'Blobs', present: false, operatorNames: [] }] }).at(-1)!.rows)
-      .toEqual([{ label: 'File storage for transcripts and attachments', ready: false }]);
+    expect(linesOf({ budget: { ...STATUS.budget, active: false, reason: 'turned off' } } as Partial<StatusResponse>)[3]!.answer).toBe('Not applied');
+  });
+
+  it('keeps a store check’s finding while it runs again, and says a failed backup only once it ended failed', () => {
+    const finding = { runId: 'c', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['x'], findingsOmitted: 0, measurements: [] } as const;
+    const running = { check: 'integrity', support: { supported: true, label: 'x' }, cadence: { state: 'off' }, dueAt: null, running: true, latest: { ...finding, state: 'running', finishedAt: null } } as const;
+    expect(storeCheckItems({ checks: [running] }, new Map([['integrity', finding]])).map((item) => item.kind === 'store_check' && item.rerunning)).toEqual([true]);
+    const producer = (stage: string, schedule: unknown) => ({ supported: true, attempt: 4, stage, form: 'staging', error: 'export_failed', schedule }) as never;
+    const latest = (stage: string) => ({ supported: true, configured: true, ready: true, intervalHours: 24, dueAt: null, due: false, latest: { attempt: 4, stage, startedAt: NOW, failure: null }, available: { state: 'none' }, idleBecause: null });
+    expect(backupFailedItems(producer('export', latest('export')))).toEqual([]);
+    expect(backupFailedItems(producer('failed', latest('failed')))).toHaveLength(1);
+    expect([backupFailedItems(producer('failed', { unreadable: 'x' })).length, backupUnchecked(producer('export', { unreadable: 'x' }))]).toEqual([1, true]);
+    expect(backupUnchecked({ supported: false, reason: 'none here', schedule: { unreadable: 'x' } } as never)).toBe(false);
+  });
+
+  it('lowers the verdict for an item that needs you even while the line’s own read is well', async () => {
+    const finding = { runId: 'c1', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['A stored record is missing.'], findingCodes: ['store_problem'], findingsOmitted: 0, measurements: [] };
+    server(routes({ ...QUIET, '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }) }));
+    mount();
+    const well = await verdictFor();
+    await waitFor(() => expect(well.querySelector('[data-verdict] p')!.textContent).toBe('Needs attention'));
+    const database = well.querySelector('[data-well-line="database"]')!;
+    expect(database.getAttribute('data-well-state')).toBe('attention');
+    expect(database.textContent).toContain('Answering, at the version this server expects (57).');
+    expect(database.textContent).toContain('Integrity check found a problem.');
   });
 
   it('gives No when any line is No, Needs attention when any is unsure, and Yes only when all are Yes', () => {
@@ -197,7 +239,7 @@ describe('Health', () => {
       [[], 'Yes'], [['attention'], 'Needs attention'], [['unknown'], 'Needs attention'], [['failed'], 'Needs attention'],
       [['yes', 'no'], 'No'], [['attention', 'no', 'failed'], 'No'],
     ] as const) expect({ states, verdict: verdictOf(withStates(...states)).verdict }).toEqual({ states, verdict });
-    expect(verdictOf(withStates('yes', 'yes', 'no', 'attention')).sentence).toBe('Not working: somewhere to run (1 of 2 online). Needs a look: within budget (yes).');
+    expect(verdictOf(withStates('yes', 'yes', 'no', 'attention')).sentence).toBe('Not working: somewhere to run (1 of 2 can work). Needs a look: within budget (yes).');
   });
 
   it('says on every line that a failed status read failed, and never says Yes', async () => {
@@ -232,10 +274,9 @@ describe('Health', () => {
     expect(await within(screen.getByRole('navigation', { name: 'Admin' })).findByRole('link', { name: 'Health, 2 things need you' })).toBeTruthy();
   });
 
-  it('lists a store check that found a problem, a rejected stored key and a failed automatic backup as items, counted beside Health', async () => {
+  it('lists a store check that found a problem, a rejected stored key and a failed automatic backup said once with its overdue schedule, counted beside Health', async () => {
     const finding = { runId: 'c1', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['A stored record is missing.'], findingCodes: ['store_problem'], findingsOmitted: 0, measurements: [] };
     server(routes({
-      '/api/attention': () => Response.json({ items: [], unavailable: [] }),
       '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }),
       '/api/status': () => Response.json({ ...STATUS, workers: { ...STATUS.workers, fleet: [
         runner('homelab-mini', 'Online', { storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'invalid_key' }] }),
@@ -248,32 +289,57 @@ describe('Health', () => {
     const needsYou = await screen.findByRole('region', { name: 'What needs you' });
     const item = async (title: string) => (await within(needsYou).findByText(title)).closest('li')!;
     const links = (li: HTMLElement) => [...li.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]);
-    expect(links(await item('Integrity check found a problem'))).toEqual([['Open upkeep →', UPKEEP], ['Change its schedule →', '/settings/advanced#maintenance']]);
+    expect(links(await item('Integrity check found a problem'))).toEqual([['See what it found, and run it again →', UPKEEP], ['Change when it runs →', '/settings/advanced#maintenance']]);
     const key = await item('The Anthropic key was rejected');
     expect(key.textContent).toContain('Seen by homelab-mini and studio.');
-    expect(links(key)).toEqual([['Replace the key →', '/settings/connections#credentials'], ['Pay another way →', '/settings/models#workers']]);
+    expect(links(key)).toEqual([['Replace the key →', '/settings/connections#credentials'], ['Change who pays on Runners →', '/work/runners']]);
     expect((await item('The last automatic backup failed')).textContent).toContain('Attempt 4');
+    expect(within(needsYou).queryByText(/^Last backup was /)).toBeNull();
     expect(within(needsYou).queryByText(/Codex \(OpenAI\) key/)).toBeNull();
     expect(await within(screen.getByRole('navigation', { name: 'Admin' })).findByRole('link', { name: 'Health, 3 things need you' })).toBeTruthy();
   });
 
-  it('turns a project’s code map off from its item, at the revision it read, and says so', async () => {
+  it('turns off, for the item’s project alone, the switch that gates it: an untouched code map, and the switch a failing task runs under', async () => {
     const puts: Array<{ path: string; body: unknown; match: string | null }> = [];
+    const put = (capability: string): Route => (init) => {
+      puts.push({ path: capability, body: JSON.parse(String(init!.body)), match: new Headers(init!.headers).get('if-match') });
+      return Response.json({ applied: true });
+    };
     server(routes({
-      '/api/attention': () => Response.json({ items: [{ kind: 'repository_missing', tone: 'warn', projectId: MYCO, codeMap: true }], unavailable: [] }),
-      [`/api/projects/${MYCO}/capabilities`]: () => Response.json({ capabilities: { canopy: true }, capabilityRevisions: { canopy: 7 }, settings: {}, revisions: {} }),
-      [`/api/projects/${MYCO}/capabilities/canopy`]: (init) => {
-        puts.push({ path: 'canopy', body: JSON.parse(String(init!.body)), match: new Headers(init!.headers).get('if-match') });
-        return Response.json({ applied: true });
-      },
+      '/api/attention': () => Response.json({ items: [
+        { kind: 'repository_missing', tone: 'warn', projectId: MYCO, codeMap: true },
+        { kind: 'outcome_failed', tone: 'bad', projectId: MYCO, outcome: 'learn', task: 'curate-spores', failures: 2, since: NOW - HOUR, latestAt: NOW, runId: 'run_c19f7a0e55', retrying: false },
+      ], unavailable: [] }),
+      '/api/tasks': () => Response.json({ tasks: [{ task: 'extract-curate', capability: 'vault_evolution' }, { task: 'curate-spores', capability: 'spore_curation' }] }),
+      [`/api/projects/${MYCO}/capabilities`]: () => Response.json({ capabilities: { canopy: true, vault_evolution: true, spore_curation: true, cortex: true }, settings: { 'curation.daily_cluster_limit': 3 }, revisions: {}, capabilityRevisions: {} }),
+      [`/api/projects/${MYCO}/capabilities/canopy`]: put('canopy'),
+      [`/api/projects/${MYCO}/capabilities/spore_curation`]: put('spore_curation'),
     }));
     mount();
     const needsYou = await screen.findByRole('region', { name: 'What needs you' });
-    const off = await within(needsYou).findByRole('button', { name: 'Turn the code map off' });
-    await waitFor(() => expect(off.hasAttribute('disabled')).toBe(false));
-    fireEvent.click(off);
-    expect(await within(needsYou).findByText('The code map is off for Myco.')).toBeTruthy();
-    expect(puts).toEqual([{ path: 'canopy', body: { enabled: false }, match: '7' }]);
+    for (const [label, done] of [['Turn the code map off', 'The code map is off for Myco.'], ['Turn curate overlapping spores off here', 'Curate overlapping spores is off for Myco.']] as const) {
+      const off = await within(needsYou).findByRole('button', { name: label });
+      await waitFor(() => expect(off.hasAttribute('disabled')).toBe(false));
+      fireEvent.click(off);
+      expect(await within(needsYou).findByText(done)).toBeTruthy();
+    }
+    expect(puts).toEqual([{ path: 'canopy', body: { enabled: false }, match: '0' }, { path: 'spore_curation', body: { enabled: false }, match: '0' }]);
+  });
+
+  it('keeps an item read before when a refresh fails, and says the check could not be read, with a retry', async () => {
+    let fail = false;
+    const finding = { runId: 'c1', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['x'], findingCodes: ['store_problem'], findingsOmitted: 0, measurements: [] };
+    server(routes({ ...QUIET, '/api/maintenance': () => (fail ? Response.json({ error: 'unavailable' }, { status: 503 })
+      : Response.json({ checks: [{ check: 'integrity', support: { supported: true, label: 'x' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] })) }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount('/status/health', client);
+    const needsYou = await screen.findByRole('region', { name: 'What needs you' });
+    await within(needsYou).findByText('Integrity check found a problem');
+    fail = true;
+    await client.refetchQueries({ queryKey: ['maintenance'] });
+    await waitFor(() => expect(needsYou.textContent).toContain('Couldn’t check store checks just now.'));
+    expect(within(needsYou).getByText('Integrity check found a problem')).toBeTruthy();
+    expect(within(needsYou).getByRole('button', { name: 'Retry' })).toBeTruthy();
   });
 
   it('words a transcript that stopped being read with its next step, and no raw id', async () => {
@@ -307,6 +373,7 @@ describe('Health', () => {
       ['/status/health#upkeep', { pathname: '/settings/advanced', search: '', hash: '#upkeep' }, () => screen.findByRole('button', { name: 'Run housekeeping now' })],
       ['/status/health?window=7#measures', { pathname: '/measures', search: '?window=7', hash: '' }, () => screen.findByRole('heading', { level: 1, name: 'Is Myco helping?' })],
       ['/status', { pathname: '/status/health', search: '', hash: '#status' }, () => screen.findByRole('region', { name: 'Is the server well?' })],
+      ['/status/health#%', { pathname: '/status/health', search: '', hash: '#%' }, () => screen.findByRole('region', { name: 'Is the server well?' })],
     ] as const) {
       server(routes());
       mount(from);
@@ -347,6 +414,39 @@ describe('Health', () => {
     await waitFor(() => expect(posts.at(-1)).toEqual({ path: '/api/backups/bk_7f3a9c0e21/restore', body: { allowForeignLineage: true } }));
     expect((await screen.findByText(/^Restored: /)).textContent).toBe('Restored: 5 records added.');
     expect(screen.getByText('spores: newer rows are kept')).toBeTruthy();
+    // Closing Backups and opening it again keeps the restore it followed.
+    const fold = within(document.querySelector<HTMLElement>('[data-fold="backups"]')!).getAllByRole('button')[0]!;
+    fireEvent.click(fold);
+    await waitFor(() => expect(screen.queryByText(/^Restored: /)).toBeNull());
+    fireEvent.click(fold);
+    expect((await screen.findByText(/^Restored: /)).textContent).toBe('Restored: 5 records added.');
+  });
+
+  it('keeps Backups and Upkeep, with what automatic recovery reports, when the settings cannot be read', async () => {
+    server(routes({
+      '/api/settings': () => Response.json({ error: 'unavailable' }, { status: 503 }),
+      '/api/status': () => Response.json({ ...STATUS, target: 'cloudflare' }),
+      '/api/recovery/exports': () => Response.json({ supported: true, attempt: 5, stage: 'export', form: 'staging', error: null, schedule: { unreadable: 'Automatic backup settings could not be read.' } }),
+    }));
+    mount(BACKUPS);
+    expect((await screen.findByTestId('recovery-latest')).textContent).toBe('Attempt 5 is exporting the database.');
+    expect(screen.getByTestId('recovery-unreadable').textContent).toBe('Automatic backup settings could not be read.');
+    expect(screen.getByTestId('stored-data-hold')).toBeTruthy();
+    expect(document.querySelector('[data-fold="upkeep"]')).not.toBeNull();
+    expect(document.querySelector('[data-fold="pace"]')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
+  });
+
+  it('lets an admin who is not the owner run upkeep, and shows archived projects with their sessions and last receipt', async () => {
+    server(routes());
+    mount(UPKEEP);
+    expect((await screen.findByRole('button', { name: 'Run housekeeping now' })).hasAttribute('disabled')).toBe(false);
+    cleanup();
+    server(routes());
+    mount('/projects');
+    fireEvent.click(await screen.findByRole('button', { name: 'Archived (1)' }));
+    const archived = await screen.findByRole('list', { name: 'Archived projects' });
+    expect(archived.textContent).toMatch(/3 sessions.*Last sent .*Archived/);
   });
 
   it('follows a restore the server is still walking until it completes, and names a stopped one with what to do', async () => {
@@ -547,7 +647,7 @@ describe('dashboard status honesty gates', () => {
     expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
   });
   it('finding 6: a well database survives unread learning and runner facts, and the verdict is not Yes', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, fleet: null, runsQueued: null }, learning: null, unavailable: ['workers', 'learning'] }) }));
+    server(routes({ ...QUIET, '/api/status': () => Response.json({ ...STATUS, workers: { available: false, fleet: null, runsQueued: null }, learning: null, unavailable: ['workers', 'learning'] }) }));
     mount();
     const well = await verdictFor();
     expect(well.querySelector('[data-well-line="database"]')!.getAttribute('data-well-state')).toBe('yes');

@@ -168,7 +168,7 @@ const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' |
   '/api/uncaptured': () => Response.json(over.uncaptured ?? { items: [] }),
   '/api/status': () => Response.json(over.status ?? { capture: CAPTURE, unavailable: [], projects: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 0, fleet: [] } }),
   '/api/maintenance': () => Response.json({ checks: [] }),
-  '/api/recovery/exports': () => Response.json({ error: 'unsupported' }, { status: 400 }),
+  '/api/recovery/exports': () => Response.json({ supported: false, reason: 'no producer here', schedule: { unreadable: 'not read' } }),
 });
 
 /** The first element `selector` matches, once one is rendered. */
@@ -942,7 +942,7 @@ describe('Today\'s words', () => {
       const words = attentionWords(item, NOW, (id) => names.get(id) ?? null);
       const text = `${words.title} ${words.detail} ${words.action?.label ?? ''}`;
       expect({ kind: item.kind, text }).not.toEqual({ kind: item.kind, text: expect.stringMatching(RAW_ID) });
-      expect({ kind: item.kind, acts: words.action !== null }).toEqual({ kind: item.kind, acts: item.kind !== 'transcripts_stopped' });
+      expect({ kind: item.kind, acts: words.action !== null }).toEqual({ kind: item.kind, acts: item.kind !== 'transcripts_stopped' && item.kind !== 'schema_mismatch' });
       expect(words.title.length).toBeGreaterThan(0);
     }
     expect(attentionWords(items[3]!, NOW, () => null).title).toBe('Search is falling behind');

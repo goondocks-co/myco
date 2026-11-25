@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useStatus } from '../../../hooks/use-status';
 import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
@@ -19,6 +21,15 @@ const failure = (error: unknown): string => error instanceof ApiError && error.c
   ? retiredFormatWords(typeof error.body === 'object' && error.body !== null ? Reflect.get(error.body, 'restoresOn') : null)
   : errorWords(error).title;
 
+const FOLLOWED_RESTORE = ['restore-followed'] as const;
+
+/** The restore started, continued or stopped here, held for the dashboard's session so closing Backups never loses it. */
+function useFollowedRestore(): [string | null, (id: string | null) => void] {
+  const client = useQueryClient();
+  const query = useQuery({ queryKey: FOLLOWED_RESTORE, queryFn: () => client.getQueryData<string | null>(FOLLOWED_RESTORE) ?? null, staleTime: Infinity, gcTime: Infinity });
+  return [query.data ?? null, (id) => client.setQueryData(FOLLOWED_RESTORE, id)];
+}
+
 /** The anchor of the backups made here, inside Settings › Advanced › Backups. */
 export const BACKUP_COPIES_ANCHOR = 'backup-copies';
 
@@ -26,13 +37,15 @@ export const BACKUP_COPIES_ANCHOR = 'backup-copies';
  * The backups made here: the small additive export an admin makes, each with its restore behind a preview and a
  * confirm, then automatic recovery, the complete-recovery path the Deployment runs on its own clock.
  */
-export function BackupsSection({ target }: { target?: string | null }) {
+export function BackupsSection() {
+  const status = useStatus();
+  const target = status.data?.target;
   const backupPermission = permissionOf(useMe().data, 'backups');
   const backups = useBackups();
   const [confirming, setConfirming] = useState<{ row: BackupRow; preview: RestorePreview } | null>(null);
   const [adopt, setAdopt] = useState(false);
   const [adoptAsked, setAdoptAsked] = useState(false);
-  const [startedHere, setStartedHere] = useState<string | null>(null);
+  const [startedHere, setStartedHere] = useFollowedRestore();
 
   const rows = backups.list.data?.pages.flatMap((page) => page.backups) ?? [];
   const retention = backups.create.data?.retention.recordingErrorClass !== undefined

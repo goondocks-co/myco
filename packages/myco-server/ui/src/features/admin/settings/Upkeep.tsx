@@ -6,11 +6,11 @@ import { ApiError, postJson } from '../../../lib/api';
 import { useMaintenance } from '../../../hooks/use-maintenance';
 import { formatBytes, formatCount } from '../../../lib/format';
 import { agoWords } from '@goondocks/myco-shared/time-words';
-import { usePassedOver } from '../../../hooks/use-settings';
+import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { UpkeepLine } from '../../today/Summary';
 import type { CheckStatus, MaintenanceOutcome, TickReport } from '../health/wire';
 import { CHECK_TITLES, findingWords, groupedFindings, measurementWords, supportWords, checkCadenceWords, measurementName, outcomeWords, reportWords } from '../health/words';
-import { PassedOverSources } from './EmbeddingSwitch';
+import { EmbeddingSwitchPanel, PassedOverSources } from './EmbeddingSwitch';
 
 const HOUR = 3_600_000;
 
@@ -45,8 +45,30 @@ function SearchUpkeep() {
         : upkeep.lastSuccessAt === null && upkeep.unrecovered === null
           ? <p className="t-small text-muted">The search index has not been updated in the last day.</p>
           : <UpkeepLine upkeep={upkeep} now={Date.now()} statusHref={null} />}
+      {upkeep !== undefined && work.error !== null && <StaleRead onRetry={() => void work.refetch()} />}
+      <ModelSwitch />
       <PassedOver />
     </Card>
+  );
+}
+
+/** A refresh that failed while an earlier answer is shown: said, with a way to read it again. */
+function StaleRead({ onRetry }: { onRetry: () => void }) {
+  return (
+    <p role="status" className="flex flex-wrap items-center gap-s2 t-small text-warn">
+      <span>Couldn’t refresh this just now; it shows what was read before.</span>
+      <Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button>
+    </p>
+  );
+}
+
+/** A switch of the search model under way, with how far rebuilding search has come; nothing while there is none. */
+function ModelSwitch() {
+  const sw = useEmbeddingSwitch();
+  return (
+    <ReadState data={sw.data} pending={sw.isPending} error={sw.error} onRetry={() => void sw.refetch()} label="a switch of the search model">
+      {(value) => value === null ? null : <EmbeddingSwitchPanel sw={value} now={Date.now()} />}
+    </ReadState>
   );
 }
 
@@ -102,6 +124,7 @@ function Maintenance() {
             {status.data.checks.map((check) => <CheckRow key={check.check} status={check} />)}
           </div>
         )}
+      {status.data !== undefined && status.error !== null && <StaleRead onRetry={() => void status.refetch()} />}
     </Card>
   );
 }
