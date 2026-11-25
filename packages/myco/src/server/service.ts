@@ -47,6 +47,8 @@ export interface ServiceUnit {
   restartDelaySeconds: number;
   /** A one-shot unit has no platform-managed restart. */
   restart?: 'never';
+  /** Only a failed exit restarts this unit, including on launchd. */
+  restartOnFailureOnly?: true;
 }
 
 /** The native Deployment. */
@@ -313,8 +315,7 @@ ${spec.unit.args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key>
   ${spec.unit.restart === 'never' ? '<false/>' : `<dict>
-    <key>SuccessfulExit</key><false/>
-    <key>NetworkState</key><true/>
+    <key>SuccessfulExit</key><false/>${spec.unit.restartOnFailureOnly === true ? '' : '\n    <key>NetworkState</key><true/>'}
   </dict>`}
   <key>ThrottleInterval</key><integer>${spec.unit.restartDelaySeconds}</integer>
   <key>EnvironmentVariables</key>

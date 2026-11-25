@@ -16,11 +16,12 @@ import { sameProgram } from '../runner/program.js';
 import { getPluginVersion } from '../version.js';
 import { workerLogLine } from '../runner/log.js';
 import { workerHolder, workerLockDir } from '../runner/instance.js';
-import { isLiveRunner, listRunnerRecords, readRunnerRecord, recordRunnerContact, runnerDir } from '../runner/runner-registry.js';
+import { isLiveRunner, listRunnerRecords, readRunnerRecord, recordRunnerContact, rememberRunnerRemoval, runnerDir } from '../runner/runner-registry.js';
 import { rotateRunnerCredential, runnerRenewer } from '../runner/runner-rotation.js';
+import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
 import { RUNNER_CONTACT_PATH } from '../runner/runner-routes.js';
 import { harnessesNamed, parseFlags } from './flags.js';
-import { RUNNER_ADDRESS_RULE, runnerServerUrl } from './runner-deps.js';
+import { RUNNER_ADDRESS_RULE, runnerRemovalWords, runnerServerUrl } from './runner-deps.js';
 import { registerRunner } from './runner-register.js';
 import { runRunnerService, runnerExecutionRefusal } from './runner-service.js';
 import { executionDeploymentUrls } from './worker-service.js';
@@ -45,13 +46,13 @@ Usage:
   myco runner install [--server <url>]
                                   Start this enrolled runner as a per-user service.
   myco runner uninstall [--server <url>]
-                                  Remove the local service; retain Deployment identity.
+                                  Remove the service and clear the local registration after dashboard removal.
 
 register prints a link and a code. Open the link on a machine signed in to the
 dashboard, check the code and the runner's name, and approve. This terminal
 waits for approval; no browser is opened here, so it works over SSH. A bare
-host defaults to HTTPS. --replace registers afresh over a record the
-Deployment no longer accepts.
+host defaults to HTTPS. --replace requests new access for an existing runner.
+After dashboard removal, run uninstall before registering again.
 
 A runner holds its own credential, separate from any member's. Each agent uses
 this machine's sign-in by default. An administrator can approve a stored key
@@ -88,10 +89,11 @@ function resolveServer(flags: Map<string, string>, mycoHome: string): { serverUr
 }
 
 /** The runner's current bearer, read afresh on every request so a rotation is followed. */
-function tokenReader(serverUrl: string, mycoHome: string, log: (line: string) => void): () => string | null {
+function tokenReader(serverUrl: string, mycoHome: string, runnerId: string, log: (line: string) => void): () => string | null {
   return () => {
     try {
-      return readRunnerRecord(serverUrl, mycoHome)?.token ?? null;
+      const current = readRunnerRecord(serverUrl, mycoHome);
+      return current?.runnerId === runnerId && current.removed !== true ? current.token ?? null : null;
     } catch (error) {
       log(`cannot read this runner's record: ${error instanceof Error ? error.message : String(error)}`);
       return null;
@@ -110,6 +112,11 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const record = readRunnerRecord(serverUrl, mycoHome);
   if (!isLiveRunner(record)) return fail(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\``);
 
+  if (record.removed === true) {
+    (deps.stdout ?? console.log)(runnerRemovalWords(serverUrl));
+    return true;
+  }
+
   const legacyRefusal = await runnerExecutionRefusal(deps);
   if (legacyRefusal !== null) return fail(legacyRefusal);
 
@@ -127,7 +134,7 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const outcome = await runWorker({
     serverUrl,
     clock: deps.now,
-    token: tokenReader(serverUrl, mycoHome, log),
+    token: tokenReader(serverUrl, mycoHome, record.runnerId, log),
     renew: runnerRenewer(serverUrl, { mycoHome, fetch: deps.fetch, now: deps.now, notify: log }),
     compatibilityPath: RUNNER_CONTACT_PATH,
     detection: { credentialBytes: false },
@@ -181,6 +188,11 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   if (outcome.replaced === true) return false;
   if (outcome.refused === null) return true;
   updater.recordHealthRefusal(outcome.refused);
+  if (outcome.refused === RUNNER_REMOVED_CODE) {
+    log(runnerRemovalWords(serverUrl));
+    if (!await rememberRunnerRemoval(serverUrl, record.runnerId, mycoHome)) log('The runner registration is busy. A later start will check with the server again.');
+    return true;
+  }
   if (outcome.refused === 'unauthorized' || outcome.refused === 'no_membership') {
     return fail(`${serverUrl} does not accept this runner's credential; register it afresh with \`myco runner register ${serverUrl} --replace\``);
   }
@@ -214,6 +226,8 @@ async function rotateVerb(args: readonly string[], deps: RunnerRunDeps): Promise
       return fail('another myco runner process is rotating this credential; try again shortly');
     case 'retry':
       return fail(`could not reach ${serverUrl}${detail}; the same rotation is sent again next time`);
+    case RUNNER_REMOVED_CODE:
+      return fail(runnerRemovalWords(serverUrl, report.runnerRemoved?.at));
     case 'lineage-expired':
     case 'unauthorized':
       return fail(`${serverUrl} no longer accepts this runner${detail}; register it afresh with \`myco runner register ${serverUrl} --replace\``);

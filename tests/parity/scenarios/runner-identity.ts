@@ -142,7 +142,14 @@ export const runnerIdentity: ParityScenario = {
     expect(removed.body).toMatchObject({ changed: true, runner: { state: 'removed' } });
     expect((await asRunner(token, '/worker/lease', { projectId: target.projectId, runId, attemptId: claimed.run.attemptId })).status).toBe(401);
     expect((await mcp()).error?.data?.code).toBe('no_run');
-    expect((await asRunner(token, '/runners/contact', { machineId: 'parity-removed' })).status).toBe(401);
+    const missing = await asRunner(runnerBearer(), '/runners/contact', {});
+    expect({ status: missing.status, body: missing.body }).toEqual({ status: 401, body: { error: 'unauthorized' } });
+    for (const [route, body] of [['/runners/contact', { machineId: 'parity-removed' }], ['/runners/rotate', { candidate: runnerBearer() }]] as const) {
+      const answer = await asRunner(token, route, body);
+      expect({ status: answer.status, body: answer.body }).toEqual({
+        status: 401, body: { error: 'unauthorized', code: 'runner_removed', removedAt: expect.any(Number) },
+      });
+    }
     // The refused contact wrote nothing: the runner's last contact is still the paused one, which no client reads by machine.
     expect(await target.sql(`SELECT machine_id FROM runner_contacts WHERE runner_id = ${lit(runnerId)}`)).toEqual([{ machine_id: 'parity-mini-2' }]);
   },

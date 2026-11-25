@@ -8,6 +8,7 @@
  * record's token until the Deployment confirms the successor, so a runner that
  * never hears back keeps working on the credential it has.
  */
+import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
 import type { FetchLike, Outcome } from '../member/transport.js';
@@ -32,8 +33,11 @@ export interface RotationOptions {
   force?: boolean;
 }
 
+export type RunnerRefreshStatus = RefreshStatus | typeof RUNNER_REMOVED_CODE;
+
 export interface RotationReport {
-  status: RefreshStatus;
+  status: RunnerRefreshStatus;
+  runnerRemoved?: { at: number | null };
   /** The record as it stands after the attempt; null where none is held. */
   record: RunnerRecord | null;
   /** What the Deployment or the transport said, for statuses that need words. */
@@ -62,7 +66,7 @@ function withoutPending(record: RunnerRecord): RunnerRecord {
 
 /** Settle one answered rotation into the record and the status it earns. */
 function settle(lock: RunnerLock, held: RunnerRecord & { token: string }, candidate: string, outcome: Outcome): RotationReport {
-  const finish = (status: RefreshStatus, next: RunnerRecord, detail?: string): RotationReport => {
+  const finish = (status: RunnerRefreshStatus, next: RunnerRecord, detail?: string): RotationReport => {
     publishRunnerRecord(lock, next);
     return { status, record: next, ...(detail === undefined ? {} : { detail }) };
   };
@@ -80,6 +84,9 @@ function settle(lock: RunnerLock, held: RunnerRecord & { token: string }, candid
     case 'refused':
       return finish(outcome.code === LINEAGE_EXPIRED ? 'lineage-expired' : 'terminal', withoutPending(held), `${outcome.code}${outcome.reason === '' ? '' : `: ${outcome.reason}`}`);
     case 'unauthorized':
+      if (outcome.runnerRemoved !== undefined) {
+        return { ...finish(RUNNER_REMOVED_CODE, withoutPending(held)), runnerRemoved: outcome.runnerRemoved };
+      }
       return finish('unauthorized', withoutPending(held), outcome.replayed === true ? 'this runner\'s credential was used from two places and has been revoked' : 'the Deployment does not accept this runner\'s credential');
     case 'route_missing':
       return { status: 'route-missing', record: held, detail: 'the Deployment serves no runner routes at this address' };
@@ -125,7 +132,7 @@ export async function rotateRunnerCredential(serverUrl: string, options: Rotatio
  * Deployment stays quiet for `RETRY_BACKOFF_MS`. `notify` is told of every
  * outcome that needs words.
  */
-export function runnerRenewer(serverUrl: string, options: RotationOptions & { notify?: (line: string) => void } = {}): (force: boolean, signal?: AbortSignal) => Promise<RefreshStatus> {
+export function runnerRenewer(serverUrl: string, options: RotationOptions & { notify?: (line: string) => void } = {}): (force: boolean, signal?: AbortSignal) => Promise<RunnerRefreshStatus> {
   const now = options.now ?? Date.now;
   let quietUntil = 0;
   return async (force, signal) => {

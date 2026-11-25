@@ -34,12 +34,13 @@ export interface RunnerAuthRow {
   predecessor_id: string | null;
   first_used_at: number | null;
   state: 'enabled' | 'paused' | 'removed' | null;
+  removed_at: number | null;
   credential_epoch: number | null;
   name: string | null;
 }
 
 const authRead = read<[digest: string], RunnerAuthRow>({ name: 'runners.authenticate', sql: `SELECT s.value AS schema_version, c.id, c.runner_id, c.epoch, c.issued_at, c.expires_at, c.revoked_at,
-    c.predecessor_id, c.first_used_at, r.state, r.credential_epoch, r.name
+    c.predecessor_id, c.first_used_at, r.state, r.removed_at, r.credential_epoch, r.name
   FROM schema_meta s
   LEFT JOIN runner_credentials c ON c.token_hash = ?1
   LEFT JOIN runners r ON r.id = c.runner_id

@@ -7,6 +7,7 @@ import { memberServerDialUrl } from '@myco/member/server-url.js';
  * connect timeout bounds the wait for response headers, the request timeout
  * bounds the whole exchange.
  */
+import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
 import { deploymentScopedHeaders, LINEAGE_REPLAYED_CODE, MEMBER_CODES, MEMBER_PROTOCOL, memberHeaders, PARKED_CODE, PROTOCOL_HEADER, RESLICE_CODES, type MemberCode } from './constants.js';
 import type { RequestBudget } from './budget.js';
 import type { MemberEnvelope } from './envelope.js';
@@ -68,7 +69,7 @@ export type Outcome =
   /** A capped share ran out before the answer did: the server is slow, not gone. Nothing latches on it. */
   | { class: 'slow'; phase: TimeoutPhase; elapsedMs: number; detail: string }
   | { class: 'route_missing'; status: 401 }
-  | { class: 'unauthorized'; status: 401; replayed?: true }
+  | { class: 'unauthorized'; status: 401; replayed?: true; runnerRemoved?: { at: number | null } }
   | { class: 'protocol'; serverProtocol?: number; minCompatMemberProtocol?: number };
 
 export type RefreshOutcome =
@@ -329,6 +330,10 @@ function classifyCommon(raw: RawAnswer): Outcome | null {
   if (status === 200) return null;
   if (status === 401) {
     if (routeMissing(raw)) return { class: 'route_missing', status };
+    if (raw.json?.code === RUNNER_REMOVED_CODE) {
+      const at = raw.json.removedAt;
+      return { class: 'unauthorized', status, runnerRemoved: { at: typeof at === 'number' && Number.isFinite(new Date(at).getTime()) ? at : null } };
+    }
     return raw.json?.code === LINEAGE_REPLAYED_CODE ? { class: 'unauthorized', status, replayed: true } : { class: 'unauthorized', status };
   }
   if (status === 409) {

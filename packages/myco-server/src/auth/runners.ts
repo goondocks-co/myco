@@ -71,15 +71,16 @@ export const runnerWindowOpensAt = (expiresAt: number): number => expiresAt - RU
 
 /**
  * One read: the schema version, the credential for the digest and its runner. A revoked credential, one of an older
- * epoch, and one whose runner is removed never authenticate; an expired one authenticates only under `lapsed`, for
- * the rotation route, and only inside the lineage idle bound measured from its issue.
+ * epoch, and one whose runner is removed never authenticate. A recognized removed runner carries only its removal
+ * time. An expired credential authenticates only under `lapsed`, inside the lineage idle bound measured from issue.
  */
-export async function authenticateRunner(db: RelationalStore, digest: string, now: number, expiry: RunnerExpiry = 'live'): Promise<RunnerAuth | null> {
+export async function authenticateRunner(db: RelationalStore, digest: string, now: number, expiry: RunnerExpiry = 'live'): Promise<RunnerAuth | { state: 'removed'; removedAt: number | null } | null> {
   const row = await runnerAuthRow(db, digest);
   if (!row) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, null);
   if (row.schema_version !== String(SERVER_SCHEMA_VERSION)) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, row.schema_version);
   if (row.id === null || row.runner_id === null || row.epoch === null || row.expires_at === null || row.issued_at === null) return null;
-  if (row.revoked_at !== null || row.state === null || row.state === 'removed' || row.credential_epoch !== row.epoch) return null;
+  if (row.state === 'removed') return { state: 'removed', removedAt: row.removed_at };
+  if (row.revoked_at !== null || row.state === null || row.credential_epoch !== row.epoch) return null;
   if (expiry === 'live' ? row.expires_at <= now : row.issued_at + RUNNER_LINEAGE_IDLE_MS <= now) return null;
   return {
     runnerId: row.runner_id, credentialId: row.id, epoch: row.epoch, state: row.state, name: row.name ?? '',

@@ -136,6 +136,19 @@ async function observeRenewal(r: ReturnType<typeof rig>, step: () => void): Prom
 }
 
 describe('a worker stops at its accepted lease expiry', () => {
+  it('stops the active agent and sends no outcome when its runner is removed', async () => {
+    let removed = false;
+    const r = rig({ heartbeatMs: SHORT_RENEWAL_MS, leaseMs: 10_000, renewal: () => removed
+      ? Response.json({ error: 'unauthorized', code: 'runner_removed' }, { status: 401 }) : held(10_000) });
+    await withWorker(r, async worker => {
+      await until(() => r.pids().length === 1);
+      removed = true;
+      expect(await bounded(worker, r.snapshot)).toMatchObject({ refused: 'runner_removed' });
+      expect(r.pids().map(alive)).toEqual([false]);
+      expect(r.ended()).toHaveLength(0);
+    });
+  }, OBSERVATION_BOUND_MS * 3);
+
   it('stops an awake harness when every renewal is unreachable', async () => {
     const r = rig({ heartbeatMs: 30, leaseMs: 300, renewal: unreachable });
     await withWorker(r, async (worker) => {

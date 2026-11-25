@@ -113,7 +113,7 @@ export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Respon
 type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
 /** Session handlers run after a valid session whether or not its account is a member; exactly the routes that serve a signed-in non-member carry them. */
 type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
-/** Runner handlers answer a route only a runner credential reaches: its own contact and rotation. */
+/** Live runner credentials reach contact and rotation handlers. The pipeline answers a removed runner before either handler runs. */
 type RunnerHandler = (env: ServerEnv, ctx: RunnerContext) => Promise<Response>;
 /** Enroll handlers present an enrollment authority rather than a credential, so they reach storage without an authenticated member. They receive the unread request and consume its body themselves, within the bound the pipeline enforces. */
 type EnrollHandler = (env: ServerEnv, request: Request, now: number, source: string) => Promise<Response>;

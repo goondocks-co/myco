@@ -46,6 +46,8 @@ import { recoverAbandonedRunDirectories, retryPendingRunDirectoryDiscards } from
 import { discardRunDir, writeRunDir } from './mcp-config.js';
 import { deploymentScopedHeaders, MEMBER_PROTOCOL } from '../member/constants.js';
 import type { RefreshStatus } from '../member/refresh.js';
+import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
+import type { RunnerRefreshStatus } from './runner-rotation.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_FAILURE_FEATURE, LEGACY_REPOSITORY_PREPARATION_TIMEOUT_MS, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
@@ -101,7 +103,7 @@ export interface WorkerOptions {
    * Deployment refuses the credential (`force` true) before that refusal is
    * taken as final. The next read of `token` presents whatever it wrote.
    */
-  renew?: (force: boolean, signal?: AbortSignal) => Promise<RefreshStatus>;
+  renew?: (force: boolean, signal?: AbortSignal) => Promise<RunnerRefreshStatus>;
   /**
    * Where this machine's worker locks live (`instance.ts`), or null for a worker
    * that shares the Deployment with nothing — a test's own server.
@@ -225,8 +227,10 @@ function postRepository(options: Requester & Pick<WorkerOptions, 'githubApi' | '
 /** How long a repository answer still arriving may finish, for its cleanup, once the run stopped waiting for it. */
 const REPOSITORY_ANSWER_LINGER_MS = 10_000;
 
+const RUNNER_REMOVAL: WorkerAnswer = { kind: 'refused', code: RUNNER_REMOVED_CODE, detail: '' };
+
 async function postWithin(options: Requester, path: string, body: unknown): Promise<WorkerAnswer> {
-  await options.renew?.(false, options.signal);
+  if (await options.renew?.(false, options.signal) === RUNNER_REMOVED_CODE) return RUNNER_REMOVAL;
   options.signal.throwIfAborted();
   const token = credentialOf(options);
   if (token === null) return NO_MEMBERSHIP;
@@ -237,6 +241,7 @@ async function postWithin(options: Requester, path: string, body: unknown): Prom
     case 'present': return postAs(options, next.token, path, body);
     case 'final': return answer;
     case 'gone': return NO_MEMBERSHIP;
+    case 'removed': return RUNNER_REMOVAL;
     default: return { kind: 'unreachable', detail: next.detail };
   }
 }
@@ -256,7 +261,7 @@ export const RENEW_BUSY_ATTEMPTS = 20;
  * that could not be completed leaves the worker waiting rather than ended.
  */
 async function afterRefusal(options: Requester, refused: string): Promise<
-  { kind: 'present'; token: string } | { kind: 'final' } | { kind: 'gone' } | { kind: 'wait'; detail: string }
+  { kind: 'present'; token: string } | { kind: 'final' } | { kind: 'gone' } | { kind: 'removed' } | { kind: 'wait'; detail: string }
 > {
   for (let attempt = 0; ; attempt += 1) {
     const current = credentialOf(options);
@@ -267,6 +272,7 @@ async function afterRefusal(options: Requester, refused: string): Promise<
     const renewed = credentialOf(options);
     if (renewed === null || status === 'no-entry') return { kind: 'gone' };
     if (renewed !== refused) return { kind: 'present', token: renewed };
+    if (status === RUNNER_REMOVED_CODE) return { kind: 'removed' };
     if (RENEWAL_FINAL.includes(status)) return { kind: 'final' };
     if (status !== 'busy' || attempt + 1 >= RENEW_BUSY_ATTEMPTS || options.signal.aborted) {
       return { kind: 'wait', detail: `the credential was refused and could not be renewed yet (${status})` };
@@ -328,6 +334,7 @@ async function postAs(options: Requester, token: string, path: string, body: unk
           + ` and accepts nothing below ${outcome.minCompatMemberProtocol ?? '?'}`,
       };
     case 'unauthorized':
+      if (outcome.runnerRemoved !== undefined) return RUNNER_REMOVAL;
       return { kind: 'refused', code: 'unauthorized', detail: 'the Deployment does not hold the credential this worker presented' };
     case 'route_missing':
       return { kind: 'refused', code: 'route_missing', detail: 'the Deployment serves no worker control plane at this address' };
@@ -409,6 +416,7 @@ const asRun = (value: unknown): ClaimedRun | null => {
 };
 
 interface AttemptLease {
+  readonly runnerRemoved: boolean;
   readonly deadline: number;
   readonly lost: boolean;
   signal: AbortSignal;
@@ -423,6 +431,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
   const renewals = new AbortController();
   let deadline = initialDeadline;
   let lost = false;
+  let runnerRemoved = false;
   let unreachable = false;
   let requestSequence = 0;
   let acceptedSequence = 0;
@@ -432,10 +441,10 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
   const onAbort = (): void => stopping.abort();
   options.signal.addEventListener('abort', onAbort, { once: true });
   if (options.signal.aborted) onAbort();
-  const losing = (line: string): void => {
+  const losing = (line?: string): void => {
     if (lost) return;
     lost = true;
-    options.log(line);
+    if (line !== undefined) options.log(line);
     clearTimeout(expiryTimer);
     renewals.abort();
     stopping.abort();
@@ -461,6 +470,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
       projectId: run.projectId, runId: run.id, ...(run.attemptId === undefined ? {} : { attemptId: run.attemptId }),
     }).then((answer) => {
       if (renewals.signal.aborted || sequence < acceptedSequence) return;
+      if (answer === RUNNER_REMOVAL) { runnerRemoved = true; losing(); return; }
       if (clock() >= deadline) { scheduleExpiry(); return; }
       if (answer.kind === 'unreachable') {
         if (!unreachable) { unreachable = true; options.log(`cannot renew the lease on ${run.id}: ${answer.detail}`); }
@@ -492,6 +502,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
   scheduleExpiry();
   wake.driving(true);
   return {
+    get runnerRemoved() { return runnerRemoved; },
     get deadline() { return deadline; }, get lost() { return lost; }, signal: stopping.signal, lose: losing,
     release() {
       released = true;
@@ -850,13 +861,16 @@ const WORKER_REFUSALS: ReadonlySet<string> = new Set(['unauthorized', 'no_member
  * Deliver every step log waiting for this Deployment, oldest first, where it advertises that it stores them. A page
  * the Deployment does not answer (a transport failure, a 5xx or a 429) or a refusal of the worker itself leaves its
  * log waiting for the next pass; a page the Deployment answers with a refusal ends that log, and the next is sent.
+ * Returns true on a runner removal refusal.
  */
-async function deliverStepLogs(options: WorkerOptions, advertised: boolean, requestMs: number): Promise<void> {
-  if (!advertised) return;
+async function deliverStepLogs(options: WorkerOptions, advertised: boolean, requestMs: number): Promise<boolean> {
+  if (!advertised) return false;
+  let runnerRemoved = false;
   const send = async (body: string): Promise<PageDelivery> => {
     const answer = await post({ ...options, signal: within(options.signal, requestMs) }, '/worker/steps', new SerializedBody(body));
     // A page the Deployment did not answer waits; one it answered with a refusal of the page ends that log. A refusal
     // of this worker itself ends the pass and keeps the log, which the sweep bounds.
+    if (answer === RUNNER_REMOVAL) { runnerRemoved = true; return 'retry'; }
     if (answer.kind === 'unreachable') return 'retry';
     if (answer.kind === 'refused') return WORKER_REFUSALS.has(answer.code) ? 'retry' : 'refused';
     return answer.body.stored === true ? 'acked' : 'refused';
@@ -864,14 +878,15 @@ async function deliverStepLogs(options: WorkerOptions, advertised: boolean, requ
   const root = stepRootOf(options);
   try {
     for (const file of pendingStepOutboxes(root, options.serverUrl, options.log)) {
-      if (options.signal.aborted) return;
-      if (await deliverStepOutbox(file, (options.clock ?? Date.now)(), send, options.log) === 'pending') return;
+      if (options.signal.aborted) return false;
+      if (await deliverStepOutbox(file, (options.clock ?? Date.now)(), send, options.log) === 'pending') return runnerRemoved;
     }
     removeEmptyOutbox(root, options.serverUrl);
   } catch (error) {
     // The outbox is the worker's own disk; a fault reading or writing it is said, and the next pass reads it again.
     options.log(`could not deliver the waiting step logs: ${error instanceof Error ? error.message : String(error)}`);
   }
+  return runnerRemoved;
 }
 
 /** How a worker's attachment ended: what it drove, and the code it was refused with where a Deployment refused it. */
@@ -1070,7 +1085,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       {
         const compatibility = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, options.compatibilityPath ?? MEMBER_COMPATIBILITY_PATH, options.contactBody === undefined ? {} : { ...options.contactBody(), arch: process.arch, availability: 'ready', readinessReason: 'Awake and checking for work.' }));
         if (compatibility.kind === 'refused') {
-          options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
+          if (compatibility !== RUNNER_REMOVAL) options.log(`the Deployment refused the compatibility check: ${compatibility.code}${compatibility.detail === '' ? '' : ` — ${compatibility.detail}`}`);
           return { driven, refused: compatibility.code };
         }
         if (compatibility.kind === 'unreachable') {
@@ -1095,7 +1110,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         }
         needsServerUpdate = !claimCompatible;
         advertisesCatalog = compatibility.modelCatalog;
-        await deliverStepLogs(options, compatibility.steps, requestMs);
+        if (await deliverStepLogs(options, compatibility.steps, requestMs)) return { driven, refused: RUNNER_REMOVED_CODE };
         if (!wake.settled()) continue;
       }
       if (options.signal.aborted) break;
@@ -1132,7 +1147,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       const answer = await noticing(requestMs, () => post({ ...options, signal: within(options.signal, requestMs) }, '/worker/claim', { harnesses, capabilities: [...WORKER_CAPABILITIES] }));
       if (answer.kind !== 'answered') detection.invalidate();
       if (answer.kind === 'refused') {
-        options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
+        if (answer !== RUNNER_REMOVAL) options.log(`the Deployment refused the claim: ${answer.code}${answer.detail === '' ? '' : ` — ${answer.detail}`}`);
         return { driven, refused: answer.code };
       }
       if (answer.kind === 'unreachable') {
@@ -1194,6 +1209,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           if (loginMissingForRun(runErrorDiagnostic(outcome.error ?? ''), run)) detection.loginMissing(run.harness, Object.keys(run.credentialEnv).length > 0 ? 'stored' : 'own');
           else detection.invalidate();
         }
+        if (lease.runnerRemoved) return { driven, refused: RUNNER_REMOVED_CODE };
         // Only the current lease owner reports the attempt's outcome.
         if (outcome.status === 'settled') {
           options.log(`run ${run.id}: the code map was already current`);
@@ -1211,7 +1227,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
             ...(answer.profileOutcome && outcome.refusal !== undefined ? { refusal: outcome.refusal } : {}),
           }));
           if (ended.kind === 'refused') {
-            options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
+            if (ended !== RUNNER_REMOVAL) options.log(`the Deployment refused the outcome of ${run.id}: ${ended.code}`);
             return { driven, refused: ended.code };
           }
           // The Deployment's sweep settles runs whose terminal request did not arrive.
@@ -1229,8 +1245,8 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           }
         }
       } finally { lease.release(); }
-      await deliverStepLogs(options, answer.steps, requestMs);
       driven += 1;
+      if (await deliverStepLogs(options, answer.steps, requestMs)) return { driven, refused: RUNNER_REMOVED_CODE };
       if (options.once === true) return { driven, refused: null };
     }
     return { driven, refused: null };

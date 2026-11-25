@@ -33,3 +33,8 @@ export function defaultRunnerName(hostname: string): string {
   const name = hostname.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, RUNNER_NAME_MAX_CHARS);
   return name === '' ? FALLBACK_RUNNER_NAME : name;
 }
+
+export function runnerRemovalWords(url: string, at: number | null = null): string {
+  const when = at === null ? '' : ` on ${new Date(at).toISOString()}`;
+  return `This machine was removed as a runner${when} and takes no work. Clear its local registration with \`myco runner uninstall --server ${url}\`. To register again, run that command, then \`myco runner register ${url}\`.`;
+}

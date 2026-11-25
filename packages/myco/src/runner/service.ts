@@ -59,6 +59,7 @@ function unitWithId(id: string, url: string, executor: 'runner' | 'legacy-member
     args: executor === 'runner' ? ['runner', 'run', '--server', url] : ['worker', '--server', url],
     logName: `${kind}-${new URL(url).host.replace(/[^A-Za-z0-9.-]/g, '_')}`,
     restartDelaySeconds: WORKER_RESTART_DELAY_SECONDS,
+    ...(executor === 'runner' ? { restartOnFailureOnly: true } : {}),
   };
 }
 
