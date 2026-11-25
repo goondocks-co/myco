@@ -6,6 +6,7 @@ import { attemptHarnessSql } from './attempt-harness.js';
 
 export type ToolCallEventRow = { id: number; tool: string | null; durationMs: number | null; outcome: string | null; payload: string | null; recordedAt: number };
 export interface AttemptRecord {
+  runner_payer: string | null; runner_fallback_reason: string | null;
   attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null;
   ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null; waitedFor: string | null; waitedSince: number | null;
   runnerVersion: string | null; agentVersion: string | null; harness: string | null;
@@ -26,7 +27,7 @@ const failedCalls = read<[project: string, run: string, limit: number], ToolCall
       WHERE project_id = ?1 AND run_id = ?2 AND ${FAILED_CALL_SQL}
       ORDER BY recorded_at DESC, id DESC LIMIT ?3` });
 
-const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.waited_for AS waitedFor, a.waited_since AS waitedSince, a.runner_version AS runnerVersion, a.agent_version AS agentVersion, ${attemptHarnessSql('a')} AS harness, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
+const ATTEMPT_COLUMNS = `a.runner_payer,a.runner_fallback_reason,a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.waited_for AS waitedFor, a.waited_since AS waitedSince, a.runner_version AS runnerVersion, a.agent_version AS agentVersion, ${attemptHarnessSql('a')} AS harness, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
   a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
   CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId`;
 const latestAttempts = read<[project: string, run: string, limit: number], AttemptRecord>({ name: 'runDetail.latestAttempts', sql:

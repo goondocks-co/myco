@@ -48,6 +48,8 @@ export async function seedRuns(target: SeedTarget, stamp: number, ended: string)
   const claim = await client(target, '/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES }, token);
   expect(claim.body).toMatchObject({ claimed: true });
   const claimed = String(claim.body.run.id);
+  expect((await owner(target, '/api/secrets/anthropic', { method: 'PUT', body: JSON.stringify({ value: `sk-ant-api-upgrade-seed-${stamp}` }) })).status).toBe(200);
+  expect((await owner(target, `/api/runners/${runner.id}/sign-in`, { method: 'POST', body: JSON.stringify({ agent: 'claude-code', choice: 'stored' }) })).status).toBe(200);
   const queued = await dispatch(target);
   const backup = await owner(target, '/api/backups', { method: 'POST', body: '{}' });
   expect(backup.status).toBe(200);
@@ -67,7 +69,7 @@ export async function observeRuns(target: RouteTarget, seed: RunsSeed): Promise<
     queued: await run(seed.queued),
     claimed: await run(seed.claimed),
     runner: [runners.status, (runners.body.runners ?? []).filter((row: { id: string }) => row.id === seed.runner.id).map((row: { models?: unknown[] }) => ({
-      ...pick(row, ['id', 'name', 'state', 'offers']),
+      ...pick(row, ['id', 'name', 'state', 'offers', 'credentialChoices']),
       // The model catalog the runner reported.
       models: (row.models ?? []).map((catalog) => pick(catalog, ['harness', 'source', 'available', 'fetchedAt'])),
     }))],

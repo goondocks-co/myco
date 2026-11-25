@@ -48,11 +48,13 @@ You can also request choices during registration:
 myco runner register <address> --name <runner-name> --sign-in claude-code=stored,opencode=own
 ```
 
-The device approval page names these choices. An administrator must approve them, and an unavailable stored key refuses approval. Omitted agents use the machine on a new runner; replacement registration also resets omitted agents to this machine’s sign-in. Request each stored key again so it appears in the new approval.
+The device approval page names these choices. An administrator must approve them. The `stored` choice requires a usable key. Omitted agents use the machine on a new runner; replacement registration also resets omitted agents to this machine’s sign-in. Request each stored key again so it appears in the new approval.
 
 Each agent defaults to **this machine’s sign-in**, including on existing runners. A subscription runner is never moved onto API billing by adding or changing a stored key. Only an explicit choice for that runner and agent enables the stored key. Changing one agent does not change another.
 
 The stored choice is unavailable when there is no usable key. If a chosen key is later removed, unreadable or of a kind that the agent cannot use, work waits for that credential; it never falls back to the machine’s sign-in. Claude Code accepts an Anthropic API key or subscription token; OpenCode and Cursor accept API keys only. Choose **Use this machine’s sign-in** to return deliberately to the machine’s account. Sign-in status still reports the machine’s own login, even when work uses a stored key.
+
+Choose **A stored key first, then the runner’s own sign-in** on Models or Runners, or request `--sign-in <agent>=stored-first` at registration. With this choice the runner uses its own sign-in while the key is missing, out of credit or rejected. A failed key attempt queues the work again for a runner’s own sign-in. At most one ordinary run rechecks a held key each hour, when work and budget are available. Work returns to that key after a successful recheck. Models, Connections, Runners and Health show the key’s state, and each run records the sign-in it used.
 
 Legacy workers default to their machine’s sign-in. An explicitly saved **Legacy workers sign in with** choice can retain their supported server-key flow; it never changes a registered runner.
 

@@ -1,3 +1,4 @@
+import { paidByWords, type RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { useQuery } from '@tanstack/react-query';
@@ -34,7 +35,7 @@ export interface RunHoursAnswer {
 interface FinishedRun {
   dryRun?: boolean;
   projectId: string; projectName: string | null; runId: string; task: string | null; result: 'produced' | 'unchanged' | 'failed' | 'failed_with_output' | 'interrupted'; interruptionMachine?: string | null;
-  errorCode: string | null; harness: string | null; model: string | null; runner: { id: string; name: string | null } | null; completedAt: number;
+  payment?: RunPayer; fallbackQueued?: boolean; errorCode: string | null; harness: string | null; model: string | null; runner: { id: string; name: string | null } | null; completedAt: number;
 }
 
 const WINDOW_WORDS: Readonly<Record<RunsWindow, { pill: string; span: string; before: string }>> = {
@@ -159,7 +160,7 @@ export function RunsPage() {
               <li key={`${run.projectId}\u0000${run.runId}`} className="flex items-center" data-runs-run={outcomeOf(run.result)}>
                 <ListRow className="flex-1" to={runPath(run.projectId, run.runId)} leading={<HealthDot tone={outcome.tone} label={outcome.words} />}
                   title={`${capital(taskWords(run.task))}${run.projectName === null ? '' : ` · ${run.projectName}`}`}
-                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || !['failed','interrupted'].includes(outcomeOf(run.result)) ? null : storedRunFailureWords(run.errorCode, run.harness) ?? runErrorWords(run.errorCode, null, null, run.interruptionMachine ?? run.runner?.name ?? null, run.result === 'interrupted' ? 'skipped' : 'failed'), run.harness === null ? null : harnessLabel(run.harness), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
+                  meta={[run.dryRun ? 'Preview: nothing was changed' : outcome.words, run.errorCode === null || !['failed','interrupted'].includes(outcomeOf(run.result)) ? null : storedRunFailureWords(run.errorCode, run.harness, run.fallbackQueued) ?? runErrorWords(run.errorCode, null, null, run.interruptionMachine ?? run.runner?.name ?? null, run.result === 'interrupted' ? 'skipped' : 'failed'), run.harness === null ? null : harnessLabel(run.harness), run.payment === undefined ? null : paidByWords(run.payment), `finished ${shortTime(run.completedAt, now)}`].filter((part) => part !== null).join(' · ')} wrap />
                 {run.runner !== null && <Link to={runnerPath(run.runner.id)} className="shrink-0 px-s3 t-small">{run.runner.name ?? 'Its runner'}</Link>}
               </li>
             );

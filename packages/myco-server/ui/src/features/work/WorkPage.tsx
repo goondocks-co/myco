@@ -267,7 +267,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
       : (all ? scopedRows : scopedRows.slice(0, RUNS_SHOWN)).map((row) => pageRowLine(row, kind, projectId, now, name));
   const lines = lineItems.filter((item) => matches(item.words) || matches(item.where ?? ''));
   const groups = summary.failureGroups
-    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(failureWords(run.failure)) || matches(failureDetail(run.failure) ?? '')) }))
+    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(failureWords(run.failure, run.harness)) || matches(failureDetail(run.failure) ?? '')) }))
     .filter((group) => !searching || group.failures.length > 0 || matches(projectName(group.projectId) ?? '') || matches('failed'));
   const whole = matches(headline);
   const failed = summary.produced === 0 && summary.failed > 0 && summary.spores === 0;

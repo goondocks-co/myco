@@ -8,6 +8,12 @@ export const putSecret = write<[string, string, string, number, number, string]>
   ON CONFLICT(name) DO UPDATE SET ciphertext=excluded.ciphertext,iv=excluded.iv,key_version=excluded.key_version,
     updated_at=excluded.updated_at,updated_by=excluded.updated_by`,
 });
+export const recordRunnerKeyRemoval = write<[slot: string, at: number]>({
+  name: 'settings.recordRunnerKeyRemoval',
+  sql: `INSERT INTO runner_key_removals (slot, removed_at)
+    SELECT ?1,?2 WHERE EXISTS (SELECT 1 FROM deployment_secrets WHERE name=?1)
+    ON CONFLICT (slot) DO UPDATE SET removed_at=excluded.removed_at`,
+});
 export const removeSecret = write<[string], { name: string }>({
   name: 'settings.removeSecret',
   sql: 'DELETE FROM deployment_secrets WHERE name=? RETURNING name',

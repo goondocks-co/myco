@@ -11,7 +11,7 @@ import { todaySchedules, curationDispositions } from '../db/learning/curation-no
 import { todayMarks } from '../db/meta/marks.js';
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
-import { QUEUE_REASON_WORDS, storedKeyFailureTitle, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
+import { QUEUE_REASON_WORDS, runnerFallbackWords, runnerFallbackReasonWords, storedKeyFailureTitle, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { HELD_BY_WORDS, holdSentence, visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { stepWords } from '@goondocks/myco-shared/step-words';
 import { callWords } from '@goondocks/myco-shared/call-words';
@@ -85,6 +85,7 @@ interface NowWaiting {
 
 /** A failure or a stuck item, with the server's own reason and the run to open. */
 interface NowNeed {
+  information?: true;
   key: string;
   projectId: string | null;
   what: string;
@@ -311,12 +312,17 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
       const runner = row.runnerDetails;
       const code = runner?.readiness.code;
       if (runner === undefined || row.runner?.state !== 'enabled') return [];
-      if (runner.storedKeyFailures?.length) return runner.storedKeyFailures.map(({ agent, slot, failure }) => ({
+      const fallback = (runner.fallbackNotices ?? []).map(({ agent, slot, reason, since }): NowNeed => ({
+        key: `fallback:${runner.id}:${agent}`, projectId: null, what: `${runner.name}: ${runnerFallbackReasonWords(reason)}`,
+        why: runnerFallbackWords(reason, slot), at: since, runId: null, retryAt: null,
+        ...(reason === 'out_of_credit' ? { information: true } : {}),
+      }));
+      if (runner.storedKeyFailures?.length) return [...fallback, ...runner.storedKeyFailures.map(({ agent, slot, failure }) => ({
         key: `sign-in:${runner.id}:${agent}`, projectId: null, what: storedKeyFailureTitle(failure, slot),
         why: storedKeyFailureWords(failure, slot), at: runner.readiness.observedAt ?? now, runId: null, retryAt: null,
-      }));
-      if (code !== 'not_signed_in' && code !== 'credential_unavailable') return [];
-      return [{ key: `sign-in:${row.runner.id}`, projectId: null, what: `${row.runner.name} can’t sign in to a coding agent`,
+      }))];
+      if (code !== 'not_signed_in' && code !== 'credential_unavailable') return fallback;
+      return [...fallback, { key: `sign-in:${row.runner.id}`, projectId: null, what: `${row.runner.name} can’t sign in to a coding agent`,
         why: runner.readiness.reason, at: runner.readiness.observedAt ?? now, runId: null, retryAt: null }];
     }),
     ...unclaimed.map((due): NowNeed => ({
@@ -344,7 +350,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
   const [fleet, marks, runningPage, recovery] = await Promise.all([
     settle('waiting', async () => {
       const rows = await fleetAvailability(env, now, includeSignIn);
-      if (includeSignIn) await applyFleetSignInAvailability(rows, now, fleetSelectionContext(env, true).available);
+      if (includeSignIn) await applyFleetSignInAvailability(rows, now, fleetSelectionContext(env, true, now).keyState);
       return rows;
     }, [] as WorkerFleetRow[]),
     todayMarks(env.db).catch(() => Array.from({ length: 5 }, () => `unread:${now}`)),

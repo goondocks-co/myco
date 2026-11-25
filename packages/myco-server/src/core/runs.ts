@@ -213,6 +213,7 @@ export interface QueuedRunRef {
  * requeues, which is what makes a run it held claimable again.
  */
 export interface ClaimCandidate {
+  fallbackRetry?: { reason: import('@goondocks/myco-shared/runner-fleet').RunnerFallbackReason; subject: string | null };
   projectId: string;
   id: string;
   task: string;
@@ -231,6 +232,7 @@ export interface ClaimedRunRow {
 
 /** A pulled run the claim creates: its identity, single-flight subject, built input and its stage's reassertion. */
 export interface PulledCandidate {
+  key?: string;
   projectId: string;
   id: string;
   task: string;

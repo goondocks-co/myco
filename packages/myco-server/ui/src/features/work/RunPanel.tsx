@@ -1,3 +1,4 @@
+import { paidByWords } from '@goondocks/myco-shared/runner-fleet';
 import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
@@ -116,6 +117,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         {run.status === 'completed' && run.endedNote === LATE_HARNESS_ERROR_NOTE &&
           <p data-run-ended-note="" className="t-small text-muted">{lateSessionWords(diagnosticReaderCode(run.harnessStop?.code ?? null))}</p>}
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
+        {run.payment !== undefined && <p className="t-small text-ink-2">{paidByWords(run.payment)}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{queuedWords(run, now)}</p>}
@@ -150,7 +152,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {repositoryFailure ? <p>{admin
             ? <ActionLink to={projectRepositoryPath(projectId, true)}>Check repository settings</ActionLink>
             : 'Ask an admin to check the repository in Project settings.'}</p>
-            : <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>}
+            : !run.fallbackQueued && <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>}
         </div>
       )}
 
@@ -252,7 +254,7 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 }
 
 function causeOf({ run }: RunDetailAnswer): string {
-  return storedRunFailureWords(run.errorCode, run.harness) ?? runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
+  return storedRunFailureWords(run.errorCode, run.harness, run.fallbackQueued) ?? runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -340,6 +342,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
             {run.startedAt !== null && <FactRow term="Started">{new Date(run.startedAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</FactRow>}
             {took !== null && <FactRow term="Execution">{took}</FactRow>}
             <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}{run.costSource === 'partial' && ' (partial; some request usage is unknown)'}</FactRow>
+            {run.payment !== undefined && <FactRow term="Payment">{paidByWords(run.payment)}</FactRow>}
             <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}{run.costSource === 'partial' && '. Includes only requests with reported usage; other request costs are unknown.'}</span></>}</FactRow>
           </FactsPanel>
           {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}

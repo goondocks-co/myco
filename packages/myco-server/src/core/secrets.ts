@@ -1,8 +1,8 @@
 import { commit, type Bound } from '../db/index.js';
-import { listSecrets, readRunnerSecret, readSecret, type SecretRow } from '../db/settings/secret-rows.js';
+import { listSecrets, readRunnerKeyRemoval, readRunnerSecret, readSecret, type SecretRow } from '../db/settings/secret-rows.js';
 import type { RunnerSecretAvailability, RunnerSecretVersion } from '../db/settings/runner-secret-health.js';
 import type { StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
-import { putSecret, removeRetiredSecrets, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
+import { putSecret, removeRetiredSecrets, removeSecret, recordSecretDeletion, recordRunnerKeyRemoval } from '../db/settings/secret-writes.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor, credentialKind, type HarnessCredentialKind } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
 import { emit } from '../telemetry.js';
@@ -106,7 +106,7 @@ export interface SecretStore {
   get(name: string): Promise<string | null>;
   /** Open a runner key with the sealed generation and its current provider observation. */
   runnerKey(name: string, now: number): Promise<{
-    key: string; version: RunnerSecretVersion; failure: StoredKeyFailure | null; probeDue: boolean;
+    key: string; version: RunnerSecretVersion; failure: StoredKeyFailure | null; failureSince: number | null; probeDue: boolean;
   } | null>;
   /** What a settings surface may show. Never returns the value. */
   describe(name: string): Promise<SecretDescription>;
@@ -234,7 +234,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
       const r = await readRunnerSecret(db, name, now);
       if (r === null) return null;
       try {
-        return { key: await openRow(r), version: { slot: name, generation: r.iv }, failure: r.failure, probeDue: r.probeDue === 1 };
+        return { key: await openRow(r), version: { slot: name, generation: r.iv }, failure: r.failure, failureSince: r.failureSince, probeDue: r.probeDue === 1 };
       } catch (error) {
         if (error instanceof SecretOpenError || error instanceof SecretValueError) return null;
         throw error;
@@ -253,7 +253,9 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     },
 
     async delete(name, actor, nowMs) {
-      const [result] = await commit(db, removeSecret.bind(name));
+      const runnerSlot = Object.values(HARNESS_CREDENTIALS).some(manifest => manifest.slot === name);
+      const results = await commit(db, ...(runnerSlot ? [recordRunnerKeyRemoval.bind(name, nowMs)] : []), removeSecret.bind(name));
+      const result = results.at(-1)!;
       const deleted = result.results.length === 1;
       // Every other mutation on this table records its actor on the row. Deletion
       // removes the row, making it the one destructive operation here whose trail
@@ -272,21 +274,31 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
 }
 
 /** One request opens each stored slot at most once and receives only agent usability. */
-export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: SecretWrappingKey): (harness: string) => Promise<RunnerSecretAvailability> {
+export interface RunnerKeyState { availability: RunnerSecretAvailability; since: number | null; probeDue: boolean }
+
+export function harnessKeyState(db: RelationalStore, wrappingKey: SecretWrappingKey, now = 0): (harness: string) => Promise<RunnerKeyState> {
   const store = deploymentSecretStore(db, wrappingKey);
-  const slots = new Map<string, ReturnType<SecretStore['runnerKey']>>();
+  const slots = new Map<string, Promise<{ key: Awaited<ReturnType<SecretStore['runnerKey']>>; removedAt: number | null }>>();
   return async harness => {
     const slot = HARNESS_CREDENTIALS[harness]?.slot;
-    if (slot == null) return false;
+    const missing = { availability: false, since: null, probeDue: false };
+    if (slot == null) return missing;
     let opened = slots.get(slot);
     if (opened === undefined) {
-      opened = store.runnerKey(slot, 0);
+      opened = store.runnerKey(slot, now).then(async key => ({
+        key, removedAt: key === null ? await readRunnerKeyRemoval(db, slot) : null,
+      }));
       slots.set(slot, opened);
     }
-    const key = await opened;
-    if (key === null || Object.keys(credentialEnvFor(harness, key.key)).length === 0) return false;
-    return key.failure ?? true;
+    const { key, removedAt } = await opened;
+    if (key === null || Object.keys(credentialEnvFor(harness, key.key)).length === 0) return { ...missing, since: removedAt };
+    return { availability: key.failure ?? true, since: key.failureSince, probeDue: key.probeDue };
   };
+}
+
+export function harnessCredentialAvailability(db: RelationalStore, wrappingKey: SecretWrappingKey): (harness: string) => Promise<RunnerSecretAvailability> {
+  const state = harnessKeyState(db, wrappingKey);
+  return async (harness) => (await state(harness)).availability;
 }
 
 /** A stored choice can name a locally usable key while its provider is refusing it. */

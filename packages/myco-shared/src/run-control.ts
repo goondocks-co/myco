@@ -1,13 +1,16 @@
-import { storedKeyFailureWords } from './runner-fleet.js';
+import { runnerFallbackWords, storedKeyFailureWords } from './runner-fleet.js';
 import { HARNESS_CREDENTIALS } from './harness-providers.js';
 import { STORED_KEY_READER_CODES } from './run-diagnostic.js';
 import { memberHeaders } from './member-protocol.js';
 
-export function storedRunFailureWords(code: string | null | undefined, agent?: string | null): string | null {
+export function storedRunFailureWords(code: string | null | undefined, agent?: string | null, fallbackQueued = false): string | null {
   const failure = code === STORED_KEY_READER_CODES.out_of_credit ? 'out_of_credit'
     : code === STORED_KEY_READER_CODES.invalid_key ? 'invalid_key' : null;
   const slot = agent == null ? undefined : HARNESS_CREDENTIALS[agent]?.slot ?? undefined;
-  return failure === null ? null : storedKeyFailureWords(failure, slot, true);
+  if (failure === null) return null;
+  return fallbackQueued && slot !== undefined
+    ? `${runnerFallbackWords(failure, slot)} This work was queued again.`
+    : storedKeyFailureWords(failure, slot, true);
 }
 
 /** Consecutive interrupted attempts admitted before automatic work stops. */

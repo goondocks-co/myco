@@ -1030,6 +1030,31 @@ describe('Models', () => {
     expect(sent).toHaveLength(1);
   });
 
+  it('saves stored-first without a key and shows the runner’s fallback on Models and Connections', async () => {
+    let choice = 'own';
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves({ 'worker.harness': { value: 'claude-code' } })),
+      '/api/runners/agents': () => Response.json({ today: [], agents: [{
+        agent: 'claude-code', storedUsable: false, runners: [{ id: 'mini', name: 'Mini', choice }],
+        ...(choice === 'own' ? {} : { storedFailure: 'out_of_credit', fallbacks: [
+          { runnerId: 'mini', agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW },
+        ] }),
+      }] }),
+      '/api/runners/sign-in': () => { choice = 'stored-first'; return Response.json({ saved: true }); },
+    }));
+    const label = 'A stored key first, then the runner’s own sign-in';
+    mount('/settings/models');
+    await screen.findByRole('combobox', { name: /^Paid by/ });
+    await pick('Paid by', label);
+    await screen.findByRole('combobox', { name: `Paid by: ${label}` });
+    expect(sent[0]).toMatchObject({ path: '/api/runners/sign-in', body: { agent: 'claude-code', choice: 'stored-first' } });
+    await screen.findByText(/Work continues on the runner’s own sign-in/);
+    cleanup();
+    mount('/settings/connections');
+    await screen.findByText('Out of credit', { exact: true });
+    await screen.findByText(/Work continues on the runner’s own sign-in/);
+  });
+
   it('folds each tuning group under Advanced with one line on whether it was changed', async () => {
     server(base({ '/api/settings': () => Response.json(leaves({ 'agent.reasoning_map.codex.low': { value: 'luna', updatedBy: ADA, updatedAt: NOW } })) }));
     mount('/settings/models');

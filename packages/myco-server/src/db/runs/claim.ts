@@ -443,13 +443,13 @@ const claimDefinitions = Object.fromEntries(budgetVariants.flatMap(budgetKind =>
     return [name,{guard:assertion<readonly unknown[]>({name:`runs.${name}Admission`,refusal:CLAIM_SELECTION_REFUSED,when:authority}),credential:write<readonly unknown[]>({name:`runs.${name}Credential`,sql:CREDENTIAL_INSERT_SQL+` AND ${authority} RETURNING id`}),run:write<readonly unknown[],ClaimedRunRow>({name:`runs.${name}`,sql: pulled ?
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject, dispatch_spec, started_at, dispatched_by,
         leased_by,leased_runner_id,leased_runner_credential_id,lease_expires_at,harness,reasoning_level,model,execution_overrides,
-        runner_secret_slot,runner_secret_generation)
-      SELECT ?,?,'myco-agent',?,'running','automatic',?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${authority}
+        runner_secret_slot,runner_secret_generation,runner_payer,runner_fallback_reason,runner_fallback_allowed)
+      SELECT ?,?,'myco-agent',?,'running','automatic',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${authority}
       RETURNING project_id AS projectId,id,task,instruction,run_context AS runContext,dry_run AS dryRun` :
       `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, leased_runner_id = ?, leased_runner_credential_id = ?,
         lease_expires_at=?,harness=?,waited_for=held_by,held_by=NULL,last_renewed_at=NULL,reasoning_level=?,model=?,execution_overrides=?,
-        runner_secret_slot=?,runner_secret_generation=?,runner_secret_outcome=NULL,subject=COALESCE(?,subject)
+        runner_secret_slot=?,runner_secret_generation=?,runner_secret_outcome=NULL,runner_payer=?,runner_fallback_reason=?,runner_fallback_allowed=?,subject=COALESCE(?,subject)
       WHERE project_id=? AND id=? AND ${authority}
         AND (? IS NULL OR NOT EXISTS(SELECT 1 FROM agent_runs flight INDEXED BY idx_agent_runs_task_live
           WHERE flight.task=agent_runs.task AND flight.${IN_FLIGHT_RUN_STATUSES} AND flight.subject=? AND flight.id!=agent_runs.id))
@@ -471,10 +471,10 @@ function claimBinding(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmis
 export function workerClaimWrite(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmission, dispatchedBy: string): Bound<ClaimedRunRow,'write'> {
   const {definition,candidate,authority}=claimBinding(form,claim,admission), owner=leaseOwnerColumns(claim.worker);
   const profile = [claim.profile.tier,claim.profile.model,JSON.stringify({requested:claim.profile,harness:claim.harness})];
-  const key = [claim.storedKey?.slot ?? null, claim.storedKey?.generation ?? null];
+  const key = [claim.storedKey?.slot ?? null, claim.storedKey?.generation ?? null, claim.login?.payer ?? null, claim.login?.fallbackReason ?? null, claim.login?.allowFallback === true ? 1 : 0];
   const subject = claim.input?.subject ?? null;
   return definition.run.bind(...(form.kind === 'pulled'
-    ? [candidate.projectId,candidate.id,candidate.task,form.pull.subject,JSON.stringify({actor:'deployment'}),claim.now,dispatchedBy,
+    ? [candidate.projectId,candidate.id,candidate.task,form.pull.subject,JSON.stringify({ actor: 'deployment', pulledKey: form.pull.key }),claim.now,dispatchedBy,
       owner.leasedBy,owner.runnerId,owner.runnerCredentialId,claim.leaseExpiresAt,claim.harness,...profile,...key,...authority]
     : [claim.now,dispatchedBy,owner.leasedBy,owner.runnerId,owner.runnerCredentialId,claim.leaseExpiresAt,claim.harness,...profile,...key,
       subject,candidate.projectId,candidate.id,...authority,subject,subject]));
@@ -492,12 +492,21 @@ const claimMemberAuthority = assertion<[token: string, now: number]>({ name: 'ru
   when: `EXISTS (SELECT 1 FROM member_credentials c JOIN members m ON m.id=c.member_id
     WHERE c.id=?1 AND c.revoked_at IS NULL AND c.expires_at>?2 AND m.revoked_at IS NULL)` });
 
+const admitPayerChoice = assertion<[runnerId: string, agentPath: string, retry: number]>({
+  name: 'runs.admitFallbackPayer', refusal: CLAIM_SELECTION_REFUSED, when: `EXISTS (SELECT 1 FROM runners WHERE id=?1
+    AND (json_extract(credential_choices,?2)='stored-first'
+      OR (?3=1 AND COALESCE(json_extract(credential_choices,?2),'own')='own')))`,
+});
+
 /** Authority and admission are asserted before any claim companion can commit. */
 export function workerClaimAssertions(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmission): Bound[] {
   const { definition, authority } = claimBinding(form, claim, admission);
   const session = quietSession(claim.input);
   const candidate = form.kind === 'queued' ? form.candidate : form.pull;
   return [
+    ...(claim.worker.kind !== 'runner' || (claim.login?.allowFallback !== true && claim.login?.fallbackReason === undefined) ? [] : [
+      admitPayerChoice.bind(claim.worker.runnerId, `$."${claim.harness}"`, form.kind === 'queued' && form.candidate.fallbackRetry !== undefined ? 1 : 0),
+    ]),
     claim.worker.kind === 'runner' ? claimRunnerAuthority.bind(claim.worker.credentialId, claim.worker.runnerId) : claimMemberAuthority.bind(claim.worker.tokenId, claim.now),
     definition.guard.bind(...authority),
     ...(session === null ? [] : [claim.input?.context?.assignment && (claim.input.context.assignment as { kind: string }).kind === 'cards'

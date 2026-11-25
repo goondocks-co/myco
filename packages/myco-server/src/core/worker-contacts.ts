@@ -337,7 +337,7 @@ function runnerFleetRow(row: RunnerFleetRow, now: number, includeSignIn: boolean
     lastSeenAt: displaySeenAt || null, connected, busy, display: 'Never contacted',
     awaitingReplacement: row.replacement_pending === 1, updateMetadataUnavailable,
     lastAttempted, lastCompleted: fleetRun(row.last_completed), lastFailed: fleetRun(row.last_failed),
-    ...(includeSignIn ? { credentialChoices: storedRunnerCredentialChoices(row.credential_choices) } : {}),
+    ...(includeSignIn ? { credentialChoices: storedRunnerCredentialChoices(row.credential_choices), credentialChoiceTimes: JSON.parse(row.credential_choice_times) as Record<string, number> } : {}),
     offers, offersObservedAt: offers === null ? null : row.updated_at,
     capabilities, labels: parseCapabilities(row.labels), preference: null, os: row.os, arch: row.arch, version: row.version, readiness, lastReason: row.last_reason,
     models: models.map(model => ({ harness: model.harness, source: model.source, fetchedAt: model.fetchedAt, receivedAt: model.receivedAt,

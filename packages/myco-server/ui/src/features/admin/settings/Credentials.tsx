@@ -1,3 +1,4 @@
+import { runnerFallbackSince, runnerFallbackWords } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { HARNESS_CREDENTIALS, type HarnessCredentialKind } from '@goondocks/myco-shared/harness-providers';
 import { harnessesReading, SECRET_SLOTS, slotUse, type SecretSlotName } from '@goondocks/myco-shared/secret-slots';
@@ -44,7 +45,7 @@ export interface KeyUses { payers: AgentPayersAnswer['agents']; quickJobs: Quick
 export function keyUsedBy(name: string, uses: KeyUses): string[] {
   const agents = harnessesReading(name as SecretSlotName);
   const runners = uses.payers.filter((entry) => agents.includes(entry.agent)).flatMap((entry) =>
-    entry.runners.filter((runner) => runner.choice === 'stored').map((runner) => `${runner.name} (${harnessLabel(entry.agent)})`));
+    entry.runners.filter((runner) => runner.choice === 'stored' || runner.choice === 'stored-first').map((runner) => `${runner.name} (${harnessLabel(entry.agent)})`));
   const searchProvider = uses.embedding?.selection === null || uses.embedding === null ? null
     : uses.embedding.providers.find((provider) => provider.id === uses.embedding!.selection!.provider) ?? null;
   return [
@@ -77,6 +78,11 @@ export function KeyRows({ secrets, uses }: { secrets: readonly SecretRow[]; uses
     <>
       {stored.map((secret) => {
         const usedBy = keyUsedBy(secret.name, uses);
+        const agents = harnessesReading(secret.name as SecretSlotName);
+        const failure = uses.payers.find(entry => agents.includes(entry.agent) && entry.storedFailure !== undefined)?.storedFailure;
+        const fallback = uses.payers.flatMap(entry => entry.fallbacks ?? []).find(notice => notice.slot === secret.name);
+        const status = failure === 'out_of_credit' ? { words: 'Out of credit', tone: 'neutral' as const }
+          : failure === 'invalid_key' ? { words: 'Rejected', tone: 'bad' as const } : keyStatus(secret, usedBy);
         const who = nameOf(secret.updatedBy);
         const saved = secret.updatedAt === null ? 'saved' : `saved ${who === null ? '' : `by ${who} `}${agoWords(secret.updatedAt, now)}`;
         const kind = keyKindWords(secret.name, secret.kind);
@@ -86,11 +92,12 @@ export function KeyRows({ secrets, uses }: { secrets: readonly SecretRow[]; uses
             kind="key"
             label={keyLabel(secret.name)}
             use={USE[secret.name] ?? 'Nothing on this server reads it.'}
-            status={keyStatus(secret, usedBy)}
+            status={status}
             note={<>
               <p className="t-mono">{secret.readable ? `${secret.maskedValue ?? 'Stored'} · ${saved}` : 'Stored under a key this server can no longer open. Enter it again.'}</p>
               {kind !== null && <p data-key-kind={secret.kind}>{kind}</p>}
-              {usedBy.length > 0 && <p>{`Used by ${usedBy.join(', ')}.`}</p>}
+              {fallback !== undefined && <p>Since {runnerFallbackSince(fallback.since)}. {runnerFallbackWords(fallback.reason, fallback.slot)}</p>}
+              {usedBy.length > 0 && <p>{`${fallback === undefined ? 'Used' : 'Chosen'} by ${usedBy.join(', ')}.`}</p>}
             </>}
             actions={allowed && <>
               <Button size="sm" onClick={() => setReplacing(secret.name)}>Replace</Button>

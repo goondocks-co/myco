@@ -30,7 +30,7 @@ import { runRunnerUpdateHelper } from '../runner/update-helper.js';
 export const RUNNER_HELP = `myco runner — run a Deployment's queued tasks on this machine's harnesses
 
 Usage:
-  myco runner register <host> [--name <name>] [--replace] [--sign-in <agent>=own|stored,...]
+  myco runner register <host> [--name <name>] [--replace] [--sign-in <agent>=own|stored|stored-first,...]
                                   Register this machine as a runner of the Deployment.
   myco runner run [--server <url>] [--once] [--harness <id>]...
                                   Claim and drive the Deployment's runs in this terminal.
@@ -53,11 +53,12 @@ waits for approval; no browser is opened here, so it works over SSH. A bare
 host defaults to HTTPS. --replace registers afresh over a record the
 Deployment no longer accepts.
 
-A runner holds its own credential, separate from any member's, and runs only
-with the harnesses already signed in on this machine; the Deployment never
-hands it a provider key. --server defaults to the only Deployment this machine
-is registered with. One runner or worker serves a Deployment per machine: a
-second one waits until the first stops.
+A runner holds its own credential, separate from any member's. Each agent uses
+this machine's sign-in by default. An administrator can approve a stored key
+for that agent, with or without using the machine's sign-in when the key is
+unavailable. --server defaults to the only Deployment this machine is registered
+with. One runner or worker serves a Deployment per machine: a second one waits
+until the first stops.
 `;
 
 const RUNS_DIRNAME = 'runs';

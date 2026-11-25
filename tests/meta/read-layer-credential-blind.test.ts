@@ -42,7 +42,7 @@ const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js
 
 /** The secret store exposes only boolean presence and agent-login availability to reads. */
 const SECRET_STORE = join(SRC, 'core', 'secrets.ts');
-const SECRET_PRESENCE = new Set(['secretReadable', 'harnessCredentialAvailable', 'harnessCredentialAvailability']);
+const SECRET_PRESENCE = new Set(['secretReadable', 'harnessCredentialAvailable', 'harnessCredentialAvailability', 'harnessKeyState']);
 /** What opens a stored secret: a read reaching any of these could hand a decrypted login to a dashboard. */
 const OPENS_SECRET = /\b(?:openHarnessCredential|openProviderCredential|deploymentSecretStore)\s*\(|crypto\.subtle\.decrypt\b/;
 
@@ -62,7 +62,7 @@ function valueImports(file: string): Array<{ target: string; names: string[] | n
 }
 
 describe('read layer', () => {
-  it('never receives an opened secret: the store exposes only boolean checks, at any depth', () => {
+  it('never receives an opened secret: the store exposes only key presence and usability checks, at any depth', () => {
     const offenders: string[] = [];
     for (const start of tsFiles(READ_DIR)) {
       const via = new Map<string, string | null>([[start, null]]);

@@ -1,3 +1,4 @@
+import type { RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import type { HarnessStop } from '@goondocks/myco-shared/run-diagnostic';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
@@ -38,6 +39,8 @@ export interface RunWorker {
 
 /** The fields Myco's work reads of a run, on a page of the list and on its detail. */
 export interface RunFields {
+  payment?: RunPayer;
+  fallbackQueued?: boolean;
   dryRun?: boolean;
   fleetWait?: { reason: import('@goondocks/myco-shared/runner-fleet').QueueReason; observedAt: number };
   requested: ExecutionProfile | null;
@@ -145,6 +148,7 @@ export interface RunReport {
 
 /** One claim of a run, and what its worker's step log holds; `steps` is null where no page of the log has arrived. */
 export interface RunAttempt {
+  payment?: RunPayer | null;
   attemptId: string;
   claimedAt: number;
   /** Who took the attempt: a runner by name, or the member whose worker credential claimed it. */

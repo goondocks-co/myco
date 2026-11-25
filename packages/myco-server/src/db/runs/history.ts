@@ -93,8 +93,8 @@ export async function workSummary(db: RelationalStore, set: ProjectSet, window: 
 
 const SCOPE_PAGE = 201;
 const timelineRow = `c.project_id,c.run_id AS id,c.task,c.status,c.at,c.tokens AS tokens_used,c.cost AS cost_usd,c.produced,c.spores,c.sessions AS spore_sessions,c.title_session AS titled_session,
-  r.dry_run,r.queued_at,r.started_at,r.completed_at,${requestedProfileValue('r.')} AS requested_profile,r.harness,r.model,r.provider,r.usage_data,${costProvenanceValue('r.')} AS cost_provenance,
-  CASE WHEN c.status='failed' THEN r.error END AS error,CASE WHEN c.status='failed' THEN r.error_code END AS error_code,
+  r.dry_run,r.queued_at,r.started_at,r.completed_at,${requestedProfileValue('r.')} AS requested_profile,r.harness,r.model,r.provider,r.usage_data,r.runner_payer,r.runner_fallback_reason,r.runner_secret_slot,${costProvenanceValue('r.')} AS cost_provenance,
+  CASE WHEN c.status='failed' THEN r.error END AS error, ${contextValue('fallbackRunId')} AS fallback_run_id,CASE WHEN c.status='failed' THEN r.error_code END AS error_code,
   CASE WHEN c.status='failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
   CASE WHEN c.status='failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
   CASE WHEN c.status='failed' THEN ${contextValue(REPOSITORY_FAILURE_SUMMARY_KEY)} END AS repository_failure_summary`;
@@ -202,6 +202,7 @@ const COLUMNS = `id, agent_id, task, subject, status, provider, model, usage_dat
   ${runResultSql('agent_runs')} AS result,
   ${requestedProfileValue()} AS requested_profile,
   ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
+  runner_payer,runner_fallback_reason,runner_secret_slot,${contextValue('fallbackRunId')} AS fallback_run_id,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by,
   harness, leased_by, lease_expires_at, leased_runner_id, leased_runner_credential_id,

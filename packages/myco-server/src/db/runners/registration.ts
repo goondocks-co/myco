@@ -22,7 +22,7 @@ const insertRunner = write<[runner: string, now: number, approver: string, reque
   `INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id)
     SELECT ?1, d.runner_name, 'enabled', 1, 1, '[]', ?2, ?3, d.id FROM device_requests d WHERE d.id = ?4 AND d.subject = 'runner'` });
 const recredentialRunner = write<[epoch: number, request: string, runner: string]>({ name: 'runners.recredential', sql:
-  `UPDATE runners SET credential_epoch = ?1, revision = revision + 1, registration_id = ?2, credential_choices = '{}' WHERE id = ?3` });
+  `UPDATE runners SET credential_epoch = ?1, revision = revision + 1, registration_id = ?2, credential_choices = '{}', credential_choice_times = '{}' WHERE id = ?3` });
 const revokeOldCredentials = write<[now: number, runner: string]>({ name: 'runners.recredentialRevoke', sql:
   `UPDATE runner_credentials SET revoked_at = ?1, revoked_by = 'runner-recredentialed' WHERE runner_id = ?2 AND revoked_at IS NULL` });
 const insertFirstCredential = write<[credential: string, runner: string, epoch: number, now: number, expiresAt: number, request: string]>({ name: 'runners.insertFirstCredential', sql:
@@ -146,15 +146,15 @@ export async function commitRunnerRename(db: RelationalStore, rename: { actor: s
 const choicesRead = read<[runner: string], { credential_choices: string }>({ name: 'runners.credentialChoices', sql: 'SELECT credential_choices FROM runners WHERE id = ?1' });
 export const storedChoices = async (db: RelationalStore, runnerId: string): Promise<string | null> => (await first(db, choicesRead.bind(runnerId)))?.credential_choices ?? null;
 
-const setChoice = write<[path: string, choice: string, runner: string]>({ name: 'runners.setCredentialChoice', sql:
-  'UPDATE runners SET credential_choices = json_set(credential_choices, ?1, ?2), revision = revision + 1 WHERE id = ?3' });
-const auditChoice = write<[id: string, runner: string, actor: string, agent: string, choice: string, revision: number, now: number]>({ name: 'runners.auditCredentialChoice', sql:
-  'INSERT INTO runner_signin_audit(id,runner_id,actor_member,agent,choice,revision,at) VALUES (?1,?2,?3,?4,?5,?6,?7)' });
+const setChoice = write<[path: string, choice: string, runner: string, now: number]>({ name: 'runners.setCredentialChoice', sql:
+  'UPDATE runners SET credential_choices = json_set(credential_choices, ?1, ?2), credential_choice_times = json_set(credential_choice_times, ?1, ?4), revision = revision + 1 WHERE id = ?3' });
+const auditChoice = write<[id: string, runner: string, actor: string, agent: string, choice: string, revision: number, now: number, fallback: number]>({ name: 'runners.auditCredentialChoice', sql:
+  'INSERT INTO runner_signin_audit(id,runner_id,actor_member,agent,choice,revision,at,fallback_to_own) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)' });
 
 /** The two writes a sign-in change makes, in the batch of whichever commit carries it. */
 export const signInChange = (change: { runner: string; actor: string; agent: string; choice: string; revision: number; now: number }): readonly Bound[] => [
-  setChoice.bind(`$."${change.agent}"`, change.choice, change.runner),
-  auditChoice.bind(crypto.randomUUID(), change.runner, change.actor, change.agent, change.choice, change.revision, change.now),
+  setChoice.bind(`$."${change.agent}"`, change.choice, change.runner, change.now),
+  auditChoice.bind(crypto.randomUUID(), change.runner, change.actor, change.agent, change.choice === 'stored-first' ? 'stored' : change.choice, change.revision, change.now, change.choice === 'stored-first' ? 1 : 0),
 ];
 
 /**

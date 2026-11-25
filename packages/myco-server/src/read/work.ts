@@ -5,7 +5,7 @@ import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { type RunResult } from '../db/runs/run-output.js';
-import { runAccounting } from './accounting.js';
+import { recordedRunPayer, runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 /**
  * Myco's work: what the Deployment's own runs produced over a window, read across Projects.
@@ -84,6 +84,7 @@ interface WorkMap { projectId: string; branch: string; commit: string; generated
 
 /** A run that published output or failed, listed in the timeline. */
 export interface WorkRun {
+  payment?: NonNullable<ReturnType<typeof recordedRunPayer>>;
   dryRun: boolean;
   requested: ExecutionProfile | null;
   queuedAt: number | null;
@@ -106,7 +107,7 @@ export interface WorkRun {
   /** The session a title run titled; null for every other run. */
   sessionId: string | null;
   /** The terminal failure classifier and stored reason, separate from the agent's report. */
-  failure: { repositoryFailure?: RepositoryFailure | null; cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
+  failure: { fallbackQueued?: boolean; repositoryFailure?: RepositoryFailure | null; cause: string; code?: string | null; reason?: string | null; error?: string | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }
@@ -241,6 +242,7 @@ function workRunOf(row: Record<string, unknown>, includeSignIn: boolean): WorkRu
   const repositoryFailure = parseRepositoryFailure({ code: row.repository_failure_code, summary: row.repository_failure_summary });
   return {
     ...runAccounting(row.usage_data, row.cost_provenance),
+    ...paymentOf(row, includeSignIn),
     dryRun: num(row.dry_run) === 1,
     requested: requestedProfile(row.requested_profile),
     queuedAt: orNull(row.queued_at), startedAt: orNull(row.started_at), completedAt: orNull(row.completed_at),
@@ -260,7 +262,7 @@ function workRunOf(row: Record<string, unknown>, includeSignIn: boolean): WorkRu
       maps: kind === 'map' && produced ? 1 : 0,
     },
     sessionId: kind === 'title' ? titled : null,
-    failure: !failed ? null : { ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
+    failure: !failed ? null : { ...(includeSignIn && row.fallback_run_id != null ? { fallbackQueued: true } : {}), ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
     tokens: orNull(row.tokens_used),
     costUsd: orNull(row.cost_usd),
   };
@@ -358,4 +360,9 @@ export async function capabilityHolds(db: RelationalStore, capabilities: readonl
 export async function runsAwaitingWorker(db: RelationalStore, runtimeServed: readonly string[]): Promise<{ runs: number; since: number | null }> {
   const row = await awaitingRow(db, runtimeServed);
   return { runs: num(row.runs), since: orNull(row.since) };
+}
+
+function paymentOf(row: Record<string, unknown>, includeSignIn: boolean) {
+  const payment = recordedRunPayer(includeSignIn, row.runner_payer, row.runner_fallback_reason, row.runner_secret_slot);
+  return payment === null ? {} : { payment };
 }

@@ -17,11 +17,17 @@ const one = read<[name: string], SecretRow>({ name: 'settings.secret', sql:
 
 export const readSecret = (db: RelationalStore, name: string): Promise<SecretRow | null> => first(db, one.bind(name));
 
-type RunnerSecretRow = SecretRow & { failure: StoredKeyFailure | null; probeDue: number | null };
+type RunnerSecretRow = SecretRow & { failure: StoredKeyFailure | null; failureSince: number | null; probeDue: number | null };
 const runnerSecret = read<[slot: string, now: number], RunnerSecretRow>({ name: 'settings.runnerSecret', sql:
-  `SELECT name,ciphertext,iv,key_version,updated_at,updated_by,runner_failure AS failure,
+  `SELECT name,ciphertext,iv,key_version,updated_at,updated_by,runner_failure AS failure,runner_failure_since AS failureSince,
     (${probeIsDue('?2')}) AS probeDue FROM deployment_secrets WHERE name=?1` });
 export const readRunnerSecret = (db: RelationalStore, slot: string, now: number) => first(db, runnerSecret.bind(slot, now));
 
 const every = read<[], SecretRow>({ name: 'settings.secrets', sql: 'SELECT name,ciphertext,iv,key_version,updated_at,updated_by FROM deployment_secrets ORDER BY name' });
 export const listSecrets = (db: RelationalStore): Promise<readonly SecretRow[]> => rows(db, every.bind());
+
+const runnerKeyRemoval = read<[slot: string], { at: number }>({
+  name: 'settings.runnerKeyRemoval', sql: 'SELECT removed_at AS at FROM runner_key_removals WHERE slot=?1',
+});
+export const readRunnerKeyRemoval = async (db: RelationalStore, slot: string): Promise<number | null> =>
+  (await first(db, runnerKeyRemoval.bind(slot)))?.at ?? null;

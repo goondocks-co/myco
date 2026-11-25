@@ -76,7 +76,7 @@ async function committedWith(serverUrl: string, candidate: string, metadata: { m
   }
 }
 
-export const REGISTER_USAGE = 'usage: myco runner register <host> [--name <name>] [--replace] [--sign-in <agent>=own|stored,...]';
+export const REGISTER_USAGE = 'usage: myco runner register <host> [--name <name>] [--replace] [--sign-in <agent>=own|stored|stored-first,...]';
 
 /** Register this machine as a runner of the Deployment at `<host>`, and report whether it is registered. */
 export async function registerRunner(args: readonly string[], deps: RunnerCliDeps = {}): Promise<boolean> {
@@ -99,9 +99,9 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
   if (signIn !== undefined) {
     const pairs = signIn.split(',').map(entry => entry.split('='));
     if (pairs.some(pair => pair.length !== 2) || new Set(pairs.map(pair => pair[0])).size !== pairs.length)
-      return fail('--sign-in needs agent=own or agent=stored, separated by commas');
+      return fail('--sign-in needs agent=own, agent=stored or agent=stored-first, separated by commas');
     try { credentialChoices = parseRunnerCredentialChoices(JSON.stringify(Object.fromEntries(pairs))); }
-    catch { return fail('--sign-in needs a supported agent and own or stored'); }
+    catch { return fail('--sign-in needs a supported agent and own, stored or stored-first'); }
   }
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const replace = flags.get('replace') === 'true';

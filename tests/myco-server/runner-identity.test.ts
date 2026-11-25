@@ -42,6 +42,7 @@ import { restoreArtifact } from './helpers/restore-artifact.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
+import { capture, GOTCHAS } from './helpers/learning-stages.ts';
 import { PROTOCOL, publishFixture, memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -90,8 +91,8 @@ function rig(options: { onSql?: (sql: string) => void; deploymentId?: string } =
   const start = async (name = 'mini', candidate = bearer(), replace = false, credentialChoices?: Record<string, string>): Promise<Json> => ({ candidate, ...await json(post('/auth/runner/start', { name, machineId: `rm_${crypto.randomUUID()}`, machineName: 'Mac mini', os: 'darwin', candidate, ...(credentialChoices === undefined ? {} : { credentialChoices }), ...(replace ? { replace: true } : {}) })) });
   const poll = (deviceCode: string) => json(post('/auth/runner/poll', { device_code: deviceCode }));
   /** Start, approve as the owner and poll: a registered runner and its bearer. */
-  const register = async (name = 'mini') => {
-    const started = await start(name);
+  const register = async (name = 'mini', credentialChoices?: Record<string, string>) => {
+    const started = await start(name, undefined, false, credentialChoices);
     const approved = await json(asSession('/api/device/approve-runner', { user_code: started.user_code }));
     expect(approved).toMatchObject({ approved: true });
     now += 5000;
@@ -1275,6 +1276,98 @@ describe('shared runner fleet projection', () => {
 });
 
 describe('runner agent sign-in choice', () => {
+  it('queues an exhausted stored-first run once, records its own-sign-in retry, and returns to the key after a recheck', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      const { runnerId, token } = await r.register('mini', { 'claude-code': 'stored-first' });
+      const read = (path: string) => r.json(r.asSession(path, {}, OWNER_SUB, 'GET'));
+      const end = (run: Json, status: string, error?: string) => r.json(r.asRunner(token, '/worker/end', {
+        projectId: 'proj_1', runId: run.id, attemptId: run.attemptId, status, error,
+      }));
+      const exhausted = 'Your credit balance is too low to access the Anthropic API.';
+      expect((await read('/api/runners')).runners[0].credentialChoices).toEqual({ 'claude-code': 'stored-first' });
+      expect((await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'antigravity', choice: 'stored-first' })).status).toBe(400);
+      await r.queueTitling();
+      const withoutKey = (await r.claim(token)).run;
+      expect(withoutKey.credentialEnv).toEqual({});
+      expect((await read(`/api/projects/proj_1/runs/${withoutKey.id}`)).run.payment).toEqual({ payer: 'own', fallbackReason: 'no_key' });
+      await end(withoutKey, 'completed');
+      expect((await read('/api/runners/check')).takers).toMatchObject([{ runners: [{ id: runnerId, payer: 'own' }] }]);
+      expect((await r.asSession('/api/runners/sign-in', { agent: 'claude-code', choice: 'stored-first' })).status).toBe(200);
+
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
+        .put('anthropic', 'sk-ant-api-fixture-credit', OWNER, r.now());
+      const target = await r.queueTitling();
+      const first = (await r.claim(token)).run;
+      expect(Object.keys(first.credentialEnv)).toHaveLength(1);
+      const since = r.now();
+      await Promise.all([end(first, 'failed', exhausted), end(first, 'failed', exhausted)]);
+      expect((await read(`/api/projects/proj_1/runs/${first.id}`)).run).toMatchObject({
+        errorCode: 'stored_key_out_of_credit', payment: { payer: 'stored' }, fallbackQueued: true,
+      });
+      expect((await read('/api/projects/proj_1/runs?status=queued')).rows).toHaveLength(1);
+      expect((await read('/api/runners/agents')).agents[0]).toMatchObject({
+        storedFailure: 'out_of_credit', fallbacks: [{ runnerId, reason: 'out_of_credit', since }],
+      });
+      expect((await read('/api/work/now')).needsYou).toContainEqual(expect.objectContaining({ information: true, at: since }));
+      expect((await read('/api/status')).workers.fleet[0].runnerDetails.fallbackNotices[0]).toMatchObject({ reason: 'out_of_credit', since });
+      const retry = (await r.claim(token)).run;
+      expect(retry.credentialEnv).toEqual({});
+      expect((await read(`/api/projects/proj_1/runs/${retry.id}`)).run).toMatchObject({
+        targetSessionId: target, payment: { payer: 'own', fallbackReason: 'out_of_credit' },
+      });
+      const memberDetail = await r.asSession(`/api/projects/proj_1/runs/${retry.id}`, {}, MEMBER_SUB, 'GET');
+      expect(memberDetail.status).toBe(200);
+      expect((await r.json(memberDetail)).run.payment).toBeUndefined();
+      await end(retry, 'failed', exhausted);
+      expect((await r.claim(token)).claimed).toBe(false);
+
+      r.advance(60 * 60_000);
+      await r.queueTitling();
+      const probe = (await r.claim(token)).run;
+      expect(Object.keys(probe.credentialEnv)).toHaveLength(1);
+      await end(probe, 'failed', '401 authentication_error: invalid x-api-key');
+      const afterProbe = (await r.claim(token)).run;
+      expect(afterProbe.credentialEnv).toEqual({});
+      expect((await read('/api/runners/agents')).agents[0]).toMatchObject({ storedFailure: 'invalid_key' });
+      await end(afterProbe, 'completed');
+      r.advance(60 * 60_000);
+      await r.queueTitling();
+      const recovered = (await r.claim(token)).run;
+      expect(Object.keys(recovered.credentialEnv)).toHaveLength(1);
+      await end(recovered, 'completed');
+      expect((await read('/api/runners/agents')).agents[0].fallbacks).toBeUndefined();
+      await r.queueTitling();
+      expect(Object.keys((await r.claim(token)).run.credentialEnv)).toHaveLength(1);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('retries the same automatic card work with the runner’s own sign-in', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
+        .put('anthropic', 'sk-ant-api-fixture-credit', OWNER, r.now());
+      const { token } = await r.register('mini', { 'claude-code': 'stored-first' });
+      await settingsWriter(r.e.db).setLeaf('agent.scheduled_tasks_enabled', true, OWNER, r.now());
+      await capture(r.e.db, 'cards-for-retry', GOTCHAS, 'proj_1');
+      await publishFixture(r.e);
+      const first = (await r.claim(token)).run;
+      expect(first.task).toBe('turn-cards');
+      expect(Object.keys(first.credentialEnv)).toHaveLength(1);
+      expect(await r.json(r.asRunner(token, '/worker/end', {
+        projectId: 'proj_1', runId: first.id, attemptId: first.attemptId, status: 'failed',
+        error: 'Your credit balance is too low to access the Anthropic API.',
+      }))).toMatchObject({ ended: true });
+      const retry = (await r.claim(token)).run;
+      expect(retry).toMatchObject({ task: 'turn-cards', credentialEnv: {} });
+      expect(await r.json(r.asSession(`/api/projects/proj_1/runs/${retry.id}`, {}, OWNER_SUB, 'GET'))).toMatchObject({
+        run: { targetSessionId: 'cards-for-retry', payment: { payer: 'own', fallbackReason: 'out_of_credit' } },
+      });
+    } finally { r.e.sqlite.close(); }
+  });
+
   it('holds an exhausted stored key and resumes queued work after a successful recheck', async () => {
     const r = rig();
     try {

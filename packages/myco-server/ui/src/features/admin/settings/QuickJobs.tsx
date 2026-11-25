@@ -62,6 +62,7 @@ export function QuickJobs({ group, rows, fact }: { group: LeafGroup; rows: Reado
     <AdminSection id={group.id} title={group.label} description={group.note}>
       <RowCard label={group.label}>
         <SettingRow
+          stacked
           setting="quick-jobs"
           label="Answered by"
           htmlFor="quick-jobs-answerer"
@@ -72,6 +73,8 @@ export function QuickJobs({ group, rows, fact }: { group: LeafGroup; rows: Reado
             <Select
               id="quick-jobs-answerer"
               label="Answered by"
+              wrap
+              className="max-w-measure"
               value={shown}
               disabled={!admin || pending}
               options={fact.offered.map((answerer) => ({ value: answerer, label: ANSWERERS[answerer].label }))}

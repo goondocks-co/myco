@@ -85,7 +85,7 @@ const RESTORE_CHUNK_ROWS = 20;
  */
 export const BACKUP_TABLES: readonly string[] = [
   'projects', 'project_remotes', 'members', 'runners', 'device_decision_audit', 'device_requests', 'machine_claims', 'uncaptured_roots', 'enrollment_authorities', 'identity_link_authorities',
-  'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
+  'member_credentials', 'runner_credentials', 'runner_audit', 'runner_metadata_audit', 'runner_signin_audit', 'runner_key_removals', 'legacy_worker_audit', 'runner_update_audit', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'raw_provenance_state', 'raw_provenance_backfill', 'raw_claims', 'raw_credentials', 'agents',
   'sessions', 'session_tombstones', 'blobs', 'archive_bundles', 'registered_content_proofs', 'prepared_archive_bundles', 'events', 'event_refs', 'processed_resources', 'plans',
   'attachments', 'transcripts', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'spore_curation_work', 'spore_curation_receipts', 'spore_curation_owners',

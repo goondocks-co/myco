@@ -1,4 +1,4 @@
-import { STORED_SIGN_IN_HINT, type RunnerCredentialChoice, type HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
+import { STORED_SIGN_IN_HINT, type RunnerSignInSource, type HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
 /**
  * Which harnesses this machine has, and which of them are logged in.
  *
@@ -25,7 +25,7 @@ export interface DetectedHarness {
   authenticated: boolean;
   error?: string;
   unavailableReason?: 'login_missing';
-  signInSource?: RunnerCredentialChoice;
+  signInSource?: RunnerSignInSource;
   /** The agent's own version, as its CLI prints it; absent where it printed none this worker can read. */
   version?: string;
 }
@@ -266,9 +266,9 @@ export async function detectHarnessesAsync(only?: readonly string[], signal?: Ab
 export function harnessDetection(options: { detect: (excluded: readonly string[]) => Promise<DetectedHarness[]>; clock: () => number }): {
   read: () => Promise<DetectedHarness[]>;
   invalidate: () => void;
-  loginMissing: (id: string, source?: RunnerCredentialChoice) => void;
+  loginMissing: (id: string, source?: RunnerSignInSource) => void;
 } {
-  const signedOut = new Map<string, { until: number; source: RunnerCredentialChoice; detected: DetectedHarness }>();
+  const signedOut = new Map<string, { until: number; source: RunnerSignInSource; detected: DetectedHarness }>();
   let generation = 0;
   let snapshot: { at: number; detected: DetectedHarness[] } | null = null;
   let pending: { generation: number; work: Promise<DetectedHarness[]> } | null = null;

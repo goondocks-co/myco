@@ -1,5 +1,5 @@
 import { parseWorkerAccounting, type WorkerUsage, type ExecutionIdentity } from '@goondocks/myco-shared/worker-usage';
-import { MAX_RUN_ERROR_CHARS } from '../constants.js';
+import { MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
 import { resolveWorkerCost } from './cost/worker.js';
 import { decideRunEnd, runEndingContext } from './run-postconditions.js';
 import { getWorkerExecution, type RunUpdate } from '../db/runs/lifecycle.js';
@@ -44,7 +44,7 @@ function runError(status: 'completed' | 'failed', unmet: string | null, reported
 /** Close evidence and accounting are prepared under the same dispatched attempt. */
 export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEnd, row) => {
   const { usage = null, attemptId, accountingVersion, identity: reportedIdentity } = parseWorkerAccounting(run);
-  const { profile: requested, stored } = await getWorkerExecution(env.db, { projectId: run.projectId }, run.runId, row.dispatchedBy);
+  const { profile: requested, stored, fallbackAllowed } = await getWorkerExecution(env.db, { projectId: run.projectId }, run.runId, row.dispatchedBy);
   const verdict = requested !== null && reportedIdentity !== undefined && reportedIdentity.status !== 'unknown'
     ? profileModelVerdict(row.harness ?? '', requested, reportedIdentity.primary) : 'match';
   const warning = verdict === 'mismatch' ? MODEL_MISMATCH : verdict === 'unconfirmed' ? MODEL_UNCONFIRMED : null;
@@ -74,7 +74,9 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
     : refused ? 'model_not_applied' : unmet === null ? diagnosticErrorCode(reported) : closeErrorCode(unmet);
   const repositoryFailed = status === 'failed' && REPOSITORY_TASKS.includes(row.task ?? '') && parseRunError(reported ?? '')?.code === 'repository_unprepared';
   const repositoryFailure = repositoryFailed ? parseRepositoryFailure(run.repositoryFailure) : null;
+  const fallbackRunId = fallbackAllowed && status === 'failed' && keyFailure !== null ? `${RUN_ID_PREFIX}${crypto.randomUUID()}` : undefined;
   const context: Record<string, string> = {
+    ...(fallbackRunId === undefined ? {} : { fallbackRunId }),
     ...runEndingContext(endedNote, reported, run.harnessStop),
     ...(refused && run.refusal!.reason !== null ? { [FAILURE_REASON_KEY]: run.refusal!.reason } : {}),
     ...(repositoryFailure === null ? {} : {
@@ -82,5 +84,5 @@ export const prepareWorkerEnd = withLeasedRun(async (env, _worker, run: WorkerEn
       ...(repositoryFailure.summary === undefined ? {} : { [REPOSITORY_FAILURE_SUMMARY_KEY]: repositoryFailure.summary }),
     }),
   };
-  return { row, unmet, status, update, errorCode, context, runnerSecretOutcome };
+  return { row, unmet, status, update, errorCode, context, runnerSecretOutcome, fallbackRunId };
 });
