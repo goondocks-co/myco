@@ -32,7 +32,7 @@ export function HealthPage() {
   const read = <T,>(query: { data: T | undefined; error: unknown }) => ({ data: query.data, failed: query.error !== null });
   const facts: HealthFacts = {
     now, projectName, status: read(status), attention: read(attention), work: read(work), payers: read(payers),
-    server: needsItems((attention.data?.items ?? []), needsYou.server.items).server,
+    server: needsItems((attention.data?.items ?? []), needsYou.server.items).server, unchecked: needsYou.server.unchecked,
   };
   useAnchorScroll(!status.isPending && !needsYou.pending);
   const retry = () => { void status.refetch(); void attention.refetch(); void work.refetch(); void payers.refetch(); needsYou.onRetry(); };

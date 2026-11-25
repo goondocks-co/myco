@@ -23,13 +23,17 @@ export type ServerItem =
   /** `overdue` is the attention answer's overdue backup, said with the failure as one item. */
   | { kind: 'backup_failed'; tone: 'bad'; recovery: Producer; overdue?: Overdue };
 
+/** The reads the server-side items come from, by what each checks, as "Needs you" names them. */
+export const SERVER_READS = { storeChecks: 'store checks', storedKeys: 'stored keys', backups: 'automatic backups' } as const;
+export type ServerReadName = (typeof SERVER_READS)[keyof typeof SERVER_READS];
+
 /** What the server-side items read: what they found, which reads are still on their way, and which failed. */
 export interface ServerItemsRead {
   items: ServerItem[];
   /** Reads with no answer yet, by what they check. */
-  checking: string[];
+  checking: ServerReadName[];
   /** Reads that failed, by what they check; an item they found before stays listed. */
-  unchecked: string[];
+  unchecked: ServerReadName[];
 }
 
 const finished = (outcome: MaintenanceOutcome | null | undefined): outcome is MaintenanceOutcome =>

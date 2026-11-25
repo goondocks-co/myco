@@ -1,7 +1,7 @@
 import type { NeedsYouProps } from '../features/today/NeedsYou';
 import { useRef } from 'react';
 import type { MaintenanceOutcome } from '../features/admin/health/wire';
-import { backupFailedItems, backupUnchecked, storedKeyItems, storeCheckItems, type ServerItemsRead } from '../features/today/server-items';
+import { backupFailedItems, backupUnchecked, SERVER_READS, storedKeyItems, storeCheckItems, type ServerItemsRead } from '../features/today/server-items';
 import { isArchived } from '../lib/api';
 import { useAttention } from './use-attention';
 import { useMaintenance } from './use-maintenance';
@@ -35,14 +35,14 @@ export function useServerItems({ enabled }: { enabled: boolean }): ServerItemsRe
       ...backupFailedItems(recovery.data),
     ],
     checking: [
-      ...(maintenance.data === undefined && maintenance.isPending ? ['store checks'] : []),
-      ...(status.data === undefined && status.isPending ? ['stored keys'] : []),
-      ...(recovery.data === undefined && recovery.isPending ? ['automatic backups'] : []),
+      ...(maintenance.data === undefined && maintenance.isPending ? [SERVER_READS.storeChecks] : []),
+      ...(status.data === undefined && status.isPending ? [SERVER_READS.storedKeys] : []),
+      ...(recovery.data === undefined && recovery.isPending ? [SERVER_READS.backups] : []),
     ],
     unchecked: [
-      ...(maintenance.error === null ? [] : ['store checks']),
-      ...(keysUnread ? ['stored keys'] : []),
-      ...(recovery.error !== null || backupUnchecked(recovery.data) ? ['automatic backups'] : []),
+      ...(maintenance.error === null ? [] : [SERVER_READS.storeChecks]),
+      ...(keysUnread ? [SERVER_READS.storedKeys] : []),
+      ...(recovery.error !== null || backupUnchecked(recovery.data) ? [SERVER_READS.backups] : []),
     ],
     refetch: () => { void status.refetch(); void maintenance.refetch(); void recovery.refetch(); },
   };

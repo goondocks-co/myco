@@ -86,6 +86,7 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
   '/api/uncaptured': () => Response.json({ items: [], cursor: null }),
   '/api/runners/agents': () => Response.json({ agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: 'claude-code' }, { id: 'studio', name: 'studio', agent: 'claude-code' }] }),
   '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 0, sources: [] }),
+  '/api/embedding/switch': () => Response.json({ switch: null }),
   '/api/kpis': () => Response.json({
     state: 'ready', windowStart: 1697328000000, windowEnd: 1700006399999, asOf: 1700000000000, metricVersion: 711, windowDays: 30, since: 0, promptsServed: 2, deliveries: { placed: 2, unplaced: 1 }, servedShare: { value: 0.5, sampleSize: 4 }, sporeServeRate: { value: null, sampleSize: 0 }, sessionStartPresent: { value: null, sampleSize: 0 }, callsPerPrompt: { value: null, sampleSize: 0 },
     callsPerPromptByHarness: [], planReadsPerSession: { value: null, sampleSize: 0 }, firstInjectionMs: { value: null, sampleSize: 0 }, recallQuality: { value: null, sampleSize: 0 }, promptIdentity: [],
@@ -133,7 +134,7 @@ const PAYERS = { agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini',
 const QUIET = { '/api/attention': () => Response.json({ items: [], unavailable: [] }) };
 /** The lines Health reads from `STATUS` changed by `over`, with every other fact well unless `facts` says otherwise. */
 const linesOf = (over: Partial<StatusResponse> = {}, facts: Partial<HealthFacts> = {}): WellLine[] => wellLines({
-  now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null), server: [],
+  now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null), server: [], unchecked: [],
   status: { data: { ...STATUS, ...over } as unknown as StatusResponse, failed: false },
   attention: { data: { items: [], unavailable: [] }, failed: false },
   work: { data: WORK, failed: false }, payers: { data: PAYERS, failed: false }, ...facts,
@@ -199,6 +200,7 @@ describe('Health', () => {
       ['a task held for the budget', { budget: { ...STATUS.budget, heldHeads: [{ projectId: MYCO, runId: 'r', task: 'extract-curate', reason: 'budget_too_small', requiredUsd: 25, quotedAt: NOW }] } } as Partial<StatusResponse>, {}, { budget: 'attention' }],
       ['the database not answering', { database: { readable: false } }, {}, { database: 'no' }],
       ['no storage reported', { capabilities: [] }, {}, { database: 'unknown' }],
+      ['the store checks unread', {}, { unchecked: ['store checks'] }, { database: 'unknown' }],
       ['an integrity finding', {}, { server: storeCheckItems({ checks: [{ check: 'integrity', support: { supported: true, label: 'x' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }) }, { database: 'attention' }],
       ['failed reads', { unavailable: ['capture', 'learning', 'workers', 'budget', 'schema'] }, {}, { sessions: 'failed', learning: 'failed', runners: 'failed', budget: 'failed', database: 'failed' }],
     ];
@@ -220,16 +222,24 @@ describe('Health', () => {
     expect(backupUnchecked({ supported: false, reason: 'none here', schedule: { unreadable: 'x' } } as never)).toBe(false);
   });
 
-  it('lowers the verdict for an item that needs you even while the line’s own read is well', async () => {
+  it('lowers the verdict for an integrity finding, a failure Myco retries and quiet capture, while each line’s own read is well', async () => {
     const finding = { runId: 'c1', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['A stored record is missing.'], findingCodes: ['store_problem'], findingsOmitted: 0, measurements: [] };
-    server(routes({ ...QUIET, '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }) }));
+    server(routes({
+      '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }),
+      '/api/attention': () => Response.json({ items: [{ kind: 'outcome_failed', tone: 'bad', projectId: ATLAS, outcome: 'learn', task: 'extract-curate', failures: 3, since: NOW - HOUR, latestAt: NOW, runId: 'run_c19f7a0e55', retrying: true }], unavailable: [] }),
+      '/api/status': () => Response.json({ ...STATUS, capture: [{ ...STATUS.capture[0]!, lastEventAt: NOW - 2 * 86_400_000 }] }),
+    }));
     mount();
     const well = await verdictFor();
-    await waitFor(() => expect(well.querySelector('[data-verdict] p')!.textContent).toBe('Needs attention'));
-    const database = well.querySelector('[data-well-line="database"]')!;
-    expect(database.getAttribute('data-well-state')).toBe('attention');
-    expect(database.textContent).toContain('Answering, at the version this server expects (57).');
-    expect(database.textContent).toContain('Integrity check found a problem.');
+    await waitFor(() => expect(well.querySelector('[data-verdict]')!.textContent)
+      .toBe('Needs attentionNeeds a look: sessions arriving (quiet), learning from them, database and storage.'));
+    const line = (key: string) => well.querySelector(`[data-well-line="${key}"]`)!;
+    expect(line('database').textContent).toContain('Answering, at the version this server expects (57).');
+    expect(line('database').textContent).toContain('Integrity check found a problem.');
+    expect(line('learning').textContent).toContain('Last learning completed 2 min ago.');
+    expect(line('learning').textContent).toContain('3 learning attempts failed.');
+    expect(line('sessions').textContent).toContain('Quiet since then. Last capture received 2 days ago');
+    expect(within(screen.getByRole('region', { name: 'What needs you' })).queryByText('3 learning attempts failed')).toBeNull();
   });
 
   it('gives No when any line is No, Needs attention when any is unsure, and Yes only when all are Yes', () => {
@@ -340,6 +350,7 @@ describe('Health', () => {
     await waitFor(() => expect(needsYou.textContent).toContain('Couldn’t check store checks just now.'));
     expect(within(needsYou).getByText('Integrity check found a problem')).toBeTruthy();
     expect(within(needsYou).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(document.querySelector('[data-well-line="database"]')!.textContent).toContain('Couldn’t check store checks just now.');
   });
 
   it('words a transcript that stopped being read with its next step, and no raw id', async () => {
@@ -640,11 +651,14 @@ for (const [code, configured, ready, expected] of [
 
 
 describe('dashboard status honesty gates', () => {
-  it('finding 3: a failed read of the sources search passes over stays visible under Upkeep, with a retry', async () => {
-    server(routes({ '/api/embedding/passed-over': () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
-    mount(UPKEEP);
-    await screen.findAllByRole('alert');
-    expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
+  it('finding 3: a failed read of a search model switch, or of the sources search passes over, stays visible under Upkeep, with a retry', async () => {
+    for (const endpoint of ['/api/embedding/switch', '/api/embedding/passed-over']) {
+      server(routes({ [endpoint]: () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
+      mount(UPKEEP);
+      expect(await screen.findByRole('alert')).toBeTruthy();
+      expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
+      cleanup();
+    }
   });
   it('finding 6: a well database survives unread learning and runner facts, and the verdict is not Yes', async () => {
     server(routes({ ...QUIET, '/api/status': () => Response.json({ ...STATUS, workers: { available: false, fleet: null, runsQueued: null }, learning: null, unavailable: ['workers', 'learning'] }) }));

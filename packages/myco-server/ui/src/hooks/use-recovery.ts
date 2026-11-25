@@ -7,8 +7,8 @@ export type { LatestAttempt, RecoveryAvailability, RecoverySchedule, RecoverySta
 
 /**
  * The Deployment's recovery state, read only. A Deployment that runs no
- * producer answers 400 for this route, which is not a dashboard error: Health
- * says automatic recovery is unavailable here, so the query does not retry it.
+ * producer answers `supported: false` with its schedule; any failed read is
+ * an error the page names.
  */
 export function useRecovery({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({

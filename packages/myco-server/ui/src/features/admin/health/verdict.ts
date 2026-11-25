@@ -18,7 +18,7 @@ import type { AgentPayersAnswer } from '../../../hooks/use-fleet';
 import type { WorkNowAnswer } from '../../now/wire';
 import type { AttentionAnswer, AttentionItem, AttentionKind } from '../../today/wire';
 import { attentionWords, MYCO_MEMBER_ID } from '../../today/words';
-import { serverItemWords, type ServerItem } from '../../today/server-items';
+import { SERVER_READS, serverItemWords, type ServerItem, type ServerReadName } from '../../today/server-items';
 import { kindOf } from '../../work/words';
 import { taskWords } from '../workers';
 import { backlogWords, capabilityWords, lastLearningWords } from './words';
@@ -81,6 +81,8 @@ export interface HealthFacts {
   attention: Read<AttentionAnswer>;
   /** Store checks, stored keys and automatic backups, an overdue backup already merged into a failed one. */
   server: readonly ServerItem[];
+  /** The reads of those items that failed; an item read before them stays in `server`. */
+  unchecked: readonly ServerReadName[];
   work: Read<WorkNowAnswer>;
   payers: Read<AgentPayersAnswer>;
 }
@@ -108,13 +110,21 @@ function attentionFacts(key: LineKey, { attention, server, now, projectName }: H
   ];
 }
 
-/** What the store checks, stored keys and automatic backups say about one line. A key runners work around stays in What needs you. */
-function serverFacts(key: LineKey, { server }: HealthFacts): Fact[] {
-  return server.flatMap((item) => {
+/** The reads of store checks and automatic backups bear on the database line; stored keys come with the status read. */
+const UNCHECKED_ON_DATABASE: readonly ServerReadName[] = [SERVER_READS.storeChecks, SERVER_READS.backups];
+
+/**
+ * What the store checks, stored keys and automatic backups say about one line, and which of their reads failed. A key
+ * runners work around stays in What needs you.
+ */
+function serverFacts(key: LineKey, { server, unchecked }: HealthFacts): Fact[] {
+  const found = server.flatMap((item) => {
     const on: LineKey | null = item.kind === 'stored_key' ? (item.waits ? 'runners' : null) : 'database';
     if (on !== key) return [];
     return [fact('attention', NEEDS_A_LOOK, `${serverItemWords(item).title}.`)];
   });
+  const unread = key === 'database' ? unchecked.filter((name) => UNCHECKED_ON_DATABASE.includes(name)) : [];
+  return unread.length === 0 ? found : [...found, fact('unknown', 'Couldn’t check', `Couldn’t check ${unread.join(' or ')} just now.`)];
 }
 
 /** A failed refresh keeps what was read, and says so. */
@@ -153,7 +163,7 @@ function learningFact(status: StatusResponse, { now, work }: HealthFacts): Fact 
   if (learning.state !== 'ready' || learning.dueSessions === undefined) return fact('unknown', 'Still counting', said);
   const backlog = learning.dueSessions > 0 || (learning.turnsAwaitingCards ?? 0) > 0;
   if (!backlog) return fact('yes', 'Yes', said);
-  if (work.data === undefined) return fact('unknown', 'Unknown', `${said} Whether learning is moving couldn’t be read.`);
+  if (work.data === undefined) return fact('unknown', 'Unknown', `${said} Whether learning is moving ${work.failed ? 'couldn’t be read' : 'is still being read'}.`);
   const running = work.data.running.filter((run) => processesSessions(run.task));
   if (running.length > 0) return fact('yes', 'Catching up', `${said} Running now: ${[...new Set(running.map((run) => taskWords(run.task)))].join(', ')}.`);
   if (work.data.waiting.length > 0) return fact('attention', 'Waiting', `${said} ${work.data.waiting.map((wait) => `${wait.what}: ${wait.why}`).join(' ')}`);
