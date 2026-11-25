@@ -80,7 +80,7 @@ describe('Projects', () => {
     mount('/projects');
     fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Archive' }));
     expect(await screen.findByText('Archive Live?')).toBeTruthy();
-    expect(screen.getByText(/Capture from every agent stops, and Myco does no work here, until you unarchive it/)).toBeTruthy();
+    expect(screen.getByText(/nothing new is captured here and no new task starts here. A run already going isn’t stopped by archiving/)).toBeTruthy();
     expect(posts).toEqual([]);
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive project' }));
     await screen.findByRole('list', { name: 'Projects' });

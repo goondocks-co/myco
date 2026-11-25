@@ -87,7 +87,7 @@ export function RawClaims({ nested = false }: { nested?: boolean }) {
         </Card>}
       {notice !== null && <p role="status" className="t-small text-ink">{notice}</p>}
       <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); claim.reset(); } }} title="Take ownership of this raw data?"
-        description="You are recorded as its uploader, and only you can read it from then on. Nothing is deleted or changed."
+        description="You are recorded as its uploader, and only you can read it from then on. The files and event contents stay as they are."
         confirmLabel="Take ownership" tone="primary" pending={claim.isPending} confirmDisabled={!confirmed || review?.complete !== true || claim.isError}
         error={claim.isError ? claimError(claim.error) : null}
         onConfirm={() => { if (confirmed && review?.complete === true && !claim.isPending) claim.mutate(review.revision); }}>

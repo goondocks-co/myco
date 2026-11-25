@@ -3,6 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
+import { topmostOwnsEscape } from '../primitives/Dialog';
 
 export interface SlideOverProps {
   open: boolean;
@@ -26,6 +27,7 @@ export function SlideOver({ open, onOpenChange, title, children, ...rest }: Slid
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
+          onEscapeKeyDown={topmostOwnsEscape}
           data-slide-over=""
           data-testid={rest['data-testid']}
           className={cn(

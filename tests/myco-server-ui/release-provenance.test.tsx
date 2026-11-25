@@ -62,8 +62,12 @@ describe('release tracking in project settings', () => {
   it('says what a stopped check means for the sessions it did not reach, and what happens next', () => {
     const stopped = (failure: string) => checkSummary(row({ check: { ...row().check!, status: 'partial', failure, lookups: 50,
       counts: { checked: 4, changed: 0, unchanged: 3, unknown: 1, unavailable: 1, deferred: 196 } } }).check);
-    expect(stopped('budget_exhausted')).toContain('Checked 4 sessions; no release state changed, and Myco couldn’t tell for 1. At least 197 sessions weren’t checked because this check used all 50 of its GitHub lookups; the next check carries on.');
-    expect(stopped('rate_limited')).toContain('At least 197 sessions weren’t checked because of this: GitHub rate limit reached; it resets within the hour. Sessions it didn’t reach keep their earlier state.');
+    // Running out of lookups leaves the rest pending, with no promise the next check gets further.
+    expect(stopped('budget_exhausted')).toContain('Checked 4 sessions; no release state changed, and Myco couldn’t tell for 1. At least 197 sessions weren’t finished because this check used all 50 of its GitHub lookups. Unfinished sessions stay pending and are tried again on the next check, which can run out the same way: to make progress, raise “GitHub lookups per check” under More, or list fewer tags and branches.');
+    expect(stopped('rate_limited')).toContain('At least 197 sessions weren’t finished because of this: GitHub rate limit reached; it resets within the hour. Unfinished sessions stay pending and keep their earlier state.');
+    // The per-check session cap is not a lookup shortfall.
+    expect(checkSummary(row({ check: { ...row().check!, status: 'partial', failure: null, counts: { checked: 200, changed: 0, unchanged: 200, unknown: 0, unavailable: 0, deferred: 1 } } }).check))
+      .toContain('At least 1 session wasn’t finished: one check takes a limited number of sessions');
     expect(stopped('repository_not_connected')).toContain('no repository is connected; connect one under Repository');
     expect(checkSummary(null)).toBe('Not checked yet');
   });

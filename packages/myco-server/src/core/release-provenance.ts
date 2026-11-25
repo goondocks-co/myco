@@ -183,13 +183,25 @@ function checkOf(row: Row): ReleaseCheck | null {
   };
 }
 
-function refList(value: unknown, label: string): string[] {
+/** Why one line is not a ref this setting takes, in the words of what it holds; null when it is one. */
+function refProblem(ref: string, label: string, names: 'tags' | 'branches'): string | null {
+  if (!ref) return `${label} holds an empty line.`;
+  if (ref.length > MAX_REF_CHARS) return `${label} holds a line longer than ${MAX_REF_CHARS} characters.`;
+  if (ref.includes('..')) return `${label} holds a line with "..", which no tag or branch name can hold.`;
+  if (!REF_GRAMMAR.test(ref)) {
+    return names === 'tags'
+      ? `${label} holds a line that is not a tag name or pattern: use letters, digits, . _ / - and * or ? as wildcards.`
+      : `${label} holds a line that is not a branch name: write each branch's exact name, with letters, digits, . _ / and -.`;
+  }
+  return null;
+}
+
+function refList(value: unknown, label: string, names: 'tags' | 'branches'): string[] {
   if (!Array.isArray(value) || value.length > MAX_REFS) throw new ReleaseProvenanceInputError(`${label} takes at most ${MAX_REFS} lines.`);
   const refs = value.map((ref) => (typeof ref === 'string' ? ref.trim() : ''));
   for (const ref of refs) {
-    if (!ref || ref.length > MAX_REF_CHARS || !REF_GRAMMAR.test(ref) || ref.includes('..')) {
-      throw new ReleaseProvenanceInputError(`${label} holds a line that is not a tag or branch name: use letters, digits, . _ / - and * or ? as wildcards.`);
-    }
+    const problem = refProblem(ref, label, names);
+    if (problem !== null) throw new ReleaseProvenanceInputError(problem);
   }
   return [...new Set(refs)];
 }
@@ -197,8 +209,8 @@ function refList(value: unknown, label: string): string[] {
 /** The validated settings a write carries, or an input error naming the field. */
 function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSettings {
   if (typeof input.enabled !== 'boolean' || typeof input.includeUnknown !== 'boolean') throw new ReleaseProvenanceInputError('Tracking and marking sessions as release unknown are each on or off.');
-  const productionRefs = refList(input.productionRefs, 'Release tags');
-  const integrationRefs = refList(input.integrationRefs, 'Merged-into branches');
+  const productionRefs = refList(input.productionRefs, 'Release tags', 'tags');
+  const integrationRefs = refList(input.integrationRefs, 'Merged-into branches', 'branches');
   if (!Array.isArray(input.packageMap) || input.packageMap.length > MAX_PACKAGE_MAPPINGS) {
     throw new ReleaseProvenanceInputError(`Packages take at most ${MAX_PACKAGE_MAPPINGS} lines.`);
   }
@@ -207,7 +219,7 @@ function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSett
     if (typeof pathGlob !== 'string' || !pathGlob.trim() || pathGlob.length > 256 || pathGlob.includes('..')) {
       throw new ReleaseProvenanceInputError('Each package line starts with a folder in the repository, then = and its tags.');
     }
-    return { pathGlob: pathGlob.trim(), tagPattern: refList([tagPattern], 'A package line')[0] };
+    return { pathGlob: pathGlob.trim(), tagPattern: refList([tagPattern], 'A package line', 'tags')[0] };
   });
   const maxLookups = input.maxLookups;
   if (typeof maxLookups !== 'number' || !Number.isInteger(maxLookups) || maxLookups < 1 || maxLookups > MAX_LOOKUPS_CEILING) {

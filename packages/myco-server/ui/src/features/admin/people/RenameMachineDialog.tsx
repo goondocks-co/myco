@@ -13,9 +13,9 @@ export interface RenameTarget {
 
 /**
  * Rename a machine: its name prefilled, checked as it is typed against the rule
- * the server holds it to, and the server's refusal said in words. Its member and
- * admins see the name wherever machines are listed; everyone else sees the work
- * as from its member.
+ * the server holds it to, and the server's refusal said in words. Its member sees
+ * the name on Today and their sessions; admins see it in the machine list and on
+ * the machine's page.
  */
 export function RenameMachineDialog({ machine, onClose }: { machine: RenameTarget | null; onClose: () => void }) {
   return (
@@ -41,7 +41,7 @@ function RenameBody({ machine, onClose }: { machine: RenameTarget; onClose: () =
   return (
     <DialogContent
       title={machine.named ? `Rename ${machine.name}` : 'Name this machine'}
-      description={`Its member and admins see this name on Today, on ${INVITE_CONTROLS.page} and on the machine’s own page; its member also sees it on their sessions. Everyone else sees the work as from its member.`}
+      description={`Its member sees this name on Today and on their sessions. Admins see it in the machine list on ${INVITE_CONTROLS.page} and on the machine’s own page. Everywhere else, the machine’s work shows as its member’s.`}
     >
       <form className="flex flex-col gap-s3" onSubmit={(event) => { event.preventDefault(); save(); }}>
         <Input

@@ -1,8 +1,9 @@
 import { paidByWords, runnerFallbackReasonWords } from '@goondocks/myco-shared/runner-fleet';
 import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
-import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, errorWords, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
+import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTaskNames } from '../../hooks/use-tasks';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useStarterNames } from './names';
@@ -78,6 +79,7 @@ function capitalize(text: string): string {
 function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectId: string; now: number }) {
   const { run, read, produced } = answer;
   const cancel = useCancelRun(projectId, run.id);
+  const client = useQueryClient();
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const canCancel = run.canCancel === true;
@@ -131,7 +133,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           ? 'The code map was already current. Nothing ran, and nothing was spent.'
           : <>Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</>}</p>}
         {live && (canCancel
-          ? <Button size="sm" onClick={() => { setCancelError(null); setConfirmCancel(true); }}>Cancel run</Button>
+          ? <Button size="sm" onClick={() => { setCancelError(null); cancel.reset(); setConfirmCancel(true); }}>Cancel run</Button>
           : <p className="t-small text-muted">{run.cancelReason ?? 'Run cancellation permission is unavailable. Refresh this run.'}</p>)}
         {cancelError !== null && <p role="alert" className="t-small text-bad">{cancelError}</p>}
       </header>
@@ -139,15 +141,21 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         open={confirmCancel}
         onOpenChange={setConfirmCancel}
         title="Cancel this run?"
-        description="The run stops now and doesn’t finish its work. What it already saved stays."
+        description="From now on Myco saves nothing more from this run, and it doesn’t finish its work. The runner may take a moment to stop the agent. What the run already saved stays."
         confirmLabel="Cancel run"
         cancelLabel="Keep it running"
         confirmDisabled={!canCancel}
         pending={cancel.isPending}
-        error={cancel.error instanceof ApiError ? cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.' : `The server didn’t cancel this run: ${errorWords(cancel.error).title.toLowerCase()}. It is still running.` : cancel.error ? 'Could not reach the server. The run is still running.' : null}
-        onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, { onSuccess: () => setConfirmCancel(false), onError: (error) => {
-          if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
-        } }); }}
+        error={cancel.error === null ? null
+          : cancel.error instanceof ApiError && cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.'
+          : 'Myco couldn’t confirm whether the run was cancelled. It has read the run again: check where it stands before trying again.'}
+        onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, {
+          onSuccess: () => setConfirmCancel(false),
+          onError: (error) => {
+            void client.invalidateQueries({ queryKey: ['run', projectId, run.id] });
+            if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
+          },
+        }); }}
       />
 
       {cause !== null && (

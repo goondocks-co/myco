@@ -1,4 +1,4 @@
-import { runnerFallbackSince, runnerFallbackWords } from '@goondocks/myco-shared/runner-fleet';
+import { RUNNER_PAYER_LABELS, runnerFallbackSince, runnerFallbackWords } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { HARNESS_CREDENTIALS, type HarnessCredentialKind } from '@goondocks/myco-shared/harness-providers';
 import { harnessesReading, SECRET_SLOTS, slotUse, type SecretSlotName } from '@goondocks/myco-shared/secret-slots';
@@ -111,7 +111,7 @@ export function KeyRows({ secrets, uses }: { secrets: readonly SecretRow[]; uses
         open={removing !== null}
         onOpenChange={(open) => { if (!open) closeRemove(); }}
         title={`Remove the ${removing === null ? '' : keyLabel(removing.name)}?`}
-        description="The key is deleted from this server and can’t be shown again; to use it later, enter it again. Work that uses it waits until a key is stored, and never falls back to another sign-in."
+        description={removing === null ? '' : `The key is deleted from this server and can’t be shown again; to use it later, enter it again. Work that needs this key waits until one is stored. A runner set to “${RUNNER_PAYER_LABELS['stored-first']}” carries on instead: ${runnerFallbackWords('no_key', removing.name as SecretSlotName)} That work is billed to the account the runner signed in with.`}
         confirmLabel="Remove key"
         pending={actions.deleteSecret.isPending}
         error={actions.deleteSecret.error ? settingsRefusalText(actions.deleteSecret.error) : null}

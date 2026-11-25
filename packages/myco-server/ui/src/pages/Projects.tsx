@@ -108,7 +108,7 @@ export function Projects() {
         open={archiving !== null}
         onOpenChange={(open) => { if (!open) { setArchiving(null); actions.archive.reset(); } }}
         title={`Archive ${archiving?.name ?? ''}?`}
-        description="Capture from every agent stops, and Myco does no work here, until you unarchive it. Everything already captured and learned stays."
+        description="Until you unarchive it, nothing new is captured here and no new task starts here. A run already going isn’t stopped by archiving. Everything already captured and learned stays."
         confirmLabel="Archive project"
         pending={actions.archive.isPending}
         error={actions.archive.error ? refusalText(actions.archive.error) : null}

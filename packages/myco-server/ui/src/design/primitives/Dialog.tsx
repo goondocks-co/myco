@@ -15,6 +15,14 @@ function openerTarget(): HTMLElement | null {
   return trigger ?? active;
 }
 
+/**
+ * Only the topmost dialog or panel answers an Escape: the layer that closes stops the key there, so a dialog opened
+ * inside a panel closes alone, whichever layer heard the key first.
+ */
+export function topmostOwnsEscape(event: KeyboardEvent): void {
+  event.stopImmediatePropagation();
+}
+
 /** The opener is captured before dialog children mount or receive autofocus. */
 export function Dialog({ open, defaultOpen, onOpenChange, ...props }: ComponentPropsWithoutRef<typeof DialogPrimitive.Root>) {
   const [localOpen, setLocalOpen] = useState(defaultOpen ?? false);
@@ -42,7 +50,7 @@ export interface DialogContentProps extends Omit<ComponentPropsWithoutRef<typeof
 
 /** A centred dialog traps focus and returns it to its connected opener or the page. */
 export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+  ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, onEscapeKeyDown, ...props }, ref) => {
     const opener = useContext(ReturnFocus);
     return (
     <DialogPrimitive.Portal>
@@ -58,6 +66,10 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
         {...props}
         onOpenAutoFocus={(event) => {
           onOpenAutoFocus?.(event);
+        }}
+        onEscapeKeyDown={(event) => {
+          onEscapeKeyDown?.(event);
+          topmostOwnsEscape(event);
         }}
         onCloseAutoFocus={(event) => {
           onCloseAutoFocus?.(event);

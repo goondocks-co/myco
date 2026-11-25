@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useStatus } from '../../../hooks/use-status';
 import { live } from '../../../lib/live';
-import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
+import { DASHBOARD_BACKUP_LIMITS, HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
 import { useBackups, useRestoreJob, type BackupRow, type RestoreJob, type RestorePreview } from '../../../hooks/use-backups';
@@ -72,7 +72,7 @@ export function BackupsSection() {
       nested
       id={BACKUP_COPIES_ANCHOR}
       title="Backups made here"
-      description="A backup made here brings back records that were deleted or lost: restoring it adds only the records this server is missing and changes nothing it still holds. To put the whole server back as it was at an earlier moment, use the recovery described below instead. A backup holds up to 64 MiB of records. It is read while the server keeps working, so records written during it may be partly in, and it leaves out attachment and transcript files, settings and secrets."
+      description={`A backup made here is a copy of this server’s records, for bringing back records that were deleted or lost. Its records are read together, at one moment. It can be made only while it stays under ${DASHBOARD_BACKUP_LIMITS.rows.toLocaleString()} records and about ${DASHBOARD_BACKUP_LIMITS.bytes / 1_048_576} MiB by Myco’s cautious estimate. It leaves out attachment and transcript files, settings and secrets; a complete recovery copy, below, keeps those, and is what puts the whole server back as it was.`}
       actions={<Button variant="primary" disabled={!backupPermission.allowed} pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
     >
       {!backupPermission.allowed && <p className="t-small text-muted">{backupPermission.reason ?? 'Only an admin can manage backups.'}</p>}
@@ -168,7 +168,7 @@ export function BackupsSection() {
         open={confirming !== null}
         onOpenChange={(open) => { if (!open) { setConfirming(null); backups.restore.reset(); } }}
         title={confirming === null ? 'Restore this backup?' : `Restore the backup from ${backupDate(confirming.preview.header.createdAt)}?`}
-        description="Only the records this server is missing are added. Records it already holds stay exactly as they are, and nothing is deleted."
+        description="Myco adds the records from this backup that this server is missing and can take. Deletions and archived transcript parts the backup records still apply here, so a session the backup records as deleted loses its parent links here, and a transcript part it records as archived is read from the archive instead of this server’s copy. What it will skip is listed below, and the result says what was left out."
         confirmLabel="Add the missing records"
         tone="primary"
         pending={backups.restore.isPending}

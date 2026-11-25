@@ -1030,6 +1030,26 @@ it('uses the per-run server cancellation decision even when account scope and di
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
 });
 
+it('says a cancel it could not confirm, reads the run again, and opens clean the next time', async () => {
+  const live = runDetail(learning[2]!, { run: { status: 'queued', completedAt: null, canCancel: true, cancelReason: null } });
+  let reads = 0;
+  server({ ...routes({ detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => { reads += 1; return Response.json(live); } } }), [`/api/projects/${P}/runs/run_a2c4e6f801/cancel`]: () => new Response(null, { status: 503 }) });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  const open = await panel();
+  fireEvent.click(await within(open).findByRole('button', { name: 'Cancel run' }));
+  let dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
+  const before = reads;
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel run' }));
+  expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t confirm whether the run was cancelled. It has read the run again: check where it stands before trying again.');
+  await waitFor(() => expect(reads).toBeGreaterThan(before));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it running' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
+  fireEvent.click(within(await panel()).getByRole('button', { name: 'Cancel run' }));
+  dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
+  expect(within(dialog).queryByRole('alert')).toBeNull();
+});
+
 it('uses the registry description when confirming a task', async () => {
   const description = 'The server’s changed declaration is shown before starting this task.';
   server({ ...routes(), '/api/tasks': () => Response.json({ tasks: TASK_DESCRIPTIONS.map((task) => task.task === 'vault-seed' ? { ...task, description } : task) }) });

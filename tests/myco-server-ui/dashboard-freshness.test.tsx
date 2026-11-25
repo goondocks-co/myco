@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Dialog, DialogContent, Input, MoreMenu } from '../../packages/myco-server/ui/src/design';
+import { Button, ConfirmDialog, Dialog, DialogContent, Input, MoreMenu, SlideOver } from '../../packages/myco-server/ui/src/design';
 import { LinkPage } from '../../packages/myco-server/ui/src/pages/Link';
 import { MachineSettingsDialog } from '../../packages/myco-server/ui/src/features/admin/people/MachineSettingsDialog';
 import { PlansBoard } from '../../packages/myco-server/ui/src/features/knowledge/PlansBoard';
@@ -177,6 +177,28 @@ it('returns focus to the connected menu trigger after an autofocused dialog clos
   await screen.findByRole('dialog');
   fireEvent.click(screen.getByRole('button', { name: 'Close' }));
   await waitFor(() => expect(document.activeElement === trigger).toBe(true));
+});
+
+it('closes only the topmost dialog on Escape, and returns focus to what opened it', async () => {
+  const closed: string[] = [];
+  function Host() { const [open, setOpen] = useState(true); return open ? <SlideOverHost onClose={() => { closed.push('panel'); setOpen(false); }} /> : null; }
+  function SlideOverHost({ onClose }: { onClose: () => void }) {
+    const [confirming, setConfirming] = useState(false);
+    return <SlideOver open onOpenChange={(next) => { if (!next) onClose(); }} title="Run">
+      <Button onClick={() => setConfirming(true)}>Cancel run</Button>
+      <ConfirmDialog open={confirming} onOpenChange={setConfirming} title="Cancel this run?" description="It stops." confirmLabel="Cancel run" cancelLabel="Keep it running" onConfirm={() => undefined} />
+    </SlideOver>;
+  }
+  render(<Host />);
+  const opener = await screen.findByRole('button', { name: 'Cancel run' });
+  opener.focus();
+  fireEvent.click(opener);
+  const confirm = await screen.findByRole('dialog', { name: 'Cancel this run?' });
+  fireEvent.keyDown(confirm, { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
+  expect(closed).toEqual([]);
+  expect(screen.getByRole('dialog', { name: 'Run' })).toBeTruthy();
+  await waitFor(() => expect(document.activeElement === screen.getByRole('button', { name: 'Cancel run' })).toBe(true));
 });
 
 it('retains committed account linking while sign-in refresh fails and retries only the read', async () => {

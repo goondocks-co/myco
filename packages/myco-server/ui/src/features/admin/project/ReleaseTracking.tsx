@@ -20,7 +20,8 @@ const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} 
 
 /**
  * The latest check in words: when, how many sessions it checked and what changed, and, for the sessions it did not
- * reach, why and what happens to them. Unreached sessions keep their earlier state and stay open for the next check.
+ * finish, why. Unfinished sessions keep their earlier state and stay pending; lookups running out is told apart from
+ * the number of sessions one check takes.
  */
 export function checkSummary(check: ReleaseCheck | null): string {
   if (check === null || check.startedAt === null) return check?.requestedAt ? 'Check requested' : 'Not checked yet';
@@ -33,14 +34,14 @@ export function checkSummary(check: ReleaseCheck | null): string {
     parts.push(`Checked ${plural(c.checked, 'session', 'sessions')}; ${changed}${unknown}.`);
   }
   const missed = c === null ? 0 : c.unavailable + c.deferred;
-  const more = `At least ${plural(missed, 'session', 'sessions')}`;
+  const unfinished = `At least ${plural(missed, 'session', 'sessions')} ${missed === 1 ? 'wasn’t' : 'weren’t'} finished`;
   if (check.failure === 'budget_exhausted') {
     const used = check.lookups === null ? 'all its GitHub lookups' : `all ${check.lookups.toLocaleString()} of its GitHub lookups`;
-    parts.push(`${missed > 0 ? `${more} weren’t checked` : 'It stopped early'} because this check used ${used}; the next check carries on. To check more at once, raise “GitHub lookups per check” under More when you edit release tracking.`);
+    parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending and are tried again on the next check, which can run out the same way: to make progress, raise “GitHub lookups per check” under More, or list fewer tags and branches.`);
   } else if (check.failure !== null) {
-    parts.push(`${missed > 0 ? `${more} weren’t checked` : 'It stopped'} because of this: ${checkFailureLabel(check.failure)}. Sessions it didn’t reach keep their earlier state.`);
+    parts.push(`${missed > 0 ? unfinished : 'It stopped'} because of this: ${checkFailureLabel(check.failure)}. Unfinished sessions stay pending and keep their earlier state.`);
   } else if (missed > 0) {
-    parts.push(`${more} wait for the next check.`);
+    parts.push(`${unfinished}: one check takes a limited number of sessions, and a session that changed while it ran waits. They stay pending for the next check.`);
   }
   const pending = check.requestedAt !== null && check.requestedAt > check.startedAt ? ' Another check is requested.' : '';
   return `${agoWords(check.finishedAt)}: ${parts.join(' ')}${pending}`;
@@ -179,20 +180,20 @@ function ReleaseTrackingForm({ projectId, row, onClose }: { projectId: string; r
       <FormField id="release-refs" label="Which tags mark a release?" hint="One per line. A * stands for anything: v* covers v2.1.0 and v2.2.0, and myco/v* covers tags like myco/v2.0.3.">
         <Textarea id="release-refs" aria-describedby="release-refs-hint" className="t-mono" value={production} onChange={(e) => setProduction(e.target.value)} placeholder="v*" />
       </FormField>
-      <FormField id="release-integration" label="Which branch is work merged into?" hint={`One per line; for this repository, usually ${branch}. A session found there but in no release tag shows as merged, not released.`}>
+      <FormField id="release-integration" label="Which branch is work merged into?" hint={`Each branch’s exact name, one per line; for this repository, usually ${branch}. A session Myco finds merged there, directly or through a merged pull request, but in none of the release tags it checked, shows as “Merged, not released”.`}>
         <Textarea id="release-integration" aria-describedby="release-integration-hint" className="t-mono" rows={2} value={integration} onChange={(e) => setIntegration(e.target.value)} placeholder={branch} />
       </FormField>
       <SwitchField
         id="release-unknown"
         label="Say when Myco can’t tell"
-        hint="A session that ended with uncommitted changes, or whose last commit wasn’t captured, can’t be placed. On, it shows as “Release unknown”; off, it shows no release state."
+        hint="Myco can’t place a session that ended with uncommitted changes, whose last commit wasn’t captured or isn’t on GitHub, or whose files couldn’t be read. On, a check records it as “Release unknown”. Off, a check records nothing new for it, and a state it already shows stays."
         checked={includeUnknown}
         onCheckedChange={setIncludeUnknown}
       />
       <Disclosure summary="More" defaultOpen={row.packageMap.length > 0}>
         <div className="flex flex-col gap-s4 pt-s1">
-          <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then that package’s tags. A session that changed files in the folder is checked against those tags only.">
-            <Textarea id="release-packages" aria-describedby="release-packages-hint" className="t-mono" value={mapping} onChange={(e) => setMapping(e.target.value)} placeholder="packages/app/ = app/v*" />
+          <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then the tags of the package in it. For a session that changed files in a listed folder, Myco checks only the release tags above that match that package’s tags; when none match, or no folder is listed, it checks all of them. The merged-into branch is checked either way. For example, with myco/v* above: packages/myco/ = myco/v*">
+            <Textarea id="release-packages" aria-describedby="release-packages-hint" className="t-mono" value={mapping} onChange={(e) => setMapping(e.target.value)} placeholder="packages/myco/ = myco/v*" />
           </FormField>
           <FormField id="release-lookups" label="GitHub lookups per check" hint="Each check reads tags and compares commits on GitHub, at most this many times. More checks more sessions at once and uses more of GitHub’s hourly allowance.">
             <Input id="release-lookups" aria-describedby="release-lookups-hint" type="number" min={1} max={1000} value={maxLookups} onChange={(e) => setMaxLookups(e.target.value)} />
