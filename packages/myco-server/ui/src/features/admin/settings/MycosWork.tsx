@@ -1,19 +1,20 @@
-import { useState } from 'react';
-import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
+import { useMemo, useState } from 'react';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { BUDGET_DEFAULT_USD, type BudgetStatus } from '@goondocks/myco-shared/budget-status';
-import type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
+import { runnerAgentLoginReady, storedKeyFailureTitle, type FleetRun, type RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import { agoWords, dayWords } from '@goondocks/myco-shared/time-words';
-import { ActionLink, Button, CommandBlock, ErrorState, Input, LoadingState, StatusChip, Switch, type Tone } from '../../../design';
-import { useAgentPayers, useFleet, type AgentPayersAnswer } from '../../../hooks/use-fleet';
+import { ActionLink, Button, CommandBlock, ErrorState, Input, LoadingState, ShowMore, StatusChip, Switch, type Tone } from '../../../design';
+import { RUNNERS_KEY, useAgentPayers, type AgentPayersAnswer, type FleetAnswer } from '../../../hooks/use-fleet';
 import { permissionOf, useMe } from '../../../hooks/use-me';
-import { settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
+import { isSettingsConflict, settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { useStatus } from '../../../hooks/use-status';
+import { fetchJson } from '../../../lib/api';
 import { harnessLabel } from '../../../lib/harness';
+import { live } from '../../../lib/live';
 import { runnerPath } from '../../../routes/nav';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import { taskWords } from '../workers';
-import { keyLabel } from './KeyDialog';
 import type { LeafRow } from './wire';
 
 const SCHEDULE_LEAF = 'agent.scheduled_tasks_enabled';
@@ -29,16 +30,29 @@ export function changeNote(row: LeafRow | undefined, name: string | null, viewer
 
 const usd = (value: number): string => `$${Number.isInteger(value) ? value : value.toFixed(2)}`;
 
-/** What automatic and hand-started work spent in the last 24 hours, or why that is not known yet. */
-function spentWords(budget: BudgetStatus | undefined): string | null {
-  if (budget === undefined) return null;
-  if (budget.state === 'building' || budget.automaticUsd === null) return 'Measuring what was spent in the last 24 hours';
-  return `$${(budget.automaticUsd + (budget.manualUsd ?? 0)).toFixed(2)} spent in the last 24 hours`;
+/**
+ * What counts against the budget in the trailing day, as the server's admission accounting holds it: settled spend
+ * and estimates for runs still going or with no reported cost. Each state the read can be in says so.
+ */
+export function budgetCountWords(read: { isPending: boolean; isError: boolean }, budget: BudgetStatus | undefined): string {
+  if (read.isPending) return 'Reading what counts against the budget';
+  if (read.isError) return 'Couldn’t read what counts against the budget';
+  if (budget === undefined) return 'What counts against the budget is unavailable on this server';
+  if (!budget.active) return `The budget is not applied: ${budget.reason ?? 'no reason given'}`;
+  if (budget.state === 'building' || budget.automaticUsd === null) return 'Still measuring what counts against the budget';
+  return `$${(budget.automaticUsd + (budget.manualUsd ?? 0)).toFixed(2)} counts against it from the last 24 hours, estimates for unfinished or unpriced runs included`;
 }
+
+/** A value being typed, with the revision of the setting it started from: a save carries that revision, never a newer one. */
+interface Draft { value: string; revision: number | undefined }
+
+const revisionOf = (row: LeafRow | undefined): number | undefined => (row === undefined ? undefined : Number(row.revision));
+/** Whether the server could say what a setting is: a row it answered for, in a known state. */
+const known = (row: LeafRow | undefined): row is LeafRow => row !== undefined && row.state !== 'unknown';
 
 /**
  * "Should Myco work on its own?": the switch that lets Myco work unasked, and the most it may spend on its own in a
- * day, each saying who changed it and when, the budget with what was spent in the last 24 hours.
+ * day, each saying who changed it and when, with a way back to the default; the budget with what counts against it.
  */
 function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
   const me = useMe();
@@ -48,32 +62,38 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
   const actions = useSettingsActions();
   const status = useStatus();
   const [error, setError] = useState<{ leaf: string; words: string } | null>(null);
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);
   const schedule = rows.get(SCHEDULE_LEAF);
   const budget = rows.get(BUDGET_LEAF);
-  const on = schedule?.effective === true;
   const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending;
-  const locked = !permission.allowed || pending;
-  const refused = (leaf: string) => (failure: unknown) => setError({ leaf, words: settingsRefusalText(failure) });
-  const revisionOf = (row: LeafRow | undefined): number | undefined => (row === undefined ? undefined : Number(row.revision));
-  const save = (leaf: string, value: unknown) => {
+  const admin = permission.allowed;
+  const refused = (leaf: string) => (failure: unknown) => {
+    if (isSettingsConflict(failure)) setDraft(null);
+    setError({ leaf, words: settingsRefusalText(failure) });
+  };
+  const save = (leaf: string, value: unknown, revision: number | undefined) => {
     setError(null);
-    actions.setLeaf.mutate({ leaf, value, revision: revisionOf(rows.get(leaf)) }, { onError: refused(leaf), onSuccess: () => setDraft(null) });
+    actions.setLeaf.mutate({ leaf, value, revision }, { onSuccess: () => setDraft(null), onError: refused(leaf) });
+  };
+  const reset = (leaf: string) => {
+    setError(null);
+    actions.resetLeaf.mutate({ leaf, revision: revisionOf(rows.get(leaf)) }, { onSuccess: () => setDraft(null), onError: refused(leaf) });
   };
   const amount = typeof budget?.effective === 'number' ? budget.effective : null;
+  const edit = (value: string) => setDraft((was) => ({ value, revision: was?.revision ?? revisionOf(budget) }));
   const commitBudget = () => {
-    if (draft === null) return;
-    const next = Number(draft);
-    if (draft.trim() === '' || !Number.isFinite(next) || next < 1) { setError({ leaf: BUDGET_LEAF, words: 'Enter an amount of at least $1.' }); return; }
-    if (next === amount) { setDraft(null); return; }
-    save(BUDGET_LEAF, next);
+    if (draft === null || pending) return;
+    const next = Number(draft.value);
+    if (draft.value.trim() === '' || !Number.isFinite(next) || next < 1) { setError({ leaf: BUDGET_LEAF, words: 'Enter an amount of at least $1.' }); return; }
+    if (next === amount && draft.revision === revisionOf(budget)) { setDraft(null); return; }
+    save(BUDGET_LEAF, next, draft.revision);
   };
-  const useDefault = () => {
-    setError(null);
-    actions.resetLeaf.mutate({ leaf: BUDGET_LEAF, revision: revisionOf(budget) }, { onError: refused(BUDGET_LEAF), onSuccess: () => setDraft(null) });
-  };
-  const spent = spentWords(status.data?.budget);
-  const note = (row: LeafRow | undefined) => changeNote(row, row?.configured === true ? nameOf(row.updatedBy) : null, viewerId);
+  const note = (row: LeafRow) => changeNote(row, row.configured ? nameOf(row.updatedBy) : null, viewerId);
+  const statusOf = (leaf: string, row: LeafRow | undefined, extra: string | null = null) => (error?.leaf === leaf ? error.words
+    : [known(row) ? note(row) : 'Not known right now: the server could not say what this is set to', extra, admin ? null : permission.reason].filter(Boolean).join(' · '));
+  const resetButton = (leaf: string, row: LeafRow | undefined, label: string) => (row?.configured === true && admin
+    ? <div className="mt-s1"><Button size="sm" variant="ghost" disabled={pending} onClick={() => reset(leaf)}>{label}</Button></div> : null);
+  const on = schedule?.effective === true;
 
   return (
     <AdminSection id="scheduling" title="Should Myco work on its own?">
@@ -82,22 +102,26 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
           inline
           setting={SCHEDULE_LEAF}
           label="Work on its own"
-          htmlFor="work-on-its-own"
-          note={on
-            ? 'Myco learns from finished sessions, writes their titles and keeps code maps current, without being asked.'
+          htmlFor={known(schedule) ? 'work-on-its-own' : undefined}
+          note={!known(schedule) ? 'Whether Myco works on its own is unavailable until the server answers.'
+            : on ? 'Myco learns from finished sessions, writes their titles and keeps code maps current, without being asked.'
             : 'Myco does nothing until you start it by hand from Myco’s work.'}
-          status={error?.leaf === SCHEDULE_LEAF ? error.words : [note(schedule), permission.allowed ? null : permission.reason].filter(Boolean).join(' · ')}
+          status={statusOf(SCHEDULE_LEAF, schedule)}
           refused={error?.leaf === SCHEDULE_LEAF}
-          control={<Switch id="work-on-its-own" aria-label="Work on its own" checked={on} disabled={locked || schedule === undefined} onCheckedChange={(checked) => save(SCHEDULE_LEAF, checked)} />}
+          details={resetButton(SCHEDULE_LEAF, schedule, 'Use the default (off)')}
+          control={known(schedule)
+            ? <Switch id="work-on-its-own" aria-label="Work on its own" checked={on} disabled={!admin || pending} onCheckedChange={(checked) => save(SCHEDULE_LEAF, checked, revisionOf(schedule))} />
+            : <span className="t-small text-muted">Unavailable</span>}
         />
         <SettingRow
           setting={BUDGET_LEAF}
           label="Daily budget"
-          htmlFor="daily-budget"
+          htmlFor={known(budget) ? 'daily-budget' : undefined}
           note="The most Myco spends on its own in a day. When it’s reached, Myco waits until spending from the last 24 hours makes room. Work you start by hand is never blocked, and its spend counts."
-          status={error?.leaf === BUDGET_LEAF ? error.words : [note(budget), spent].filter(Boolean).join(' · ')}
+          status={statusOf(BUDGET_LEAF, budget, budgetCountWords(status, status.data?.budget))}
           refused={error?.leaf === BUDGET_LEAF}
-          control={<div className="flex w-full flex-wrap items-center justify-end gap-s2">
+          details={resetButton(BUDGET_LEAF, budget, `Use default (${usd(BUDGET_DEFAULT_USD)})`)}
+          control={known(budget) ? <div className="flex w-full items-center justify-end gap-s2">
             <span className="t-body text-muted">$</span>
             <Input
               id="daily-budget"
@@ -107,16 +131,13 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
               className="min-w-0 flex-1"
               min={1}
               step={0.01}
-              value={draft ?? (amount === null ? '' : String(amount))}
-              readOnly={locked}
-              onChange={(event) => setDraft(event.target.value)}
+              value={draft?.value ?? (amount === null ? '' : String(amount))}
+              readOnly={!admin}
+              onChange={(event) => edit(event.target.value)}
               onBlur={commitBudget}
               onKeyDown={(event) => { if (event.key === 'Enter') commitBudget(); }}
             />
-            {budget?.configured === true && permission.allowed && (
-              <Button size="sm" disabled={pending} onClick={useDefault}>{`Use default (${usd(BUDGET_DEFAULT_USD)})`}</Button>
-            )}
-          </div>}
+          </div> : <span className="t-small text-muted">Unavailable</span>}
         />
       </RowCard>
     </AdminSection>
@@ -125,60 +146,95 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
 
 const DISPLAY_TONE: Readonly<Record<string, Tone>> = { Online: 'ok', Busy: 'ok', 'Not ready': 'warn' };
 
-/** What a runner last ran and when, or what it is running now. */
-function lastRanWords(runner: RunnerFleetRecord, now: number): string {
+/** A runner's latest run whatever its outcome, in one phrase, or what it is running now. */
+export function lastRunWords(runner: Pick<RunnerFleetRecord, 'busy' | 'lastCompleted' | 'lastFailed' | 'lastAttempted'>, now: number): string {
   if (runner.busy !== null) return `Running ${taskWords(runner.busy.task)} now`;
-  if (runner.lastCompleted !== null) return `Last ran ${taskWords(runner.lastCompleted.task)} ${agoWords(runner.lastCompleted.at, now)}`;
-  return 'Has not run anything yet';
+  const runs: Array<{ run: FleetRun; outcome: 'ran' | 'failed' | 'started' }> = [
+    ...(runner.lastCompleted === null ? [] : [{ run: runner.lastCompleted, outcome: 'ran' as const }]),
+    ...(runner.lastFailed === null ? [] : [{ run: runner.lastFailed, outcome: 'failed' as const }]),
+    ...(runner.lastAttempted === null ? [] : [{ run: runner.lastAttempted, outcome: 'started' as const }]),
+  ];
+  // A run that ended is told by how it ended, not by its start.
+  const ended = new Set(runs.filter(({ outcome }) => outcome !== 'started').map(({ run }) => run.runId));
+  const latest = runs.filter(({ run, outcome }) => outcome !== 'started' || !ended.has(run.runId))
+    .reduce<(typeof runs)[number] | null>((best, next) => (best === null || next.run.at > best.run.at ? next : best), null);
+  if (latest === null) return 'Has not run anything yet';
+  const task = taskWords(latest.run.task);
+  const when = agoWords(latest.run.at, now);
+  return latest.outcome === 'ran' ? `Last ran ${task} ${when}` : latest.outcome === 'failed' ? `Last run, ${task}, failed ${when}` : `Last started ${task} ${when}, with no outcome reported`;
 }
 
-/** How a runner pays for the agent it uses today: its own sign-in, or a key this server stores. */
-export function paysWords(runnerId: string, payers: AgentPayersAnswer | undefined): string | null {
-  if (payers === undefined) return null;
-  const today = payers.today.find((entry) => entry.id === runnerId);
-  if (today === undefined) return null;
-  if (today.agent === null) return 'not signed in to an agent it can use';
-  const choice = payers.agents.find((entry) => entry.agent === today.agent)?.runners.find((runner) => runner.id === runnerId)?.choice ?? null;
-  const agent = harnessLabel(today.agent);
-  if (choice === 'stored') {
-    const slot = HARNESS_CREDENTIALS[today.agent]?.slot ?? null;
-    return `pays for ${agent} with the stored ${slot === null ? 'key' : keyLabel(slot)}`;
-  }
-  return choice === 'own' ? `pays with its own ${agent} sign-in` : `uses ${agent}; who pays needs choosing again`;
+/**
+ * How a runner is set to pay for the agent it uses for learning, and whether it can use that agent now, from the
+ * runner's own reported readiness. What the server could not say reads as unknown.
+ */
+export function payWords(runner: Pick<RunnerFleetRecord, 'id' | 'offers' | 'credentialChoices' | 'storedKeyFailures'>, payers: AgentPayersAnswer | undefined, storedUsable: Readonly<Record<string, boolean>> | undefined): string {
+  const today = payers?.today.find((entry) => entry.id === runner.id);
+  const agent = today?.agent ?? runner.offers?.find((offer) => runnerAgentLoginReady(offer, runner.credentialChoices, storedUsable))?.id ?? null;
+  if (agent === null) return runner.offers === null ? 'Which agent it can use is unknown' : 'No agent it can use now';
+  const label = harnessLabel(agent);
+  const choices = runner.credentialChoices ?? {};
+  const choice = Object.hasOwn(choices, agent) ? choices[agent]! : 'own';
+  const set = choice === null ? `Who pays for ${label} needs choosing again`
+    : choice === 'own' ? `Set to pay for ${label} with its own sign-in` : `Set to pay for ${label} with the stored key`;
+  if (runner.offers === null) return `${set}; whether it can use it now is unknown`;
+  const offer = runner.offers.find((entry) => entry.id === agent);
+  if (offer === undefined) return `${set}; ${label} is not on it now`;
+  if (runnerAgentLoginReady(offer, runner.credentialChoices, storedUsable)) return `${set}, and can use it now`;
+  const failure = runner.storedKeyFailures?.find((entry) => entry.agent === agent);
+  const why = choice === 'stored'
+    ? (failure !== undefined ? storedKeyFailureTitle(failure.failure, failure.slot) : 'There is no stored key it can use')
+    : offer.installed === false ? `${label} is not installed` : `It is not signed in to ${label}`;
+  return `${set}, but can’t use it now. ${why}.`;
 }
 
-/** "Where the work runs": one row per registered runner, and how to add another. */
+/** Every page of the active runners, each further page read on request. */
+function useRunnerPages() {
+  const query = useInfiniteQuery({
+    queryKey: [...RUNNERS_KEY, 'pages'],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam, signal }) => fetchJson<FleetAnswer>(`/api/runners${pageParam === null ? '' : `?cursor=${encodeURIComponent(pageParam)}`}`, signal),
+    getNextPageParam: (last) => last.cursor ?? undefined,
+    ...live({ follows: ['fleet', 'runs'] }),
+  });
+  const runners = useMemo(() => query.data?.pages.flatMap((page) => page.runners) ?? [], [query.data]);
+  return { query, runners, storedUsable: query.data?.pages[0]?.storedCredentials, total: query.data?.pages[0]?.totals?.active };
+}
+
+/** "Where the work runs": one row per registered runner, every page of them, and how to add another. */
 function WhereWorkRuns() {
-  const fleet = useFleet();
+  const { query, runners: all, storedUsable, total } = useRunnerPages();
   const payers = useAgentPayers();
   const [adding, setAdding] = useState(false);
   const now = Date.now();
-  const runners = (fleet.data?.runners ?? []).filter((runner) => runner.state !== 'removed');
+  const runners = all.filter((runner) => runner.state !== 'removed');
   const origin = window.location.origin;
+  const none = query.isSuccess && !query.hasNextPage && runners.length === 0;
   return (
     <AdminSection id="runners" title="Where the work runs">
-      {fleet.isError && <ErrorState error={fleet.error} onRetry={() => void fleet.refetch()} />}
+      {query.isError && <ErrorState error={query.error} onRetry={() => void (query.isFetchNextPageError ? query.fetchNextPage() : query.refetch())} />}
       <RowCard label="Where the work runs">
-        {fleet.isPending && <LoadingState label="Reading the runners" count={2} />}
-        {runners.map((runner) => {
-          const pays = paysWords(runner.id, payers.data);
-          return (
-            <div key={runner.id} className="flex flex-col gap-s3 px-s4 py-s4 sm:flex-row sm:items-start sm:justify-between sm:gap-s6" data-runner-row={runner.id}>
-              <div className="flex min-w-0 flex-col gap-s1">
-                <span className="t-body font-medium text-ink break-words">{runner.name}</span>
-                <span className="t-small text-muted">{[lastRanWords(runner, now), pays].filter(Boolean).join(' · ')}</span>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-s2">
-                <StatusChip tone={DISPLAY_TONE[runner.display] ?? 'neutral'}>{runner.display}</StatusChip>
-                <ActionLink to={runnerPath(runner.id)}>Manage</ActionLink>
-              </div>
+        {query.isPending && <LoadingState label="Reading the runners" count={2} />}
+        {runners.map((runner) => (
+          <div key={runner.id} className="flex flex-col gap-s3 px-s4 py-s4 sm:flex-row sm:items-start sm:justify-between sm:gap-s6" data-runner-row={runner.id}>
+            <div className="flex min-w-0 flex-col gap-s1">
+              <span className="t-body font-medium text-ink break-words">{runner.name}</span>
+              <span className="t-small text-muted">{lastRunWords(runner, now)}</span>
+              <span className="t-small text-muted" data-runner-pay="">{payWords(runner, payers.data, storedUsable)}</span>
             </div>
-          );
-        })}
+            <div className="flex shrink-0 flex-wrap items-center gap-s2">
+              <StatusChip tone={DISPLAY_TONE[runner.display] ?? 'neutral'}>{runner.display}</StatusChip>
+              <ActionLink to={runnerPath(runner.id)}>Manage</ActionLink>
+            </div>
+          </div>
+        ))}
+        {(query.hasNextPage || query.isFetchingNextPage) && (
+          <div className="px-s4 py-s3"><ShowMore shown={all.length} total={total} noun="runners" hasMore={query.hasNextPage} pending={query.isFetchingNextPage} onMore={() => void query.fetchNextPage()} /></div>
+        )}
         <div className="flex flex-col gap-s3 px-s4 py-s4">
           <div className="flex flex-col gap-s3 sm:flex-row sm:items-center sm:justify-between sm:gap-s6">
             <p className="max-w-measure t-small text-muted">
-              {fleet.isSuccess && runners.length === 0 ? 'No machine runs Myco’s work yet. ' : ''}
+              {none ? 'No machine runs Myco’s work yet. ' : ''}
               A runner is a machine you’ve chosen to do Myco’s work, with a coding agent signed in on it.
             </p>
             <Button className="shrink-0" onClick={() => setAdding(!adding)} aria-expanded={adding}>Add a runner</Button>

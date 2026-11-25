@@ -251,7 +251,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     label: 'What Myco keeps',
     note: 'How long this server keeps raw transcripts and its own records.',
     leaves: [
-      { leaf: 'retention.raw_days', label: 'Keep raw content hot for', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Defaults to 90 days. Older raw content moves to verified archive storage. Unparsed bytes and recovery holds delay the move. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely. A legacy forever choice holds archival until a finite window is set.' },
+      { leaf: 'retention.raw_days', label: 'Keep raw transcripts in active storage for', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Defaults to 90 days. After that, raw transcripts move to archive storage, where they stay, checked. A transcript Myco has not read yet, or one a restore still needs, moves later. A server set to keep them forever keeps them here until a number of days is set. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
     ],
   },
@@ -264,7 +264,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     leaves: [
       { leaf: 'backup.auto_interval_hours', label: 'Back up every', kind: 'number', min: 1, max: 720, unit: 'hours', note: `A self-hosted server writes a verified recovery copy on this interval; a hosted one stages a copy an operator then turns into one. ${HOSTED_BACKUP_PAUSE_NOTICE}` },
       { leaf: 'backup.recovery.keep_stagings', label: 'Full recovery copies to keep', kind: 'number', min: 1, max: 30, note: 'Complete copies kept, newest first; older ones are released, and so are failed ones past the newest. Unset keeps 2.' },
-      { leaf: 'backup.retention.keep_daily', label: 'Newest manual relational exports to keep (daily)', kind: 'number', min: 1, max: 365, note: 'Keeps the newest export copies, rather than one per day. Pruned when a manual export is created.' },
+      { leaf: 'backup.retention.keep_daily', label: 'Manual exports to keep, newest first', kind: 'number', min: 1, max: 365, note: 'Keeps the newest export copies, rather than one per day. Pruned when a manual export is created.' },
       { leaf: 'backup.retention.keep_weekly', label: 'Recent export weeks to keep', kind: 'number', min: 0, max: 52, note: 'Keeps the newest export from each of the N most recent weeks that contain exports. Empty weeks consume no slot. Pruned when a manual export is created.' },
     ],
   },

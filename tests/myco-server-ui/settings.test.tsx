@@ -128,14 +128,15 @@ interface Sent { method: string; path: string; body: unknown; headers: Record<st
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, (init?: RequestInit) => Response | Promise<Response>>): { sent: Sent[] } {
+function server(routes: Record<string, (init?: RequestInit, url?: URL) => Response | Promise<Response>>): { sent: Sent[] } {
   const sent: Sent[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const pathname = new URL(href, 'https://s').pathname;
+    const url = new URL(href, 'https://s');
+    const pathname = url.pathname;
     const method = init?.method ?? 'GET';
     if (method !== 'GET') sent.push({ method, path: pathname, body: init?.body ? JSON.parse(String(init.body)) : undefined, headers: Object.fromEntries(Object.entries((init?.headers as Record<string, string>) ?? {})) });
-    return routes[pathname]?.(init) ?? new Response(null, { status: 404 });
+    return routes[pathname]?.(init, url) ?? new Response(null, { status: 404 });
   }) as typeof fetch;
   return { sent };
 }
@@ -147,7 +148,7 @@ const SETUP = { target: 'cloudflare', origin: null, clientId: 'Iv1.app', expecte
 const KEYED = { ...SETUP, key: { state: 'ready', app: { slug: 'myco-app' }, missing: [] } };
 const INSTALLED = { installationId: 41, account: APP_OWNER, approved: false, suspended: false, permissionsAccepted: true };
 
-const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<Response>> = {}) => ({
+const base = (extra: Record<string, (init?: RequestInit, url?: URL) => Response | Promise<Response>> = {}) => ({
   '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
@@ -157,7 +158,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/api/titling-backfill': () => Response.json(TITLING),
   '/api/runners/agents': () => Response.json(ONE_RUNNER),
   '/api/telemetry/keys': () => Response.json({ endpoint: 'https://myco.example', keys: [] }),
-  '/api/repositories': () => Response.json({ projects: [{ projectId: P_X, name: 'Project X', repository: null }], more: false }),
+  '/api/repositories': () => Response.json({ repositories: [], cursor: null }),
   ...extra,
 });
 
@@ -804,7 +805,7 @@ describe('Settings, in six sections', () => {
     }));
     mount('/settings?tab=records');
 
-    const window = await screen.findByLabelText('Keep raw content hot for');
+    const window = await screen.findByLabelText('Keep raw transcripts in active storage for');
     expect((window as HTMLInputElement).value).toBe('30');
     fireEvent.change(window, { target: { value: '60' } });
     fireEvent.blur(window);
@@ -812,7 +813,7 @@ describe('Settings, in six sections', () => {
     expect(sent[0]).toMatchObject({ method: 'PUT', path: '/api/settings/retention.raw_days', body: { value: 60 } });
     expect(Object.keys(sent[0]!.body as object)).toEqual(['value']);
 
-    await waitFor(() => expect((screen.getByLabelText('Keep raw content hot for') as HTMLInputElement).value).toBe('60'));
+    await waitFor(() => expect((screen.getByLabelText('Keep raw transcripts in active storage for') as HTMLInputElement).value).toBe('60'));
     for (const [groupLabel, label, leaf] of [
       ['What sessions receive', 'Session-start instructions', 'instructions.template'],
       ['Importing past sessions', 'Reach back at most', 'import.window_days'],
@@ -925,26 +926,36 @@ describe('older links to a Settings tab', () => {
     }
   });
 
-  it('replace the address with the section and land on the group, and lead a moved anchor to its new section', async () => {
-    server(base());
-    mount('/settings?tab=secrets');
-    await waitFor(() => expect(location()).toBe('/settings/connections#credentials'));
-    expect(await screen.findByRole('group', { name: 'Connections' })).toBeTruthy();
-    cleanup();
-    for (const [old, now] of [
-      ['/settings/access#github-app', '/settings/repositories#github-app'], ['/settings/access#telemetry', '/settings/connections#telemetry'], ['/settings#single-turn', '/settings/models#single-turn'],
-      ['/settings/connections#github-app', '/settings/repositories#github-app'], ['/settings/models#agent-order', '/settings/advanced#agent-order'], ['/settings#cortex', '/settings/advanced#cortex'],
-      ['/settings/access', '/settings/people'], ['/settings/capture#import', '/settings/advanced#import'], ['/settings/backups', '/settings/advanced'],
-    ]) {
-      server(base());
-      mount(old!);
-      await waitFor(() => expect(location()).toBe(now));
+  it('lead every older address to the place that holds its content now, and show that content', async () => {
+    const byId = (id: string) => () => found(`#${CSS.escape(id)}`);
+    const addresses: Array<[old: string, now: string, content: () => HTMLElement | Promise<HTMLElement>]> = [
+      ['/settings?tab=secrets', '/settings/connections#credentials', () => screen.findByRole('group', { name: 'Connections' })],
+      ['/settings/capture?tab=secrets', '/settings/connections#credentials', () => screen.findByRole('group', { name: 'Connections' })],
+      ['/settings/access#github-app', '/settings/repositories#github-app', byId('github-app')],
+      ['/settings/connections#github-app', '/settings/repositories#github-app', byId('github-app')],
+      ['/settings/access#telemetry', '/settings/connections#telemetry', byId('telemetry')],
+      ['/settings#single-turn', '/settings/models#single-turn', byId('single-turn')],
+      ['/settings/models#agent-order', '/settings/advanced#agent-order', () => screen.findByRole('list', { name: 'Then try, in order' })],
+      ['/settings/models#models-advanced', '/settings/advanced#advanced-settings', () => screen.findByRole('group', { name: 'Advanced' })],
+      ['/settings#cortex', '/settings/advanced#cortex', () => screen.findByRole('switch', { name: 'Spores on every prompt' })],
+      ['/settings/capture#import', '/settings/advanced#import', () => screen.findByLabelText('Reach back at most')],
+      ['/settings/backups', '/settings/advanced', () => found('[data-fold="backups"]')],
+      ['/settings/access', '/settings/people', () => screen.findByRole('group', { name: 'Who can sign in?' })],
+      ['/settings/access#projects', '/settings/repositories#projects', () => screen.findByRole('link', { name: 'Access keys' })],
+      ['/settings?tab=capabilities', '/settings/repositories#projects', () => screen.findByRole('link', { name: 'Access keys' })],
+      ['/people#ownership', '/settings/advanced#ownership', () => screen.findByRole('heading', { name: 'Server owner' })],
+      ['/people#raw-claims', '/settings/advanced#raw-claims', () => found('[data-fold="owner-actions"] [aria-expanded="true"]')],
+    ];
+    for (const [old, now, content] of addresses) {
+      server(base({ '/auth/me': () => Response.json(dashboardMe({ ...ME, owner: true })), '/api/ownership': () => Response.json({ ownerMemberId: ADA, revision: 'owner-r1', candidates: [], proposalMemberId: null }) }));
+      mount(old);
+      await waitFor(() => expect({ old, now: location() }).toEqual({ old, now }));
+      expect({ old, content: await waitFor(content).then(() => true, () => false) }).toEqual({ old, content: true });
       cleanup();
     }
     server(base());
-    mount('/settings?tab=capabilities');
-    await waitFor(() => expect(location()).toBe('/settings/repositories#projects'));
-    expect(await screen.findByRole('group', { name: 'Projects and their repositories' })).toBeTruthy();
+    mount('/settings/access#projects');
+    expect((await screen.findByRole('link', { name: 'Access keys' })).getAttribute('href')).toBe(`/p/${P_X}/settings#access-keys`);
   });
 
   it('land on a list’s place once it has loaded, even when the list is empty, and lead a member who is not an admin there too', async () => {
@@ -1098,13 +1109,15 @@ describe('Models', () => {
 
 describe('Advanced', () => {
   it('folds every group with one line on what it holds and whether it was changed, and lists only the agents runners offer', async () => {
-    server(base({ '/api/settings': () => Response.json(leaves({ 'agent.reasoning_map.codex.low': { value: 'luna', updatedBy: ADA, updatedAt: NOW } })) }));
+    server(base({ '/api/settings': () => Response.json(leaves({ 'agent.reasoning_map.codex.low': { value: 'luna', updatedBy: ADA, updatedAt: NOW }, 'backup.retention.keep_weekly': { value: 4, updatedBy: ADA, updatedAt: NOW } })) }));
     mount('/settings/advanced');
     await waitFor(() => {
       const states = Object.fromEntries([...document.querySelectorAll<HTMLElement>('[data-fold]')].map((fold) => [fold.dataset.fold, fold.querySelector('[data-fold-state]')?.textContent]));
-      expect(states).toEqual({ 'model-sizes': 'Changed by Ada just now', pace: 'All default', 'sessions-given': 'All default', 'new-and-past': 'All default', kept: 'All default', backups: 'Automatic backups off', 'owner-actions': 'Rarely needed' });
+      expect(states).toEqual({ 'model-sizes': 'Changed by Ada just now', pace: 'All default', 'sessions-given': 'All default', 'new-and-past': 'imported sessions get titles · All default',
+        kept: 'All default', backups: 'Automatic backups off · Changed by Ada just now', 'owner-actions': 'Rarely needed' });
     });
     expect(document.querySelector('[data-fold="backups"]')!.textContent).toContain('A scheduled backup pauses the dashboard while it runs');
+    expect(document.querySelector('[data-fold="backups"]')!.textContent).toContain('Cloudflare can also put the database back to a recent point without one.');
     expect(document.querySelector('[data-fold="kept"]')!.textContent).toContain('Raw transcripts move to archive after 90 days.');
     expect(screen.queryByLabelText('Small jobs model')).toBeNull();
     cleanup();
@@ -1356,6 +1369,9 @@ describe('GitHub on Repositories', () => {
     expect(connection('GitHub').textContent).toContain('Myco reads your repositories, read-only, through its own GitHub App: Myco (app), owned by goondocks-co (an organization).');
     expect(connection('GitHub').textContent).toContain('Installed on goondocks-co.');
     expect(document.querySelector('[data-setup-headline]')).toBeNull();
+    expect(document.querySelector('[data-step]')).toBeNull();
+    expect(screen.getAllByRole('link', { name: 'Install on another account' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Accounts it can read for' }));
     const approved = (await screen.findByText('goondocks-co (an organization)', { selector: '[data-approved-accounts] span' })).parentElement as HTMLElement;
     fireEvent.click(within(approved).getByRole('button', { name: 'Remove approval' }));
     await waitFor(() => expect(sent.filter((request) => request.method === 'DELETE').map(({ method, path }) => ({ method, path }))).toEqual([{ method: 'DELETE', path: '/api/github-app/accounts/9001' }]));
@@ -1386,19 +1402,34 @@ describe('GitHub on Repositories', () => {
 });
 
 describe('Repositories', () => {
-  it('lists every live project with its repository or Connect, five first, and Connections leads to it', async () => {
+  it('lists every live project, most active first, with its repository from every page or Connect, five first, then all', async () => {
     const names = ['myco', 'atlas', 'notes', 'ledger', 'infra', 'blog', 'docs'];
-    server(base({ '/api/repositories': () => Response.json({ more: false, projects: names.map((name, index) => ({ projectId: `proj_${name}`, name,
-      repository: index % 2 === 0 ? { url: `https://github.com/goondocks-co/${name}.git`, branch: 'main' } : null })) }) }));
+    const projects = names.map((name, index) => ({ projectId: `proj_${name}`, name, createdAt: 0, sessionCount: 0, lastActivityAt: NOW - index * 60_000, archivedAt: null, archivedBy: null }));
+    server(base({
+      '/api/projects': () => Response.json({ projects: [...projects, { ...projects[0]!, projectId: 'proj_gone', name: 'gone', archivedAt: 1, archivedBy: ADA }] }),
+      '/api/repositories': (_init, url) => Response.json(url!.searchParams.get('cursor') === 'proj_myco'
+        ? { repositories: [{ projectId: 'proj_notes', url: 'https://github.com/goondocks-co/notes.git', branch: 'main' }, { projectId: 'proj_docs', url: 'https://github.com/goondocks-co/docs', branch: 'trunk' }], cursor: null }
+        : { repositories: [{ projectId: 'proj_myco', url: 'https://github.com/goondocks-co/myco.git', branch: 'main' }], cursor: 'proj_myco' }),
+    }));
     mount('/settings/repositories');
     const list = await screen.findByRole('group', { name: 'Projects and their repositories' });
     await waitFor(() => expect(list.querySelectorAll('[data-project-repository]')).toHaveLength(5));
-    expect(list.textContent).toContain('goondocks-co/myco · main');
-    const atlas = within(list).getByText('atlas').closest('[data-project-repository]') as HTMLElement;
-    expect(atlas.textContent).toContain('Not connected');
-    expect(within(atlas).getByRole('link', { name: 'Connect' }).getAttribute('href')).toBe('/p/proj_atlas/settings#repository');
+    const row = (name: string) => within(list).getByText(name, { exact: true }).closest('[data-project-repository]') as HTMLElement;
+    expect([...list.querySelectorAll('[data-project-repository]')].map((element) => element.querySelector('span')?.textContent)).toEqual(names.slice(0, 5));
+    expect(row('myco').textContent).toContain('goondocks-co/myco · main');
+    expect(row('notes').textContent).toContain('goondocks-co/notes · main');
+    expect(row('atlas').textContent).toContain('Not connected');
+    expect(within(row('atlas')).getByRole('link', { name: 'Connect' }).getAttribute('href')).toBe('/p/proj_atlas/settings#repository');
+    expect(within(row('atlas')).getByRole('link', { name: 'Access keys' }).getAttribute('href')).toBe('/p/proj_atlas/settings#access-keys');
     fireEvent.click(within(list).getByRole('button', { name: 'Show all' }));
     expect(list.querySelectorAll('[data-project-repository]')).toHaveLength(7);
+    expect(row('docs').textContent).toContain('goondocks-co/docs · trunk');
+    expect(within(list).queryByText('gone')).toBeNull();
+    cleanup();
+    server(base({ '/api/repositories': () => new Response(null, { status: 500 }) }));
+    mount('/settings/repositories');
+    await screen.findByRole('alert');
+    expect(document.querySelector('[data-project-repository]')).toBeNull();
     cleanup();
     server(base());
     mount('/settings/connections');
@@ -1407,22 +1438,32 @@ describe('Repositories', () => {
   });
 });
 
+const QUEUE = { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false };
+const runner = (over: Record<string, unknown>) => ({ state: 'enabled', display: 'Online', busy: null, lastCompleted: null, lastFailed: null, lastAttempted: null,
+  offers: [{ id: 'claude-code', authenticated: true }], credentialChoices: {}, storedKeyFailures: [], ...over });
+const STATUS = (budget: Record<string, unknown>) => Response.json({ workers: { available: true, fleet: [] }, budget: { active: true, reason: null, dailyUsd: 30, automaticUsd: 4, manualUsd: 0.56, liveUsd: 0, unconfirmed: null, heldHeads: [], pricedExposure: null, state: 'ready', ...budget } });
+
 describe('Myco’s work', () => {
-  it('switches work on its own, sets the budget and its default, says who changed each and what was spent, and lists each runner', async () => {
+  it('switches work on its own and back to its default, sets the budget, says who changed each and what counts against it, and lists every runner with its latest run and how it pays', async () => {
+    const run = (task: string, ago: number) => ({ runId: `run_${task}`, task, at: NOW - ago, projectId: P_X, projectName: 'Project X', status: 'x' });
     const { sent } = server(base({
       '/api/settings': () => Response.json(leaves({ 'agent.scheduled_tasks_enabled': { value: true, updatedBy: ADA, updatedAt: NOW }, 'agent.budget.daily_usd': { value: 30, updatedBy: ADA, updatedAt: NOW } })),
       '/api/settings/agent.scheduled_tasks_enabled': () => Response.json({ applied: true }),
       '/api/settings/agent.budget.daily_usd': () => Response.json({ applied: true }),
-      '/api/status': () => Response.json({ workers: { available: true, fleet: [] }, budget: { active: true, reason: null, dailyUsd: 30, automaticUsd: 4, manualUsd: 0.56, liveUsd: 0, unconfirmed: null, heldHeads: [], pricedExposure: null, state: 'ready' } }),
-      '/api/runners': () => Response.json({ observedAt: NOW, legacyWorkers: [], queue: { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false }, runners: [
-        { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', display: 'Online', busy: null, lastCompleted: { task: 'canopy-map', at: NOW - 13 * 3_600_000, projectId: P_X, runId: 'run_1', projectName: 'Project X' } },
-      ] }),
+      '/api/status': () => STATUS({}),
+      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'own'], ['rn_win', 'win-box', 'stored']] }], [['rn_mini', 'homelab-mini', 'claude-code'], ['rn_win', 'win-box', 'claude-code']])),
+      '/api/runners': (_init, url) => Response.json(url!.searchParams.get('cursor') === null
+        ? { observedAt: NOW, legacyWorkers: [], queue: QUEUE, storedCredentials: { 'claude-code': false }, totals: { active: 2 }, cursor: 'page_2',
+          runners: [runner({ id: 'rn_mini', name: 'homelab-mini', lastCompleted: run('canopy-map', 13 * 3_600_000) })] }
+        : { observedAt: NOW, legacyWorkers: [], queue: QUEUE, cursor: null, runners: [runner({ id: 'rn_win', name: 'win-box', display: 'Not ready',
+          lastFailed: run('extract-curate', 2 * 3_600_000), lastAttempted: run('extract-curate', 2 * 3_600_000), credentialChoices: { 'claude-code': 'stored' },
+          storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'out_of_credit' }] })] }),
     }));
     mount('/settings');
     const own = await screen.findByRole('switch', { name: 'Work on its own' });
     expect(own.getAttribute('aria-checked')).toBe('true');
     expect(statusOf('agent.scheduled_tasks_enabled')).toMatch(/^Changed by you on /);
-    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('$4.56 spent in the last 24 hours'));
+    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('$4.56 counts against it from the last 24 hours, estimates for unfinished or unpriced runs included'));
     const budget = screen.getByLabelText('Daily budget in dollars') as HTMLInputElement;
     expect(budget.value).toBe('30');
     fireEvent.change(budget, { target: { value: '25' } });
@@ -1432,26 +1473,77 @@ describe('Myco’s work', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use default ($20)' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'DELETE', path: '/api/settings/agent.budget.daily_usd' });
-    fireEvent.click(own);
+    fireEvent.click(screen.getByRole('button', { name: 'Use the default (off)' }));
     await waitFor(() => expect(sent).toHaveLength(3));
-    expect(sent[2]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.scheduled_tasks_enabled', body: { value: false } });
-    const runner = await waitFor(() => found('[data-runner-row="rn_mini"]'));
-    await waitFor(() => expect(runner.textContent).toContain('Last ran a code map update 13 h ago · pays with its own Claude Code sign-in'));
-    expect(runner.textContent).toContain('Online');
-    expect(within(runner).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/work/runners/rn_mini');
+    expect(sent[2]).toMatchObject({ method: 'DELETE', path: '/api/settings/agent.scheduled_tasks_enabled', headers: { 'if-match': '0' } });
+    fireEvent.click(own);
+    await waitFor(() => expect(sent).toHaveLength(4));
+    expect(sent[3]).toMatchObject({ method: 'PUT', path: '/api/settings/agent.scheduled_tasks_enabled', body: { value: false } });
+    const mini = await waitFor(() => found('[data-runner-row="rn_mini"]'));
+    await waitFor(() => expect(mini.textContent).toContain('Set to pay for Claude Code with its own sign-in, and can use it now'));
+    expect(mini.textContent).toContain('Last ran a code map update 13 h ago');
+    expect(within(mini).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/work/runners/rn_mini');
+    expect(document.querySelector('[data-runner-row="rn_win"]')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^Show more/ }));
+    const win = await waitFor(() => found('[data-runner-row="rn_win"]'));
+    expect(win.textContent).toContain('Last run, learning, failed 2 h ago');
+    expect(win.textContent).toContain('Set to pay for Claude Code with the stored key, but can’t use it now.');
+    expect(win.textContent).toContain('ran out of API credit');
+    expect(win.textContent).toContain('Not ready');
     fireEvent.click(screen.getByRole('button', { name: 'Add a runner' }));
     expect(found('[data-add-runner]').textContent).toContain(`myco runner register ${window.location.origin}`);
+  });
+
+  it('saves a typed budget against the revision it was read at, so a newer change by someone else refuses it', async () => {
+    let revision = '5';
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { sent } = server(base({
+      '/api/settings': () => Response.json(leaves({ 'agent.budget.daily_usd': { value: revision === '5' ? 30 : 40, revision, updatedBy: ADA, updatedAt: NOW } })),
+      '/api/settings/agent.budget.daily_usd': () => Response.json({ applied: false, reason: 'conflict', leaf: 'agent.budget.daily_usd', revision: 6 }, { status: 409 }),
+      '/api/status': () => STATUS({}),
+    }));
+    mount('/settings', client);
+    const budget = await screen.findByLabelText('Daily budget in dollars') as HTMLInputElement;
+    fireEvent.change(budget, { target: { value: '25' } });
+    revision = '6';
+    await client.refetchQueries({ queryKey: ['settings'] });
+    fireEvent.blur(budget);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.headers['if-match']).toBe('5');
+    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('Review the current value'));
+    await waitFor(() => expect((screen.getByLabelText('Daily budget in dollars') as HTMLInputElement).value).toBe('40'));
+  });
+
+  it('says what it could not read rather than guessing: an unknown switch, a failed status read and a failed runner read', async () => {
+    server(base({
+      '/api/settings': () => Response.json({ ...leaves(), leaves: leaves().leaves.map((row) => row.leaf === 'agent.scheduled_tasks_enabled' ? { ...row, state: 'unknown', effective: null } : row) }),
+      '/api/status': () => new Response(null, { status: 500 }),
+      '/api/runners': () => new Response(null, { status: 500 }),
+    }));
+    mount('/settings');
+    await waitFor(() => expect(statusOf('agent.scheduled_tasks_enabled')).toContain('Not known right now'));
+    expect(screen.queryByRole('switch', { name: 'Work on its own' })).toBeNull();
+    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('Couldn’t read what counts against the budget'));
+    const runners = screen.getByRole('group', { name: 'Where the work runs' });
+    await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
+    expect(runners.textContent).not.toContain('No machine runs Myco’s work yet');
+    cleanup();
+    server(base({ '/api/status': () => STATUS({ state: 'building', automaticUsd: null }) }));
+    mount('/settings');
+    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('Still measuring what counts against the budget'));
   });
 });
 
 describe('People and machines', () => {
-  it('lists who can sign in, never Myco, and the viewer\'s machines with what each captures, how it updates and whether it runs work, each leading to its page', async () => {
+  it('lists who can sign in, never Myco, and the viewer\'s machines page by page with what each captures, how it updates and whether it runs work', async () => {
     const machine = { machineId: 'm_ada', name: 'ada-mbp', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false }, claimedAt: 0, credentialCount: 1,
       liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: NOW, lastRunAt: null, lastCaptureAt: NOW - 60_000,
       capture: [{ agent: 'claude-code', lastEventAt: NOW - 60_000, projectId: P_X }, { agent: 'codex', lastEventAt: NOW - 120_000, projectId: P_X }] };
     server(base({
       '/api/members': () => Response.json({ members: MEMBERS.members.map((member) => ({ ...member, effectiveRole: member.id === ADA ? 'owner' : member.role, liveMachines: member.id === ADA ? 1 : 0 })) }),
-      '/api/machines': () => Response.json({ machines: [machine, { ...machine, machineId: 'm_lin', name: 'lin-pc', member: { id: LIN, label: null, revoked: false } }], cursor: null }),
+      '/api/machines': (_init, url) => Response.json(url!.searchParams.get('cursor') === null
+        ? { machines: [{ ...machine, machineId: 'm_lin', name: 'lin-pc', member: { id: LIN, label: null, revoked: false } }], cursor: 'page_2' }
+        : { machines: [machine, { ...machine, machineId: 'm_old', name: 'old-mac', liveCredentialCount: 0, standing: 'expired' }], cursor: null }),
       '/api/machines/m_ada/settings': () => Response.json({ leaves: [{ leaf: 'update.automatic', effective: true }, { leaf: 'capture.auto_join_roots', effective: ['~/Repos'] }] }),
       '/api/status': () => Response.json({ workers: { available: true, fleet: [{ credentialId: 'cred_1', machineId: 'm_ada', runnerDetails: {} }] } }),
     }));
@@ -1464,15 +1556,39 @@ describe('People and machines', () => {
     expect(people.textContent).not.toContain('harness');
     expect(within(people).getAllByRole('link', { name: 'Manage' })[0]!.getAttribute('href')).toBe('/people#people');
     const machines = screen.getByRole('group', { name: 'Your machines' });
+    await waitFor(() => expect(machines.textContent).toContain('None of yours among the machines read so far.'));
+    expect(machines.textContent).not.toContain('None of your machines can write here now');
+    fireEvent.click(within(machines).getByRole('button', { name: /^Show more/ }));
     const row = await waitFor(() => { const element = machines.querySelector<HTMLElement>('[data-list-row="machine"]'); expect(element?.textContent).toContain('updates itself'); return element!; });
     expect(machines.querySelectorAll('[data-list-row="machine"]')).toHaveLength(1);
     expect(row.textContent).toContain('Captures Claude Code, Codex · updates itself · captures repositories under ~/Repos · also a runner');
-    expect(row.textContent).toContain('Capturing');
+    expect(row.textContent).toContain('Captured 1 min ago');
+    expect(machines.textContent).toContain('1 former machine of yours is on My machines.');
     expect(within(row).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/me/machines');
     expect(screen.getByRole('link', { name: 'Advanced › Owner actions' }).getAttribute('href')).toBe('/settings/advanced#owner-actions');
     fireEvent.click(screen.getByRole('button', { name: 'Invite a teammate' }));
     expect(await screen.findByRole('button', { name: 'Create invitation' })).toBeTruthy();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
+  });
+
+  it('says a failed machine read failed, and a machine whose settings or runner state could not be read says so', async () => {
+    server(base({ '/api/machines': () => new Response(null, { status: 500 }) }));
+    mount('/settings/people');
+    const machines = await screen.findByRole('group', { name: 'Your machines' });
+    await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
+    expect(machines.textContent).not.toContain('None of your machines can write here now');
+    cleanup();
+    server(base({
+      '/api/machines': () => Response.json({ machines: [{ machineId: 'm_ada', name: 'ada-mbp', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false }, claimedAt: 0, credentialCount: 1,
+        liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, lastRunAt: null, lastCaptureAt: null, capture: [] }], cursor: null }),
+      '/api/machines/m_ada/settings': () => new Response(null, { status: 500 }),
+      '/api/status': () => new Response(null, { status: 500 }),
+    }));
+    mount('/settings/people');
+    const row = await waitFor(() => found('[data-list-row="machine"]'));
+    await waitFor(() => expect(row.textContent).toContain('how it updates and what it captures could not be read'));
+    expect(row.textContent).toContain('whether it runs Myco’s work is unknown');
+    expect(row.textContent).toContain('Nothing captured lately');
   });
 });
 

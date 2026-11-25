@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
-import { dayWords } from '@goondocks/myco-shared/time-words';
-import { ActionLink, Button, ErrorState, Link, LoadingState, StatusChip, type Tone } from '../../../design';
+import { agoWords } from '@goondocks/myco-shared/time-words';
+import { ActionLink, Button, ErrorState, Link, LoadingState, ShowMore, StatusChip, type Tone } from '../../../design';
 import { useMembers } from '../../../hooks/use-access';
 import { useMe } from '../../../hooks/use-me';
 import { useWorkerFleet } from '../../../hooks/use-status';
@@ -22,7 +22,7 @@ import type { MemberRow } from '../wire';
 /** Where People and machines' sign-in list sits, where an older link to Sign-in and access lands. */
 export const SIGN_IN_ANCHOR = 'sign-in';
 const OWNER_ACTIONS = `${SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to}#owner-actions`;
-/** How long a machine stays "Capturing" after it last captured anything. */
+/** How long after a machine last captured anything its chip reads as current. */
 const CAPTURING_MS = 86_400_000;
 
 /** One row of the short lists: a name, a line about it, and its state and actions at the right. */
@@ -85,40 +85,43 @@ function WhoCanSignIn({ onInvite }: { onInvite: () => void }) {
 
 interface MachineLeafRow { leaf: string; effective?: unknown }
 
-/** What a machine's own settings say of it: whether it updates itself, and the folders whose repositories it captures. */
-function useMachineFacts(machineId: string | null): { updates: string | null; folders: string[] } {
+/**
+ * What a machine's own settings say of it, through the same read its settings dialog makes: whether it updates
+ * itself and the folders whose repositories it captures, or that they could not be read.
+ */
+function useMachineFacts(machineId: string | null): string[] {
   const settings = useQuery({
     queryKey: ['machine-settings', machineId],
     enabled: machineId !== null,
     queryFn: ({ signal }) => fetchJson<{ leaves: MachineLeafRow[] }>(`/api/machines/${encodeURIComponent(machineId!)}/settings`, signal),
     ...live('still'),
   });
-  const leaf = (name: string) => settings.data?.leaves.find((row) => row.leaf === name)?.effective;
+  if (settings.isError) return ['how it updates and what it captures could not be read'];
+  if (settings.data === undefined) return [];
+  const leaf = (name: string) => settings.data.leaves.find((row) => row.leaf === name)?.effective;
   const automatic = leaf('update.automatic');
   const folders = leaf(AUTO_JOIN_ROOTS_LEAF);
-  return {
-    updates: automatic === true ? 'updates itself' : automatic === false ? 'updates when you update it' : null,
-    folders: Array.isArray(folders) ? folders.filter((folder): folder is string => typeof folder === 'string') : [],
-  };
+  const listed = Array.isArray(folders) ? folders.filter((folder): folder is string => typeof folder === 'string') : [];
+  return [
+    automatic === true ? 'updates itself' : automatic === false ? 'updates when you update it' : 'how it updates is not reported yet',
+    ...(listed.length === 0 ? [] : [`captures repositories under ${listed.join(', ')}`]),
+  ];
 }
 
-/** Whether a machine has captured lately, as a chip. */
+/** When a machine last captured anything, as a chip. */
 function captureState(machine: Machine, now: number): { words: string; tone: Tone } {
   if (machine.lastCaptureAt === null) return { words: 'Nothing captured lately', tone: 'neutral' };
-  if (now - machine.lastCaptureAt < CAPTURING_MS) return { words: 'Capturing', tone: 'ok' };
-  return { words: `Quiet since ${dayWords(machine.lastCaptureAt, now)}`, tone: 'neutral' };
+  return { words: `Captured ${agoWords(machine.lastCaptureAt, now)}`, tone: now - machine.lastCaptureAt < CAPTURING_MS ? 'ok' : 'neutral' };
 }
 
-/** One of the viewer's machines: what it captures, how it updates, whether it also runs Myco's work, and its state. */
-function MachineRow({ machine, runner }: { machine: Machine; runner: boolean }) {
+/** One of the viewer's machines: what it captures, how it updates, whether it also runs Myco's work, and when it last captured. */
+function MachineRow({ machine, runner }: { machine: Machine; runner: boolean | null }) {
   const facts = useMachineFacts(machine.machineId);
-  const now = Date.now();
-  const state = captureState(machine, now);
+  const state = captureState(machine, Date.now());
   const line = [
     machine.capturedAgents.length === 0 ? 'Has not captured an agent lately' : `Captures ${machine.capturedAgents.map(harnessLabel).join(', ')}`,
-    facts.updates,
-    facts.folders.length === 0 ? null : `captures repositories under ${facts.folders.join(', ')}`,
-    runner ? 'also a runner' : null,
+    ...facts,
+    runner === null ? 'whether it runs Myco’s work is unknown' : runner ? 'also a runner' : null,
   ].filter(Boolean).join(' · ');
   return (
     <ListRow data="machine" name={machine.name} line={line}>
@@ -128,20 +131,31 @@ function MachineRow({ machine, runner }: { machine: Machine; runner: boolean }) 
   );
 }
 
-/** "Your machines": each of the viewer's machines that may write now, and adding another. */
+/** "Your machines": each of the viewer's machines that may write now, page by page, and adding another. */
 function YourMachines({ onAdd }: { onAdd: () => void }) {
   const viewerId = useMe().data?.member?.id ?? null;
   const machines = useMachines();
   const fleet = useWorkerFleet();
-  const own = machines.machines.filter((machine) => machine.memberId === viewerId && machine.standing === 'allowed');
-  const runs = (machine: Machine) => (fleet?.fleet ?? []).some((worker) => worker.runnerDetails !== undefined && machineOfWorker([machine], worker) !== undefined);
+  const mine = machines.machines.filter((machine) => machine.memberId === viewerId);
+  const own = mine.filter((machine) => machine.standing === 'allowed');
+  const former = mine.length - own.length;
+  const read = !machines.isPending && machines.error == null;
+  const runs = (machine: Machine): boolean | null => (fleet === undefined ? null
+    : (fleet.fleet ?? []).some((worker) => worker.runnerDetails !== undefined && machineOfWorker([machine], worker) !== undefined));
   return (
     <AdminSection id="your-machines" title="Your machines">
       {machines.error != null && <ErrorState error={machines.error} onRetry={machines.retry} />}
       <RowCard label="Your machines">
         {machines.isPending && <LoadingState label="Reading your machines" count={2} />}
         {own.map((machine) => <MachineRow key={machine.key} machine={machine} runner={runs(machine)} />)}
-        {!machines.isPending && own.length === 0 && <p className="px-s4 py-s4 t-small text-muted">None of your machines can write here now.</p>}
+        {(machines.hasMore || machines.isFetchingMore) && (
+          <div className="flex flex-col gap-s2 px-s4 py-s3">
+            {own.length === 0 && <p className="t-small text-muted">None of yours among the machines read so far.</p>}
+            <ShowMore shown={machines.machines.length} noun="machines" hasMore={machines.hasMore} pending={machines.isFetchingMore} onMore={machines.more} />
+          </div>
+        )}
+        {read && !machines.hasMore && own.length === 0 && <p className="px-s4 py-s4 t-small text-muted">None of your machines can write here now.</p>}
+        {former > 0 && <p className="px-s4 py-s3 t-small text-muted">{`${former} former ${former === 1 ? 'machine of yours is' : 'machines of yours are'} on My machines.`}</p>}
         <AddRow words="A machine you add signs in from a one-time link and starts capturing what its agents do.">
           <Button onClick={onAdd}>{INVITE_CONTROLS.button}</Button>
         </AddRow>

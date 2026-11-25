@@ -64,7 +64,14 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     const saved = await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
     expect(saved.body.repository).toMatchObject({ url: SOURCE_URL, branch: 'main', repositoryId: SOURCE.id, installationId: OPERATOR.installationId, updatedBy: 'mem_machine_1' });
     expect((await r.call('GET', REPOSITORY)).body).toEqual({ repository: saved.body.repository, appConfigured: true });
-    expect((await r.call('GET', '/api/repositories')).body.projects).toContainEqual({ projectId: 'proj_1', name: expect.any(String), repository: { url: SOURCE_URL, branch: 'main' } });
+    const listed1 = { projectId: 'proj_1', url: SOURCE_URL, branch: 'main' };
+    expect((await r.call('GET', '/api/repositories?limit=1')).body).toEqual({ repositories: [listed1], cursor: null });
+    expect((await r.call('GET', '/api/repositories?cursor=proj_0')).body.repositories).toContainEqual(listed1);
+    expect((await r.call('GET', '/api/repositories?cursor=proj_1')).body.repositories).not.toContainEqual(listed1);
+    expect((await r.call('GET', '/api/repositories?limit=201')).status).toBe(400);
+    expect((await r.call('POST', '/api/projects/proj_1/archive')).status).toBe(200);
+    expect((await r.call('GET', '/api/repositories')).body.repositories).not.toContainEqual(listed1);
+    expect((await r.call('POST', '/api/projects/proj_1/unarchive')).status).toBe(200);
     // Discovery reads metadata only; the save's check reads one repository; both end as soon as they are used.
     expect(r.github.state.issued.map(entry => entry.body)).toEqual([
       { permissions: { metadata: 'read' } },

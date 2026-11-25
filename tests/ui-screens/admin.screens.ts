@@ -167,10 +167,25 @@ async function expectSection(page: Page, tab: string, group: string): Promise<vo
 async function expectAdvanced(page: Page): Promise<void> {
   // An older Capture and retention address lands on its group under Advanced, opened.
   await expect(page).toHaveURL(/\/settings\/advanced#import$/);
+  // Opened directly, the last tab is scrolled into the strip's view, even on a phone.
+  const strip = page.getByRole('navigation', { name: 'Settings sections' });
+  const [box, tab] = await Promise.all([strip.boundingBox(), strip.getByRole('link', { name: 'Advanced' }).boundingBox()]);
+  expect(tab!.x, 'the open tab starts inside the strip').toBeGreaterThanOrEqual(box!.x - 1);
+  expect(tab!.x + tab!.width, 'the open tab ends inside the strip').toBeLessThanOrEqual(box!.x + box!.width + 1);
   await expectSection(page, 'Advanced', 'Advanced');
   await expect(page.locator('[data-fold]')).toHaveCount(7);
   await expect(page.getByRole('heading', { name: 'Importing past sessions' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Create a project for it' })).toBeVisible();
+  // A stored switch keeps its name readable beside it and its reset inside the card, at every width.
+  const creation = page.locator('[data-setting="capture.auto_create_projects"]');
+  const named = await creation.getByText('Create a project for it', { exact: true }).boundingBox();
+  const card = await creation.boundingBox();
+  expect(named!.width, 'the switch’s name has room').toBeGreaterThan(100);
+  if (onFixture()) {
+    const clear = await creation.getByRole('button', { name: 'Clear the stored value for Create a project for it' }).boundingBox();
+    expect(clear!.x + clear!.width, 'the reset sits inside the row').toBeLessThanOrEqual(card!.x + card!.width);
+    expect(clear!.y, 'the reset sits under the name').toBeGreaterThan(named!.y);
+  }
   const titling = page.getByRole('switch', { name: 'Title imported sessions' });
   await expect(titling).toBeVisible();
   if (onFixture()) await expect(titling).toBeChecked();

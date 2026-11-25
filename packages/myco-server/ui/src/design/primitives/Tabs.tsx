@@ -82,6 +82,16 @@ function useMoreToTheRight<T extends HTMLElement>() {
  */
 export function TabLinks({ label, items, className }: { label: string; items: readonly TabLinkItem[]; className?: string }) {
   const { ref, more } = useMoreToTheRight<HTMLElement>();
+  const current = items.find((item) => item.active)?.to;
+  // The open page's tab is scrolled into the row's view, so an address opened directly shows where it is.
+  useEffect(() => {
+    const nav = ref.current;
+    const tab = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (nav == null || tab == null) return;
+    if (tab.offsetLeft < nav.scrollLeft || tab.offsetLeft + tab.offsetWidth > nav.scrollLeft + nav.clientWidth) {
+      nav.scrollLeft = Math.max(0, tab.offsetLeft - (nav.clientWidth - tab.offsetWidth) / 2);
+    }
+  }, [ref, current]);
   return (
     <div className={cn('relative', className)} data-tab-links="">
       <nav ref={ref} aria-label={label} className="flex gap-s6 overflow-x-auto border-b border-line">

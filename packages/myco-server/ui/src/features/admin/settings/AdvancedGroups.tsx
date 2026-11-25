@@ -5,6 +5,7 @@ import { agoWords } from '@goondocks/myco-shared/time-words';
 import { Disclosure } from '../../../design';
 import { useAgentPayers } from '../../../hooks/use-fleet';
 import { permissionOf, useMe } from '../../../hooks/use-me';
+import { useTitlingBackfill } from '../../../hooks/use-settings';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import { Ownership } from '../people/Ownership';
@@ -92,12 +93,12 @@ const numberOf = (rows: ReadonlyMap<string, LeafRow>, leaf: string): number | nu
 };
 
 /** What Backups says while folded: whether backups run on their own, and what one costs while it runs on this server. */
-function backupSummary(rows: ReadonlyMap<string, LeafRow>, target: string | null): { summary: string; state: string } {
+function backupSummary(rows: ReadonlyMap<string, LeafRow>, target: string | null): { summary: string; cadence: string } {
   const every = numberOf(rows, 'backup.auto_interval_hours');
-  const cost = target === 'cloudflare' ? 'A scheduled backup pauses the dashboard while it runs: nothing can be read or saved until it ends.'
+  const cost = target === 'cloudflare' ? 'A scheduled backup pauses the dashboard while it runs: nothing can be read or saved until it ends. Cloudflare can also put the database back to a recent point without one.'
     : target === 'bun' ? NATIVE_BACKUP_NOTICE
     : `On a hosted server, a scheduled backup pauses the dashboard while it runs. ${HOSTED_BACKUP_PAUSE_NOTICE}`;
-  return { summary: `How often this server backs itself up and what it keeps. ${cost}`, state: every === null ? 'Automatic backups off' : `Every ${plural(every, 'hour')}` };
+  return { summary: `How often this server backs itself up and what it keeps. ${cost}`, cadence: every === null ? 'Automatic backups off' : `Every ${plural(every, 'hour')}` };
 }
 
 /** What How long things are kept says while folded, from what the server keeps now. */
@@ -121,6 +122,7 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
   const me = useMe();
   const nameOfPerson = usePersonName();
   const owner = permissionOf(me.data, 'roles').allowed;
+  const titling = useTitlingBackfill();
   const now = Date.now();
   // An agent's model sizes are listed where a runner offers the agent, or where one of them was changed.
   const offered = new Set((payers.data?.agents ?? []).map((entry) => entry.agent));
@@ -134,8 +136,12 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
     const inside = [...groups.map((group) => group.id), ...ADVANCED_ANCHORS.filter(([, home]) => home === fold.id).map(([anchor]) => anchor)];
     const backups = fold.id === 'backups' ? backupSummary(rows, target) : null;
     const summary = backups?.summary ?? (fold.id === 'kept' ? keptSummary(rows) : fold.summary);
-    let state = backups?.state ?? (fold.id === 'owner-actions' ? 'Rarely needed' : changedWords(groups, rows, nameOf, now));
-    if (fold.id === 'model-sizes' && changedTasks > 0) state = state === 'All default' ? `${plural(changedTasks, 'job size')} changed` : `${state}; ${plural(changedTasks, 'job size')} changed`;
+    const changes = changedWords(groups, rows, nameOf, now);
+    const extra = fold.id === 'backups' ? backups!.cadence
+      : fold.id === 'model-sizes' && changedTasks > 0 ? `${plural(changedTasks, 'job size')} changed`
+      : fold.id === 'new-and-past' && titling.data !== undefined ? `imported sessions ${titling.data.backfillEnabled ? 'get' : 'don’t get'} titles`
+      : null;
+    const state = fold.id === 'owner-actions' ? 'Rarely needed' : [extra, changes].filter(Boolean).join(' · ');
     const subgroups = groups.map((group) => <Subgroup key={group.id} group={group} rows={rows} />);
     // Each job's size follows the model each agent uses for each size.
     const sizesAt = groups.reduce((at, group, index) => (group.harness === undefined ? at : index + 1), 0);

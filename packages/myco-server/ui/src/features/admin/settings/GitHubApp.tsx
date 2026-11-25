@@ -97,11 +97,14 @@ export function GitHubReadRow() {
       >
         {setup.isPending ? <LoadingState label="Checking the GitHub App with GitHub" count={2} />
           : setup.isError ? <ErrorState error={setup.error} onRetry={() => void setup.refetch()} />
-          : <Disclosure summary={done ? 'Setup and approved accounts' : 'Finish setting up'} defaultOpen={!done}>
+          : done ? <Disclosure key="accounts" summary="Accounts it can read for">
+            <div className="flex flex-col gap-s3"><Unapproved setup={setup.data} /><ApprovedAccounts installations={installations} /></div>
+          </Disclosure>
+          : <Disclosure key="setup" summary="Finish setting up" defaultOpen>
             <GitHubSetup setup={setup.data} installations={installations} />
           </Disclosure>}
       </ConnectionRow>
-      {pages !== null && (
+      {pages !== null && done && (
         <div className="flex flex-col gap-s3 px-s4 py-s4 sm:flex-row sm:items-center sm:justify-between sm:gap-s6">
           <p className="max-w-measure t-small text-muted">To read another account’s repositories, install the App there too. Signing in with GitHub does not install it.</p>
           <ExternalLink href={pages.install} className={`shrink-0 t-small ${tapTarget}`}>Install on another account</ExternalLink>
@@ -113,11 +116,20 @@ export function GitHubReadRow() {
 
 /** The App's identity, its live checklist and the accounts approved here. */
 export function GitHubSetup({ setup, installations }: { setup: GitHubAppSetup; installations: ReturnType<typeof useGitHubInstallations> }) {
-  const accounts = useGitHubAccountActions();
   return (
     <div className="flex flex-col gap-s4" data-github-app-setup="">
       <AppIdentity setup={setup} />
       <Checklist setup={setup} />
+      <ApprovedAccounts installations={installations} />
+    </div>
+  );
+}
+
+/** The accounts approved here, each withdrawn with one press, or why they could not be listed. */
+function ApprovedAccounts({ installations }: { installations: ReturnType<typeof useGitHubInstallations> }) {
+  const accounts = useGitHubAccountActions();
+  return (
+    <>
       {installations.isSuccess && installations.data.accounts.length > 0 && (
         <div className="flex flex-col gap-s2" data-approved-accounts="">
           <p className="t-small text-muted">Repositories can be connected from installations by these accounts:</p>
@@ -131,7 +143,7 @@ export function GitHubSetup({ setup, installations }: { setup: GitHubAppSetup; i
         </div>
       )}
       {installations.isError && <p role="alert" className="t-small text-bad">{settingsRefusalText(installations.error)}</p>}
-    </div>
+    </>
   );
 }
 

@@ -206,7 +206,7 @@ export function checkCadenceWords(cadence: Cadence): string {
   if (cadence.state === 'on') return `Runs automatically every ${cadence.intervalHours} hours.`;
   if (cadence.state === 'off') return 'Automatic runs are off.';
   if (cadence.state === 'invalid') return 'Automatic runs are not scheduled: the saved setting is invalid.';
-  return 'Automatic runs are not set up. Turn them on and choose an interval under Settings · Backups.';
+  return 'Automatic runs are not set up. Turn them on and choose an interval under Settings › Advanced › Backups.';
 }
 
 /** How far an unfinished check got, in tables; empty when its target counts none. The rest were not checked. */

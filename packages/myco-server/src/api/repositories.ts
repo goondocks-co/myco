@@ -11,12 +11,18 @@ import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from '.
 const REMOVED_FIELDS = ['url', 'username', 'credential'] as const;
 const CONFLICT = (reason: string) => Response.json({ error: 'conflict', reason }, { status: 409 });
 
-/** How many live Projects one listing names. */
-export const REPOSITORY_LISTING_LIMIT = 500;
+/** How many connected repositories one page of the listing names, at most and by default. */
+export const REPOSITORY_PAGE_MAX = 200;
 
-/** Every live Project by name with the repository it reads or none, from storage alone. */
-export async function handleProjectRepositories(env: ServerEnv): Promise<Response> {
-  return ok(await projectRepositoryListing(env.db, REPOSITORY_LISTING_LIMIT));
+/**
+ * One page of live Projects' connected repositories, in Project id order, from storage alone: `?cursor=` is the
+ * `cursor` the previous page answered, `?limit=` at most REPOSITORY_PAGE_MAX.
+ */
+export async function handleProjectRepositories(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const params = new URL(ctx.request.url).searchParams;
+  const limit = Number(params.get('limit') ?? REPOSITORY_PAGE_MAX);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > REPOSITORY_PAGE_MAX) return badRequest(`limit is a whole number from 1 to ${REPOSITORY_PAGE_MAX}.`);
+  return ok(await projectRepositoryListing(env.db, params.get('cursor') ?? '', limit));
 }
 
 /** The stored connection and whether this server can use it, from storage alone. */

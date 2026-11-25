@@ -29,19 +29,16 @@ export async function unconnectedProjects(db: RelationalStore, limit: number): P
   return projects;
 }
 
-/** A live Project and the repository it reads, or null where none is connected. */
-export interface ProjectRepositoryListing { projectId: string; name: string; repository: { url: string; branch: string } | null }
+/** A live Project's connected repository, as the projects list shows it. */
+export interface ProjectRepositoryListing { projectId: string; url: string; branch: string }
 
-const listing = read<[limit: number], { projectId: string; name: string; url: string | null; branch: string | null }>({ name: 'githubApp.projectRepositoryListing', sql: `
-  SELECT p.project_id AS projectId,p.name,r.url,r.branch FROM projects p LEFT JOIN project_repositories r ON r.project_id=p.project_id
-   WHERE p.archived_at IS NULL ORDER BY p.name,p.project_id LIMIT ?1` });
+const listing = read<[after: string, limit: number], ProjectRepositoryListing>({ name: 'githubApp.projectRepositoryListing', sql: `
+  SELECT r.project_id AS projectId,r.url,r.branch FROM project_repositories r JOIN projects p ON p.project_id=r.project_id
+   WHERE r.project_id>?1 AND p.archived_at IS NULL ORDER BY r.project_id LIMIT ?2` });
 
-/** Up to `limit` live Projects by name, each with its repository or none, and whether more were left out. */
-export async function projectRepositoryListing(db: RelationalStore, limit: number): Promise<{ projects: ProjectRepositoryListing[]; more: boolean }> {
-  const [rows] = await readSet(db, listing.bind(limit + 1));
-  return {
-    projects: rows.slice(0, limit).map((row) => ({ projectId: row.projectId, name: row.name,
-      repository: row.url === null || row.branch === null ? null : { url: row.url, branch: row.branch } })),
-    more: rows.length > limit,
-  };
+/** One page of live Projects' connected repositories in Project id order, after `after`, and the id the next page starts after. */
+export async function projectRepositoryListing(db: RelationalStore, after: string, limit: number): Promise<{ repositories: ProjectRepositoryListing[]; cursor: string | null }> {
+  const [rows] = await readSet(db, listing.bind(after, limit + 1));
+  const repositories = rows.slice(0, limit);
+  return { repositories, cursor: rows.length > limit ? repositories.at(-1)!.projectId : null };
 }

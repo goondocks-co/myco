@@ -1,7 +1,7 @@
-import { useLocation, useSearchParams } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { ErrorState, LoadingState, Link, TabLinks } from '../../../design';
 import { useSettings } from '../../../hooks/use-settings';
-import { SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
+import { MOVED_SETTINGS_SECTIONS, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { ADVANCED_ANCHOR, ADVANCED_ANCHORS, AdvancedSection, GroupCard } from './AdvancedGroups';
 import { AgentWork } from './AgentWork';
@@ -23,7 +23,6 @@ const ANCHOR_SECTION: ReadonlyMap<string, SettingsSectionId> = new Map<string, S
   ...LEAF_GROUPS.map((group) => [group.id, group.section] as const),
   ...ADVANCED_FOLDS.map((fold) => [fold.id, 'advanced'] as const),
   ...ADVANCED_ANCHORS.map(([anchor]) => [anchor, 'advanced'] as const),
-  ['models-advanced', 'advanced'],
   [ADVANCED_ANCHOR, 'advanced'],
   [CREDENTIALS_ANCHOR, 'connections'],
   [TELEMETRY_ANCHOR, 'connections'],
@@ -45,24 +44,35 @@ export function oldTabTarget(tab: string): string {
   return section === undefined ? SETTINGS_PATH : `${sectionPath(section)}#${tab}`;
 }
 
-/** Where a link to an anchor that has moved to another section leads now, or null when the anchor is on this section. */
-export function movedAnchorTarget(section: SettingsSectionId, hash: string): string | null {
-  const anchor = decodeURIComponent(hash.replace(/^#/, ''));
-  const home = ANCHOR_SECTION.get(anchor);
-  return home === undefined || home === section ? null : `${sectionPath(home)}#${anchor}`;
+/** Anchors an older page named that are now another anchor. */
+const ANCHOR_ALIASES: Readonly<Record<string, string>> = { 'models-advanced': ADVANCED_ANCHOR };
+
+/** The section an address of Settings shows, current or older: null for an address Settings never had. */
+function sectionAt(pathname: string): SettingsSectionId | null {
+  const path = pathname.replace(/(.)\/+$/, '$1');
+  return SETTINGS_SECTIONS.find((s) => s.to === path)?.id ?? MOVED_SETTINGS_SECTIONS.find((s) => s.from === path)?.to ?? null;
 }
 
-/** Where an address of a section that no longer has a tab leads: its anchor's section when it names one, else the section that took its settings. */
-export function movedSectionTarget(to: SettingsSectionId, hash: string): string {
-  return movedAnchorTarget(to, hash) ?? `${sectionPath(to)}${hash}`;
+/**
+ * Where any Settings address leads now, or null when it is already current: a `?tab=` link to the place that holds
+ * that group; an older section's address to the section that took its settings; an anchor, under its current name, on
+ * the section that holds it now.
+ */
+export function settingsAddress(pathname: string, search: string, hash: string): string | null {
+  const tab = new URLSearchParams(search).get('tab');
+  if (tab !== null) return oldTabTarget(tab);
+  const section = sectionAt(pathname);
+  if (section === null) return null;
+  const named = decodeURIComponent(hash.replace(/^#/, ''));
+  const anchor = ANCHOR_ALIASES[named] ?? named;
+  const target = `${sectionPath(ANCHOR_SECTION.get(anchor) ?? section)}${anchor === '' ? '' : `#${anchor}`}`;
+  return target === `${pathname}${hash}` ? null : target;
 }
 
-/** Where an older address of this section leads now: a `?tab=` link, or an anchor that moved to another section; null when it is current. */
-export function useSettingsRedirect(section: SettingsSectionId): string | null {
-  const [params] = useSearchParams();
-  const { hash } = useLocation();
-  const tab = params.get('tab');
-  return tab !== null ? oldTabTarget(tab) : movedAnchorTarget(section, hash);
+/** Where the address of this page leads now, or null when it is current. */
+export function useSettingsRedirect(): string | null {
+  const { pathname, search, hash } = useLocation();
+  return settingsAddress(pathname, search, hash);
 }
 
 /**
