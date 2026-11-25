@@ -939,7 +939,7 @@ describe('older links to a Settings tab', () => {
       ['/settings/models#models-advanced', '/settings/advanced#advanced-settings', () => screen.findByRole('group', { name: 'Advanced' })],
       ['/settings#cortex', '/settings/advanced#cortex', () => screen.findByRole('switch', { name: 'Spores on every prompt' })],
       ['/settings/capture#import', '/settings/advanced#import', () => screen.findByLabelText('Reach back at most')],
-      ['/settings/backups', '/settings/advanced', () => found('[data-fold="backups"]')],
+      ['/settings/backups', '/settings/advanced#backups', () => screen.findByText(/Back up every/)],
       ['/settings/access', '/settings/people', () => screen.findByRole('group', { name: 'Who can sign in?' })],
       ['/settings/access#projects', '/settings/repositories#projects', () => screen.findByRole('link', { name: 'Access keys' })],
       ['/settings?tab=capabilities', '/settings/repositories#projects', () => screen.findByRole('link', { name: 'Access keys' })],
@@ -1113,7 +1113,7 @@ describe('Advanced', () => {
     mount('/settings/advanced');
     await waitFor(() => {
       const states = Object.fromEntries([...document.querySelectorAll<HTMLElement>('[data-fold]')].map((fold) => [fold.dataset.fold, fold.querySelector('[data-fold-state]')?.textContent]));
-      expect(states).toEqual({ 'model-sizes': 'Changed by Ada just now', pace: 'All default', 'sessions-given': 'All default', 'new-and-past': 'imported sessions get titles · All default',
+      expect(states).toEqual({ 'model-sizes': 'Changed by Ada just now', pace: 'All default', 'sessions-given': 'All default', 'new-and-past': 'imported sessions get titles',
         kept: 'All default', backups: 'Automatic backups off · Changed by Ada just now', 'owner-actions': 'Rarely needed' });
     });
     expect(document.querySelector('[data-fold="backups"]')!.textContent).toContain('A scheduled backup pauses the dashboard while it runs');
@@ -1463,7 +1463,7 @@ describe('Myco’s work', () => {
     const own = await screen.findByRole('switch', { name: 'Work on its own' });
     expect(own.getAttribute('aria-checked')).toBe('true');
     expect(statusOf('agent.scheduled_tasks_enabled')).toMatch(/^Changed by you on /);
-    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('$4.56 counts against it from the last 24 hours, estimates for unfinished or unpriced runs included'));
+    await waitFor(() => expect(statusOf('agent.budget.daily_usd')).toContain('$4.56 counts against it now: what was spent in the last 24 hours, plus estimates for runs still going or not yet priced'));
     const budget = screen.getByLabelText('Daily budget in dollars') as HTMLInputElement;
     expect(budget.value).toBe('30');
     fireEvent.change(budget, { target: { value: '25' } });
@@ -1497,13 +1497,14 @@ describe('Myco’s work', () => {
   it('says a runner set to the stored key first is on its own sign-in while that key is out of credit', async () => {
     server(base({
       '/api/status': () => STATUS({}),
-      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'stored-first']] }], [['rn_mini', 'homelab-mini', 'claude-code']])),
+      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'stored-first']] }], [['rn_mini', 'homelab-mini', 'claude-code'], ['rn_win', 'win-box', null]])),
       '/api/runners': () => Response.json({ observedAt: NOW, legacyWorkers: [], queue: QUEUE, cursor: null, runners: [runner({ id: 'rn_mini', name: 'homelab-mini',
-        credentialChoices: { 'claude-code': 'stored-first' }, fallbackNotices: [{ agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW }] })] }),
+        credentialChoices: { 'claude-code': 'stored-first' }, fallbackNotices: [{ agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW }] }), runner({ id: 'rn_win', name: 'win-box' })] }),
     }));
     mount('/settings');
     const mini = await waitFor(() => found('[data-runner-row="rn_mini"]'));
     await waitFor(() => expect(mini.textContent).toContain('Set to pay for Claude Code with the stored key first, then its own sign-in. The Anthropic key ran out of API credit. Work continues on the runner’s own sign-in'));
+    expect(found('[data-runner-row="rn_win"]').textContent).toContain('No agent on it can do this work now');
   });
 
   it('saves a typed budget against the revision it was read at, so a newer change by someone else refuses it', async () => {
@@ -1575,7 +1576,8 @@ describe('People and machines', () => {
     expect(machines.querySelectorAll('[data-list-row="machine"]')).toHaveLength(1);
     expect(row.textContent).toContain('Captures Claude Code, Codex · updates itself · captures repositories under ~/Repos · also a runner');
     expect(row.textContent).toContain('Captured 1 min ago');
-    expect(machines.textContent).toContain('1 former machine of yours is on My machines.');
+    expect(machines.textContent).toContain('1 former machine of yours is no longer connected.');
+    expect(within(machines).getByRole('link', { name: 'See on My machines' }).getAttribute('href')).toBe('/me/machines');
     expect(within(row).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/me/machines');
     expect(screen.getByRole('link', { name: 'Advanced › Owner actions' }).getAttribute('href')).toBe('/settings/advanced#owner-actions');
     fireEvent.click(screen.getByRole('button', { name: 'Invite a teammate' }));

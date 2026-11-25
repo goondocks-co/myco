@@ -155,7 +155,7 @@ function YourMachines({ onAdd }: { onAdd: () => void }) {
           </div>
         )}
         {read && !machines.hasMore && own.length === 0 && <p className="px-s4 py-s4 t-small text-muted">None of your machines can write here now.</p>}
-        {former > 0 && <p className="px-s4 py-s3 t-small text-muted">{`${former} former ${former === 1 ? 'machine of yours is' : 'machines of yours are'} on My machines.`}</p>}
+        {former > 0 && <p className="flex flex-wrap items-center gap-s2 px-s4 py-s3 t-small text-muted">{`${former} former ${former === 1 ? 'machine of yours is' : 'machines of yours are'} no longer connected.`}<ActionLink to={MY_MACHINES_PATH}>See on My machines</ActionLink></p>}
         <AddRow words="A machine you add signs in from a one-time link and starts capturing what its agents do.">
           <Button onClick={onAdd}>{INVITE_CONTROLS.button}</Button>
         </AddRow>

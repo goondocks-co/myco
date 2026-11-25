@@ -40,7 +40,7 @@ export function budgetCountWords(read: { isPending: boolean; isError: boolean },
   if (budget === undefined) return 'What counts against the budget is unavailable on this server';
   if (!budget.active) return `The budget is not applied: ${budget.reason ?? 'no reason given'}`;
   if (budget.state === 'building' || budget.automaticUsd === null) return 'Still measuring what counts against the budget';
-  return `$${(budget.automaticUsd + (budget.manualUsd ?? 0)).toFixed(2)} counts against it from the last 24 hours, estimates for unfinished or unpriced runs included`;
+  return `$${(budget.automaticUsd + (budget.manualUsd ?? 0)).toFixed(2)} counts against it now: what was spent in the last 24 hours, plus estimates for runs still going or not yet priced`;
 }
 
 /** A value being typed, with the revision of the setting it started from: a save carries that revision, never a newer one. */
@@ -117,7 +117,7 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
           setting={BUDGET_LEAF}
           label="Daily budget"
           htmlFor={known(budget) ? 'daily-budget' : undefined}
-          note="The most Myco spends on its own in a day. When it’s reached, Myco waits until spending from the last 24 hours makes room. Work you start by hand is never blocked, and its spend counts."
+          note="The most Myco spends on its own in a day. When it’s reached, Myco waits until what counts against it drops below the budget. Work you start by hand is never blocked, and its spend counts."
           status={statusOf(BUDGET_LEAF, budget, budgetCountWords(status, status.data?.budget))}
           refused={error?.leaf === BUDGET_LEAF}
           details={resetButton(BUDGET_LEAF, budget, `Use default (${usd(BUDGET_DEFAULT_USD)})`)}
@@ -132,7 +132,7 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
               min={1}
               step={0.01}
               value={draft?.value ?? (amount === null ? '' : String(amount))}
-              readOnly={!admin}
+              readOnly={!admin || pending}
               onChange={(event) => edit(event.target.value)}
               onBlur={commitBudget}
               onKeyDown={(event) => { if (event.key === 'Enter') commitBudget(); }}
@@ -170,8 +170,9 @@ export function lastRunWords(runner: Pick<RunnerFleetRecord, 'busy' | 'lastCompl
  */
 export function payWords(runner: Pick<RunnerFleetRecord, 'id' | 'offers' | 'credentialChoices' | 'storedKeyFailures' | 'fallbackNotices'>, payers: AgentPayersAnswer | undefined, storedUsable: Readonly<Record<string, boolean>> | undefined): string {
   const today = payers?.today.find((entry) => entry.id === runner.id);
-  const agent = today?.agent ?? runner.offers?.find((offer) => runnerAgentLoginReady(offer, runner.credentialChoices, storedUsable))?.id ?? null;
-  if (agent === null) return runner.offers === null ? 'Which agent it can use is unknown' : 'No agent it can use now';
+  if (today === undefined) return 'Which agent it would use, and how it pays, is unknown right now';
+  const agent = today.agent;
+  if (agent === null) return 'No agent on it can do this work now';
   const label = harnessLabel(agent);
   const choices = runner.credentialChoices ?? {};
   const choice = Object.hasOwn(choices, agent) ? choices[agent]! : 'own';

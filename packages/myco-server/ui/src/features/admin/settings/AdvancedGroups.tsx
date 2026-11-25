@@ -44,10 +44,12 @@ export function GroupCard({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
   );
 }
 
+const ALL_DEFAULT = 'All default';
+
 /** Whether groups are as the server ships them, or what was changed, by whom and when. */
 export function changedWords(groups: readonly LeafGroup[], rows: ReadonlyMap<string, LeafRow>, nameOf: (id: string | null) => string | null, now: number): string {
   const changed = groups.flatMap((group) => group.leaves).map((field) => rows.get(field.leaf)).filter((row): row is LeafRow => row?.configured === true && !row.retired);
-  if (changed.length === 0) return 'All default';
+  if (changed.length === 0) return ALL_DEFAULT;
   const latest = changed.reduce((a, b) => ((b.updatedAt ?? 0) > (a.updatedAt ?? 0) ? b : a));
   const who = nameOf(latest.updatedBy);
   const when = latest.updatedAt === null ? '' : ` ${agoWords(latest.updatedAt, now)}`;
@@ -141,7 +143,8 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
       : fold.id === 'model-sizes' && changedTasks > 0 ? `${plural(changedTasks, 'job size')} changed`
       : fold.id === 'new-and-past' && titling.data !== undefined ? `imported sessions ${titling.data.backfillEnabled ? 'get' : 'don’t get'} titles`
       : null;
-    const state = fold.id === 'owner-actions' ? 'Rarely needed' : [extra, changes].filter(Boolean).join(' · ');
+    // A group's own line of state stands in for "All default": it names something the change summary does not cover.
+    const state = fold.id === 'owner-actions' ? 'Rarely needed' : [extra, extra !== null && changes === ALL_DEFAULT ? null : changes].filter(Boolean).join(' · ');
     const subgroups = groups.map((group) => <Subgroup key={group.id} group={group} rows={rows} />);
     // Each job's size follows the model each agent uses for each size.
     const sizesAt = groups.reduce((at, group, index) => (group.harness === undefined ? at : index + 1), 0);

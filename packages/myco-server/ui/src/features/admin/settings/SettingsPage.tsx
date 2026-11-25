@@ -63,7 +63,8 @@ export function settingsAddress(pathname: string, search: string, hash: string):
   if (tab !== null) return oldTabTarget(tab);
   const section = sectionAt(pathname);
   if (section === null) return null;
-  const named = decodeURIComponent(hash.replace(/^#/, ''));
+  const moved = MOVED_SETTINGS_SECTIONS.find((s) => s.from === pathname.replace(/(.)\/+$/, '$1'));
+  const named = decodeURIComponent(hash.replace(/^#/, '')) || (moved !== undefined && 'anchor' in moved ? moved.anchor : '');
   const anchor = ANCHOR_ALIASES[named] ?? named;
   const target = `${sectionPath(ANCHOR_SECTION.get(anchor) ?? section)}${anchor === '' ? '' : `#${anchor}`}`;
   return target === `${pathname}${hash}` ? null : target;

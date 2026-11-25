@@ -25,9 +25,9 @@ export const SETTINGS_SECTIONS = [
 /** Settings sections that no longer have a tab, each leading to the section that holds its settings now. */
 export const MOVED_SETTINGS_SECTIONS = [
   { from: `${SETTINGS_PATH}/capture`, to: 'advanced' },
-  { from: `${SETTINGS_PATH}/backups`, to: 'advanced' },
+  { from: `${SETTINGS_PATH}/backups`, to: 'advanced', anchor: 'backups' },
   { from: `${SETTINGS_PATH}/access`, to: 'people' },
-] as const satisfies ReadonlyArray<{ from: string; to: (typeof SETTINGS_SECTIONS)[number]['id'] }>;
+] as const satisfies ReadonlyArray<{ from: string; to: (typeof SETTINGS_SECTIONS)[number]['id']; anchor?: string }>;
 
 export const adminRoutesPaths = {
   runs: RUNS_PATH,
