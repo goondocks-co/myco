@@ -55,9 +55,10 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
   const pending = actions.setLeaf.isPending || actions.resetLeaf.isPending;
   const locked = !permission.allowed || pending;
   const refused = (leaf: string) => (failure: unknown) => setError({ leaf, words: settingsRefusalText(failure) });
+  const revisionOf = (row: LeafRow | undefined): number | undefined => (row === undefined ? undefined : Number(row.revision));
   const save = (leaf: string, value: unknown) => {
     setError(null);
-    actions.setLeaf.mutate({ leaf, value, revision: Number(rows.get(leaf)?.revision) }, { onError: refused(leaf), onSuccess: () => setDraft(null) });
+    actions.setLeaf.mutate({ leaf, value, revision: revisionOf(rows.get(leaf)) }, { onError: refused(leaf), onSuccess: () => setDraft(null) });
   };
   const amount = typeof budget?.effective === 'number' ? budget.effective : null;
   const commitBudget = () => {
@@ -69,7 +70,7 @@ function WorkOnItsOwn({ rows }: { rows: ReadonlyMap<string, LeafRow> }) {
   };
   const useDefault = () => {
     setError(null);
-    actions.resetLeaf.mutate({ leaf: BUDGET_LEAF, revision: Number(budget?.revision) }, { onError: refused(BUDGET_LEAF), onSuccess: () => setDraft(null) });
+    actions.resetLeaf.mutate({ leaf: BUDGET_LEAF, revision: revisionOf(budget) }, { onError: refused(BUDGET_LEAF), onSuccess: () => setDraft(null) });
   };
   const spent = spentWords(status.data?.budget);
   const note = (row: LeafRow | undefined) => changeNote(row, row?.configured === true ? nameOf(row.updatedBy) : null, viewerId);
