@@ -497,5 +497,5 @@ export const MEMBER_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MEMBER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_TTL_MS / 4;
 export const LINEAGE_REPLAYED_CODE = 'lineage_replayed';
 
-/** A known runner bearer whose registration was removed. */
+/** A known bearer for a removed runner. */
 export const RUNNER_REMOVED_CODE = 'runner_removed';

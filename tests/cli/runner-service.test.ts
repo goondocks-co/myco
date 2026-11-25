@@ -18,7 +18,7 @@ import { publishAdoptedMarker } from '@myco/install/adoption.js';
 import { writeInstallMarker, versionBinaryPath } from '@myco/install/managed-binary.js';
 import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
 import { readRunnerUpdateState, withRunnerUpdateState } from '@myco/runner/update.js';
-import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { STUB_PROFILE, stubProfileHarness } from '../helpers/stub-profile-harness.js';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
@@ -336,7 +336,6 @@ describe('explicit runner service opt-in', () => {
     expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
     expect(await run(['install', '--server', SERVER], { ...deps(), detect })).toBe(true);
     expect(previews).toBe(2);
-    expect(authorizations).toEqual([]);
     expect(readRunnerRecord(SERVER, mycoHome)?.lastOffer).toBeUndefined();
     expect(output.join('\n')).toContain('preview in the service PATH');
     expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
@@ -561,7 +560,21 @@ describe('explicit runner service opt-in', () => {
     expect(await run(['uninstall', '--server', SERVER], deps())).toBe(true);
     expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
     expect(fs.readFileSync(spool, 'utf8')).toBe('capture');
-    expect(output.join('\n')).toContain('The runner is still registered');
+    expect(output.join('\n')).toContain(`then run \`myco runner uninstall --server ${SERVER}\` again`);
+  });
+
+  it.each([
+    ['plain 401', () => Response.json({ error: 'unauthorized' }, { status: 401 }), "the server does not accept this runner's sign-in"],
+    ['proxy 401', () => new Response('<html>Sign in</html>', { status: 401, headers: { 'content-type': 'text/html' } }), "the server does not accept this runner's sign-in"],
+    ['transport error', () => { throw new Error('connection refused'); }, 'the server could not be reached'],
+    ['503', () => new Response(null, { status: 503 }), 'did not answer successfully'],
+    ['protocol header', () => Response.json({ code: 'runner_removed' }, { status: 401, headers: { [PROTOCOL_HEADER]: '1' } }), 'no Myco server answers at this address'],
+  ] as const)('retains the runner record after %s', async (_label, reply, words) => {
+    await enroll();
+    const before = readRunnerRecord(SERVER, mycoHome);
+    expect(await run(['uninstall'], { ...deps(), fetch: (async () => reply()) as typeof fetch })).toBe(true);
+    expect(readRunnerRecord(SERVER, mycoHome)).toEqual(before);
+    expect(output.join('\n')).toContain(words);
   });
 
   it('stops taking work after removal and clears the local registration for a fresh enrollment', async () => {
@@ -578,6 +591,8 @@ describe('explicit runner service opt-in', () => {
           default: workerRequests++; throw new Error('unexpected runner request');
         }
       }) as typeof fetch };
+    expect(await run(['install'], scoped)).toBe(false);
+    expect(errors.pop()).toContain('was removed as a runner');
     expect(await run(['status'], scoped)).toBe(false);
     const status = output.join('\n');
     expect(status).toContain('This machine was removed as a runner on 1970-01-01T00:00:00.500Z and takes no work');
@@ -586,9 +601,11 @@ describe('explicit runner service opt-in', () => {
     output.length = 0;
     expect(await run(['run'], scoped)).toBe(true);
     expect(await run(['run'], scoped)).toBe(true);
-    expect(contacts).toBe(2);
+    expect(contacts).toBe(3);
     expect(workerRequests).toBe(0);
-    expect(output.join('\n').match(/removed as a runner/g)).toHaveLength(1);
+    expect(output.join('\n').match(/removed as a runner/g)).toHaveLength(2);
+    expect(await run(['register', SERVER], scoped)).toBe(false);
+    expect(errors.pop()).toContain(`myco runner uninstall --server ${SERVER}`);
     expect(await run(['uninstall'], scoped)).toBe(true);
     expect(output.join('\n')).toContain('runner service stopped and removed. Cleared the local runner registration and its credential');
     expect(platform.loaded.size).toBe(0);

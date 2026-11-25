@@ -6,6 +6,7 @@ import { codexInstallationRefusal } from '@goondocks/myco-shared/setup-guidance'
 import { isLiveRunner, listRunnerRecords, readRunnerRecord, removeRunnerRecord, runnerDir, withRunnerLock } from '../runner/runner-registry.js';
 import { unclassifiedWorkerHolders, workerHolder, workerLockDir } from '../runner/instance.js';
 import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
+import type { Outcome } from '../member/transport.js';
 import { rotateRunnerCredential } from '../runner/runner-rotation.js';
 import { contactRunner, parseContact, type RunnerMetadata } from '../runner/runner-routes.js';
 import { listWorkerUnits, harnessDirectories, installWorkerService, uninstallWorkerService, workerServiceSpec, workerServiceStatus, type WorkerServiceTarget } from '../runner/service.js';
@@ -13,7 +14,7 @@ import { credentialFile, harnessById } from '@myco/runner/harnesses.js';
 import { runnerHarnessPreflight, type RunnerHarnessPreflight } from '@myco/runner/detect.js';
 import { ServicePathUnsupported, ServicePlatformUnsupported, ServiceStopFailed } from '../server/service.js';
 import { binaryRefusal, executorServiceTarget, describeWorkerService, executionDeploymentUrls, workerServiceWords, type WorkerServiceDeps } from './worker-service.js';
-import { RUNNER_ADDRESS_RULE, runnerServerUrl, type RunnerCliDeps } from './runner-deps.js';
+import { RUNNER_ADDRESS_RULE, runnerRemovalWords, runnerServerUrl, type RunnerCliDeps } from './runner-deps.js';
 import { parseFlags } from './flags.js';
 import { runnerUpdater, type RunnerUpdateCliDeps } from './runner-update.js';
 
@@ -23,11 +24,17 @@ const contactStalled = (at: number | undefined, now: number): boolean => at !== 
   && now - at > STALLED_CONTACT_MS;
 
 export const LEGACY_WORKER_WORDS = 'legacy worker — uses member credential';
-const DASHBOARD_REMOVAL = 'Remove this machine as a runner on the dashboard to clear its local registration.';
-
-export function runnerRemovalWords(url: string, at: number | null = null): string {
-  const when = at === null ? '' : ` on ${new Date(at).toISOString()}`;
-  return `This machine was removed as a runner${when} and takes no work. Clear its local registration with \`myco runner uninstall --server ${url}\`. To register again, run that command, then \`myco runner register ${url}\`.`;
+function retainedRegistrationReason(answer: Outcome | null): string {
+  switch (answer?.class) {
+    case undefined: return 'registration is still pending';
+    case 'route_missing': return 'no Myco server answers at this address';
+    case 'unauthorized': return "the server does not accept this runner's sign-in";
+    case 'retry': return answer.status === undefined ? 'the server could not be reached' : 'the server did not answer successfully';
+    case 'slow': return 'the server took too long to answer';
+    case 'protocol': return 'the server and this runner speak different versions of Myco';
+    case 'deferred': return 'the connection check was deferred';
+    default: return 'the server declined to check this runner';
+  }
 }
 
 export interface LegacyExecutor {
@@ -166,8 +173,8 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
             out(`${url}: ${serviceWords}. Cleared the local runner registration and its credential. Register again with \`myco runner register ${url}\`.`);
           } else if (service.removed || !deps.silentAbsentUninstall) {
             const registration = held === null ? '' : answer?.class === 'acked'
-              ? ` The runner is still registered. ${DASHBOARD_REMOVAL}`
-              : ` Kept the local registration because the server did not confirm removal (${answer?.class ?? 'registration pending'}).`;
+              ? ` The runner is still registered. Remove this machine as a runner on the dashboard, then run \`myco runner uninstall --server ${url}\` again to clear its local registration.`
+              : ` Kept the local registration because ${retainedRegistrationReason(answer)}.`;
             out(`${url}: ${serviceWords}.${registration}`);
           }
         }, mycoHome);
@@ -192,10 +199,12 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
           out(`  ${harness.id}: ${harness.id === 'codex' && !preview.codex.ok ? codexInstallationRefusal(preview.codex.directory, preview.codex.rule)
             : !harness.installed ? 'not installed' : harness.authenticated ? 'signed in' : 'not signed in'}`);
         }
-        const installing = await withRunnerLock(url, lock => {
+        const installing = await withRunnerLock(url, async lock => {
           const current = readRunnerRecord(url, lock.mycoHome);
           if (!isLiveRunner(current) || current.runnerId !== record.runnerId) { fail(`the runner registration for ${url} changed. Run status and try again.`); return null; }
-          if (current.removed === true) { fail(runnerRemovalWords(url)); return null; }
+          const contact = current.removed === true ? null : await contactRunner(url, current.token, {}, deps.fetch);
+          const removal = contact?.class === 'unauthorized' ? contact.runnerRemoved : undefined;
+          if (current.removed === true || removal !== undefined) { fail(runnerRemovalWords(url, removal?.at)); return null; }
           if (contactStalled(current.lastContactAt, (deps.now ?? Date.now)()) && workerServiceStatus(target, options).running) {
             out(`${url}: restarting stalled runner service.`);
             stopService(workerServiceSpec(target, []), { platform: target.platform, ...options });

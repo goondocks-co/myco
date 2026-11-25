@@ -21,9 +21,9 @@ import { rotateRunnerCredential, runnerRenewer } from '../runner/runner-rotation
 import { RUNNER_REMOVED_CODE } from '@goondocks/myco-shared/member-protocol';
 import { RUNNER_CONTACT_PATH } from '../runner/runner-routes.js';
 import { harnessesNamed, parseFlags } from './flags.js';
-import { RUNNER_ADDRESS_RULE, runnerServerUrl } from './runner-deps.js';
+import { RUNNER_ADDRESS_RULE, runnerRemovalWords, runnerServerUrl } from './runner-deps.js';
 import { registerRunner } from './runner-register.js';
-import { runRunnerService, runnerExecutionRefusal, runnerRemovalWords } from './runner-service.js';
+import { runRunnerService, runnerExecutionRefusal } from './runner-service.js';
 import { executionDeploymentUrls } from './worker-service.js';
 import { runnerUpdater, updateRunner, type RunnerUpdateCliDeps } from './runner-update.js';
 import { runRunnerUpdateHelper } from '../runner/update-helper.js';
@@ -112,7 +112,10 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
   const record = readRunnerRecord(serverUrl, mycoHome);
   if (!isLiveRunner(record)) return fail(`this machine is not registered with ${serverUrl}; run \`myco runner register ${serverUrl}\``);
 
-  if (record.removed === true) return true;
+  if (record.removed === true) {
+    (deps.stdout ?? console.log)(runnerRemovalWords(serverUrl));
+    return true;
+  }
 
   const legacyRefusal = await runnerExecutionRefusal(deps);
   if (legacyRefusal !== null) return fail(legacyRefusal);

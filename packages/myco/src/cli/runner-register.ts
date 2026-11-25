@@ -12,7 +12,7 @@ import { contactRunner, parseContact, type RunnerContact } from '../runner/runne
 import { resolveMycoHome } from '../paths/home.js';
 import { runDeviceFlow, type DeviceFlowSpec, type DeviceGrant } from './device-flow.js';
 import { parseFlags } from './flags.js';
-import { defaultRunnerName, RUNNER_ADDRESS_RULE, RUNNER_NAME_PATTERN, runnerServerUrl, type RunnerCliDeps } from './runner-deps.js';
+import { defaultRunnerName, RUNNER_ADDRESS_RULE, runnerRemovalWords, RUNNER_NAME_PATTERN, runnerServerUrl, type RunnerCliDeps } from './runner-deps.js';
 
 /** Poll errors after which the Deployment may nonetheless have committed the registration. */
 const MAYBE_COMMITTED_CODES: readonly string[] = ['unreachable', 'unreadable', 'expired_token', 'invalid_grant'];
@@ -106,6 +106,7 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
   const mycoHome = deps.mycoHome ?? resolveMycoHome();
   const replace = flags.get('replace') === 'true';
   const existing = readRunnerRecord(serverUrl, mycoHome);
+  if (existing?.removed === true) return fail(runnerRemovalWords(serverUrl));
   if (replace && isLiveRunner(existing)) {
     name = named ?? existing.name;
   }
@@ -129,6 +130,7 @@ export async function registerRunner(args: readonly string[], deps: RunnerCliDep
 
   const locked = await withRunnerLock(serverUrl, async (lock): Promise<boolean> => {
     const held = readRunnerRecord(serverUrl, mycoHome);
+    if (held?.removed === true) return fail(runnerRemovalWords(serverUrl));
     // A replacement is staged beside the acknowledged credential, which stays usable until the new one commits.
     if (isLiveRunner(held) && !replace) return fail(`this machine is already registered with ${serverUrl} as ${held.name}`);
     let pending: PendingRegister | null = held?.pending?.kind === 'register' ? held.pending : null;

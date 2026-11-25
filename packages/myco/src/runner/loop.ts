@@ -861,7 +861,7 @@ const WORKER_REFUSALS: ReadonlySet<string> = new Set(['unauthorized', 'no_member
  * Deliver every step log waiting for this Deployment, oldest first, where it advertises that it stores them. A page
  * the Deployment does not answer (a transport failure, a 5xx or a 429) or a refusal of the worker itself leaves its
  * log waiting for the next pass; a page the Deployment answers with a refusal ends that log, and the next is sent.
- * Returns true when the runner was removed.
+ * Returns true on a runner removal refusal.
  */
 async function deliverStepLogs(options: WorkerOptions, advertised: boolean, requestMs: number): Promise<boolean> {
   if (!advertised) return false;

@@ -614,19 +614,24 @@ describe('the guards that decide a runner\'s authority', () => {
     } finally { r.e.sqlite.close(); }
   });
 
-  it('authenticates an expired runner credential only on rotation inside its idle bound, and a credential of an older epoch nowhere', async () => {
+  it('authenticates an expired runner credential only on rotation inside its idle bound, and refuses revoked or older-epoch credentials generically', async () => {
+    const genericRefusal = async (reply: Promise<Response>) => {
+      const response = await reply;
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({ error: 'unauthorized' });
+    };
     const r = rig();
     try {
       const { token, runnerId } = await r.register();
       r.e.sqlite.run('UPDATE runner_credentials SET expires_at = ? WHERE runner_id = ?', [r.now() - 1, runnerId]);
-      expect((await r.asRunner(token, '/runners/contact', {})).status).toBe(401);
-      expect((await r.asRunner(token, '/worker/claim', {})).status).toBe(401);
+      await genericRefusal(r.asRunner(token, '/runners/contact', {}));
+      await genericRefusal(r.asRunner(token, '/worker/claim', {}));
       expect(await r.json(r.asRunner(token, '/runners/rotate', { candidate: bearer() }))).toMatchObject({ persisted: true, rotated: true });
       const fresh = rig();
       try {
         const lapsed = await fresh.register();
         fresh.e.sqlite.run('UPDATE runner_credentials SET expires_at = ?, issued_at = ? WHERE runner_id = ?', [fresh.now() - 1, fresh.now() - RUNNER_LINEAGE_IDLE_MS, lapsed.runnerId]);
-        expect((await fresh.asRunner(lapsed.token, '/runners/rotate', { candidate: bearer() })).status).toBe(401);
+        await genericRefusal(fresh.asRunner(lapsed.token, '/runners/rotate', { candidate: bearer() }));
         expect(fresh.row('SELECT COUNT(*) AS n FROM runner_credentials')).toEqual({ n: 1 });
       } finally { fresh.e.sqlite.close(); }
       const stale = rig();
@@ -634,8 +639,11 @@ describe('the guards that decide a runner\'s authority', () => {
         const moved = await stale.register();
         stale.e.sqlite.run('UPDATE runners SET credential_epoch = 2, revision = revision + 1 WHERE id = ?', [moved.runnerId]);
         expect(stale.row('SELECT revoked_at FROM runner_credentials')).toEqual({ revoked_at: null });
-        expect((await stale.asRunner(moved.token, '/runners/contact', {})).status).toBe(401);
-        expect((await stale.asRunner(moved.token, '/runners/rotate', { candidate: bearer() })).status).toBe(401);
+        await genericRefusal(stale.asRunner(moved.token, '/runners/contact', {}));
+        await genericRefusal(stale.asRunner(moved.token, '/runners/rotate', { candidate: bearer() }));
+        const revoked = await stale.register('revoked');
+        stale.e.sqlite.run("UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'test' WHERE runner_id = ?", [stale.now(), revoked.runnerId]);
+        await genericRefusal(stale.asRunner(revoked.token, '/runners/contact', {}));
       } finally { stale.e.sqlite.close(); }
     } finally { r.e.sqlite.close(); }
   });
