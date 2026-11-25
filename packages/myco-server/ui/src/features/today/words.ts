@@ -12,7 +12,7 @@ import { HELD_CAPTURE_TTL_DAYS } from '@goondocks/myco-shared/member-protocol';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { harnessLabel } from '../../lib/harness';
 import { memberLabel } from '../../lib/member-name';
-import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, RUNNERS_PATH, runPath } from '../../routes/nav';
+import { BACKUP_SCHEDULE_ADDRESS, BACKUPS_ADDRESS, HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, RUNNERS_PATH, runPath, UPKEEP_ADDRESS } from '../../routes/nav';
 import { hasRunOutput } from './timeline';
 import type { MachineHarnessHealth, AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
 import { agoWords, clockWords, dayWords } from '@goondocks/myco-shared/time-words';
@@ -210,10 +210,24 @@ export interface NeedsYouWords {
   title: string;
   detail: string;
   action: { label: string; to: string } | null;
+  /** The way to say no to it, where the product has one: a place to change what raises it, or a capability to turn off for a project. */
+  decline?: Decline;
 }
+
+/** Saying no to an item: a link to the setting that raises it, or turning a capability off for one project, here. */
+export type Decline = { label: string; to: string } | { label: string; turnOff: { projectId: string; capability: string; done: string } };
 
 /** A part of Health, by its anchor. */
 const healthAt = (anchor: string): string => `${HEALTH_PATH}#${anchor}`;
+
+/** A project's switches for what Myco does there. */
+const capabilitiesOf = (projectId: string): string => `${projectPath(projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.capabilities}`;
+
+/** The capability whose work an outcome is, where turning it off for a project stops that work there. */
+const OUTCOME_CAPABILITY: Readonly<Partial<Record<OutcomeKind, { capability: string; words: string }>>> = {
+  learn: { capability: 'vault_evolution', words: 'learning' },
+  map: { capability: 'canopy', words: 'the code map' },
+};
 
 
 export function attentionWords(item: AttentionItem, now: number, projectName: (projectId: string) => string | null): NeedsYouWords {
@@ -228,6 +242,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         title: `Repository preparation keeps failing in ${projectName(item.projectId) ?? 'a project'}`,
         detail: `${runErrorWords('repository_unprepared', null, item.failure)}${item.backoff ? ' Scheduled retries are slowed down.' : ''}${item.retryAt > now ? ` Next retry in ${retryIn(item.retryAt, now)}.` : ' Another retry is due.'}`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
+        decline: { label: 'Turn off what needs the repository', to: capabilitiesOf(item.projectId) },
       };
     case 'repository_missing':
       return repositoryNeededWords(item.projectId, projectName(item.projectId), item.codeMap);
@@ -236,14 +251,18 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       return {
         title: item.lastBackupAt === null ? 'No backup has completed yet' : `Last backup was ${agoWords(item.lastBackupAt, now)}`,
         detail: `Backups are set to run ${everyHours(item.intervalHours)}${item.lastBackupAt === null ? '.' : `; none has completed since ${dayWords(item.lastBackupAt, now)}.`}`,
-        action: { label: 'Open backups', to: healthAt(HEALTH_ANCHORS.backups) },
+        action: { label: 'Open backups', to: BACKUPS_ADDRESS },
+        decline: { label: 'Change how often it runs', to: BACKUP_SCHEDULE_ADDRESS },
       };
-    case 'outcome_failed':
+    case 'outcome_failed': {
+      const off = OUTCOME_CAPABILITY[item.outcome];
       return {
         title: item.failures === 1 ? `${OUTCOME_NOUN[item.outcome]} failed` : `${count(item.failures, OUTCOME_UPDATE[item.outcome])} failed`,
         detail: item.interruptionMachine !== undefined ? `${inProject(item.projectId)} ${interruptionWords(item.interruptionCode ?? 'run_interrupted_repeated', item.interruptionMachine)}` : `${inProject(item.projectId)} Nothing has succeeded since the first failure ${when(item.since, now)}.`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
+        ...(off === undefined ? {} : { decline: { label: `Turn ${off.words} off here`, turnOff: { projectId: item.projectId, capability: off.capability, done: `${off.words.charAt(0).toUpperCase()}${off.words.slice(1)} is off for ${projectName(item.projectId) ?? 'this project'}.` } } }),
       };
+    }
     case 'runs_without_audit':
       return {
         title: `${count(item.runs, 'task run')} of ${item.closed} ended without the agent’s account of its steps`,
@@ -257,14 +276,14 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: item.pendingBlobs > 0
           ? `${count(item.pendingBlobs, 'item')} ${item.pendingBlobs === 1 ? 'is' : 'are'} waiting to be searchable${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`
           : `Its updates have failed${since === null ? '' : ` since ${clockOrDay(since, now)}`}. Search still answers; new work takes longer to appear.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.upkeep) },
+        action: { label: 'Open upkeep', to: UPKEEP_ADDRESS },
       };
     }
     case 'transcripts_stopped':
       return {
         title: `${count(item.transcripts, 'transcript')} couldn’t be read`,
         detail: `${inProject(item.projectId)} ${transcriptStopWords(item)} Their sessions are missing what the transcript held.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+        action: null,
       };
     case 'runs_held_for_capability':
       return {
@@ -290,7 +309,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       return {
         title: one ? 'Text from a past run can’t be moved to storage' : `${item.hasMore ? 'More than ' : ''}${item.bodies.length} pieces of text from past runs can’t be moved to storage`,
         detail: `Failing ${sinceWords(oldest!.since, now)}, starting with run ${oldest!.runId}. The text is safe where it is, and Myco keeps trying.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+        action: null,
       };
     }
     case 'member_naming_failed': {
@@ -301,7 +320,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: one
           ? `Saving it failed at sign-in ${latest!.failures === 1 ? 'once' : `${latest!.failures} times`}, most recently ${agoWords(latest!.lastFailedAt, now)}. Their sign-in still worked, and Myco tries again the next time they sign in.`
           : `Most recently ${agoWords(latest!.lastFailedAt, now)}. Their sign-ins still worked, and Myco tries again the next time each of them signs in.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+        action: null,
       };
     }
     case 'schema_mismatch':
@@ -310,7 +329,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: item.found === null
           ? 'The database doesn’t say which version it holds, so some pages may fail.'
           : `The database holds version ${item.found}; this server expects ${item.expected}. Some pages may fail until they match.`,
-        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+        action: { label: 'See whether the server is well', to: healthAt(HEALTH_ANCHORS.status) },
       };
     case 'harness_needs_repair':
       return {
@@ -465,6 +484,9 @@ export function repositoryNeededWords(projectId: string, name: string | null, co
     title: codeMap ? `Connect ${name ?? 'this project'}’s repository so Myco can map its code` : `Connect ${name ?? 'this project'}’s repository so Myco can run its code tasks`,
     detail: codeMap ? 'Code map is turned on, but it cannot run until a repository is connected.' : 'Code tasks are turned on, but they cannot run until a repository is connected.',
     action: { label: 'Connect repository', to: projectRepositoryPath(projectId, true) },
+    decline: codeMap
+      ? { label: 'Turn the code map off', turnOff: { projectId, capability: 'canopy', done: `The code map is off for ${name ?? 'this project'}.` } }
+      : { label: 'Turn its code tasks off', to: capabilitiesOf(projectId) },
   };
 }
 

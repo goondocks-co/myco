@@ -1,9 +1,11 @@
 import { RunTaskConfirm } from '../work/RunTask';
 import { useState, type ReactNode } from 'react';
 import { ActionLink, Button, Card, Disclosure, HealthDot, errorWords, Skeleton, ReadState } from '../../design';
+import { settingsRefusalText, useCapabilities, useSettingsActions } from '../../hooks/use-settings';
 import { ConnectDialog, connectedWords, losingWork, RepositoryGroup, RepositoryItem, repositoriesTitle, type ConnectTarget } from './Repositories';
+import { serverItemKey, serverItemWords, type ServerItemsRead } from './server-items';
 import { retrying, type AttentionAnswer, type AttentionItem, type UncapturedRootItem } from './wire';
-import { ATTENTION_CHECKS, attentionWords, listed, repositoryWords, type NeedsYouWords } from './words';
+import { ATTENTION_CHECKS, attentionWords, listed, repositoryWords, type Decline, type NeedsYouWords } from './words';
 
 const TONE_LABEL = { warn: 'Needs attention', bad: 'Failing' } as const;
 
@@ -21,14 +23,39 @@ export function NeedsYouItem({ tone, words }: { tone: AttentionItem['tone']; wor
           <RunTaskConfirm projectId={words.retryTask.projectId} task={retrying ? words.retryTask.task : null} admin now={Date.now()} onOpenChange={setRetrying}
             onStarted={() => { setRetrying(false); }} />
         </>}
-        {words.action !== null && (
-          <ActionLink to={words.action.to}>
-            {words.action.label} →
-          </ActionLink>
-        )}
+        {(words.action !== null || words.decline !== undefined) && <div className="flex flex-wrap items-center gap-x-s4 gap-y-s1">
+          {words.action !== null && (
+            <ActionLink to={words.action.to}>
+              {words.action.label} →
+            </ActionLink>
+          )}
+          {words.decline !== undefined && <DeclineControl decline={words.decline} />}
+        </div>}
       </div>
     </li>
   );
+}
+
+/** The way to say no to an item: a link to the setting that raises it, or a capability turned off for its project here. */
+function DeclineControl({ decline }: { decline: Decline }) {
+  if ('to' in decline) return <ActionLink to={decline.to}>{decline.label} →</ActionLink>;
+  return <TurnOff label={decline.label} {...decline.turnOff} />;
+}
+
+/** Turns one capability off for one project, at the revision this page read, and says so once it is off. */
+function TurnOff({ label, projectId, capability, done }: { label: string; projectId: string; capability: string; done: string }) {
+  const caps = useCapabilities(projectId);
+  const actions = useSettingsActions();
+  const [error, setError] = useState<string | null>(null);
+  if (actions.setCapability.isSuccess) return <p role="status" className="t-small text-muted">{done}</p>;
+  const revision = caps.data?.capabilityRevisions[capability];
+  return <>
+    <Button size="sm" variant="ghost" disabled={revision === undefined} pending={actions.setCapability.isPending}
+      onClick={() => { setError(null); actions.setCapability.mutate({ projectId, capability, enabled: false, revision: revision! }, { onError: (err) => setError(settingsRefusalText(err)) }); }}>
+      {label}
+    </Button>
+    {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
+  </>;
 }
 
 /** The repositories a viewer's machines, or as an admin any machine, are not capturing yet. */
@@ -39,6 +66,8 @@ export interface RepositoriesRead {
 }
 
 export interface NeedsYouProps {
+  /** The list's heading; "Needs you" where none is given. */
+  title?: string;
   /** Whether the viewer is asked about the server's own health: an admin is, any other member is not. */
   admin: boolean;
   answer: AttentionAnswer | undefined;
@@ -46,6 +75,8 @@ export interface NeedsYouProps {
   error: unknown;
   onRetry: () => void;
   repositories: RepositoriesRead;
+  /** What the dashboard reads beside the attention answer: store checks, stored keys and automatic backups; an admin's alone. */
+  server: ServerItemsRead;
   viewerId: string | null;
   /** The projects a repository can be connected to. */
   projects: readonly ConnectTarget[];
@@ -61,32 +92,36 @@ interface Row {
 }
 
 /**
- * How many things need the viewer: each attention item, and the repositories their machines are not capturing as one.
- * The Needs you list and the count beside Health in the nav both say this number.
+ * How many things need the viewer: each attention item, each item read beside it, and the repositories their machines
+ * are not capturing as one. The Needs you list and the count beside Health in the nav both say this number.
  */
-export function needsYouCount(answer: AttentionAnswer | undefined, repositories: readonly UncapturedRootItem[] | undefined): number {
-  return needsPerson(answer).length + ((repositories?.length ?? 0) > 0 ? 1 : 0);
+export function needsYouCount(answer: AttentionAnswer | undefined, repositories: readonly UncapturedRootItem[] | undefined, server: ServerItemsRead['items'] = []): number {
+  return needsPerson(answer).length + server.length + ((repositories?.length ?? 0) > 0 ? 1 : 0);
 }
 
 /** The attention items a person must act on: those Myco still tries again by itself are Myco's work, stuck or failing. */
 export const needsPerson = (answer: AttentionAnswer | undefined): AttentionItem[] => (answer?.items ?? []).filter((item) => !retrying(item));
 
-function rowsOf({ admin, answer, repositories, now, projectName, viewerId }: NeedsYouProps): Row[] {
+function rowsOf({ admin, answer, repositories, server, now, projectName, viewerId }: NeedsYouProps): Row[] {
   const attention = needsPerson(answer).map((item, index): Row => {
     const words = attentionWords(item, now, projectName);
     return { key: `${item.kind}:${index}`, tone: item.tone, title: words.title, render: () => <NeedsYouItem key={`${item.kind}:${index}`} tone={item.tone} words={words} /> };
+  });
+  const read = server.items.map((item): Row => {
+    const words = serverItemWords(item);
+    return { key: serverItemKey(item), tone: item.tone, title: words.title, render: () => <NeedsYouItem key={serverItemKey(item)} tone={item.tone} words={words} /> };
   });
   const items = repositories.items ?? [];
   // One repository is its own line; more are one line that opens to each, so a machine with many never floods the list.
   const waiting: Row[] = items.length === 0 ? [] : items.length === 1
     ? [{ key: 'repository', tone: repositoryWords(items[0]!, now, viewerId).tone, title: repositoryWords(items[0]!, now, viewerId).title, render: (connect) => <RepositoryItem key="repository" item={items[0]!} now={now} viewerId={viewerId} admin={admin} onConnect={connect} /> }]
     : [{ key: 'repositories', tone: losingWork(items) ? 'bad' : 'warn', title: repositoriesTitle(items), render: (connect) => <RepositoryGroup key="repositories" items={items} now={now} viewerId={viewerId} admin={admin} onConnect={connect} /> }];
-  return [...attention, ...waiting];
+  return [...attention, ...read, ...waiting];
 }
 
 /** What could not be read, in one quiet line, so an empty list is never taken for all clear. */
-function Unchecked({ answer, repositories }: { answer: AttentionAnswer | undefined; repositories: RepositoriesRead }) {
-  const names = [...new Set((answer?.unavailable ?? []).map((kind) => ATTENTION_CHECKS[kind]))];
+function Unchecked({ answer, repositories, server }: { answer: AttentionAnswer | undefined; repositories: RepositoriesRead; server: ServerItemsRead }) {
+  const names = [...new Set([...(answer?.unavailable ?? []).map((kind) => ATTENTION_CHECKS[kind]), ...server.unchecked])];
   if (repositories.error) names.push('repositories');
   if (names.length === 0) return null;
   return <p className="t-small text-muted">Couldn’t check {listed(names)} just now.</p>;
@@ -126,7 +161,7 @@ function Connected({ words }: { words: string | null }) {
 }
 
 /** Whether a read the viewer is shown is still on its way: a member is never asked about the server's own health. */
-const waiting = ({ admin, pending, repositories }: NeedsYouProps): boolean => repositories.pending || (admin && pending);
+const waiting = ({ admin, pending, repositories, server }: NeedsYouProps): boolean => repositories.pending || (admin && (pending || server.pending));
 
 /**
  * Whether there is anything to show the viewer at all: an admin always has the panel; a member their repositories, or
@@ -141,13 +176,13 @@ function ReadChecks({ props }: { props: NeedsYouProps }) {
   return <>
     {props.admin && Boolean(props.error) && <ReadState data={props.answer} pending={false} error={props.error} onRetry={props.onRetry} label="what needs you">{() => null}</ReadState>}
     {Boolean(props.repositories.error) && <ReadState data={props.repositories.items} pending={false} error={props.repositories.error} onRetry={props.onRetry} label="repositories">{() => null}</ReadState>}
-    <Unchecked answer={props.answer} repositories={props.repositories} />
+    <Unchecked answer={props.answer} repositories={props.repositories} server={props.server} />
     {(props.answer?.unavailable.length ?? 0) > 0 && <Button size="sm" variant="ghost" onClick={props.onRetry}>Retry</Button>}
   </>;
 }
 
 function EmptyChecks({ props, connected, dialog, phone = false }: { props: NeedsYouProps; connected: string | null; dialog: ReactNode; phone?: boolean }) {
-  const incomplete = (props.admin && Boolean(props.error)) || Boolean(props.repositories.error) || (props.answer?.unavailable.length ?? 0) > 0;
+  const incomplete = (props.admin && Boolean(props.error)) || Boolean(props.repositories.error) || (props.answer?.unavailable.length ?? 0) > 0 || props.server.unchecked.length > 0;
   return <Card data-needs-you="" className={phone ? 'flex flex-col gap-s2 px-s4 py-s3' : 'flex flex-col gap-s2'}>
     <div className="flex items-center gap-s3">
       {phone && <HealthDot tone={incomplete ? 'faint' : 'ok'} label={incomplete ? 'Not every check could be read' : 'All clear'} />}
@@ -182,8 +217,8 @@ export function NeedsYouPanel(props: NeedsYouProps) {
   return (
     <Card className="flex flex-col gap-s3" data-needs-you="">
       <div className="flex items-baseline gap-s2">
-        <h2 className="t-h2 text-ink">Needs you</h2>
-        <span className="t-small text-muted">{needsYouCount(props.answer, props.repositories.items)}</span>
+        <h2 className="t-h2 text-ink">{props.title ?? 'Needs you'}</h2>
+        <span className="t-small text-muted">{needsYouCount(props.answer, props.repositories.items, props.server.items)}</span>
       </div>
       <ReadChecks props={props} />
       <Connected words={connecting.done} />

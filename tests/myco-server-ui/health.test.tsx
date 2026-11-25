@@ -1,10 +1,11 @@
 import { backlogWords } from '../../packages/myco-server/ui/src/features/admin/health/words.js';
+import { verdictOf, wellLines, type LineState, type WellLine } from '../../packages/myco-server/ui/src/features/admin/health/verdict';
+import { harnessHealthWords } from '../../packages/myco-server/ui/src/features/today/words';
+import type { StatusResponse } from '../../packages/myco-server/ui/src/lib/api';
 /**
- * Health as one page: its parts in order at their anchors, the addresses it
- * replaced leading to the right part with their query kept, what needs an
- * admin, the search index's upkeep, workers named by their machine, a restore
- * that asks before it adds a foreign Deployment's members, and no raw id
- * anywhere a reader sees.
+ * Health as two questions: whether the server is well, as one verdict over five lines, and what needs an admin, each
+ * item with a way to finish it and, where there is one, a way to decline it. The parts that left Health are reached
+ * from their old addresses; backups, their restore and the store checks are read where they live now.
  */
 import { retiredBackupNotice } from '@goondocks/myco-shared/backup-words';
 import { dashboardMe } from '../helpers/dashboard-permissions';
@@ -30,25 +31,25 @@ const PROJECTS = { projects: [
 const STUDIO_CREDENTIAL = 'mt_4Kp9Qs2Vx7Lm0Zb1';
 const BUSY_CREDENTIAL = 'mt_Ws8Yt3Nq6Rc2Hd5E';
 const STRAY_CREDENTIAL = 'mt_Pz1Ga7Ue4Oi9Kj3F';
+const runner = (name: string, display: string, extra: Record<string, unknown> = {}) => ({ runnerDetails: { id: name, name, state: 'enabled', display, lastSeenAt: NOW - 86_400_000, ...extra } });
 const STATUS = {
-  learning: { line: '2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; 1 session waiting to become readable; spent $2.00 of $20.00 in the last 24 hours.', lastCompleted: { at: NOW - 2 * 60_000, reason: 'learned' } },
+  learning: { line: '2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; spent $2.00 of $20.00 in the last 24 hours.', lastCompleted: { at: NOW - 2 * 60_000, reason: 'learned' }, dueSessions: 2, turnsAwaitingCards: 3, state: 'ready' },
+  budget: { active: true, reason: null, dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5, liveUsd: 0, unconfirmed: null, heldHeads: null, pricedExposure: null, state: 'ready' },
+  database: { readable: true },
   schema: { expected: 57, found: 57, matches: true }, target: 'bun',
-  capabilities: [{ capability: 'blobs', label: 'Stored attachments and transcripts', present: true, operatorNames: ['MYCO_BLOBS'] }],
+  capabilities: [{ capability: 'blob-store', label: 'Blobs', present: true, operatorNames: ['MYCO_BLOBS'] }],
   workers: {
     available: true, workersBusy: 1, runsQueued: 2, recentWithinMs: 90_000,
     queue: { observedAt: NOW, count: 2, oldestAt: NOW - 18 * 60000, reasons: [{ reason: 'capacity', count: 2 }], nativeNeedsRunner: false },
-    fleet: [
-      { credentialId: STUDIO_CREDENTIAL, machineId: 'ada_5a2d54af', offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], lastReason: 'no_work', lastSeenAt: NOW - 3_000, busy: null, eligible: true, recent: true },
-      { credentialId: BUSY_CREDENTIAL, machineId: 'lin_9e8f7a6b', offers: [{ id: 'codex', authenticated: true }], capabilities: [], lastReason: 'claimed', lastSeenAt: NOW - 1_000, busy: { runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', leaseExpiresAt: NOW + 60_000 }, eligible: true, recent: true },
-      { credentialId: STRAY_CREDENTIAL, machineId: null, offers: null, capabilities: null, lastReason: null, lastSeenAt: NOW - 3 * 86_400_000, busy: null, eligible: true, recent: false },
-    ],
+    fleet: [runner('homelab-mini', 'Busy'), runner('studio', 'Offline')],
   },
   transcriptBacklog: { transcripts: 3, bytes: 4096, imported: { transcripts: 3, bytes: 4096 } },
-  projects: [
-    { projectId: MYCO, lastActivityAt: NOW - 60_000, sessionCount: 12, archivedAt: null },
-    { projectId: ATLAS, lastActivityAt: NOW - 86_400_000, sessionCount: 3, archivedAt: NOW - 3_600_000 },
+  projects: [],
+  capture: [
+    { machineId: 'ada_5a2d54af', machineName: 'Ada’s studio Mac', member: { id: ADMIN.member.id, label: 'Ada' }, agent: 'claude-code', lastEventAt: NOW - 60_000, projectId: MYCO },
+    { machineId: 'mini', machineName: null, member: { id: 'mem_harness', label: 'Myco' }, agent: 'codex', lastEventAt: NOW - 1_000, projectId: ATLAS },
   ],
-  capture: [],
+  unavailable: [],
 };
 const credential = (id: string, machineId: string, runtimeLabel: string | null, memberId = ADMIN.member.id) => ({
   id, memberId, machineId, runtimeLabel, expiresAt: NOW + 86_400_000, revokedAt: null, revokedBy: null, bytesWritten: 0,
@@ -80,6 +81,8 @@ const routes = (over: Record<string, Route> = {}): Record<string, Route> => ({
     running: [{ runId: 'run_4f1c9a2e7b', projectId: MYCO, task: 'extract-curate', what: 'Learn from sessions', machine: 'homelab-mini', runnerId: null, heardAt: null, harness: 'codex', model: null, startedAt: NOW - 60_000, step: { words: 'Read session cards', at: NOW - 5_000 } }],
     waiting: [{ key: 'budget', projectId: null, what: 'Automatic work', count: null, why: 'Paused until the rolling 24-hour budget has room: $1.00 of $1.00 spent.', since: null, nextAt: null }],
     needsYou: [{ key: 'sign-in:rn_mini', projectId: null, what: 'homelab-mini can’t sign in to a coding agent', why: 'Sign in to a coding agent on this runner.', at: NOW, runId: null, retryAt: null }] }),
+  '/api/settings': () => Response.json({ leaves: [], taskTiers: [], embedding: null, quickJobs: { answeredBy: 'included', offered: ['included'] } }),
+  '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 0, sources: [] }),
   '/api/kpis': () => Response.json({
     state: 'ready', windowStart: 1697328000000, windowEnd: 1700006399999, asOf: 1700000000000, metricVersion: 711, windowDays: 30, since: 0, promptsServed: 2, deliveries: { placed: 2, unplaced: 1 }, servedShare: { value: 0.5, sampleSize: 4 }, sporeServeRate: { value: null, sampleSize: 0 }, sessionStartPresent: { value: null, sampleSize: 0 }, callsPerPrompt: { value: null, sampleSize: 0 },
     callsPerPromptByHarness: [], planReadsPerSession: { value: null, sampleSize: 0 }, firstInjectionMs: { value: null, sampleSize: 0 }, recallQuality: { value: null, sampleSize: 0 }, promptIdentity: [],
@@ -120,231 +123,197 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
   return screen.findByRole('menu');
 }
 
-const PARTS = [['needs-you', 'Needs you'], ['status', 'Status'], ['backups', 'Backups'], ['upkeep', 'Upkeep'], ['measures', 'Measures']] as const;
+const BACKUPS = '/settings/advanced#backups';
+const UPKEEP = '/settings/advanced#upkeep';
+
+/** The status `STATUS` answers, changed by `over`, read into lines as Health reads it. */
+const linesOf = (over: Partial<StatusResponse> = {}): WellLine[] =>
+  wellLines({ status: { ...STATUS, ...over } as unknown as StatusResponse, now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null) });
+const stateOf = (lines: readonly WellLine[]): Record<string, LineState> => Object.fromEntries(lines.map((line) => [line.key, line.state]));
+const verdictFor = async (): Promise<HTMLElement> => {
+  const well = await screen.findByRole('region', { name: 'Is the server well?' });
+  await waitFor(() => expect(well.querySelector('[data-verdict]')).not.toBeNull());
+  return well;
+};
 
 describe('Health', () => {
-  it('keeps to the server’s own wellness, and leads to Myco’s work for what Myco is doing and the machines that do it', async () => {
-    server(routes());
-    mount();
-    expect((await screen.findByRole('link', { name: 'What Myco is doing, and its runners →' })).getAttribute('href')).toBe('/work');
-    await screen.findByRole('region', { name: 'Status' });
-    expect(screen.queryByRole('region', { name: 'Now' })).toBeNull();
-    expect(screen.queryByRole('region', { name: 'Workers' })).toBeNull();
-  });
-
-  it('shows the budget and runner sign-in waits beneath one learning heading', async () => {
-    for (const reason of ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window', 'waiting for a runner that can sign in']) {
-      const line = `1 session ready to learn (1 summary to learn from); 1 turn waiting to be summarized; 1 session waiting to become readable; ${reason}; spent $1.00 of $1.00 in the last 24 hours.`;
-      server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: { line } }) }));
-      mount('/status/health#status');
-      const section = await screen.findByRole('region', { name: 'Status' });
-      expect(await within(section).findByText(line)).toBeTruthy();
-      expect(within(section).getAllByRole('heading', { name: 'Learning from sessions' })).toHaveLength(1);
-      expect(section.textContent).not.toContain('Learning:');
-      expect(section.textContent).not.toContain('1 sessions');
-      cleanup();
-    }
-  });
-  it('names each refused stored key even when they failed for the same reason', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { ...STATUS.workers, fleet: [{
-      runnerDetails: { storedKeyFailures: [
-        { agent: 'claude-code', slot: 'anthropic', failure: 'out_of_credit' },
-        { agent: 'codex', slot: 'codex', failure: 'out_of_credit' },
-      ] },
-    }] } }) }));
-    mount('/status/health#status');
-    expect(await screen.findByText(/^The Anthropic key ran out of API credit\./)).toBeTruthy();
-    expect(await screen.findByText(/^The Codex \(OpenAI\) key ran out of API credit\./)).toBeTruthy();
-  });
-  it('shows one dated sign-in fallback notice per agent with the affected runners', async () => {
-    const fallbackNotices = [{ agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW }];
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { ...STATUS.workers,
-      fleet: ['Mini', 'Studio'].map(name => ({ runnerDetails: { id: name, name, fallbackNotices } })),
-    } }) }));
-    mount('/status/health#status');
-    const notice = await screen.findByRole('status', { name: 'Claude Code sign-in fallback' });
-    expect(notice.textContent).toContain('Mini, Studio');
-    expect(notice.textContent).toContain('Since');
-    expect(notice.textContent).toContain('Work continues on the runner’s own sign-in');
-  });
-
-  it('shows learning progress, its last outcome and daily spend, and surfaces a failed read', async () => {
-    server(routes());
-    mount('/status/health#status');
-    const section = await screen.findByRole('region', { name: 'Status' });
-    expect(await within(section).findByText(STATUS.learning.line)).toBeTruthy();
-    expect(section.querySelector('[data-health-last-learning]')!.textContent).toBe('Last learning completed 2 min ago.');
-    cleanup();
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: null, unavailable: ['learning'] }) }));
-    mount('/status/health#status');
-    expect(await screen.findByText(/learning progress.*couldn.t|couldn.t.*learning progress/i)).toBeTruthy();
-  });
-  it('gives a next step for an older stop without promising an automatic retry', async () => {
-    server(routes({
-      '/api/attention': () => Response.json({ items: [{
-        kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 1, latestAt: NOW,
-        reasons: { parse: 1 },
-      }], unavailable: [] }),
-    }));
-    mount('/status/health#status');
-    const section = await screen.findByRole('region', { name: 'Status' });
-    await waitFor(() => expect(within(section).getByText(/Latest stop:/).textContent)
-      .toContain('The reason was not recorded. Update Myco'));
-    expect(section.textContent).toContain('If reading stays stopped, report this problem.');
-    expect(section.textContent).not.toContain('will try again');
-  });
-
-  it('shows the stopping reason and next step at the Open Health destination', async () => {
-    server(routes({
-      '/api/attention': () => Response.json({ items: [{
-        kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 2, latestAt: NOW,
-        reasons: { parse: 2 }, latestDiagnostic: { branch: 'no_progress', offset: 12345, lineKind: 'tool_result' },
-      }], unavailable: [] }),
-    }));
-    mount('/status/health#status');
-    const section = await screen.findByRole('region', { name: 'Status' });
-    await waitFor(() => expect(within(section).getByText(/Latest stop:/).textContent)
-      .toContain('Reading could not move past a record (tool result).'));
-    expect(within(section).getByText(/Latest stop:/).textContent).toContain('Update Myco');
-    expect(section.textContent).not.toContain('12345');
-    expect(within(section).getByText('2 transcripts in Myco')).toBeTruthy();
-    expect(seen.hash).toBe('#status');
-    expect(rawIdsIn(section)).toEqual([]);
-  });
-
-  it('lists its parts in order, each at its anchor, with a jump to each', async () => {
+  it('asks two questions in order, keeps the diagnostics at its foot, and says in one line where the rest went', async () => {
     server(routes());
     mount();
     expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
     const page = document.querySelector('[data-admin-page="health"]')!;
-    const sections = [...page.querySelectorAll(':scope > section')].map((s) => s.id);
-    expect(sections).toEqual(PARTS.map(([id]) => id));
-    for (const [id, name] of PARTS) expect(screen.getByRole('region', { name }).id).toBe(id);
-    const jumps = within(screen.getByRole('navigation', { name: 'Parts of Health' })).getAllByRole('link');
-    expect(jumps.map((a) => [a.getAttribute('href'), a.textContent])).toEqual(PARTS.map(([id, name]) => [`/status/health#${id}`, name]));
-  });
-
-  it('names each source search by meaning passes over, with where it is and why, and shows nothing while there is none', async () => {
-    server(routes({
-      '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 2, sources: [
-        { projectId: 'proj_x', projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true },
-        { projectId: 'proj_x', projectName: 'Project X', type: 'session', title: 'A very long session', reason: 'the model refused its text with HTTP 400 (“input is too long”)', anyModel: false },
-      ] }),
-    }));
-    mount();
-    const list = await waitFor(() => { const found = document.querySelector<HTMLElement>('[data-health-passed-over]'); if (found === null) throw new Error('not yet'); return found; });
-    expect(list.textContent).toContain('Search by meaning leaves out 2 sources. Search by words still finds them.');
-    expect([...list.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
-      'Plan “Release checklist” in Project X: its stored text is missing',
-      'Session “A very long session” in Project X: the model refused its text with HTTP 400 (“input is too long”)',
+    expect([...page.querySelectorAll(':scope > section')].map((s) => s.id)).toEqual(['status', 'needs-you']);
+    expect((await screen.findByTestId('download-diagnostics')).getAttribute('href')).toBe('/api/diagnostics');
+    const moved = page.querySelector('[data-health-moved]')!;
+    expect([...moved.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Backups', BACKUPS], ['Upkeep', UPKEEP], ['Is Myco helping?', '/measures'],
     ]);
-    cleanup();
-    server(routes({ '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 0, sources: [] }) }));
-    mount();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
-    await waitFor(() => expect(document.querySelector('[data-health-schema]')).toBeTruthy());
-    expect(document.querySelector('[data-health-passed-over]')).toBeNull();
+    expect(page.textContent).not.toContain('Installed agents');
+    expect(page.textContent).not.toContain('What each project last sent');
   });
 
-  it('shows passed-over catch-up as measuring instead of an empty count', async () => {
-    server(routes({ '/api/embedding/passed-over': () => Response.json({ state: 'building' }) }));
-    mount();
-    expect(await screen.findByText('Measuring passed-over sources…')).toBeTruthy();
-    expect(document.querySelector('[data-health-passed-over]')).toBeNull();
-  });
-
-  it('asks for its own reads at once, without waiting on the projects list', async () => {
-    // The projects list never answers. Health's reads start beside it, so the page never waits a round trip on it.
-    const { asked } = server(routes({ '/api/projects': () => new Promise<Response>(() => undefined) as unknown as Response }));
-    mount();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
-    await waitFor(() => {
-      const missing = ['/api/status', '/api/attention', '/api/backups', '/api/maintenance', '/api/kpis', '/api/recovery/exports']
-        .filter((path) => !asked.some((line) => line === `GET ${path}` || line.startsWith(`GET ${path}?`)));
-      expect(missing).toEqual([]);
-    });
-  });
-
-  it('leads each address it replaced to its part, the query kept', async () => {
-    server(routes());
-    mount('/status');
-    await waitFor(() => expect(seen).toEqual({ pathname: '/status/health', search: '', hash: '#status' }));
-    cleanup();
-    const again = server(routes());
-    mount('/measures?window=7');
-    await waitFor(() => expect(seen).toEqual({ pathname: '/status/health', search: '?window=7', hash: '#measures' }));
-    await waitFor(() => expect(again.asked).toContain('GET /api/kpis?window=7'));
-    cleanup();
-    server(routes());
-    mount('/operations');
-    await waitFor(() => expect(seen).toEqual({ pathname: '/status/health', search: '', hash: '#upkeep' }));
-  });
-
-  it('shows what needs an admin, with its count beside Health in the nav', async () => {
+  it('says Yes when every line is, each from its own read, by machine and project name', async () => {
     server(routes());
     mount();
-    const needsYou = await screen.findByRole('region', { name: 'Needs you' });
+    const well = await verdictFor();
+    expect(well.querySelector('[data-verdict]')!.textContent).toBe('YesSessions are arriving, Myco is learning from them, and 1 of 2 runners is online.');
+    const line = (key: string) => well.querySelector(`[data-well-line="${key}"]`)!.textContent;
+    expect(line('sessions')).toBe('Sessions arrivingLast one 1 min ago, from Ada’s studio Mac for Myco.Yes');
+    expect(line('learning')).toContain('Last learning completed 2 min ago.');
+    expect(line('learning')).toContain(STATUS.learning.line);
+    expect(line('learning')).toContain('3 transcripts (4.0 KB) waiting to be read into sessions.');
+    expect(line('runners')).toBe('Somewhere to runhomelab-mini is working. studio is offline, last seen yesterday.1 of 2 online');
+    expect(line('budget')).toContain('$2.00 counts against it now');
+    expect(line('database')).toBe('Database and storageAnswering, at the version this server expects (57).Yes');
+    expect(well.textContent).not.toContain('MYCO_BLOBS');
+  });
+
+  it('reads each line to the state its facts give', () => {
+    expect(stateOf(linesOf())).toEqual({ sessions: 'yes', learning: 'yes', runners: 'yes', budget: 'yes', database: 'yes' });
+    const cases: Array<[string, Partial<StatusResponse>, Record<string, LineState>]> = [
+      ['no person’s session lately', { capture: [STATUS.capture[1]!] } as Partial<StatusResponse>, { sessions: 'attention' }],
+      ['sessions waiting a day for learning', { learning: { ...STATUS.learning, lastCompleted: { at: NOW - 2 * 86_400_000, reason: 'learned' } } }, { learning: 'attention' }],
+      ['no runner online', { workers: { ...STATUS.workers, fleet: [runner('studio', 'Offline')] } } as unknown as Partial<StatusResponse>, { runners: 'no' }],
+      ['no runner at all', { workers: { ...STATUS.workers, fleet: [] } } as unknown as Partial<StatusResponse>, { runners: 'no' }],
+      ['runs blocked on a key', { workers: { ...STATUS.workers, queue: { ...STATUS.workers.queue, reasons: [{ reason: 'invalid_key', count: 1 }] } } } as unknown as Partial<StatusResponse>, { runners: 'attention' }],
+      ['the budget reached', { budget: { ...STATUS.budget, automaticUsd: 20 } } as Partial<StatusResponse>, { budget: 'attention' }],
+      ['spend still measuring', { budget: { ...STATUS.budget, state: 'building' } } as Partial<StatusResponse>, { budget: 'unknown' }],
+      ['the database not answering', { database: { readable: false } }, { database: 'no' }],
+      ['the wrong database version', { schema: { expected: 57, found: 56, matches: false } }, { database: 'no' }],
+      ['something not set up', { capabilities: [{ capability: 'blob-store', label: 'Blobs', present: false, operatorNames: [] }] }, { database: 'attention' }],
+      ['failed reads', { unavailable: ['capture', 'learning', 'workers', 'budget', 'schema'] }, { sessions: 'failed', learning: 'failed', runners: 'failed', budget: 'failed', database: 'failed' }],
+    ];
+    for (const [name, over, changed] of cases) {
+      expect({ name, states: stateOf(linesOf(over)) }).toEqual({ name, states: { ...stateOf(linesOf()), ...changed } });
+    }
+    expect(linesOf({ capabilities: [{ capability: 'blob-store', label: 'Blobs', present: false, operatorNames: [] }] }).at(-1)!.rows)
+      .toEqual([{ label: 'File storage for transcripts and attachments', ready: false }]);
+  });
+
+  it('gives No when any line is No, Needs attention when any is unsure, and Yes only when all are Yes', () => {
+    const lines = linesOf();
+    const withStates = (...states: LineState[]) => lines.map((line, index) => ({ ...line, state: states[index] ?? 'yes' }));
+    for (const [states, verdict] of [
+      [[], 'Yes'], [['attention'], 'Needs attention'], [['unknown'], 'Needs attention'], [['failed'], 'Needs attention'],
+      [['yes', 'no'], 'No'], [['attention', 'no', 'failed'], 'No'],
+    ] as const) expect({ states, verdict: verdictOf(withStates(...states)).verdict }).toEqual({ states, verdict });
+    expect(verdictOf(withStates('yes', 'yes', 'no', 'attention')).sentence).toBe('Not working: somewhere to run (1 of 2 online). Needs a look: within budget (yes).');
+  });
+
+  it('says on every line that a failed status read failed, and never says Yes', async () => {
+    server(routes({ '/api/status': () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
+    mount();
+    const well = await verdictFor();
+    expect(well.querySelector('[data-verdict] p')!.textContent).toBe('Needs attention');
+    expect([...well.querySelectorAll('[data-well-state="failed"]')]).toHaveLength(5);
+    expect(well.textContent).toContain('Couldn’t read this server’s status just now.');
+  });
+
+  it('shows what needs an admin with a way to finish and decline it, and its count beside Health in the nav', async () => {
+    server(routes());
+    mount();
+    const needsYou = await screen.findByRole('region', { name: 'What needs you' });
     expect(await within(needsYou).findByText(/^Last backup was /)).toBeTruthy();
-    expect(within(needsYou).getByRole('link', { name: /Open backups/ }).getAttribute('href')).toBe('/status/health#backups');
+    expect(within(needsYou).getByRole('link', { name: /Open backups/ }).getAttribute('href')).toBe(BACKUPS);
+    expect(within(needsYou).getByRole('link', { name: /Change how often it runs/ }).getAttribute('href')).toBe('/settings/advanced#backup');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
     expect(await within(admin).findByRole('link', { name: 'Health, 1 thing needs you' })).toBeTruthy();
   });
 
-  it('says one Needs you count in the list and beside Health, counting the repositories not captured yet', async () => {
+  it('says one count in the list and beside Health, counting the repositories not captured yet', async () => {
     server(routes({
       '/api/uncaptured': () => Response.json({ items: [{ machineId: 'mt_studio_machine', machineName: 'Ada’s studio Mac', member: { id: 'mem_ada', label: 'Ada' }, rootKey: 'a1b2c3d4e5f60718',
         label: 'widget', remote: 'github.com/acme/widget', reason: 'outside_folders', misses: 3, held: 'held', firstSeenAt: NOW - 86_400_000, lastSeenAt: NOW - 7_200_000 }], cursor: null }),
     }));
     mount();
-    const needsYou = await screen.findByRole('region', { name: 'Needs you' });
+    const needsYou = await screen.findByRole('region', { name: 'What needs you' });
     await within(needsYou).findByText(/widget/);
-    expect(needsYou.querySelector('h2')!.parentElement!.textContent).toBe('Needs you2');
+    expect(needsYou.querySelector('h2')!.parentElement!.textContent).toBe('What needs you2');
     expect(await within(screen.getByRole('navigation', { name: 'Admin' })).findByRole('link', { name: 'Health, 2 things need you' })).toBeTruthy();
-    expect(screen.queryByText('Nothing needs you.')).toBeNull();
   });
 
-  it('says what the server holds and received, by project name, with the transcripts still waiting', async () => {
-    server(routes());
+  it('lists a store check that found a problem, a rejected stored key and a failed automatic backup as items, counted beside Health', async () => {
+    const finding = { runId: 'c1', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['A stored record is missing.'], findingCodes: ['store_problem'], findingsOmitted: 0, measurements: [] };
+    server(routes({
+      '/api/attention': () => Response.json({ items: [], unavailable: [] }),
+      '/api/maintenance': () => Response.json({ checks: [{ check: 'integrity', support: { supported: true, label: 'Checks stored records' }, cadence: { state: 'off' }, dueAt: null, running: false, latest: finding }] }),
+      '/api/status': () => Response.json({ ...STATUS, workers: { ...STATUS.workers, fleet: [
+        runner('homelab-mini', 'Online', { storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'invalid_key' }] }),
+        runner('studio', 'Online', { fallbackNotices: [{ agent: 'claude-code', slot: 'anthropic', reason: 'invalid_key', since: NOW }, { agent: 'codex', slot: 'codex', reason: 'out_of_credit', since: NOW }] }),
+      ] } }),
+      '/api/recovery/exports': () => Response.json({ supported: true, attempt: 4, stage: 'failed', form: 'staging', error: 'export_failed',
+        schedule: { supported: true, configured: true, ready: true, intervalHours: 24, dueAt: null, due: false, latest: { attempt: 4, stage: 'failed', startedAt: NOW, failure: 'export_failed' }, available: { state: 'none' }, idleBecause: null } }),
+    }));
     mount();
-    const status = await screen.findByRole('region', { name: 'Status' });
-    expect(await within(status).findByText('The database is at the version this server expects (57).')).toBeTruthy();
-    expect(within(status).getByText('Stored attachments and transcripts')).toBeTruthy();
-    expect(status.textContent).not.toContain('MYCO_BLOBS');
-    const received = within(status).getByRole('group', { name: 'What each project last sent' });
-    expect([...received.querySelectorAll('[data-health-project]')].map((row) => row.textContent)).toEqual([
-      expect.stringContaining('Myco'),
-      expect.stringMatching(/Atlas web.*Archived.*3 sessions/),
-    ]);
-    expect(within(status).getByTestId('transcript-backlog').textContent).toBe('3 transcripts (4.0 KB) waiting to be read into sessions.');
+    const needsYou = await screen.findByRole('region', { name: 'What needs you' });
+    const item = async (title: string) => (await within(needsYou).findByText(title)).closest('li')!;
+    const links = (li: HTMLElement) => [...li.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href')]);
+    expect(links(await item('Integrity check found a problem'))).toEqual([['Open upkeep →', UPKEEP], ['Change its schedule →', '/settings/advanced#maintenance']]);
+    const key = await item('The Anthropic key was rejected');
+    expect(key.textContent).toContain('Seen by homelab-mini and studio.');
+    expect(links(key)).toEqual([['Replace the key →', '/settings/connections#credentials'], ['Pay another way →', '/settings/models#workers']]);
+    expect((await item('The last automatic backup failed')).textContent).toContain('Attempt 4');
+    expect(within(needsYou).queryByText(/Codex \(OpenAI\) key/)).toBeNull();
+    expect(await within(screen.getByRole('navigation', { name: 'Admin' })).findByRole('link', { name: 'Health, 3 things need you' })).toBeTruthy();
   });
 
-  it('shows the search index’s upkeep over the last day in one line', async () => {
-    const { asked } = server(routes());
+  it('turns a project’s code map off from its item, at the revision it read, and says so', async () => {
+    const puts: Array<{ path: string; body: unknown; match: string | null }> = [];
+    server(routes({
+      '/api/attention': () => Response.json({ items: [{ kind: 'repository_missing', tone: 'warn', projectId: MYCO, codeMap: true }], unavailable: [] }),
+      [`/api/projects/${MYCO}/capabilities`]: () => Response.json({ capabilities: { canopy: true }, capabilityRevisions: { canopy: 7 }, settings: {}, revisions: {} }),
+      [`/api/projects/${MYCO}/capabilities/canopy`]: (init) => {
+        puts.push({ path: 'canopy', body: JSON.parse(String(init!.body)), match: new Headers(init!.headers).get('if-match') });
+        return Response.json({ applied: true });
+      },
+    }));
     mount();
-    const upkeep = await screen.findByRole('region', { name: 'Upkeep' });
-    expect((await within(upkeep).findByText(/Search kept up to date/)).textContent).toBe('Search kept up to date · 1 h ago · 2 retries along the way');
-    const work = asked.find((line) => line.startsWith('GET /api/work?'))!;
-    const params = new URL(work.slice(4), 'https://s').searchParams;
-    expect(params.has('project')).toBe(false);
-    expect(Number(params.get('until')) - Number(params.get('since'))).toBeGreaterThanOrEqual(24 * 3_600_000);
+    const needsYou = await screen.findByRole('region', { name: 'What needs you' });
+    const off = await within(needsYou).findByRole('button', { name: 'Turn the code map off' });
+    await waitFor(() => expect(off.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(off);
+    expect(await within(needsYou).findByText('The code map is off for Myco.')).toBeTruthy();
+    expect(puts).toEqual([{ path: 'canopy', body: { enabled: false }, match: '7' }]);
   });
 
-  it('names the server refusal in Search and links its latest failed run', async () => {
-    server(routes({ '/api/work': () => Response.json({ window: { since: 0, until: NOW }, state: 'ready', summary: [], timeline: [], hasMore: false, cursor: null, maps: [],
-      upkeep: { task: 'embedding-reconcile', lastSuccessAt: null, failedInWindow: 3,
-        unrecovered: { runs: 3, since: NOW - 3_600_000, latestFailure: { projectId: MYCO, runId: 'failed-search', at: NOW - 1000, code: 'parse' } } } }) }));
+  it('words a transcript that stopped being read with its next step, and no raw id', async () => {
+    server(routes({
+      '/api/attention': () => Response.json({ items: [{ kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 2, latestAt: NOW,
+        reasons: { parse: 2 }, latestDiagnostic: { branch: 'no_progress', offset: 12345, lineKind: 'tool_result' } }], unavailable: [] }),
+    }));
     mount();
-    const upkeep = await screen.findByRole('region', { name: 'Upkeep' });
-    await waitFor(() => expect(upkeep.textContent).toContain('The server refused the task’s request because its format was invalid.'));
-    expect(within(upkeep).getByRole('link', { name: 'See the latest failed run' }).getAttribute('href')).toContain('/runs/failed-search');
+    const needsYou = await screen.findByRole('region', { name: 'What needs you' });
+    const item = (await within(needsYou).findByText('2 transcripts couldn’t be read')).closest('li')!;
+    expect(item.textContent).toContain('Reading could not move past a record (tool result).');
+    expect(item.textContent).toContain('Update Myco');
+    expect(item.textContent).not.toContain('12345');
+    expect(rawIdsIn(item)).toEqual([]);
   });
 
-  it('makes queued work with no executor contact an explicit owner opt-in', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: true, workersBusy: 0, runsQueued: 2, recentWithinMs: 90_000, fleet: [], queue: { observedAt: NOW, count: 2, oldestAt: NOW - 18 * 60000, reasons: [{ reason: 'no_runner', count: 2 }], nativeNeedsRunner: true } } }) }));
+  it('asks for its own reads at once, without waiting on the projects list', async () => {
+    const { asked } = server(routes({ '/api/projects': () => new Promise<Response>(() => undefined) as unknown as Response }));
     mount();
-    expect(await screen.findByText(/No recently seen runner can currently take this work/)).toBeTruthy();
-    expect(screen.getByText(/2 runs waiting; oldest/).textContent).toContain('18 min ago');
-    expect(screen.getByText(/This native server no longer runs agent work by itself/).textContent).toContain('on this machine or another');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Health' })).toBeTruthy();
+    await waitFor(() => {
+      const missing = ['/api/status', '/api/attention', '/api/maintenance', '/api/recovery/exports']
+        .filter((path) => !asked.some((line) => line === `GET ${path}` || line.startsWith(`GET ${path}?`)));
+      expect(missing).toEqual([]);
+    });
+  });
+
+  it('leads each old address of a part that left to where it lives now, with its content there', async () => {
+    for (const [from, to, content] of [
+      ['/status/health#backups', { pathname: '/settings/advanced', search: '', hash: '#backups' }, () => screen.findByRole('heading', { name: 'Backups made here' })],
+      ['/status/health#upkeep', { pathname: '/settings/advanced', search: '', hash: '#upkeep' }, () => screen.findByRole('button', { name: 'Run housekeeping now' })],
+      ['/status/health?window=7#measures', { pathname: '/measures', search: '?window=7', hash: '' }, () => screen.findByRole('heading', { level: 1, name: 'Is Myco helping?' })],
+      ['/status', { pathname: '/status/health', search: '', hash: '#status' }, () => screen.findByRole('region', { name: 'Is the server well?' })],
+    ] as const) {
+      server(routes());
+      mount(from);
+      await waitFor(() => expect(seen).toEqual(to));
+      expect(await content()).toBeTruthy();
+      cleanup();
+    }
   });
 
   it('restores a backup only through its confirm, and one from another Deployment only once the switch is on', async () => {
@@ -357,8 +326,8 @@ describe('Health', () => {
         return Response.json({ applied: true, tables, job: restoreJob({ state: 'complete', rowsDone: 16, rowsTotal: 16, completedAt: NOW, outcome: { tables } }) });
       },
     }));
-    mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    mount(BACKUPS);
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
     expect(within(dialog).getByText("This backup includes older data this version no longer keeps (generated skills, digests, old instructions). It won't be restored.")).toBeTruthy();
@@ -389,8 +358,8 @@ describe('Health', () => {
       '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: false, job: running }, { status: 202 }),
       '/api/backups/restores/rs_1': () => Response.json({ job: progress }),
     }));
-    mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    mount(BACKUPS);
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore' }));
     expect((await screen.findByText(/^Restoring: /)).textContent).toBe('Restoring: 25% done, 10 records added so far.');
@@ -400,7 +369,7 @@ describe('Health', () => {
     progress = restoreJob({ state: 'failed', rowsDone: 20, rowsTotal: 40, completedAt: NOW, outcome: { tables: { sessions: { rows: 40, inserted: 20 } } },
       failure: { code: 'backup_unavailable', message: 'the backup this restore reads is no longer stored; the rows it restored stay' } });
     server(routes({ '/api/backups': () => Response.json({ backups: [BACKUP], restore: progress }) }));
-    mount();
+    mount(BACKUPS);
     const stopped = await screen.findByText(/stopped\.$/);
     expect(stopped.textContent).toMatch(/^The restore started .+ stopped\.$/);
     expect(screen.getByText(/no longer stored/).textContent).toContain('restoring the same backup again picks up from them');
@@ -417,7 +386,7 @@ describe('Health', () => {
       // The continue answers mid-walk; the next read finds it finished, and that read is what the page shows.
       '/api/backups/restores/rs_1/continue': () => { job = complete; return Response.json({ applied: false, job: { ...waiting, rowsDone: 35 } }, { status: 202 }); },
     }));
-    mount();
+    mount(BACKUPS);
     expect((await screen.findByText(/only while this page continues the restore/)).textContent).toContain('Continue it to finish');
     expect(posts).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Continue restore' }));
@@ -436,7 +405,7 @@ describe('Health', () => {
       '/api/backups/restores/rs_1': () => Response.json({ job }),
       '/api/backups/restores/rs_1/stop': () => { job = stopped; return Response.json({ job: stopped }); },
     }));
-    mount();
+    mount(BACKUPS);
     await screen.findByText(/^Restoring: /);
     expect(posts).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Stop restore' }));
@@ -450,8 +419,8 @@ describe('Health', () => {
     server(routes({
       '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ error: 'artifact_format_retired', message: 'server sentence', retiredRows: { prompt_batches: 2 }, restoresOn: '2.0.0-alpha.23' }, { status: 409 }),
     }));
-    mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    mount(BACKUPS);
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const alert = await screen.findByText(/older format this release can’t restore/);
     expect(alert.textContent).toContain('Myco 2.0.0-alpha.23 was the last release that read it');
@@ -464,8 +433,8 @@ describe('Health', () => {
     const { posts } = server(routes({
       '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false, restore: { allowed: true, reason: null }, authorityExcluded: null }),
     }));
-    mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    mount(BACKUPS);
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('switch')).toBeNull();
@@ -483,8 +452,8 @@ describe('Health', () => {
         foreignLineage: false, restore: { allowed: false, reason: 'Only the owner can restore a backup that includes members or access authority.' },
       }),
     }));
-    mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    mount(BACKUPS);
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
     expect(dialog.textContent).toContain('It holds members 2 · sessions 4');
@@ -497,22 +466,21 @@ describe('Health', () => {
     server(routes({
       '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, counts: { sessions: 4 } }, foreignLineage: false }),
     }));
-    mount();
-    const list = await screen.findByRole('group', { name: 'Backups' });
+    mount(BACKUPS);
+    const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
     expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(dialog).getByText('Restore permission is unavailable. Refresh the preview.')).toBeTruthy();
   });
 
+
   it('shows no raw id anywhere a reader sees', async () => {
     server(routes());
     mount();
-    await screen.findByText(/Search kept up to date/);
+    await verdictFor();
     await screen.findByText(/^Last backup was /);
-    await screen.findAllByTestId('measure-tile');
     expect(rawIdsIn(document.body)).toEqual([]);
-    expect(document.body.textContent).not.toContain('bk_7f3a9c0e21');
   });
 
   it('shows a member who is not an admin that the page is an admin’s, and asks none of its reads', async () => {
@@ -535,7 +503,7 @@ it('describes coded store diagnostics with specific findings and dashboard words
         findings: [...Array<string>(10).fill('A stored record is missing.'), 'A file could not be read.'], findingCodes: Array<string>(11).fill('store_problem'), findingsOmitted: 0,
         measurements: [{ name: 'size', state: 'unavailable', reasonCode: 'measurement_unavailable', reason: prose }] } },
   ] }) }));
-  mount();
+  mount(UPKEEP);
   const upkeep = await screen.findByTestId('maintenance');
   await waitFor(() => expect(upkeep.textContent).toContain('The store check found a problem.'));
   expect(upkeep.textContent).toContain('Not available on this server.');
@@ -564,7 +532,7 @@ for (const [code, configured, ready, expected] of [
       schedule: { supported: code !== 'backup_unsupported', configured, ready, intervalHours: 24, dueAt: null, due: false,
         latest: null, available: { state: 'none' }, idleCode: code, idleBecause: prose },
     }) }));
-    mount();
+    mount(BACKUPS);
     await waitFor(() => expect(document.body.textContent).toContain(expected));
     expect(document.body.textContent).not.toContain(prose);
   });
@@ -572,94 +540,56 @@ for (const [code, configured, ready, expected] of [
 
 
 describe('dashboard status honesty gates', () => {
-  it('finding 3: independently failed search support reads remain visible with retries', async () => {
-    for (const endpoint of ['/api/embedding/switch', '/api/embedding/passed-over']) {
-      const table = routes({
-        '/api/embedding/switch': () => endpoint.endsWith('/switch') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ switch: null }),
-        '/api/embedding/passed-over': () => endpoint.endsWith('passed-over') ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ state: 'ready', count: 0, sources: [] }),
-      });
-      server(table); mount();
-      await screen.findByRole('heading', { name: 'Search by meaning' });
-      await screen.findAllByRole('alert');
-      expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
-      cleanup();
-    }
+  it('finding 3: a failed read of the sources search passes over stays visible under Upkeep, with a retry', async () => {
+    server(routes({ '/api/embedding/passed-over': () => Response.json({ error: 'unavailable' }, { status: 503 }) }));
+    mount(UPKEEP);
+    await screen.findAllByRole('alert');
+    expect(screen.getAllByRole('button', { name: 'Retry' }).length).toBeGreaterThan(0);
   });
-  it('finding 6: healthy schema survives unavailable project and backlog facts without an empty claim', async () => {
-    server(routes({ '/api/status': () => Response.json({ ...STATUS, projects: [], transcriptBacklog: null, unavailable: ['projects', 'transcriptBacklog'] }) }));
+  it('finding 6: a well database survives unread learning and runner facts, and the verdict is not Yes', async () => {
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { available: false, fleet: null, runsQueued: null }, learning: null, unavailable: ['workers', 'learning'] }) }));
     mount();
-    await screen.findByText('The database is at the version this server expects (57).');
-    await screen.findByText('Couldn’t read what projects last sent.');
-    await screen.findByText('Couldn’t read transcripts waiting to be processed.');
-    expect(screen.queryByText('Nothing has been received yet.')).toBeNull();
-    expect(screen.queryByText('The database could not be reached.')).toBeNull();
-    expect(screen.queryByText('Could not reach the server')).toBeNull();
+    const well = await verdictFor();
+    expect(well.querySelector('[data-well-line="database"]')!.getAttribute('data-well-state')).toBe('yes');
+    expect(well.querySelector('[data-well-line="learning"]')!.textContent).toContain('Couldn’t read how learning stands just now.');
+    expect(well.querySelector('[data-well-line="runners"]')!.textContent).toContain('Couldn’t read the runners just now.');
+    expect(well.querySelector('[data-verdict] p')!.textContent).toBe('Needs attention');
+  });
+  it('names the passed-over sources under Upkeep, with where each is and why', async () => {
+    server(routes({ '/api/embedding/passed-over': () => Response.json({ state: 'ready', count: 1, sources: [
+      { projectId: 'proj_x', projectName: 'Project X', type: 'plan', title: 'Release checklist', reason: 'its stored text is missing', anyModel: true },
+    ] }) }));
+    mount(UPKEEP);
+    const list = await waitFor(() => { const found = document.querySelector<HTMLElement>('[data-passed-over]'); if (found === null) throw new Error('not yet'); return found; });
+    expect(list.textContent).toContain('Search by meaning leaves out 1 source. Search by words still finds it.');
+    expect([...list.querySelectorAll('li')].map((li) => li.textContent)).toEqual(['Plan “Release checklist” in Project X: its stored text is missing']);
   });
 });
 
-it('lists tools held by another Deployment in Status', async () => {
-  server(routes({
-    '/api/status': () => Response.json({ ...STATUS, harnesses: [{ id: 'claude-code', provisioned: true, state: 'held_elsewhere', toolsDeployment: 'https://myco.whisker.engineering', machineId: 'ada_5a2d54af', machineName: 'CKIRBY-MBP' }] }),
-    '/api/attention': () => Response.json({ items: [], unavailable: [] }),
-  }));
-  mount();
-  const status = await screen.findByRole('region', { name: 'Status' });
-  const copy = "Claude Code's Myco tools on CKIRBY-MBP use myco.whisker.engineering";
-  expect(await within(status).findByText(copy)).toBeTruthy();
+it('words each installed agent’s state on its machine, for the machine pages', () => {
+  const fact = (over: Record<string, unknown>) => ({ id: 'codex', provisioned: true as const, machineId: 'm', machineName: 'Work laptop', state: 'ready' as const, ...over }) as Parameters<typeof harnessHealthWords>[0];
+  expect(harnessHealthWords(fact({ id: 'claude-code', state: 'held_elsewhere', toolsDeployment: 'https://myco.whisker.engineering', machineName: 'CKIRBY-MBP' })))
+    .toBe("Claude Code's Myco tools on CKIRBY-MBP use myco.whisker.engineering");
+  expect(harnessHealthWords(fact({ id: 'claude-code', state: 'held_elsewhere', machineName: 'Personal laptop' }))).toBe("Claude Code's Myco tools on Personal laptop use another Myco");
+  expect(harnessHealthWords(fact({ state: 'unwritable', action: 'Allow Myco to write Codex configuration' }))).toBe('Codex on Work laptop: Allow Myco to write Codex configuration');
+  expect(harnessHealthWords(fact({ state: 'trust_required', hookRepairAt: NOW - HOUR, ranAt: NOW - 2 * HOUR, action: 'x', machineName: 'Spare laptop' })))
+    .toBe("Codex's Myco tools on Spare laptop are set up and waiting for its first run");
 });
 
-
-it('names the machine for private held destinations and for repair states', async () => {
-  server(routes({
-    '/api/status': () => Response.json({ ...STATUS, harnesses: [
-      { id: 'claude-code', provisioned: true, state: 'held_elsewhere', machineId: 'ada_5a2d54af', machineName: 'Personal laptop' },
-      { id: 'codex', provisioned: true, state: 'unwritable', action: 'Allow Myco to write Codex configuration', machineId: 'work', machineName: 'Work laptop' },
-      { id: 'codex', provisioned: true, state: 'trust_required', hookRepairAt: NOW - HOUR, ranAt: NOW - 2 * HOUR, action: "Restart Codex and trust Myco's hooks", machineId: 'idle', machineName: 'Spare laptop' },
-      { id: 'codex', provisioned: true, state: 'trust_required', hookRepairAt: NOW - 2 * HOUR, ranAt: NOW - HOUR, action: "Restart Codex and trust Myco's hooks", machineId: 'used', machineName: 'Desk laptop' },
-    ] }),
-  }));
-  mount();
-  const status = await screen.findByRole('region', { name: 'Status' });
-  expect(await within(status).findByText("Claude Code's Myco tools on Personal laptop use another Myco")).toBeTruthy();
-  expect(await within(status).findByText('Codex on Work laptop: Allow Myco to write Codex configuration')).toBeTruthy();
-  expect(within(status).getByText("Codex's Myco tools on Spare laptop are set up and waiting for its first run")).toBeTruthy();
-  expect(within(status).getByText("Codex on Desk laptop: Restart Codex and trust Myco's hooks")).toBeTruthy();
-});
-
-it('keeps a readable database distinct from failed learning and backup setting reads with no live export', async () => {
-  for (const stage of ['idle', 'failed']) {
-    server(routes({
-      '/api/status': () => Response.json({ ...STATUS, database: { readable: true },
-        workers: { available: false, fleet: null, runsQueued: null }, learning: null, unavailable: ['workers', 'learning'] }),
-      '/api/recovery/exports': () => Response.json({ supported: true, stage, attempt: stage === 'idle' ? null : 3,
-        form: 'staging', error: stage === 'idle' ? null : 'export_failed',
-        schedule: { unreadable: 'Automatic backup settings could not be read.', database: { readable: true } } }),
-    }));
-    mount();
-    await screen.findByText('The database is answering reads.');
-    await screen.findByText('Automatic backup settings could not be read.');
-    await screen.findByText('Couldn’t read learning progress.');
-    expect(document.body.textContent).not.toContain('export pauses');
-    expect(document.body.textContent).not.toContain('could not read its own database');
-    expect(document.body.textContent).not.toContain('This server is not answering');
-    cleanup();
-  }
-});
-
-it('shows a persisted backup retention failure with a retry action on Health', async () => {
+it('shows a persisted backup retention failure with a retry action under Backups', async () => {
   server(routes({
     '/api/backups': () => Response.json({ backups: [BACKUP], retention: { at: NOW,
       outcome: { state: 'failed', errorClass: 'db' } } }),
   }));
-  mount();
+  mount(BACKUPS);
   expect(await screen.findByText(/Backup retention failed/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Create backup' })).toBeTruthy();
 });
 
-it('names a changed retention decision on Health',async()=>{
+it('names a changed retention decision under Backups',async()=>{
   server(routes({'/api/backups':()=>Response.json({backups:[BACKUP],retention:{at:NOW,
     outcome:{state:'changed',reason:'retention_changed'}}})}));
-  mount();
+  mount(BACKUPS);
   expect(await screen.findByText('Retention changed while pruning; the next backup decides again.')).toBeTruthy();
 });
 
@@ -671,7 +601,7 @@ it('shows actual table progress for a running database check', async () => {
       errorClass: null, findings: [], findingsOmitted: 0, measurements: [],
       progress: { completedTables: 16, totalTables: 400 } },
   }] }) }));
-  mount();
+  mount(UPKEEP);
   expect(await screen.findByText(/Checked 16 of 400 tables/)).toBeTruthy();
 });
 

@@ -11,12 +11,14 @@ import { useMemberNames } from '../members';
 import { Ownership } from '../people/Ownership';
 import { RawClaims } from '../people/RawClaims';
 import { usePersonName } from '../people/PeoplePage';
+import { BACKUP_COPIES_ANCHOR, BackupsSection } from './Backups';
 import { ADVANCED_FOLDS, groupsIn, type AdvancedFoldId, type LeafGroup } from './catalogue';
 import { LeafControl } from './LeafControl';
 import { ModelListingNote, ModelPresets } from './ModelPicker';
 import { isRetired } from './retired';
 import { TASK_SIZES_NOTE, TaskTiers } from './TaskTiers';
 import { TITLING_ANCHOR, TitlingSwitch } from './TitlingSwitch';
+import { Upkeep } from './Upkeep';
 import type { LeafRow, SettingsAnswer } from './wire';
 
 /** The Advanced page's own anchor. */
@@ -29,6 +31,7 @@ export const ADVANCED_ANCHORS: ReadonlyArray<readonly [anchor: string, fold: Adv
   [TITLING_ANCHOR, 'new-and-past'],
   ['ownership', 'owner-actions'],
   ['raw-claims', 'owner-actions'],
+  [BACKUP_COPIES_ANCHOR, 'backups'],
 ];
 
 /** One settings group's live controls in one card: the agent's model listing and presets first, where it sets an agent's models. */
@@ -115,7 +118,8 @@ function keptSummary(rows: ReadonlyMap<string, LeafRow>): string {
 }
 
 /**
- * Advanced: every setting that works untouched, in seven folded groups. Each fold says in one line what it holds and
+ * Advanced: every setting that works untouched, in eight folded groups; Backups and Upkeep also hold what this server
+ * keeps and runs, beside the settings that control it. Each fold says in one line what it holds and
  * whether anything in it was changed, by whom and when; a link to a fold, or to a group inside one, opens it.
  */
 export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows: ReadonlyMap<string, LeafRow> }) {
@@ -154,6 +158,12 @@ export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows
           {subgroups.slice(0, sizesAt)}
           <AdminSection id={TASK_SIZES_ANCHOR} nested title="Size of each job" description={TASK_SIZES_NOTE}><TaskTiers tiers={answer.taskTiers} /></AdminSection>
           {subgroups.slice(sizesAt)}
+        </> : fold.id === 'backups' ? <>
+          <BackupsSection target={target} />
+          {subgroups}
+        </> : fold.id === 'upkeep' ? <>
+          <Upkeep />
+          {subgroups}
         </> : subgroups}
         {fold.id === 'new-and-past' && <TitlingSwitch nested />}
         {fold.id === 'owner-actions' && <>

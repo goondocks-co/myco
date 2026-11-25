@@ -167,6 +167,8 @@ const day = (over: Partial<Record<'sessions' | 'spores' | 'work' | 'attention' |
   '/api/attention': () => Response.json(over.attention ?? ATTENTION),
   '/api/uncaptured': () => Response.json(over.uncaptured ?? { items: [] }),
   '/api/status': () => Response.json(over.status ?? { capture: CAPTURE, unavailable: [], projects: [], workers: { available: true, workersBusy: 0, runsQueued: 0, recentWithinMs: 0, fleet: [] } }),
+  '/api/maintenance': () => Response.json({ checks: [] }),
+  '/api/recovery/exports': () => Response.json({ error: 'unsupported' }, { status: 400 }),
 });
 
 /** The first element `selector` matches, once one is rendered. */
@@ -531,13 +533,13 @@ describe('Today', () => {
     expect(asked.some((url) => url.pathname === '/api/attention')).toBe(false);
   });
 
-  it('keeps search upkeep to one quiet line, with Health for an admin', async () => {
+  it('keeps search upkeep to one quiet line, with Upkeep for an admin', async () => {
     screenWidth(1280);
     server(day());
     mount('/');
     await timeline();
     const line = await waitFor(() => document.querySelector('[data-upkeep]') as HTMLElement);
-    expect(within(line).getByRole('link', { name: 'Health →' }).getAttribute('href')).toBe('/status/health#upkeep');
+    expect(within(line).getByRole('link', { name: 'Upkeep →' }).getAttribute('href')).toBe('/settings/advanced#upkeep');
     expect(within(line).getByRole('img', { name: 'Up to date' })).toBeTruthy();
   });
 
@@ -940,7 +942,7 @@ describe('Today\'s words', () => {
       const words = attentionWords(item, NOW, (id) => names.get(id) ?? null);
       const text = `${words.title} ${words.detail} ${words.action?.label ?? ''}`;
       expect({ kind: item.kind, text }).not.toEqual({ kind: item.kind, text: expect.stringMatching(RAW_ID) });
-      expect(words.action).not.toBeNull();
+      expect({ kind: item.kind, acts: words.action !== null }).toEqual({ kind: item.kind, acts: item.kind !== 'transcripts_stopped' });
       expect(words.title.length).toBeGreaterThan(0);
     }
     expect(attentionWords(items[3]!, NOW, () => null).title).toBe('Search is falling behind');
@@ -1033,6 +1035,7 @@ it('names the missing repository and opens its connection form', () => {
     title: 'Connect Myco’s repository so Myco can map its code',
     detail: 'Code map is turned on, but it cannot run until a repository is connected.',
     action: { label: 'Connect repository', to: `/p/${P_MYCO}/settings?connect=repository#repository` },
+    decline: { label: 'Turn the code map off', turnOff: { projectId: P_MYCO, capability: 'canopy', done: 'The code map is off for Myco.' } },
   });
 });
 

@@ -10,9 +10,10 @@ export type { LatestAttempt, RecoveryAvailability, RecoverySchedule, RecoverySta
  * producer answers 400 for this route, which is not a dashboard error: Health
  * says automatic recovery is unavailable here, so the query does not retry it.
  */
-export function useRecovery() {
+export function useRecovery({ enabled = true }: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['recovery', 'exports'],
+    enabled,
     queryFn: ({ signal }) => fetchJson<RecoveryStatus>('/api/recovery/exports', signal),
     retry: false,
     ...live({ follows: ['recovery'] }),

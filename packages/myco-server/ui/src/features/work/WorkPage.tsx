@@ -11,7 +11,7 @@ import { useNow } from '../../hooks/use-today';
 import { useAllTaskRuns, useSessionsById, useTaskRuns, useWindowSpores, useWorkEvidence, useLiveWork, workHasLiveRun } from '../../hooks/use-work';
 import { sessionHeadingText } from '../../lib/session-text';
 import {
-  CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, TASKS_SUFFIX, WORK_SUFFIX,
+  CODE_MAP_SUFFIX, KNOWLEDGE_SUFFIX, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, runPath, TASKS_SUFFIX, UPKEEP_ADDRESS, WORK_SUFFIX,
 } from '../../routes/nav';
 import { UpkeepLine } from '../today/Summary';
 import type { OutcomeKind, TodaySpore, WorkAnswer, WorkRun } from '../today/wire';
@@ -488,7 +488,7 @@ function MapEvidence({ summary, projectId, now }: EvidenceProps) {
 
 /** The search index's upkeep as one quiet line, with Health one click away for an admin. */
 function UpkeepCard({ answer, now, admin }: { answer: WorkAnswer; now: number; admin: boolean }) {
-  const line = <UpkeepLine upkeep={answer.upkeep} now={now} statusHref={admin ? `${HEALTH_PATH}#${HEALTH_ANCHORS.upkeep}` : null} />;
+  const line = <UpkeepLine upkeep={answer.upkeep} now={now} statusHref={admin ? UPKEEP_ADDRESS : null} />;
   return (
     <Card className="flex flex-col gap-s2" data-upkeep-card="">
       <h2 className="t-h3 text-ink">Upkeep in the background</h2>

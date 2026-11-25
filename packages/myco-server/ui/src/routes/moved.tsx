@@ -3,7 +3,7 @@ import { Navigate, useLocation, useParams, type RouteObject } from 'react-router
 import { useIsAdmin } from '../hooks/use-me';
 import {
   HEALTH_ANCHORS, HEALTH_PATH, keptFilters, KNOWLEDGE_SUFFIX, MY_MACHINES_PATH, PEOPLE_PATH, PLANS_SUFFIX, PROJECT_SETTINGS_ANCHORS,
-  PROJECT_SETTINGS_SUFFIX, projectPath, RUN_SUFFIX, RUNNERS_PATH, runnerPath, RUNS_PATH, WORK_SUFFIX,
+  PROJECT_SETTINGS_SUFFIX, projectPath, RUN_SUFFIX, RUNNERS_PATH, runnerPath, RUNS_PATH, UPKEEP_ADDRESS, WORK_SUFFIX,
 } from './nav';
 
 /** What an old address carries that its new one keeps: its path's parts, its query string, and who is asking. */
@@ -42,10 +42,9 @@ export const MOVED: readonly MovedAddress[] = [
   // Access became People & machines for an admin and My machines for a member; a project's access keys are in its settings.
   { from: movedPaths.access, to: ({ admin }) => (admin ? PEOPLE_PATH : MY_MACHINES_PATH) },
   { from: movedPaths.projectAccess, to: (at) => `${projectPath(project(at), PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
-  // Status, Measures and Operations became parts of Health; a measures window is kept.
+  // Status became whether the server is well, on Health; Operations became Upkeep, under Settings › Advanced.
   { from: movedPaths.status, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.status}` },
-  { from: movedPaths.measures, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.measures}` },
-  { from: movedPaths.operations, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.upkeep}` },
+  { from: movedPaths.operations, to: () => UPKEEP_ADDRESS },
   // Runs and Runners became tabs of Myco's work; Runs keeps its filters, a runner its id.
   { from: movedPaths.serverRuns, to: ({ search }) => `${RUNS_PATH}${search}` },
   { from: movedPaths.serverRunners, to: ({ search }) => `${RUNNERS_PATH}${search}` },

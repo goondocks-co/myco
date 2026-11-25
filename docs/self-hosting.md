@@ -201,7 +201,7 @@ myco server backup --target cloudflare --to <backup-directory>
 
 The command snapshots the database, copies every stored object the snapshot names, and verifies the copy. It does not copy recovery credentials; keep the credentials it names separately. Repeat the same command to resume an interrupted backup. Until it completes, the source retains objects the snapshot needs, so storage can grow.
 
-Health’s **Create backup** is a separate relational export for additive restore, limited to 64 MiB. It reads while writes continue and omits stored files, settings and secrets. It is not the complete recovery copy described here.
+**Create backup** under Settings › Advanced › Backups is a separate relational export for additive restore, limited to 64 MiB. It reads while writes continue and omits stored files, settings and secrets. It is not the complete recovery copy described here.
 
 Each hosted backup pauses database requests while it exports the database: the dashboard and tools cannot read or save data, capture waits on members’ machines for later delivery, and larger databases take longer. The pause ends when the database export ends; the later download, local snapshot reconstruction and object copy do not keep the database paused. This is a whole-database export, not a paged export. Capture already written to a member's spool remains there through retryable failures and is delivered on a later hook or drain after the Deployment answers again. A native backup copies the database and stored objects while the Deployment keeps serving. [Cloudflare export limitation](https://developers.cloudflare.com/d1/best-practices/import-export-data/#known-limitations).
 

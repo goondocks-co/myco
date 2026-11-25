@@ -25,7 +25,7 @@ import { cn } from '../lib/cn';
 import { cleanSessionText, sessionHeading, sessionHeadingText, UNTITLED_SESSION_LABEL } from '../lib/session-text';
 import { readPendingLink } from '../lib/pending-link';
 import { useRouteProject } from './route-project';
-import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath, runPath } from './nav';
+import { CODE_MAP_SUFFIX, projectPath, runPath, UPKEEP_ADDRESS } from './nav';
 import { clockWords, dayWords } from '@goondocks/myco-shared/time-words';
 
 /** How many of a run's spores, or of the sessions it titled, an item lists before "and N more". */
@@ -117,7 +117,7 @@ function TodayPage({ projectId, waiting }: { projectId: string | null; waiting: 
             earlier={<DayLink to={dayHref(window.previous)}>{window.isToday ? 'Yesterday’s work' : 'The day before'} →</DayLink>}
             now={now}
           />
-          {window.isToday && today.work !== undefined && <UpkeepLine upkeep={today.work.upkeep} now={now} statusHref={admin ? `${HEALTH_PATH}#${HEALTH_ANCHORS.upkeep}` : null} />}
+          {window.isToday && today.work !== undefined && <UpkeepLine upkeep={today.work.upkeep} now={now} statusHref={admin ? UPKEEP_ADDRESS : null} />}
           {today.entries !== undefined && today.entries.length > 0 && (
             <DayLink to={dayHref(window.previous)}>{window.isToday ? 'Yesterday' : dayHeading(new Date(window.start - 1).getTime(), now)} →</DayLink>
           )}

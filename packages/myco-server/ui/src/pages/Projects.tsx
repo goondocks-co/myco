@@ -118,7 +118,7 @@ export function Projects() {
   );
 }
 
-/** One project: its name leading to its day, how much it holds and when it last saw work, and the admin's menu. */
+/** One project: its name leading to its day, its sessions and when it last sent one, and the admin's menu. */
 function ProjectRow({ project, now, note, menu, action }: {
   project: ProjectSummary;
   now: number;
@@ -137,13 +137,10 @@ function ProjectRow({ project, now, note, menu, action }: {
       >
         <span className="truncate t-body font-medium text-ink">{project.name}</span>
         <span className="flex flex-wrap gap-x-s2 t-small text-muted">
-          {note !== undefined ? <span>{note}</span> : (
-            <>
-              <span className="whitespace-nowrap">{formatCount(project.sessionCount, 'session')}</span>
-              <span aria-hidden>·</span>
-              <span className="whitespace-nowrap">{project.lastActivityAt === null ? 'No activity yet' : `Last activity ${agoWords(project.lastActivityAt, now)}`}</span>
-            </>
-          )}
+          <span className="whitespace-nowrap">{formatCount(project.sessionCount, 'session')}</span>
+          <span aria-hidden>·</span>
+          <span className="whitespace-nowrap">{project.lastActivityAt === null ? 'Nothing sent yet' : `Last sent ${agoWords(project.lastActivityAt, now)}`}</span>
+          {note !== undefined && <><span aria-hidden>·</span><span>{note}</span></>}
         </span>
       </RouterLink>
       {isArchived(project) && note === undefined && <StatusChip>Archived</StatusChip>}

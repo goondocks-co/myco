@@ -450,7 +450,7 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/agent` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `/agent/:id` | DROP | — | Blk | Legacy unscoped redirect | #925 |
 | `/skills` | DROP | — | Blk | Legacy unscoped redirect | #925 |
-| `/operations` | KEEP | UI | Blk | A moved address: leads to Health's upkeep, keeping its query (`routes/moved.tsx`) | #925 |
+| `/operations` | KEEP | UI | Blk | A moved address: leads to Upkeep under Settings › Advanced (`routes/moved.tsx`) | #925 |
 | `*` | KEEP | UI | Blk | Not found: any address no route answers at | #918 |
 
 **The 2.0 dashboard's own routes.** The rows above dispose of the 1.4 surface, and a row there whose path the 2.0 dashboard also answers at describes what it serves there. These are the rest of the routes the 2.0 dashboard registers in its one route table (`packages/myco-server/ui/src/routes/table.tsx`, which `App.tsx` renders), and the completeness gate reads that table, so a route with no row here or above fails.
@@ -470,8 +470,8 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/access` | NEW | UI | Blk | A moved address: leads to People & machines for an admin, My machines for any other member | #1162 |
 | `/p/:projectId/access` | NEW | UI | Blk | A moved address: leads to a project's access keys in its settings | #1149 |
 | `/status` | NEW | UI | Blk | A moved address: leads to Health's status | #1518 |
-| `/measures` | NEW | UI | Blk | A moved address: leads to Health's measures | #1518 |
-| `/projects` | NEW | UI, Core | Blk | Every project, its recency and sessions; the archived ones behind one button, each restored from its menu | #1518 |
+| `/measures` | NEW | UI, Core | Blk | Is Myco helping?: the measures of what Myco serves and how it is used, over a window; linked from Knowledge and Health | #1518 |
+| `/projects` | NEW | UI, Core | Blk | Every project, its sessions and when it last sent one; the archived ones behind one button, each restored from its menu | #1518 |
 | `/p/:projectId` | NEW | UI, Core | Blk | Today narrowed to one project, with its archived notice when it is archived | #1518 |
 | `/p/:projectId/sessions` | NEW | UI, Core | Blk | The sessions table narrowed to one project | #1518 |
 | `/p/:projectId/sessions/:sessionId` | NEW | UI, Core | Blk | A session's reading page: its turns, plans and the raw data at its foot | #1518 |
@@ -497,7 +497,7 @@ The 1.4 URL shape is Grove- and machine-scoped (`/g/:groveSlug/...`, `/machine`)
 | `/settings/advanced` | NEW | UI, Core | Blk | Settings' advanced section: every setting that works untouched, in seven folded groups | #1518 |
 | `/settings/capture`, `/settings/backups`, `/settings/access` | REPLACE | UI | Blk | Lead to Advanced, Advanced and People and machines, at the anchor they name | #1518 |
 | `/p/:projectId/settings` | NEW | UI, Core | Blk | A project's settings: capabilities, repository, access keys and release tracking | #1518 |
-| `/status/health` | NEW | UI, Core | Blk | Health: status, workers, backups, upkeep, measures and what needs an admin | #1518 |
+| `/status/health` | NEW | UI, Core | Blk | Health: whether the server is well (one verdict over five lines) and what needs an admin, with the diagnostics download; old anchors of the parts that left lead to Settings › Advanced › Backups and Upkeep, and to `/measures` | #1518 |
 
 **Still not ported, and that is a decision.** The 1.4 Agent, Cortex, Skills, Team and Canopy pages do not appear in the 2.0 dashboard, and the list above is the whole of what replaced them; the code map a map run writes is a page of its own, `/p/:projectId/knowledge/map` (#1378). The rows for `cortex` and `skills` are DROP, not deferral: nothing is waiting to build them.
 

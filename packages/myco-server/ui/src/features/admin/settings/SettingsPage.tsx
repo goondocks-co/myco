@@ -1,7 +1,7 @@
 import { useLocation } from 'react-router-dom';
 import { ErrorState, LoadingState, Link, TabLinks } from '../../../design';
 import { useSettings } from '../../../hooks/use-settings';
-import { MOVED_SETTINGS_SECTIONS, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
+import { HEALTH_ANCHORS, MEASURES_PATH, MOVED_SETTINGS_SECTIONS, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { ADVANCED_ANCHOR, ADVANCED_ANCHORS, AdvancedSection, GroupCard } from './AdvancedGroups';
 import { AgentWork } from './AgentWork';
@@ -42,6 +42,22 @@ export function oldTabTarget(tab: string): string {
   if (tab === 'capabilities') return `${sectionPath('repositories')}#${PROJECTS_ANCHOR}`;
   const section = ANCHOR_SECTION.get(tab);
   return section === undefined ? SETTINGS_PATH : `${sectionPath(section)}#${tab}`;
+}
+
+/** The anchor Health's measures had, which now lead to their own page. */
+const MEASURES_ANCHOR = 'measures';
+const HEALTH_OWN: ReadonlySet<string> = new Set(Object.values(HEALTH_ANCHORS));
+
+/**
+ * Where an address of Health leads now, or null when it is current: an anchor of a part that moved to Settings, under
+ * the section that holds it; the measures to their own page, their window kept.
+ */
+export function healthAddress(search: string, hash: string): string | null {
+  const anchor = decodeURIComponent(hash.replace(/^#/, ''));
+  if (anchor === MEASURES_ANCHOR) return `${MEASURES_PATH}${search}`;
+  if (anchor === '' || HEALTH_OWN.has(anchor)) return null;
+  const section = ANCHOR_SECTION.get(anchor);
+  return section === undefined ? null : `${sectionPath(section)}#${anchor}`;
 }
 
 /** Anchors an older page named that are now another anchor. */

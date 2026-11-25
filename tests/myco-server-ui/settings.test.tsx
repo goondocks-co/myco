@@ -1114,7 +1114,7 @@ describe('Advanced', () => {
     await waitFor(() => {
       const states = Object.fromEntries([...document.querySelectorAll<HTMLElement>('[data-fold]')].map((fold) => [fold.dataset.fold, fold.querySelector('[data-fold-state]')?.textContent]));
       expect(states).toEqual({ 'model-sizes': 'Changed by Ada just now', pace: 'All default', 'sessions-given': 'All default', 'new-and-past': 'imported sessions get titles',
-        kept: 'All default', backups: 'Automatic backups off · Changed by Ada just now', 'owner-actions': 'Rarely needed' });
+        kept: 'All default', backups: 'Automatic backups off · Changed by Ada just now', upkeep: 'All default', 'owner-actions': 'Rarely needed' });
     });
     expect(document.querySelector('[data-fold="backups"]')!.textContent).toContain('A scheduled backup pauses the dashboard while it runs');
     expect(document.querySelector('[data-fold="backups"]')!.textContent).toContain('Cloudflare can also put the database back to a recent point without one.');

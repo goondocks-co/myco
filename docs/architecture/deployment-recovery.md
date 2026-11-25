@@ -14,7 +14,7 @@ Operations > Create backup produces a manual JSONL export for additive restore, 
 
 ### Restoring a backup from another Deployment
 
-A backup taken on another Deployment is restored additively by uploading its text: `POST /api/backups/restore-upload` with an owner session and the JSON body `{ "artifact": "<the downloaded JSONL text>", "allowForeignLineage": true }`. The artifact is limited to 64 MiB, as for a created backup; download it on the Deployment that made it (Health > Backups > Download). A backup carries no stored bytes, so one holding session documents or other rows that name stored blobs is refused with `objects_missing` unless this Deployment already holds those blobs; recover from a complete recovery artifact with `myco server restore --from <directory>` instead.
+A backup taken on another Deployment is restored additively by uploading its text: `POST /api/backups/restore-upload` with an owner session and the JSON body `{ "artifact": "<the downloaded JSONL text>", "allowForeignLineage": true }`. The artifact is limited to 64 MiB, as for a created backup; download it on the Deployment that made it (Settings › Advanced › Backups › Download). A backup carries no stored bytes, so one holding session documents or other rows that name stored blobs is refused with `objects_missing` unless this Deployment already holds those blobs; recover from a complete recovery artifact with `myco server restore --from <directory>` instead.
 
 A backup in the format before session documents is refused with `artifact_format_retired` before any write. Restore a backup taken after the format change, or recover from a complete recovery artifact.
 
@@ -111,7 +111,7 @@ The command checks that Wrangler is ready before asking for the backup key, usin
 
 If an operator chooses scheduled backups after accounting for the database pause, **Back up every** in Settings controls the interval. The next due wake can start one. Time Travel does not require this schedule. `server update` prints the command whenever the deployed server lacks the key and never prompts for it.
 
-Before rotating, check **Health → Backups** and wait until no automatic backup attempt is in progress. This command cannot read the producer’s in-flight state through an existing operator read path; its local export record covers only exports started on this machine. Do not rotate during an automatic backup.
+Before rotating, check **Settings › Advanced › Backups** and wait until no automatic backup attempt is in progress. This command cannot read the producer’s in-flight state through an existing operator read path; its local export record covers only exports started on this machine. Do not rotate during an automatic backup.
 
 To rotate, create a replacement token with the same permissions and run the same command again. After it confirms the replacement, revoke the old token in Cloudflare. Hosted artifacts record the credential name, never its value. After restoring into the same Cloudflare account, the kept account-wide key can be reused: run this command to validate it against the restored database and install it on the new Worker. A destination in a different account needs a token scoped to that account. The restore command prints this checklist step; automatic backups need it even when the key is reused.
 
