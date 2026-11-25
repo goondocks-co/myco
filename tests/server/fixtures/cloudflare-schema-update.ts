@@ -1,31 +1,21 @@
-import { expect, it } from 'bun:test';
 import { schemaSqlite } from '../../myco-server/helpers/schema-template.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { createCloudflareDeployment, updateCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
-import { deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord, queryCloudflareDatabase } from '@myco/server/cloudflare.js';
-import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
-import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
-import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
+import { deploymentRecordPath, writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { applyCloudflareSchema } from '@myco/server/cloudflare-schema.js';
-import { restoreCloudflareDatabase } from '@myco/server/cloudflare-recovery-database.js';
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
-
-import { fingerprintFile } from '@myco/server/recovery-bundle.js';
-import { withRecoveryDatabaseCopy } from '@myco/server/recovery-copy.js';
-import { THIN_LEARNING_STEPPING_STONE_REQUIRED, THIN_LEARNING_STEPPING_STONE_REMEDY, THIN_LEARNING_UPGRADE_REMEDY } from '@myco-server-worker/db/thin-learning-admission.js';
+import { systemRunner, type CommandRunner } from '@myco/server/runner.js';
 
 export const BOOKMARK = '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683';
 export const ACCOUNT = 'a'.repeat(32);
 export const OLD_WORKER = '11111111-2222-4333-8444-555555555555';
 
 /** Only these local subprocesses answer the operator's Wrangler calls. */
-export const FAKE_WRANGLER = `#!/usr/bin/env bun
+const FAKE_WRANGLER = `#!/usr/bin/env bun
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, 'utf8'));
@@ -137,18 +127,24 @@ export function copySchemaDatabase(version: number, destination: string, kind: '
 
 export async function fixture(
   overrides: Record<string, unknown>,
-  run: (f: { home: string; root: string; create: () => Promise<unknown>; state: string; update: () => Promise<Awaited<ReturnType<typeof updateCloudflareDeployment>>>; calls: () => Call[]; reports: string[]; waits: number[] }) => Promise<void>,
+  run: (f: { home: string; root: string; runner: CommandRunner; create: () => Promise<unknown>; state: string; update: () => Promise<Awaited<ReturnType<typeof updateCloudflareDeployment>>>; calls: () => Call[]; reports: string[]; waits: number[] }) => Promise<void>,
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-update-'));
   const home = path.join(root, 'home');
-  const bin = path.join(root, 'bin');
-  fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'wrangler'), FAKE_WRANGLER, { mode: 0o755 });
-  const prefix = path.join(root, 'operator');
-  const installed = path.join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules', 'wrangler');
-  fs.mkdirSync(installed, { recursive: true });
-  fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ name: 'wrangler', bin: 'wrangler.cjs' }));
-  fs.writeFileSync(path.join(installed, 'wrangler.cjs'), `const result = require('node:child_process').spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(path.join(bin, 'wrangler'))}, ...process.argv.slice(2)], { stdio: 'inherit' }); process.exit(result.status ?? 1);`);
+  const entry = path.join(root, 'wrangler.cjs');
+  fs.writeFileSync(entry, FAKE_WRANGLER);
+  const processes = systemRunner();
+  const runner: CommandRunner = {
+    run(command, args, options) {
+      if (command === 'node' && args.length === 1 && args[0] === '--version') {
+        return processes.run(command, args, options);
+      }
+      if ((command === 'npx' || command === 'npx.cmd') && args[0] === '--no-install' && args[1] === 'wrangler') {
+        return processes.run(process.execPath, [entry, ...args.slice(2)], options);
+      }
+      throw new Error(`Unexpected schema fixture command: ${command} ${args.join(' ')}`);
+    },
+  };
   const version=Number(overrides.schema ?? SERVER_SCHEMA_VERSION-1);
   const empty=overrides.empty===true || (overrides.fresh===true && overrides.freshPopulated!==true);
   const schemaDatabase=path.join(root,'schema.sqlite');
@@ -162,7 +158,7 @@ export async function fixture(
     schemaDatabase,migrationsRoot,metadata: VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' })), ...overrides }));
   writeDeploymentRecord({ accountId: ACCOUNT, databaseName: 'myco-server', databaseId: OLD_WORKER,
     workerName: 'myco-server', bucketName: 'myco-server-blobs', versionId: OLD_WORKER, deployedAt: 'fixture' }, home);
-  const values = { npm_config_prefix: prefix, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_STATE: state, FAKE_LOG: log,
+  const values = { FAKE_STATE: state, FAKE_LOG: log,
     FAKE_RECORD: deploymentRecordPath(home), CLOUDFLARE_API_TOKEN: undefined };
   const held = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
   for (const [key, value] of Object.entries(values)) {
@@ -172,9 +168,9 @@ export async function fixture(
   const waits: number[] = [];
   const overloadRetry = { sleep: async (ms: number) => { waits.push(ms); } };
   try {
-    await run({ home, root, state, reports, waits,
-      create: () => createCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
-      update: () => updateCloudflareDeployment({ readRetry: { sleep: async () => {} }, accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
+    await run({ home, root, runner, state, reports, waits,
+      create: () => createCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, runner, report: (line) => reports.push(line), overloadRetry }),
+      update: () => updateCloudflareDeployment({ readRetry: { sleep: async () => {} }, accountId: ACCOUNT, mycoHome: home, runner, report: (line) => reports.push(line), overloadRetry }),
       calls: () => fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as Call),
     });
   } finally {

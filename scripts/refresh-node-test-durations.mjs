@@ -1,5 +1,5 @@
 // Download the last N green main CI runs that ran the current node matrix, replace the recorded
-// runs, and merge those times into scripts/test-durations.json.
+// runs, and merge those times into scripts/test-durations.json. With --rebaseline, trim stale weights.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,8 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { testsMatrixInclude, workloadRun } from './node-report-workload.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const count = Number(process.argv[2] ?? 3);
+const args = process.argv.slice(2);
+const rebaseline = args.includes('--rebaseline');
+const count = Number(args.find(arg => arg !== '--rebaseline') ?? 3);
 if (!Number.isSafeInteger(count) || count < 1) throw new Error('refresh count must be a positive integer');
+if (rebaseline && count < 3) throw new Error('Rebaselining requires three distinct CI runs');
 
 function gh(args) {
   return execFileSync('gh', args, { cwd: repo, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -42,11 +45,15 @@ try {
   const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
   fixture.runs = runs;
   fs.writeFileSync(fixturePath, `${JSON.stringify(fixture)}\n`);
-  execFileSync(process.execPath, ['scripts/node-test-durations.mjs', 'tests/fixtures/runner/node-ci-durations.json'], { cwd: repo, stdio: 'inherit' });
+  execFileSync(process.execPath, ['scripts/node-test-durations.mjs', 'tests/fixtures/runner/node-ci-durations.json',
+    ...(rebaseline ? ['--rebaseline'] : [])], { cwd: repo, stdio: 'inherit' });
   const provenancePath = path.join(repo, 'scripts/test-duration-sources.json');
   const sources = JSON.parse(fs.readFileSync(provenancePath, 'utf8'));
   const ids = chosen.map(run => run.databaseId).join(', ');
-  const sentence = `ci: node duration refresh from test-reports-node-* artifacts of green main runs ${ids} (${nodeSlots} node shards each). A file's recorded time is its JUnit file-suite time scaled to the phase FINISHED wall time; node-test-durations.mjs keeps the max of that time and the previous weight.`;
+  const policy = rebaseline
+    ? 'Caps old weights at 1.5x the slowest recorded time for files measured in every run.'
+    : 'Keeps the max of the recorded time and the previous weight.';
+  const sentence = `ci: node duration refresh from test-reports-node-* artifacts of green main runs ${ids} (${nodeSlots} node shards each). A file's recorded time is its JUnit file-suite time scaled to the phase FINISHED wall time. ${policy}`;
   if (!sources.includes(sentence)) sources.push(sentence);
   fs.writeFileSync(provenancePath, `${JSON.stringify(sources, null, 2)}\n`);
   console.log(sentence);

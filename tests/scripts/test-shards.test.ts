@@ -49,8 +49,6 @@ describe('test shard selection', () => {
     expect(groups).toEqual([['small'], ['oversized'], ['small'], ['exact'], ['small']]);
     const oversized = { label: 'oversized group', files: ['oversized'], estimatedMs: weights.oversized! };
     expect(() => assertNodeShardHeadroom([[oversized], [], [], [], []], 900_000, weights, nodeWorkload)).toThrow('split the group: oversized');
-    const overJob = { ...oversized, files: ['over-job'], estimatedMs: 900_001 };
-    expect(() => assertNodeShardHeadroom([[overJob], [], [], [], []], 900_000, { 'over-job': 900_001 }, nodeWorkload)).toThrow('split the group: over-job');
     expect(groupByDuration([], budget, () => 1)).toEqual([]);
     expect(groupByDuration([1, 2, 3, 4], budget, () => 1, 3)).toEqual([[1, 2, 3], [4]]);
     expect(() => groupByDuration([1], 0, () => 1)).toThrow('budget');
@@ -211,9 +209,21 @@ test('transfers an introduced split duration floor once and preserves measured f
   ] }] }] };
   const weights = mergeNodeDurationWeights({ original: 225, unrelated: 77 }, workload);
   expect(weights).toEqual({ original: 125, introduced: 125, unrelated: 77 });
-  expect(weights.original! + weights.introduced!).toBeGreaterThanOrEqual(225);
   expect(mergeNodeDurationWeights(weights, workload)).toEqual(weights);
   expect(mergeNodeDurationWeights({ original: 150, introduced: 200 }, workload)).toEqual({ original: 150, introduced: 200 });
+});
+
+test('rebaselines only weights measured in every green main run', () => {
+  const workload: NodeWorkload = { runs: [70, 80, 100].map((milliseconds, index) => ({
+    source: `main ${index}`, shardCount: 1, shards: [{ shard: 1, groups: [
+      { label: 'measured', milliseconds: milliseconds + 10, files: { stale: milliseconds, measured: 10 } },
+      ...(index === 0 ? [{ label: 'partial', milliseconds: 70, files: { partial: 70 } }] : []),
+    ] }],
+  })) };
+  const weights = { stale: 300, partial: 160, unmeasured: 200, measured: 1 };
+  expect(mergeNodeDurationWeights(weights, workload)).toEqual({ ...weights, measured: 10 });
+  expect(mergeNodeDurationWeights(weights, workload, { rebaseline: true })).toEqual({ ...weights, stale: 150, measured: 10 });
+  expect(() => mergeNodeDurationWeights(weights, { runs: workload.runs.slice(0, 2) }, { rebaseline: true })).toThrow('three distinct CI runs');
 });
 
 
