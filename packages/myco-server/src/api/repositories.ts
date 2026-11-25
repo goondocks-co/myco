@@ -19,10 +19,9 @@ export const REPOSITORY_PAGE_MAX = 200;
  * `cursor` the previous page answered, `?limit=` at most REPOSITORY_PAGE_MAX.
  */
 export async function handleProjectRepositories(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const params = new URL(ctx.request.url).searchParams;
-  const limit = Number(params.get('limit') ?? REPOSITORY_PAGE_MAX);
+  const limit = Number(ctx.url.searchParams.get('limit') ?? REPOSITORY_PAGE_MAX);
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > REPOSITORY_PAGE_MAX) return badRequest(`limit is a whole number from 1 to ${REPOSITORY_PAGE_MAX}.`);
-  return ok(await projectRepositoryListing(env.db, params.get('cursor') ?? '', limit));
+  return ok(await projectRepositoryListing(env.db, ctx.url.searchParams.get('cursor') ?? '', limit));
 }
 
 /** The stored connection and whether this server can use it, from storage alone. */
