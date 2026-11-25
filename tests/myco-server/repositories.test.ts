@@ -64,6 +64,14 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     const saved = await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
     expect(saved.body.repository).toMatchObject({ url: SOURCE_URL, branch: 'main', repositoryId: SOURCE.id, installationId: OPERATOR.installationId, updatedBy: 'mem_machine_1' });
     expect((await r.call('GET', REPOSITORY)).body).toEqual({ repository: saved.body.repository, appConfigured: true });
+    const listed1 = { projectId: 'proj_1', url: SOURCE_URL, branch: 'main' };
+    expect((await r.call('GET', '/api/repositories?limit=1')).body).toEqual({ repositories: [listed1], cursor: null });
+    expect((await r.call('GET', '/api/repositories?cursor=proj_0')).body.repositories).toContainEqual(listed1);
+    expect((await r.call('GET', '/api/repositories?cursor=proj_1')).body.repositories).not.toContainEqual(listed1);
+    expect((await r.call('GET', '/api/repositories?limit=201')).status).toBe(400);
+    expect((await r.call('POST', '/api/projects/proj_1/archive')).status).toBe(200);
+    expect((await r.call('GET', '/api/repositories')).body.repositories).not.toContainEqual(listed1);
+    expect((await r.call('POST', '/api/projects/proj_1/unarchive')).status).toBe(200);
     // Discovery reads metadata only; the save's check reads one repository; both end as soon as they are used.
     expect(r.github.state.issued.map(entry => entry.body)).toEqual([
       { permissions: { metadata: 'read' } },
@@ -72,7 +80,7 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     expect(r.github.state.revoked).toEqual(r.github.state.issued.map(entry => entry.token));
     const stored = JSON.stringify([r.sqlite.query('SELECT * FROM project_repositories').all(), r.sqlite.query('SELECT * FROM deployment_secrets').all()]);
     for (const { token } of r.github.state.issued) for (const text of [listed.text, saved.text, stored]) expect(text).not.toContain(token);
-    for (const [method, path] of [['GET', '/api/github-app/installations'], ['GET', choices], ['POST', '/api/github-app/accounts'], ['PUT', REPOSITORY], ['GET', REPOSITORY]]) {
+    for (const [method, path] of [['GET', '/api/github-app/installations'], ['GET', choices], ['POST', '/api/github-app/accounts'], ['PUT', REPOSITORY], ['GET', REPOSITORY], ['GET', '/api/repositories']]) {
       expect(await r.asMember(method!, path!)).toBe(403);
     }
   });

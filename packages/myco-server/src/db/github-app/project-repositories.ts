@@ -28,3 +28,17 @@ export async function unconnectedProjects(db: RelationalStore, limit: number): P
   const [projects] = await readSet(db, unconnected.bind(limit));
   return projects;
 }
+
+/** A live Project's connected repository, as the projects list shows it. */
+export interface ProjectRepositoryListing { projectId: string; url: string; branch: string }
+
+const listing = read<[after: string, limit: number], ProjectRepositoryListing>({ name: 'githubApp.projectRepositoryListing', sql: `
+  SELECT r.project_id AS projectId,r.url,r.branch FROM project_repositories r JOIN projects p ON p.project_id=r.project_id
+   WHERE r.project_id>?1 AND p.archived_at IS NULL ORDER BY r.project_id LIMIT ?2` });
+
+/** One page of live Projects' connected repositories in Project id order, after `after`, and the id the next page starts after. */
+export async function projectRepositoryListing(db: RelationalStore, after: string, limit: number): Promise<{ repositories: ProjectRepositoryListing[]; cursor: string | null }> {
+  const [rows] = await readSet(db, listing.bind(after, limit + 1));
+  const repositories = rows.slice(0, limit);
+  return { repositories, cursor: rows.length > limit ? repositories.at(-1)!.projectId : null };
+}

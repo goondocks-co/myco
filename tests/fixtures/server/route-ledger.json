@@ -106,6 +106,7 @@
   "session:admin GET /api/projects/{projectId}/spores/{sporeId}/curation",
   "session:admin GET /api/raw-claims",
   "session:admin GET /api/recovery/exports",
+  "session:admin GET /api/repositories",
   "session:admin GET /api/runners/agents",
   "session:admin GET /api/runners/check",
   "session:admin GET /api/secrets",

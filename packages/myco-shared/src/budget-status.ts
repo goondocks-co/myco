@@ -1,3 +1,6 @@
+/** The daily work budget in US dollars while none is stored. */
+export const BUDGET_DEFAULT_USD = 20;
+
 export interface BudgetStatus {
   active: boolean; reason: string | null; dailyUsd: number;
   automaticUsd: number | null; manualUsd: number | null; liveUsd: number | null;

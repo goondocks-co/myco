@@ -13,6 +13,8 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 const LABEL = 'Claim raw data with no recorded uploader';
 const OWNER = 'mem_owner';
+/** Where transferring ownership and claiming raw data live, under Settings › Advanced. */
+const OWNER_ACTIONS = '/settings/advanced#owner-actions';
 const DATE = Date.UTC(2026, 9, 1);
 const PREVIEW: RawClaimPreview = { revision: 'reviewed-r1', complete: true, projects: [{ projectId: 'proj_old', name: 'Archive', kinds: [
   { kind: 'blob', count: 2, oldestAt: DATE, newestAt: DATE + 86_400_000 },
@@ -20,7 +22,7 @@ const PREVIEW: RawClaimPreview = { revision: 'reviewed-r1', complete: true, proj
   { kind: 'transcript', count: 1, oldestAt: DATE, newestAt: DATE },
 ] }] };
 
-function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewerLabel?: string | null; login?: string; preview?: () => RawClaimPreview; claim?: (body: unknown) => Response; ownership?: (init?: RequestInit) => Response; roleChange?: (body: unknown) => Response; held?: boolean } = {}) {
+function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewerLabel?: string | null; login?: string; preview?: () => RawClaimPreview; claim?: (body: unknown) => Response; ownership?: (init?: RequestInit) => Response; roleChange?: (body: unknown) => Response; held?: boolean; path?: string } = {}) {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
@@ -37,6 +39,7 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewe
         { id: 'mem_system', label: 'Myco', system: true, role: 'admin', roleRevision: 'system-r1', linked: true, createdAt: 0, revokedAt: null, revokedBy: null, liveCredentials: 1 },
         ...(options.held ? [{ id: 'mem_held', label: 'Sam', role: 'admin', roleRevision: 'sam-r3', linked: true, createdAt: 0, revokedAt: 5, revokedBy: 'foreign-lineage-restore', awaitingAdmission: true, liveCredentials: 0 }] : []),
       ] });
+      case '/api/settings': return Response.json({ leaves: [], taskTiers: [], embedding: null, quickJobs: { answeredBy: 'included', offered: ['included'] } });
       case '/api/enrollment': return Response.json({ invitations: [] });
       case '/api/credentials': return Response.json({ rows: [], cursor: null });
       case '/api/machines': return Response.json({ machines: [], cursor: null });
@@ -50,7 +53,7 @@ function deployment(options: { owner?: boolean; role?: 'admin' | 'member'; viewe
     }
   }) as typeof fetch;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={['/people']}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[options.path ?? OWNER_ACTIONS]}><App /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
   return { requests, client };
 }
 
@@ -96,7 +99,7 @@ describe('owner raw claims', () => {
 
   it.each(['admin', 'member'] as const)('keeps preview and action absent for a nonowner %s', async (role) => {
     const { requests } = deployment({ owner: false, role });
-    await screen.findByRole('heading', { name: 'People & machines', level: 1 });
+    await screen.findByRole('heading', { name: 'Settings', level: 1 });
     await waitFor(() => expect(screen.queryByRole('button', { name: LABEL })).toBeNull());
     expect(requests.filter((r) => r.path === '/api/raw-claims')).toHaveLength(0);
   });
@@ -230,7 +233,7 @@ describe('explicit initial ownership', () => {
   });
 
   it('owner confirms role promotion using the reviewed member revision', async () => {
-    const { requests } = deployment();
+    const { requests } = deployment({ path: '/people' });
     fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Make admin' }));
     const dialog = screen.getByRole('dialog');
@@ -243,7 +246,7 @@ describe('explicit initial ownership', () => {
   });
 
   it('lists a person a restore from another server held apart from the members, and lets only the owner re-admit them in their role', async () => {
-    const { requests } = deployment({ held: true });
+    const { requests } = deployment({ held: true, path: '/people' });
     const held = await screen.findByRole('list', { name: 'Waiting to be re-admitted' });
     expect(held.textContent).toContain('Sam');
     expect(held.textContent).toContain('can’t sign in until the owner re-admits them');
@@ -258,13 +261,13 @@ describe('explicit initial ownership', () => {
   });
 
   it('shows a held person to a nonowner admin without the re-admit action', async () => {
-    deployment({ owner: false, held: true });
+    deployment({ owner: false, held: true, path: '/people' });
     const held = await screen.findByRole('list', { name: 'Waiting to be re-admitted' });
     expect(within(held).queryByRole('button', { name: 'Re-admit' })).toBeNull();
   });
 
   it('shows roles read-only to an ordinary member through the People route', async () => {
-    const { requests } = deployment({ owner: false, role: 'member' });
+    const { requests } = deployment({ owner: false, role: 'member', path: '/people' });
     const people = await screen.findByRole('list', { name: 'Members' });
     expect(within(people).getByText('Member')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'People & machines' })).toBeTruthy();
@@ -279,8 +282,10 @@ describe('explicit initial ownership', () => {
   });
 
   it('shows roles read-only to a nonowner admin', async () => {
-    const { requests } = deployment({ owner: false });
+    const { requests } = deployment({ owner: false, path: '/people' });
     expect(await screen.findByRole('button', { name: 'Invite a teammate' })).toBeTruthy();
+    // A menu open on top hides the page from the accessibility tree, so the way to owner actions is read first.
+    expect(screen.getByRole('link', { name: 'Settings › Advanced › Owner actions' }).getAttribute('href')).toBe(OWNER_ACTIONS);
     fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
     const menu = await screen.findByRole('menu');
     expect(within(menu).queryByRole('menuitem', { name: 'Make admin' })).toBeNull();
@@ -291,11 +296,11 @@ describe('explicit initial ownership', () => {
     expect(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Connect GitHub' })).toBeTruthy();
     expect(screen.getByText('Member')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Transfer server ownership' })).toBeNull();
-    expect(requests.some((request) => request.path === '/api/ownership')).toBe(true);
+    expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
   });
 
   it('owner can review an admin demotion but cannot demote or remove themselves', async () => {
-    const { requests } = deployment();
+    const { requests } = deployment({ path: '/people' });
     fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada' }), { key: 'Enter' });
     let menu = await screen.findByRole('menu');
     expect(within(menu).queryByRole('menuitem', { name: 'Make member' })).toBeNull();

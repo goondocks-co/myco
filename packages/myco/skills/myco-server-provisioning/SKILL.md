@@ -30,7 +30,7 @@ A supported Node.js is required on the operator's machine. Setup checks the engi
 
 Rerun `myco setup` after interruption; it continues from observed state. Existing machine connections can select a joining journey, so use `--create cloudflare` explicitly when creating is intended. Use `myco setup --status` for read-only progress, with `--check-remote` for remote checks.
 
-After sign-in, follow **Get started** on **Today** for the next action. Creating a server does not enroll a runner. A runner is an explicit choice on a machine with a supported coding agent signed in; see [Runners](https://myco.sh/runners). Automatic work also needs **Work on a schedule** enabled in **Settings**.
+After sign-in, follow **Get started** on **Today** for the next action. Creating a server does not enroll a runner. A runner is an explicit choice on a machine with a supported coding agent signed in; see [Runners](https://myco.sh/runners). Automatic work also needs **Work on its own** enabled in **Settings**.
 
 For a 1.4 machine, follow **myco-setup** or [Moving from Myco 1.4](https://myco.sh/upgrade#upgrading-from-myco-14). Guided setup previews the move and asks for approval. The manual reference is `myco cutover --dry-run`, then `myco cutover`; keep its backups and `restore.md`. `myco cutover --dismiss-earlier-copies` only acknowledges earlier copies locally after review; it deletes no history and contacts no Deployment.
 

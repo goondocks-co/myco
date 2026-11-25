@@ -55,7 +55,7 @@ function Preview({ preview, compact = false }: { preview: RawClaimPreview; compa
 }
 
 /** The recorded owner reviews one revision before claiming raw data whose uploader is absent. */
-export function RawClaims() {
+export function RawClaims({ nested = false }: { nested?: boolean }) {
   const client = useQueryClient();
   const preview = useQuery({ queryKey: CLAIM_KEY, queryFn: ({ signal }) => fetchJson<RawClaimPreview>('/api/raw-claims', signal), ...live('still') });
   const [review, setReview] = useState<RawClaimPreview | null>(null);
@@ -78,7 +78,7 @@ export function RawClaims() {
   });
   const total = preview.data?.projects.reduce((sum, project) => sum + project.kinds.reduce((n, kind) => n + kind.count, 0), 0) ?? 0;
   return (
-    <AdminSection id="raw-claims" title="Raw data with no recorded uploader" description="As this server’s owner, you can claim raw data with no recorded uploader. Claimed data becomes private to you.">
+    <AdminSection id="raw-claims" nested={nested} title="Raw data with no recorded uploader" description="As this server’s owner, you can claim raw data with no recorded uploader. Claimed data becomes private to you.">
       {preview.isPending ? <LoadingState label="Checking raw data uploaders" />
         : preview.isError ? <ErrorState error={preview.error} onRetry={() => void preview.refetch()} />
         : <Card className="flex flex-col gap-s4">

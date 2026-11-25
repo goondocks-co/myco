@@ -674,5 +674,5 @@ export async function conductSetup(home: string, file: SetupFile, deps: SetupDep
       : `Your Myco is ready at ${answers.url}, and this machine is signed in. Next, run myco setup --join ${answers.url} from a git repository to connect a project.`
     : `Runner setup for ${answers.url}. Review this machine on ${answers.url}/runners.`;
   ctx.out(summary);
-  if (isRunner(ctx)) ctx.out(`Myco's own work starts on its runner once Work on a schedule is on: ${answers.url}/settings.`);
+  if (isRunner(ctx)) ctx.out(`Myco's own work starts on its runner once Work on its own is on: ${answers.url}/settings.`);
 }

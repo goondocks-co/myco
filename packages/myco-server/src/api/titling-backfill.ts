@@ -27,7 +27,7 @@ export const handleSetTitlingBackfill = settingRevisionRoute('agent.tasks', asyn
   if (!result.applied) {
     const refusal = result.refusal;
     if (refusal.reason === 'conflict') return Response.json({ applied: false, ...refusal }, { status: 409 });
-    return badRequest(`the task overrides could not be written: ${refusal.reason === 'invalid_value' ? refusal.detail : refusal.reason}; correct them under Settings → Models → Advanced → Overrides for each task first`);
+    return badRequest(`the task overrides could not be written: ${refusal.reason === 'invalid_value' ? refusal.detail : refusal.reason}; correct them under Settings → Advanced → Model sizes → Overrides for each task first`);
   }
   return ok(await titlingBackfillProgress(env, ctx.now));
 });

@@ -3,12 +3,26 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { githubAppConfigured } from '../core/github-app.js';
 import { projectRepositories, RepositoryConflictError } from '../core/repositories.js';
+import { projectRepositoryListing } from '../db/github-app/project-repositories.js';
 import { githubRefusal } from './github-app.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 
 /** Fields of the token-era connection body, each refused by name rather than ignored. */
 const REMOVED_FIELDS = ['url', 'username', 'credential'] as const;
 const CONFLICT = (reason: string) => Response.json({ error: 'conflict', reason }, { status: 409 });
+
+/** How many connected repositories one page of the listing names, at most and by default. */
+export const REPOSITORY_PAGE_MAX = 200;
+
+/**
+ * One page of live Projects' connected repositories, in Project id order, from storage alone: `?cursor=` is the
+ * `cursor` the previous page answered, `?limit=` at most REPOSITORY_PAGE_MAX.
+ */
+export async function handleProjectRepositories(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const limit = Number(ctx.url.searchParams.get('limit') ?? REPOSITORY_PAGE_MAX);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > REPOSITORY_PAGE_MAX) return badRequest(`limit is a whole number from 1 to ${REPOSITORY_PAGE_MAX}.`);
+  return ok(await projectRepositoryListing(env.db, ctx.url.searchParams.get('cursor') ?? '', limit));
+}
 
 /** The stored connection and whether this server can use it, from storage alone. */
 export async function handleRepository(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

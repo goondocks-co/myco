@@ -16,12 +16,18 @@ export const HEALTH_PATH = '/status/health';
 export const MY_MACHINES_PATH = '/me/machines';
 export const SETTINGS_SECTIONS = [
   { id: 'work', label: 'Myco’s work', to: SETTINGS_PATH },
+  { id: 'people', label: 'People and machines', to: `${SETTINGS_PATH}/people` },
+  { id: 'repositories', label: 'Repositories', to: `${SETTINGS_PATH}/repositories` },
   { id: 'models', label: 'Models', to: `${SETTINGS_PATH}/models` },
   { id: 'connections', label: 'Connections', to: `${SETTINGS_PATH}/connections` },
-  { id: 'capture', label: 'Capture and retention', to: `${SETTINGS_PATH}/capture` },
-  { id: 'backups', label: 'Backups', to: `${SETTINGS_PATH}/backups` },
-  { id: 'access', label: 'Sign-in and access', to: `${SETTINGS_PATH}/access` },
+  { id: 'advanced', label: 'Advanced', to: `${SETTINGS_PATH}/advanced` },
 ] as const;
+/** Settings sections that no longer have a tab, each leading to the section that holds its settings now. */
+export const MOVED_SETTINGS_SECTIONS = [
+  { from: `${SETTINGS_PATH}/capture`, to: 'advanced' },
+  { from: `${SETTINGS_PATH}/backups`, to: 'advanced', anchor: 'backups' },
+  { from: `${SETTINGS_PATH}/access`, to: 'people' },
+] as const satisfies ReadonlyArray<{ from: string; to: (typeof SETTINGS_SECTIONS)[number]['id']; anchor?: string }>;
 
 export const adminRoutesPaths = {
   runs: RUNS_PATH,
@@ -93,6 +99,7 @@ const declaredPaths = [ROUTESPaths, adminRoutesPaths, knowledgeRoutesPaths, work
 export function routePaths(routes: readonly RouteNode[] = [
   ...declaredPaths.flatMap(group => Object.values(group).map(path => ({ path }))),
   ...SETTINGS_SECTIONS.map(section => ({ path: section.to })),
+  ...MOVED_SETTINGS_SECTIONS.map(section => ({ path: section.from })),
 ], parent = ''): string[] {
   return routes.flatMap(route => {
     const full = route.path === undefined ? parent : route.path.startsWith('/') || !parent ? route.path : parent.replace(/\/+$/, '') + '/' + route.path;

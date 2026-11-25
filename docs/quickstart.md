@@ -64,7 +64,7 @@ Choose an existing project or create one when asked. To choose directly, use `my
 
 Start a **new** session in your coding agent and do some work. Open the dashboard at your Myco's address and select the project on **Today**. The session should appear there; **Sessions** lets you open it later. **Knowledge** holds the project's spores, plans and code map.
 
-Capture and learning are separate. Myco's own agent needs a registered runner with a signed-in coding agent before it can learn from sessions. An administrator registers one using the [runner guide](runners.md). For automatic learning, they also turn on **Work on a schedule** in **Settings**. They can run work manually with **Run a task** under **Myco’s work**.
+Capture and learning are separate. Myco's own agent needs a registered runner with a signed-in coding agent before it can learn from sessions. An administrator registers one using the [runner guide](runners.md). For automatic learning, they also turn on **Work on its own** in **Settings**. They can run work manually with **Run a task** under **Myco’s work**.
 
 The project switches **Context for sessions**, **Code map** and **Learning** are on by default. A code map and learning from code also need a connected repository. You can see what ran under **Myco’s work**.
 

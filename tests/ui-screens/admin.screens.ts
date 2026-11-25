@@ -1,8 +1,8 @@
 /**
  * The admin pages and My machines, at every viewport (desktop, tablet, phone) in both modes.
  *
- * Signed in as the owner: People & machines, Settings (its first section,
- * Models and Connections), a project's settings and Health. Signed in as a member who
+ * Signed in as the owner: People & machines, every Settings section, a
+ * project's settings and Health. Signed in as a member who
  * is not an admin: the read-only People directory, My machines and its Rename
  * dialog. Other admin pages say they are for an admin.
  *
@@ -84,12 +84,10 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
   // The sections never wrap: on a phone the strip scrolls in its own box, and fades at the edge where more wait.
   await expectOneLine(page, 'nav[aria-label="Settings sections"] a');
   await expect(page.locator('[data-more-tabs]')).toHaveCount(viewport === 'phone' ? 1 : 0);
-  await expect(page.getByRole('switch').first()).toBeVisible();
-  const titling = page.getByRole('switch', { name: 'Title imported sessions' });
-  await expect(titling).toBeVisible();
-  if (onFixture()) await expect(titling).toBeChecked();
-  // With nothing stored, a switch the server treats as on reads on.
-  if (onFixture()) await expect(page.getByRole('switch', { name: 'Instructions at session start' })).toBeChecked();
+  await expect(page.getByRole('switch', { name: 'Work on its own' })).toBeVisible();
+  await expect(page.getByLabel('Daily budget in dollars')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Where the work runs' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add a runner' })).toBeVisible();
   const response = await page.evaluate(async () => {
     const answer = await fetch('/api/settings');
     return { ok: answer.ok, body: await answer.json() };
@@ -105,7 +103,7 @@ async function expectSettings(page: Page, viewport: ViewportName): Promise<void>
   }
 }
 
-/** Opens one fold under Models' Advanced by its anchor. */
+/** Opens one fold under Advanced by its anchor. */
 async function openFold(page: Page, id: string): Promise<void> {
   await page.locator(`[data-fold="${id}"] button[aria-expanded="false"]`).first().click();
 }
@@ -113,21 +111,13 @@ async function openFold(page: Page, id: string): Promise<void> {
 async function expectModels(page: Page): Promise<void> {
   const tabs = page.getByRole('navigation', { name: 'Settings sections' });
   await expect(tabs.getByRole('link', { name: 'Models', exact: true })).toHaveAttribute('aria-current', 'page');
-  for (const heading of ['Quick jobs', 'Work that needs an agent', 'Advanced']) await expect(page.getByRole('heading', { name: heading })).toBeVisible();
+  for (const heading of ['Quick jobs', 'Work that needs an agent', 'Search']) await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible();
   await expect(page.getByRole('combobox', { name: /^Answered by(?::|$)/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Check now' })).toBeVisible();
-  await expect(page.locator('[data-fold="task-tiers"]')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Advanced › Model sizes' })).toBeVisible();
   await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
-  await openFold(page, 'embedding');
   await expect(page.getByRole('combobox', { name: /^Embedding\ provider(?::|$)/ })).toBeVisible();
   if (!onFixture()) return;
-  await openFold(page, 'advanced');
-  const overrides = page.locator('[data-setting="agent.tasks"]');
-  await expect(overrides).toContainText('cortex-instructions: this task no longer exists');
-  await expect(overrides.getByRole('button', { name: 'Clear the stored value for Task overrides' })).toBeVisible();
-  await expect(overrides.getByRole('button', { name: 'Remove entries that no longer apply' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Container smoke test' })).toHaveCount(0);
-  await expect(overrides.locator('[role="alert"]')).toHaveCount(0);
   // The switch to nomic-embed-text under way: its progress, what search uses meanwhile, and the admin's way out.
   const rebuild = page.locator('[data-embedding-switch="building"]');
   await expect(rebuild).toContainText('Rebuilding search with nomic-embed-text (768 dimensions)');
@@ -135,11 +125,33 @@ async function expectModels(page: Page): Promise<void> {
   await expect(rebuild.getByRole('button', { name: 'Cancel the switch' })).toBeVisible();
 }
 
-/** Connections: GitHub with its setup checklist open while a step remains, and the way to add another. */
+/** Connections: GitHub as a short row leading to Repositories, and the way to add another. */
 async function expectConnections(page: Page): Promise<void> {
   await expectSection(page, 'Connections', 'Everything Myco is connected to');
-  await expect(page.locator('[data-connection="github"]')).toBeVisible();
+  const github = page.locator('[data-connection="github"]');
+  await expect(github).toBeVisible();
+  await expect(github.getByRole('link', { name: 'Repositories' })).toBeVisible();
+  await expect(page.locator('[data-step]')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Add a connection' })).toBeVisible();
+}
+
+/** People and machines: who can sign in and the owner's own machines, each leading to its page. */
+async function expectPeopleSection(page: Page): Promise<void> {
+  await expectSection(page, 'People and machines', 'Who can sign in?');
+  await expect(page.getByRole('heading', { name: 'Your machines' })).toBeVisible();
+  await expect(page.getByRole('button', { name: INVITE_CONTROLS.invite })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Advanced › Owner actions' })).toBeVisible();
+  if (!onFixture()) return;
+  const machines = page.getByRole('group', { name: 'Your machines' });
+  await expect(machines.getByText('Ada’s studio Mac', { exact: true })).toBeVisible();
+  await expect(machines.getByText('Lin’s build box', { exact: true })).toHaveCount(0);
+}
+
+/** Repositories: the GitHub App with its setup checklist open while a step remains, then every project's repository. */
+async function expectRepositories(page: Page): Promise<void> {
+  await expectSection(page, 'Repositories', 'What can Myco read?');
+  await expect(page.getByRole('heading', { name: 'Projects and their repositories' })).toBeVisible();
+  await expect(page.locator('[data-project-repository]').first()).toBeVisible();
   await expect(page.locator('[data-setup-headline]')).toHaveText('Repository access is not set up yet: 5 of 6 steps remain. Next: Set the App’s repository permissions.');
   await expect(page.locator('[data-step="key"] code')).toHaveText(['myco server uninstall --target local', /^myco server github-app --target local --url http:\/\/127\.0\.0\.1:\d+ --private-key-file <downloaded\.pem>$/, 'myco server install --target local']);
 }
@@ -151,12 +163,43 @@ async function expectSection(page: Page, tab: string, group: string): Promise<vo
   await expect(page.getByRole('heading', { name: group }).first()).toBeVisible();
 }
 
-/** Capture and retention, with whether a repository no project holds yet gets a project of its own. */
-async function expectCaptureSettings(page: Page): Promise<void> {
-  await expectSection(page, 'Capture and retention', 'Importing past sessions');
-  await expect(page.getByRole('heading', { name: 'New repositories' })).toBeVisible();
+/** Advanced: seven folds, each opened where a link points into it; New repositories and past sessions and Model sizes opened. */
+async function expectAdvanced(page: Page): Promise<void> {
+  // An older Capture and retention address lands on its group under Advanced, opened.
+  await expect(page).toHaveURL(/\/settings\/advanced#import$/);
+  // Opened directly, the last tab is scrolled into the strip's view, even on a phone.
+  const strip = page.getByRole('navigation', { name: 'Settings sections' });
+  const [box, tab] = await Promise.all([strip.boundingBox(), strip.getByRole('link', { name: 'Advanced' }).boundingBox()]);
+  expect(tab!.x, 'the open tab starts inside the strip').toBeGreaterThanOrEqual(box!.x - 1);
+  expect(tab!.x + tab!.width, 'the open tab ends inside the strip').toBeLessThanOrEqual(box!.x + box!.width + 1);
+  await expectSection(page, 'Advanced', 'Advanced');
+  await expect(page.locator('[data-fold]')).toHaveCount(7);
+  await expect(page.getByRole('heading', { name: 'Importing past sessions' })).toBeVisible();
   await expect(page.getByRole('switch', { name: 'Create a project for it' })).toBeVisible();
+  // A stored switch keeps its name readable beside it and its reset inside the card, at every width.
+  const creation = page.locator('[data-setting="capture.auto_create_projects"]');
+  const named = await creation.getByText('Create a project for it', { exact: true }).boundingBox();
+  const card = await creation.boundingBox();
+  expect(named!.width, 'the switch’s name has room').toBeGreaterThan(100);
   if (onFixture()) {
+    const clear = await creation.getByRole('button', { name: 'Clear the stored value for Create a project for it' }).boundingBox();
+    expect(clear!.x + clear!.width, 'the reset sits inside the row').toBeLessThanOrEqual(card!.x + card!.width);
+    expect(clear!.y, 'the reset sits under the name').toBeGreaterThan(named!.y);
+  }
+  const titling = page.getByRole('switch', { name: 'Title imported sessions' });
+  await expect(titling).toBeVisible();
+  if (onFixture()) await expect(titling).toBeChecked();
+  await openFold(page, 'sessions-given');
+  // With nothing stored, a switch the server treats as on reads on.
+  if (onFixture()) await expect(page.getByRole('switch', { name: 'Instructions at session start' })).toBeChecked();
+  if (onFixture()) {
+    await openFold(page, 'model-sizes');
+    const overrides = page.locator('[data-setting="agent.tasks"]');
+    await expect(overrides).toContainText('cortex-instructions: this task no longer exists');
+    await expect(overrides.getByRole('button', { name: 'Clear the stored value for Task overrides' })).toBeVisible();
+    await expect(overrides.getByRole('button', { name: 'Remove entries that no longer apply' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Container smoke test' })).toHaveCount(0);
+    await expect(overrides.locator('[role="alert"]')).toHaveCount(0);
     const window = page.locator('[data-setting="import.window_days"]');
     await expect(window).toContainText('Myco uses 30 days');
     await expect(window.locator('pre')).toHaveCount(0);
@@ -199,9 +242,9 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'settings', path: () => '/settings', rendered: (page, viewport) => expectSettings(page, viewport) },
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
   { name: 'settings-connections', path: () => '/settings/connections', rendered: (page) => expectConnections(page) },
-  { name: 'settings-capture', path: () => '/settings/capture', rendered: (page) => expectCaptureSettings(page) },
-  { name: 'settings-backups', path: () => '/settings/backups', rendered: (page) => expectSection(page, 'Backups', 'Store checks') },
-  { name: 'settings-access', path: () => '/settings/access', rendered: (page) => expectSection(page, 'Sign-in and access', 'Who can sign in') },
+  { name: 'settings-people', path: () => '/settings/people', rendered: (page) => expectPeopleSection(page) },
+  { name: 'settings-repositories', path: () => '/settings/repositories', rendered: (page) => expectRepositories(page) },
+  { name: 'settings-advanced', path: () => '/settings/capture#import', rendered: (page) => expectAdvanced(page) },
   { name: 'project-settings', path: () => `/p/${fixtureProject().projectId}/settings`, rendered: (page) => expectProjectSettings(page, fixtureProject().name) },
   { name: 'health', path: () => '/status/health', rendered: (page) => expectHealth(page) },
 ];

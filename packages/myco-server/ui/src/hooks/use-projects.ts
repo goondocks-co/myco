@@ -15,7 +15,7 @@ export function useProjects(options: { enabled?: boolean } = {}) {
 /** Archive, unarchive and rename, each refreshing the lists that show the change. */
 export function useProjectActions() {
   const client = useQueryClient();
-  const refresh = () => Promise.all([client.invalidateQueries({ queryKey: ['projects'] }), client.invalidateQueries({ queryKey: ['status'] })]);
+  const refresh = () => Promise.all([client.invalidateQueries({ queryKey: ['projects'] }), client.invalidateQueries({ queryKey: ['status'] }), client.invalidateQueries({ queryKey: ['project-repositories'] })]);
   return {
     archive: useMutation({ mutationFn: (projectId: string) => postJson<{ archived: true; archivedBy: string }>(`/api/projects/${encodeURIComponent(projectId)}/archive`), onSuccess: refresh }),
     unarchive: useMutation({ mutationFn: (projectId: string) => postJson<{ archived: false }>(`/api/projects/${encodeURIComponent(projectId)}/unarchive`), onSuccess: refresh }),

@@ -1,19 +1,35 @@
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
+import { HOSTED_BACKUP_PAUSE_NOTICE, NATIVE_BACKUP_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 import { Disclosure } from '../../../design';
 import { useAgentPayers } from '../../../hooks/use-fleet';
+import { permissionOf, useMe } from '../../../hooks/use-me';
+import { useTitlingBackfill } from '../../../hooks/use-settings';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { useMemberNames } from '../members';
-import type { LeafGroup } from './catalogue';
+import { Ownership } from '../people/Ownership';
+import { RawClaims } from '../people/RawClaims';
+import { usePersonName } from '../people/PeoplePage';
+import { ADVANCED_FOLDS, groupsIn, type AdvancedFoldId, type LeafGroup } from './catalogue';
 import { LeafControl } from './LeafControl';
 import { ModelListingNote, ModelPresets } from './ModelPicker';
 import { isRetired } from './retired';
 import { TASK_SIZES_NOTE, TaskTiers } from './TaskTiers';
-import type { LeafRow, TaskTierRow } from './wire';
+import { TITLING_ANCHOR, TitlingSwitch } from './TitlingSwitch';
+import type { LeafRow, SettingsAnswer } from './wire';
 
-/** The anchor of the job sizes fold. */
+/** The Advanced page's own anchor. */
+export const ADVANCED_ANCHOR = 'advanced-settings';
+/** The anchor of the job sizes group, under Model sizes. */
 export const TASK_SIZES_ANCHOR = 'task-tiers';
+/** Anchors under Advanced that are not settings groups, each with the fold that holds it. */
+export const ADVANCED_ANCHORS: ReadonlyArray<readonly [anchor: string, fold: AdvancedFoldId]> = [
+  [TASK_SIZES_ANCHOR, 'model-sizes'],
+  [TITLING_ANCHOR, 'new-and-past'],
+  ['ownership', 'owner-actions'],
+  ['raw-claims', 'owner-actions'],
+];
 
 /** One settings group's live controls in one card: the agent's model listing and presets first, where it sets an agent's models. */
 export function GroupCard({ group, rows }: { group: LeafGroup; rows: ReadonlyMap<string, LeafRow> }) {
@@ -28,10 +44,12 @@ export function GroupCard({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
   );
 }
 
-/** Whether a group is as the server ships it, or what was changed, by whom and when. */
-export function changedWords(group: LeafGroup, rows: ReadonlyMap<string, LeafRow>, nameOf: (id: string | null) => string | null, now: number): string {
-  const changed = group.leaves.map((field) => rows.get(field.leaf)).filter((row): row is LeafRow => row?.configured === true && !row.retired);
-  if (changed.length === 0) return 'Default';
+const ALL_DEFAULT = 'All default';
+
+/** Whether groups are as the server ships them, or what was changed, by whom and when. */
+export function changedWords(groups: readonly LeafGroup[], rows: ReadonlyMap<string, LeafRow>, nameOf: (id: string | null) => string | null, now: number): string {
+  const changed = groups.flatMap((group) => group.leaves).map((field) => rows.get(field.leaf)).filter((row): row is LeafRow => row?.configured === true && !row.retired);
+  if (changed.length === 0) return ALL_DEFAULT;
   const latest = changed.reduce((a, b) => ((b.updatedAt ?? 0) > (a.updatedAt ?? 0) ? b : a));
   const who = nameOf(latest.updatedBy);
   const when = latest.updatedAt === null ? '' : ` ${agoWords(latest.updatedAt, now)}`;
@@ -39,57 +57,116 @@ export function changedWords(group: LeafGroup, rows: ReadonlyMap<string, LeafRow
   return changed.length === 1 ? `${by.charAt(0).toUpperCase()}${by.slice(1)}` : `${changed.length} changed, last ${by}`;
 }
 
-/** One folded group: its name, one line on what it holds and whether it was changed, opened where a link points at it. */
-function Fold({ id, label, summary, state, children }: { id: string; label: string; summary: string; state: string; children: ReactNode }) {
+/** One folded group: its name, one line on what it holds and whether it was changed, opened where a link points at it or into it. */
+function Fold({ id, label, summary, state, inside, children }: { id: string; label: string; summary: string; state: string; inside: readonly string[]; children: ReactNode }) {
   const { hash } = useLocation();
+  const anchor = decodeURIComponent(hash.replace(/^#/, ''));
   return (
     <div id={id} className="scroll-mt-s6 px-s4 py-s2" data-fold={id}>
       <Disclosure
         wide
-        defaultOpen={hash === `#${id}`}
+        defaultOpen={anchor === id || inside.includes(anchor)}
         summary={<>
           <span className="t-body font-medium text-ink">{label}</span>
           <span className="t-small text-muted">{summary}</span>
           <span className="t-meta text-faint" data-fold-state="">{state}</span>
         </>}
       >
-        <div className="flex flex-col gap-s3 pb-s3 pt-s2">{children}</div>
+        <div className="flex flex-col gap-s6 pb-s4 pt-s3">{children}</div>
       </Disclosure>
     </div>
   );
 }
 
+/** A settings group inside a fold: its name, one line on it, and its controls. */
+function Subgroup({ group, rows }: { group: LeafGroup; rows: ReadonlyMap<string, LeafRow> }) {
+  if (group.leaves.every((field) => isRetired(field, rows.get(field.leaf)))) return null;
+  return (
+    <AdminSection id={group.id} nested title={group.label} description={group.note}>
+      <GroupCard group={group} rows={rows} />
+    </AdminSection>
+  );
+}
+
+const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+const numberOf = (rows: ReadonlyMap<string, LeafRow>, leaf: string): number | null => {
+  const value = rows.get(leaf)?.effective;
+  return typeof value === 'number' ? value : null;
+};
+
+/** What Backups says while folded: whether backups run on their own, and what one costs while it runs on this server. */
+function backupSummary(rows: ReadonlyMap<string, LeafRow>, target: string | null): { summary: string; cadence: string } {
+  const every = numberOf(rows, 'backup.auto_interval_hours');
+  const cost = target === 'cloudflare' ? 'A scheduled backup pauses the dashboard while it runs: nothing can be read or saved until it ends. Cloudflare can also put the database back to a recent point without one.'
+    : target === 'bun' ? NATIVE_BACKUP_NOTICE
+    : `On a hosted server, a scheduled backup pauses the dashboard while it runs. ${HOSTED_BACKUP_PAUSE_NOTICE}`;
+  return { summary: `How often this server backs itself up and what it keeps. ${cost}`, cadence: every === null ? 'Automatic backups off' : `Every ${plural(every, 'hour')}` };
+}
+
+/** What How long things are kept says while folded, from what the server keeps now. */
+function keptSummary(rows: ReadonlyMap<string, LeafRow>): string {
+  const raw = numberOf(rows, 'retention.raw_days');
+  const runs = numberOf(rows, 'agent.run_retention_days');
+  return [
+    raw === null ? 'Raw transcripts stay where they are.' : `Raw transcripts move to archive after ${plural(raw, 'day')}.`,
+    runs === null ? null : `The record of each task Myco ran is kept for ${plural(runs, 'day')}.`,
+    'Sessions, knowledge and plans are kept for good.',
+  ].filter((line) => line !== null).join(' ');
+}
+
 /**
- * Advanced, at the foot of Models: the model each agent a runner offers uses for each size of job, each task's size,
- * the agents tried next, the per-task overrides and search by meaning. Each folds away behind one line saying whether
- * it was changed.
+ * Advanced: every setting that works untouched, in seven folded groups. Each fold says in one line what it holds and
+ * whether anything in it was changed, by whom and when; a link to a fold, or to a group inside one, opens it.
  */
-export function AdvancedGroups({ groups: all, rows, tiers }: { groups: readonly LeafGroup[]; rows: ReadonlyMap<string, LeafRow>; tiers: readonly TaskTierRow[] }) {
+export function AdvancedSection({ answer, rows }: { answer: SettingsAnswer; rows: ReadonlyMap<string, LeafRow> }) {
   const nameOf = useMemberNames();
   const payers = useAgentPayers();
+  const me = useMe();
+  const nameOfPerson = usePersonName();
+  const owner = permissionOf(me.data, 'roles').allowed;
+  const titling = useTitlingBackfill();
   const now = Date.now();
   // An agent's model sizes are listed where a runner offers the agent, or where one of them was changed.
   const offered = new Set((payers.data?.agents ?? []).map((entry) => entry.agent));
-  const groups = all.filter((group) => group.harness === undefined || offered.has(group.harness)
-    || group.leaves.some((field) => rows.get(field.leaf)?.configured === true));
-  const changedTasks = tiers.filter((row) => row.source !== 'task').length;
-  const folds = groups.map((group) => (
-    <Fold key={group.id} id={group.id} label={group.label} summary={group.note} state={changedWords(group, rows, nameOf, now)}>
-      <GroupCard group={group} rows={rows} />
-    </Fold>
-  ));
-  // Each task's size follows the model each agent uses for each size.
-  const sizesAt = groups.reduce((at, group, index) => (group.harness === undefined ? at : index + 1), 0);
-  const sizes = (
-    <Fold key={TASK_SIZES_ANCHOR} id={TASK_SIZES_ANCHOR} label="Size of each job" summary={TASK_SIZES_NOTE} state={changedTasks === 0 ? 'Default' : `${changedTasks} changed`}>
-      <TaskTiers tiers={tiers} />
-    </Fold>
-  );
+  const shown = (group: LeafGroup) => group.harness === undefined || offered.has(group.harness)
+    || group.leaves.some((field) => rows.get(field.leaf)?.configured === true);
+  const changedTasks = answer.taskTiers.filter((row) => row.source !== 'task').length;
+  const target = answer.embedding?.target ?? null;
+
+  const folds = ADVANCED_FOLDS.map((fold) => {
+    const groups = groupsIn(fold.id).filter(shown);
+    const inside = [...groups.map((group) => group.id), ...ADVANCED_ANCHORS.filter(([, home]) => home === fold.id).map(([anchor]) => anchor)];
+    const backups = fold.id === 'backups' ? backupSummary(rows, target) : null;
+    const summary = backups?.summary ?? (fold.id === 'kept' ? keptSummary(rows) : fold.summary);
+    const changes = changedWords(groups, rows, nameOf, now);
+    const extra = fold.id === 'backups' ? backups!.cadence
+      : fold.id === 'model-sizes' && changedTasks > 0 ? `${plural(changedTasks, 'job size')} changed`
+      : fold.id === 'new-and-past' && titling.data !== undefined ? `imported sessions ${titling.data.backfillEnabled ? 'get' : 'don’t get'} titles`
+      : null;
+    // A group's own line of state stands in for "All default": it names something the change summary does not cover.
+    const state = fold.id === 'owner-actions' ? 'Rarely needed' : [extra, extra !== null && changes === ALL_DEFAULT ? null : changes].filter(Boolean).join(' · ');
+    const subgroups = groups.map((group) => <Subgroup key={group.id} group={group} rows={rows} />);
+    // Each job's size follows the model each agent uses for each size.
+    const sizesAt = groups.reduce((at, group, index) => (group.harness === undefined ? at : index + 1), 0);
+    return (
+      <Fold key={fold.id} id={fold.id} label={fold.label} summary={summary} state={state} inside={inside}>
+        {fold.id === 'model-sizes' ? <>
+          {subgroups.slice(0, sizesAt)}
+          <AdminSection id={TASK_SIZES_ANCHOR} nested title="Size of each job" description={TASK_SIZES_NOTE}><TaskTiers tiers={answer.taskTiers} /></AdminSection>
+          {subgroups.slice(sizesAt)}
+        </> : subgroups}
+        {fold.id === 'new-and-past' && <TitlingSwitch nested />}
+        {fold.id === 'owner-actions' && <>
+          {me.data?.owner !== undefined && <Ownership nested isOwner={me.data.owner} nameOfCandidate={(candidate) => nameOfPerson({ id: candidate.memberId, label: candidate.label })} />}
+          {owner && <RawClaims nested />}
+          {!owner && <p className="t-small text-muted">Only this server’s owner can claim raw data with no recorded uploader.</p>}
+        </>}
+      </Fold>
+    );
+  });
   return (
-    <AdminSection id="models-advanced" title="Advanced" description="Defaults that work untouched. Open one only if you have a reason to.">
-      <RowCard label="Advanced">
-        {[...folds.slice(0, sizesAt), sizes, ...folds.slice(sizesAt)]}
-      </RowCard>
+    <AdminSection id={ADVANCED_ANCHOR} title="Advanced" description="Defaults that work untouched. Open a group only if you have a reason to.">
+      <RowCard label="Advanced">{folds}</RowCard>
     </AdminSection>
   );
 }

@@ -4,10 +4,11 @@ import {
   type GitHubAppSetup, type RepositorySuggestion, type SetupLink, type SetupStep, type StepState,
 } from '@goondocks/myco-shared/github-app-setup';
 import { agoWords } from '@goondocks/myco-shared/time-words';
-import { Button, CommandBlock, Disclosure, ErrorState, ExternalLink, LoadingState, StatusChip, tapTarget, type Tone } from '../../../design';
+import { ActionLink, Button, CommandBlock, Disclosure, ErrorState, ExternalLink, LoadingState, StatusChip, tapTarget, type Tone } from '../../../design';
 import {
   settingsRefusalText, useConnectSuggestion, useGitHubAccountActions, useGitHubAppSetup, useGitHubInstallations, useRepositorySuggestions,
 } from '../../../hooks/use-settings';
+import { SETTINGS_SECTIONS } from '../../../routes/nav';
 import { ConnectionRow } from './ConnectionRow';
 
 const STATE: Record<StepState, { label: string; tone: Tone }> = {
@@ -17,57 +18,118 @@ const STATE: Record<StepState, { label: string; tone: Tone }> = {
   waiting: { label: 'Waiting', tone: 'neutral' },
 };
 
-/** Where a link to the GitHub App setup lands, on Connections. */
+/** Where a link to the GitHub App setup lands, on Repositories. */
 export const GITHUB_ANCHOR = 'github-app';
+const REPOSITORIES_PATH = SETTINGS_SECTIONS.find((section) => section.id === 'repositories')!.to;
 
-/** GitHub as one connection: whether the App is set up and reading, when that was checked, and the setup checklist under it. */
-function githubStatus(setup: GitHubAppSetup | undefined): { words: string; tone: Tone } {
+/** Whether the App is set up and reading, as a chip. */
+export function githubStatus(setup: GitHubAppSetup | undefined): { words: string; tone: Tone } {
   if (setup === undefined) return { words: 'Checking', tone: 'neutral' };
   const steps = githubAppChecklist(setup, window.location.origin);
   if (steps.every((step) => step.state === 'done')) return { words: 'Working', tone: 'ok' };
   return steps.some((step) => step.state === 'failed') ? { words: 'Needs attention', tone: 'bad' } : { words: 'Not set up', tone: 'warn' };
 }
 
-/**
- * The server's GitHub App as a connection row: whether it works and when that was checked, Test to check again, and
- * the setup checklist folded under it, open while a step remains. Every step is read live from GitHub and this server.
- */
-export function GitHubRow() {
+/** The App's setup, read live, and whether it works; Test reads both again. */
+function useGitHubCheck() {
   const setup = useGitHubAppSetup();
   const data = setup.data;
   const keyWorks = data?.key.state === 'ready' || data?.key.state === 'permissions_missing';
   const installations = useGitHubInstallations(keyWorks);
   const check = () => { void setup.refetch(); if (keyWorks) void installations.refetch(); };
   const status = setup.isError ? { words: 'Could not check', tone: 'bad' as const } : githubStatus(data);
+  return { setup, installations, keyWorks, check, status };
+}
+
+/** GitHub on Connections: what it is for and whether it works, Test, and the way to Repositories, where it is set up. */
+export function GitHubRow() {
+  const { setup, check, status } = useGitHubCheck();
   return (
     <ConnectionRow
-      id={GITHUB_ANCHOR}
       kind="github"
       label="GitHub"
-      use="Sign-in, and reading your repositories, through this server’s own GitHub App."
+      use="Sign-in, and reading your repositories."
       status={status}
-      note={<>
-        {data !== undefined && <p data-setup-headline="">{githubAppHeadline(githubAppChecklist(data, window.location.origin), data)}</p>}
-        {setup.dataUpdatedAt > 0 && <p>{`Checked ${agoWords(setup.dataUpdatedAt, Date.now())}`}</p>}
+      note={setup.dataUpdatedAt > 0 ? <p>{`Checked ${agoWords(setup.dataUpdatedAt, Date.now())}`}</p> : undefined}
+      actions={<>
+        <Button size="sm" onClick={check} pending={setup.isFetching}>Test</Button>
+        <ActionLink to={`${REPOSITORIES_PATH}#${GITHUB_ANCHOR}`}>Repositories</ActionLink>
       </>}
-      actions={<Button size="sm" onClick={check} pending={setup.isFetching}>Test</Button>}
-    >
-      {setup.isPending ? <LoadingState label="Checking the GitHub App with GitHub" count={2} />
-        : setup.isError ? <ErrorState error={setup.error} onRetry={() => void setup.refetch()} />
-        : <Disclosure summary="Setup and repositories" defaultOpen={githubStatus(data).words !== 'Working' || window.location.hash === `#${GITHUB_ANCHOR}`}>
-          <GitHubSetup setup={setup.data} installations={installations} />
-        </Disclosure>}
-    </ConnectionRow>
+    />
+  );
+}
+
+/** The accounts the App is installed on, ignoring suspended ones. */
+const installedOn = (setup: GitHubAppSetup): string[] => setup.installations !== null && 'list' in setup.installations
+  ? setup.installations.list.filter((installation) => !installation.suspended).map((installation) => installation.account.login) : [];
+
+const listWords = (items: readonly string[]): string => items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)!}`;
+
+/**
+ * GitHub on Repositories: which App reads your repositories, who owns it, where it is installed and whether it works,
+ * with Test and installing it on another account. The live setup checklist folds under it, open until every step is
+ * done.
+ */
+export function GitHubReadRow() {
+  const { setup, installations, check, status } = useGitHubCheck();
+  const data = setup.data;
+  const app = data?.app ?? null;
+  const pages = app === null ? null : githubAppPages(app.slug, app.owner);
+  const installed = data === undefined ? [] : installedOn(data);
+  const done = status.words === 'Working';
+  const steps = data === undefined ? [] : githubAppChecklist(data, window.location.origin);
+  return (
+    <>
+      <ConnectionRow
+        id={GITHUB_ANCHOR}
+        kind="github"
+        label="GitHub"
+        use={app === null
+          ? 'Myco reads your repositories, read-only, through this server’s own GitHub App.'
+          : `Myco reads your repositories, read-only, through its own GitHub App: ${app.name}${app.owner === null ? '' : `, owned by ${ownerWords(app.owner)}`}.`}
+        status={status}
+        note={<>
+          {installed.length > 0 && <p data-installed-on="">{`Installed on ${listWords(installed)}${app?.owner == null ? '' : `. ${appSettingsLocation(app.owner)}`}`}</p>}
+          {data !== undefined && !done && <p data-setup-headline="">{githubAppHeadline(steps, data)}</p>}
+          {setup.dataUpdatedAt > 0 && <p>{`Checked ${agoWords(setup.dataUpdatedAt, Date.now())}`}</p>}
+        </>}
+        actions={<Button size="sm" onClick={check} pending={setup.isFetching}>Test</Button>}
+      >
+        {setup.isPending ? <LoadingState label="Checking the GitHub App with GitHub" count={2} />
+          : setup.isError ? <ErrorState error={setup.error} onRetry={() => void setup.refetch()} />
+          : done ? <Disclosure key="accounts" summary="Accounts it can read for">
+            <div className="flex flex-col gap-s3"><Unapproved setup={setup.data} /><ApprovedAccounts installations={installations} /></div>
+          </Disclosure>
+          : <Disclosure key="setup" summary="Finish setting up" defaultOpen>
+            <GitHubSetup setup={setup.data} installations={installations} />
+          </Disclosure>}
+      </ConnectionRow>
+      {pages !== null && done && (
+        <div className="flex flex-col gap-s3 px-s4 py-s4 sm:flex-row sm:items-center sm:justify-between sm:gap-s6">
+          <p className="max-w-measure t-small text-muted">To read another account’s repositories, install the App there too. Signing in with GitHub does not install it.</p>
+          <ExternalLink href={pages.install} className={`shrink-0 t-small ${tapTarget}`}>Install on another account</ExternalLink>
+        </div>
+      )}
+    </>
   );
 }
 
 /** The App's identity, its live checklist and the accounts approved here. */
-function GitHubSetup({ setup, installations }: { setup: GitHubAppSetup; installations: ReturnType<typeof useGitHubInstallations> }) {
-  const accounts = useGitHubAccountActions();
+export function GitHubSetup({ setup, installations }: { setup: GitHubAppSetup; installations: ReturnType<typeof useGitHubInstallations> }) {
   return (
     <div className="flex flex-col gap-s4" data-github-app-setup="">
       <AppIdentity setup={setup} />
       <Checklist setup={setup} />
+      <ApprovedAccounts installations={installations} />
+    </div>
+  );
+}
+
+/** The accounts approved here, each withdrawn with one press, or why they could not be listed. */
+function ApprovedAccounts({ installations }: { installations: ReturnType<typeof useGitHubInstallations> }) {
+  const accounts = useGitHubAccountActions();
+  return (
+    <>
       {installations.isSuccess && installations.data.accounts.length > 0 && (
         <div className="flex flex-col gap-s2" data-approved-accounts="">
           <p className="t-small text-muted">Repositories can be connected from installations by these accounts:</p>
@@ -81,7 +143,7 @@ function GitHubSetup({ setup, installations }: { setup: GitHubAppSetup; installa
         </div>
       )}
       {installations.isError && <p role="alert" className="t-small text-bad">{settingsRefusalText(installations.error)}</p>}
-    </div>
+    </>
   );
 }
 
@@ -114,7 +176,6 @@ function Checklist({ setup }: { setup: GitHubAppSetup }) {
         </div>
         <StepBody step={step} />
         {step.id === 'approved' && <Unapproved setup={setup} />}
-        {step.id === 'connected' && step.state !== 'waiting' && <ProjectRepositories />}
       </li>)}
     </ol>
   </div>;
@@ -152,7 +213,7 @@ function Unapproved({ setup }: { setup: GitHubAppSetup }) {
 }
 
 /** Proposes, for each Project with no repository, the one repository of the same name; each is connected only when confirmed. */
-function ProjectRepositories() {
+export function ProjectRepositories() {
   const proposals = useRepositorySuggestions();
   const connect = useConnectSuggestion();
   const [outcome, setOutcome] = useState<Record<string, string>>({});

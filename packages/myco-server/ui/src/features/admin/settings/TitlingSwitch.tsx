@@ -3,7 +3,7 @@ import { settingsRefusalText, useSetTitlingBackfill, useSettings, useTitlingBack
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import { progressWords } from './titling';
 
-/** The switch's anchor on Myco's work. */
+/** The switch's anchor, under Advanced › New repositories and past sessions. */
 export const TITLING_ANCHOR = 'titling';
 
 /**
@@ -11,7 +11,7 @@ export const TITLING_ANCHOR = 'titling';
  * machine's history, read from and written to the server's own titling route,
  * with where titling stands beneath it.
  */
-export function TitlingSwitch() {
+export function TitlingSwitch({ nested = false }: { nested?: boolean }) {
   const progress = useTitlingBackfill();
   const set = useSetTitlingBackfill();
   const settings = useSettings();
@@ -37,7 +37,7 @@ export function TitlingSwitch() {
   }
 
   return (
-    <AdminSection id={TITLING_ANCHOR} title="Session titles" description="Myco gives each session a title and a summary once it ends.">
+    <AdminSection id={TITLING_ANCHOR} nested={nested} title="Session titles" description="Myco gives each session a title and a summary once it ends.">
       <RowCard>
         <SettingRow
           inline

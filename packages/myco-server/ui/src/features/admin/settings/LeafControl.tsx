@@ -247,18 +247,21 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       details={row?.configured ? <>
         <StoredValue value={row.stored} />
         {field.kind === 'json' && JSON.stringify(row.stored) !== JSON.stringify(row.effective) && <StoredValue summary="Effective value" value={row.effective} />}
+        {!locked && (
+          <div className="flex flex-wrap items-center gap-x-s3 gap-y-s1" data-reset="">
+            {row.repair === 'clean-document' && <Button size="sm" disabled={pending} onClick={() => {
+              setError(null);
+              actions.repairDocument.mutate({ leaf: field.leaf }, { onError: refused, onSuccess: clearDraft });
+            }}>Remove entries that no longer apply</Button>}
+            <Button size="sm" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button>
+            <span className="t-meta text-muted">{field.leaf === 'agent.tasks' ? 'Clearing resets every task override, including imported-session titling.' : 'Clearing restores the server’s default for this setting.'}</span>
+          </div>
+        )}
       </> : undefined}
       refused={error !== null}
       stacked={STACKED.has(field.kind)}
       inline={field.kind === 'toggle'}
-      control={row?.configured === true ? <div className="flex w-full min-w-0 flex-col gap-s2">
-        <div className="flex w-full min-w-0 items-center gap-s2">{control}</div>
-        {!locked && row.repair === 'clean-document' && <Button size="sm" className="self-end" disabled={pending} onClick={() => {
-          setError(null);
-          actions.repairDocument.mutate({ leaf: field.leaf }, { onError: refused, onSuccess: clearDraft });
-        }}>Remove entries that no longer apply</Button>}
-        {!locked && <><Button size="sm" className="self-end" aria-label={`Clear the stored value for ${field.label}`} disabled={pending} onClick={reset}>Clear the stored value</Button><p className="t-meta text-muted">{field.leaf === 'agent.tasks' ? 'Clearing resets every task override, including imported-session titling.' : 'Clearing restores the server’s default for this setting.'}</p></>}
-      </div> : control}
+      control={control}
     />
   );
 }

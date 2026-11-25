@@ -2,7 +2,7 @@ import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words'
 
 /**
  * Every Deployment setting the dashboard edits, grouped for the page and placed
- * in one of the five sections of Settings.
+ * on Myco's work, on Models, or in one of the groups folded under Advanced.
  *
  * The server stores any JSON under a leaf; the shape a person can enter comes
  * from here. A gate holds the editable fields equal to the server's admitted leaves, so a leaf
@@ -46,18 +46,30 @@ export interface LeafField {
   harness?: string;
 }
 
+/** The groups folded under Advanced, in page order. */
+export const ADVANCED_FOLDS = [
+  { id: 'model-sizes', label: 'Model sizes', summary: 'Which model each agent uses for small, medium and large jobs, how hard it thinks, and which agent is tried next.' },
+  { id: 'pace', label: 'Pace', summary: 'How many jobs run at once, how often code maps and release checks run, and how long a session sits quiet before it gets a title.' },
+  { id: 'sessions-given', label: 'What sessions are given', summary: 'The instructions each session starts with, and how much memory is attached to each prompt.' },
+  { id: 'new-and-past', label: 'New repositories and past sessions', summary: 'Whether a new repository gets a project by itself, how much history a new machine brings, and whether that history gets titles.' },
+  { id: 'kept', label: 'How long things are kept', summary: 'How long raw transcripts and the record of each task stay before they move or go.' },
+  { id: 'backups', label: 'Backups', summary: 'How often this server backs itself up, what it keeps, and the checks it runs on its database.' },
+  { id: 'owner-actions', label: 'Owner actions', summary: 'Transfer ownership of this server. Claim raw data that has no recorded uploader.' },
+] as const;
+export type AdvancedFoldId = (typeof ADVANCED_FOLDS)[number]['id'];
+
 export interface LeafGroup {
   /** The group's anchor on its section, and the `?tab=` an older link to it carries. */
   id: string;
   /** The section of Settings the group sits in. */
   section: SettingsSectionId;
+  /** The Advanced group it is folded in, where its section is Advanced. */
+  fold?: AdvancedFoldId;
   label: string;
   note: string;
   leaves: readonly LeafField[];
   /** The agent whose model sizes the group sets, where it sets one's. */
   harness?: string;
-  /** Folded under Advanced at the foot of its section, opened only by someone with a reason to. */
-  advanced?: true;
 }
 
 const SIGN_IN_OPTIONS = { deployment: 'The server’s stored key', 'worker-login': 'This machine’s sign-in' } as const;
@@ -86,12 +98,12 @@ const PROFILE_GROUPS: readonly LeafGroup[] = CONFIGURABLE_PROFILE_HARNESSES.map(
   const waits = REASONING_TIERS.some((tier) => PROFILE_HARNESSES[harness]!.models[tier] === null);
   return {
     id: `${harness.split('-')[0]}-profile`,
-    section: 'models',
+    section: 'advanced',
+    fold: 'model-sizes',
     label: `${harnessName(harness)} model sizes`,
     note: `The model and effort ${harnessName(harness)} is asked for on small, medium and large jobs.${waits ? ' A size with no model waits until one is set.' : ''}`,
     leaves: profileFields(harness),
     harness,
-    advanced: true,
   };
 });
 
@@ -99,11 +111,20 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'scheduling',
     section: 'work',
-    label: 'When Myco works',
-    note: 'When Myco learns, titles and maps on its own, without being asked.',
+    label: 'Should Myco work on its own?',
+    note: 'Myco learns from finished sessions, writes their titles and keeps code maps current, without being asked.',
     leaves: [
-      { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on a schedule', kind: 'toggle' },
-      { leaf:'agent.budget.daily_usd',label:'Daily automatic work budget',kind:'number',min:1,step:0.01,unit:'USD',note:'Default $20. Hand-started runs always remain available and their spend counts.' },
+      { leaf: 'agent.scheduled_tasks_enabled', label: 'Work on its own', kind: 'toggle' },
+      { leaf: 'agent.budget.daily_usd', label: 'Daily budget', kind: 'number', min: 1, step: 0.01, unit: 'USD', note: 'The most Myco spends on its own in a day. When it’s reached, Myco waits until spending from the last 24 hours makes room. Work you start by hand is never blocked, and its spend counts.' },
+    ],
+  },
+  {
+    id: 'timing',
+    section: 'advanced',
+    fold: 'pace',
+    label: 'When things happen',
+    note: 'Which projects count as active, when a quiet session gets its title, and how often release tracking checks what has shipped.',
+    leaves: [
       { leaf: 'agent.scheduled_tasks_active_window_days', label: 'Treat a project as active for', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.cold_project_threshold_days', label: 'Treat a project as quiet after', kind: 'number', min: 0, max: 365, unit: 'days' },
       { leaf: 'agent.titling_idle_close_minutes', label: 'Title a session once it has been quiet for', kind: 'number', min: 5, max: 10080, unit: 'minutes', note: 'A session that never reports an end, such as a closed terminal pane, is titled once it has been quiet this long. The session itself stays open.' },
@@ -112,7 +133,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'limits',
-    section: 'work',
+    section: 'advanced',
+    fold: 'pace',
     label: 'How much at once',
     note: 'How much of Myco’s work runs at once. Work past a limit waits its turn; nothing is refused. Clear a stored value to restore the server default, or choose No limit.',
     leaves: [
@@ -123,7 +145,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'cortex',
-    section: 'work',
+    section: 'advanced',
+    fold: 'sessions-given',
     label: 'What sessions receive',
     note: 'What each session is handed at start, and what each prompt is served.',
     leaves: [
@@ -137,9 +160,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'code-map',
-    section: 'work',
+    section: 'advanced',
+    fold: 'pace',
     label: 'Code map',
-    note: 'Projects with Code map on keep their map current after new capture. Needs work on a schedule, a connected repository and a ready runner. Task limits apply.',
+    note: 'Projects with Code map on keep their map current after new capture. Needs Myco to work on its own, a connected repository and a ready runner. Task limits apply.',
     leaves: [
       { leaf: 'cortex.canopy.refresh.background_period_minutes', label: 'Update every', kind: 'number', min: 1, unit: 'minutes' },
       { leaf: 'cortex.canopy.exclude.patterns', label: 'Paths left out', kind: 'patterns', note: 'Paths the map leaves out, beside the built-in ones. The map reads committed files only, so ignored files never reach it.' },
@@ -167,10 +191,10 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   ...PROFILE_GROUPS,
   {
     id: 'agent-order',
-    section: 'models',
+    section: 'advanced',
+    fold: 'model-sizes',
     label: 'Agents tried next',
     note: 'The agents a runner tries, top first, when it is not signed in to the chosen one.',
-    advanced: true,
     leaves: [
       { leaf: 'worker.harness_fallback', label: 'Then try, in order', kind: 'agents', note: 'The agents a runner tries next, top first.' },
     ],
@@ -178,9 +202,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'embedding',
     section: 'models',
-    label: 'Search by meaning',
-    note: 'The provider and model search reads every source with. Changing the model once search is built rebuilds it for every source in the background, and search keeps working meanwhile.',
-    advanced: true,
+    label: 'Search',
+    note: 'Finding things by meaning: the provider and model search reads every source with. Changing the model once search is built rebuilds it for every source in the background, and search keeps working meanwhile.',
     leaves: [
       { leaf: 'embedding.provider', label: 'Embedding provider', kind: 'embedding-provider' },
       { leaf: 'embedding.model', label: 'Embedding model', kind: 'embedding-model' },
@@ -190,17 +213,18 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'advanced',
-    section: 'models',
+    section: 'advanced',
+    fold: 'model-sizes',
     label: 'Overrides for each task',
     note: 'Overrides for each task, as one document.',
-    advanced: true,
     leaves: [
-      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'An object keyed by task name, in braces. A model named for a task needs an agent named beside it. “Title imported sessions” under Myco’s work writes its switch here.' },
+      { leaf: 'agent.tasks', label: 'Task overrides', kind: 'json', note: 'An object keyed by task name, in braces. A model named for a task needs an agent named beside it. “Title imported sessions” under New repositories and past sessions writes its switch here.' },
     ],
   },
   {
     id: 'new-repositories',
-    section: 'capture',
+    section: 'advanced',
+    fold: 'new-and-past',
     label: 'New repositories',
     note: 'What happens when someone works in a repository no project holds yet, inside the folders their machine captures.',
     leaves: [
@@ -209,7 +233,8 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'import',
-    section: 'capture',
+    section: 'advanced',
+    fold: 'new-and-past',
     label: 'Importing past sessions',
     note: 'What a machine brings with it when someone joins. Their agents have kept transcripts all along; this is how much of that history arrives.',
     leaves: [
@@ -221,29 +246,32 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   },
   {
     id: 'records',
-    section: 'capture',
+    section: 'advanced',
+    fold: 'kept',
     label: 'What Myco keeps',
     note: 'How long this server keeps raw transcripts and its own records.',
     leaves: [
-      { leaf: 'retention.raw_days', label: 'Keep raw content hot for', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Defaults to 90 days. Older raw content moves to verified archive storage. Unparsed bytes and recovery holds delay the move. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely. A legacy forever choice holds archival until a finite window is set.' },
+      { leaf: 'retention.raw_days', label: 'Keep raw transcripts in active storage for', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Defaults to 90 days. After that, raw transcripts move to archive storage, where they stay, checked. A transcript Myco has not read yet, or one a restore still needs, moves later. A server set to keep them forever keeps them here until a number of days is set. Sessions, prompts, replies, tool calls, plans and spores stay indefinitely.' },
       { leaf: 'agent.run_retention_days', label: 'Keep task records for', kind: 'number', min: 1, max: 365, unit: 'days', note: 'How long the record of each task Myco ran is kept.' },
     ],
   },
   {
     id: 'backup',
-    section: 'backups',
+    section: 'advanced',
+    fold: 'backups',
     label: 'Backups',
     note: 'How often this server backs itself up and what it keeps.',
     leaves: [
       { leaf: 'backup.auto_interval_hours', label: 'Back up every', kind: 'number', min: 1, max: 720, unit: 'hours', note: `A self-hosted server writes a verified recovery copy on this interval; a hosted one stages a copy an operator then turns into one. ${HOSTED_BACKUP_PAUSE_NOTICE}` },
       { leaf: 'backup.recovery.keep_stagings', label: 'Full recovery copies to keep', kind: 'number', min: 1, max: 30, note: 'Complete copies kept, newest first; older ones are released, and so are failed ones past the newest. Unset keeps 2.' },
-      { leaf: 'backup.retention.keep_daily', label: 'Newest manual relational exports to keep (daily)', kind: 'number', min: 1, max: 365, note: 'Keeps the newest export copies, rather than one per day. Pruned when a manual export is created.' },
+      { leaf: 'backup.retention.keep_daily', label: 'Manual exports to keep, newest first', kind: 'number', min: 1, max: 365, note: 'Keeps the newest export copies, rather than one per day. Pruned when a manual export is created.' },
       { leaf: 'backup.retention.keep_weekly', label: 'Recent export weeks to keep', kind: 'number', min: 0, max: 52, note: 'Keeps the newest export from each of the N most recent weeks that contain exports. Empty weeks consume no slot. Pruned when a manual export is created.' },
     ],
   },
   {
     id: 'maintenance',
-    section: 'backups',
+    section: 'advanced',
+    fold: 'backups',
     label: 'Store checks',
     note: 'Routine checks on the database. Nothing runs until a check is turned on with an interval; one turned on runs at the next wake and then on its interval. What each check last found is on Health.',
     leaves: [
@@ -259,3 +287,6 @@ export const LEAF_FIELDS: readonly LeafField[] = LEAF_GROUPS.flatMap((g) => g.le
 
 /** The groups of one section, in page order. */
 export const groupsOf = (section: SettingsSectionId): readonly LeafGroup[] => LEAF_GROUPS.filter((g) => g.section === section);
+
+/** The groups folded in one Advanced group, in page order. */
+export const groupsIn = (fold: AdvancedFoldId): readonly LeafGroup[] => LEAF_GROUPS.filter((g) => g.fold === fold);

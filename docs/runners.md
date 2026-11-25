@@ -60,7 +60,7 @@ Legacy workers default to their machine’s sign-in. An explicitly saved **Legac
 
 ## Let Myco work
 
-The project switches **Context for sessions**, **Code map** and **Learning** are on by default. A connected repository is also needed for code maps and learning from code. These switches do not turn on the Deployment's schedule: in **Settings** → **Myco’s work**, enable **Work on a schedule** for automatic work. Use **Run a task** under **Myco’s work** for a manual start, and check its result there.
+The project switches **Context for sessions**, **Code map** and **Learning** are on by default. A connected repository is also needed for code maps and learning from code. These switches do not turn on the Deployment's schedule: in **Settings** → **Myco’s work**, enable **Work on its own** for automatic work. Use **Run a task** under **Myco’s work** for a manual start, and check its result there.
 
 By default, **two runs of the same task can run at once across all projects**. Change **Runs of one task at once** under **Settings** → **Myco’s work** → **How much at once**. Work past a concurrency limit queues until capacity is available. Adding runners does not override the limit. Daily task ceilings are separate: reaching one holds off another start until a later scheduling check.
 

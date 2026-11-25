@@ -231,7 +231,7 @@ describe('teammate journey (c)', () => {
     expect(lines.join('\n')).toMatch(/sessions: 1 distinct[^\n]*1 from the vault/);
     expect(lines.join('\n')).toContain('sent 1 prompts, 0 responses, 1 plans');
     expect(lines.filter(line => line.includes('not imported by this Deployment'))).toHaveLength(1);
-    expect(lines.join('\n')).toMatch(/2 spores and 0 spore history events stayed[\s\S]*Allow spore import[\s\S]*Settings → Capture and retention[\s\S]*vault is left untouched/);
+    expect(lines.join('\n')).toMatch(/2 spores and 0 spore history events stayed[\s\S]*Allow spore import[\s\S]*Settings → Advanced[\s\S]*vault is left untouched/);
     expect(lines.join('\n')).not.toMatch(/partial|refused|failed/);
     expect(questions).toHaveLength(yes ? 0 : 1);
     expect(lines.join('\n')).toContain('Myco 1.4 cutover preview');

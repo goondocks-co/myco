@@ -51,15 +51,18 @@ export interface AdminSectionProps {
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** A section inside another, such as a group folded under Advanced, takes the smaller heading. */
+  nested?: boolean;
 }
 
 /** One section of an admin page: its heading, one line on what it holds, and its content. */
-export function AdminSection({ id, title, description, actions, children, className }: AdminSectionProps) {
+export function AdminSection({ id, title, description, actions, children, className, nested = false }: AdminSectionProps) {
+  const Heading = nested ? 'h3' : 'h2';
   return (
-    <section id={id} aria-labelledby={`${id}-title`} className={cn('flex scroll-mt-s6 flex-col gap-s4', className)}>
+    <section id={id} aria-labelledby={`${id}-title`} className={cn('flex scroll-mt-s6 flex-col', nested ? 'gap-s3' : 'gap-s4', className)}>
       <div className="flex flex-wrap items-end justify-between gap-s3">
         <div className="flex min-w-0 flex-col gap-s1">
-          <h2 id={`${id}-title`} className="t-h2 text-ink">{title}</h2>
+          <Heading id={`${id}-title`} className={cn(nested ? 't-h3' : 't-h2', 'text-ink')}>{title}</Heading>
           {description != null && <p className="max-w-measure t-small text-muted">{description}</p>}
         </div>
         {actions != null && <div className="flex shrink-0 flex-wrap gap-s2">{actions}</div>}

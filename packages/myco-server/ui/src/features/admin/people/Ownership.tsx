@@ -12,7 +12,7 @@ type Review = { kind: 'record' | 'transfer'; revision: string; memberId: string;
 type Candidate = DeploymentOwnershipPreview['candidates'][number];
 
 /** The server's preview supplies eligible admins and the revision for an explicit owner change. */
-export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; nameOfCandidate: (candidate: Candidate) => string }) {
+export function Ownership({ isOwner, nameOfCandidate, nested = false }: { isOwner: boolean; nameOfCandidate: (candidate: Candidate) => string; nested?: boolean }) {
   const client = useQueryClient();
   const ownership = useQuery({ queryKey: OWNERSHIP_KEY, queryFn: ({ signal }) => fetchJson<DeploymentOwnershipPreview>('/api/ownership', signal), ...live('still') });
   const [selected, setSelected] = useState('');
@@ -54,7 +54,7 @@ export function Ownership({ isOwner, nameOfCandidate }: { isOwner: boolean; name
     setReview({ kind: preview.ownerMemberId === null ? 'record' : 'transfer', revision: preview.revision, memberId: candidate.memberId, name: nameOfCandidate(candidate) });
   };
   return (
-    <AdminSection id="ownership" title="Server owner" description="The owner controls administrator access and ownership of this server. Raw uploads remain private to the person who uploaded them.">
+    <AdminSection id="ownership" nested={nested} title="Server owner" description="The owner controls administrator access and ownership of this server. Raw uploads remain private to the person who uploaded them.">
       {ownership.isPending ? <LoadingState label="Reading server ownership" />
         : ownership.isError ? <ErrorState error={ownership.error} onRetry={() => void ownership.refetch()} />
         : preview === undefined ? null

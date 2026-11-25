@@ -14,7 +14,7 @@ import {
 import { ApiError } from '../../../lib/api';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
-const BACKUP_SETTINGS = SETTINGS_SECTIONS.find((section) => section.id === 'backups')!.to;
+const BACKUP_SETTINGS = `${SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to}#backup`;
 
 /** A failed request in words chosen by its status or refusal code, never the server's own sentence. */
 const failure = (error: unknown): string => error instanceof ApiError && error.code === 'artifact_format_retired'
@@ -253,7 +253,7 @@ function RecoveryCard() {
             {availableWords(schedule.available)}
           </p>
           <p className="max-w-measure t-small text-muted">
-            How often it runs is “Back up every” in <Link to={BACKUP_SETTINGS}>Settings</Link>.
+            How often it runs is “Back up every” in <Link to={BACKUP_SETTINGS}>Settings › Advanced › Backups</Link>.
             {form === 'artifact'
               ? ' Restoring from an artifact is an operator command: see the '
               : ' Turning a staging into a verified artifact, and restoring from one, are operator commands: see the '}
