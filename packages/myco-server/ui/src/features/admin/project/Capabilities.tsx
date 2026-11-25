@@ -21,6 +21,10 @@ export const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: st
   vault_evolution: { label: 'Learning', note: 'Myco learns spores from this project’s sessions and keeps them current.' },
 };
 
+/** A task as the page names it in a sentence: "learning from the code". */
+const startedName = (task: TaskDescription): string => startableEntry(task.task, task.name).started.toLowerCase();
+const sentence = (text: string): string => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+
 function repositoryName(connection: RepositoryRow): string {
   const parts = new URL(connection.url).pathname.replace(/\/$/, '').replace(/\.git$/, '').split('/').filter(Boolean);
   return parts.slice(-2).join('/');
@@ -46,7 +50,7 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, a
   const repositoryAction = needsSetup ? 'set up repository access on this server' : 'connect the repository';
   const missingNote = needsSetup ? `${allNeedRepository ? 'Code tasks' : repositoryTasks.map((task) => task.name).join(', ')} wait until the server operator sets up repository access with myco server github-app.`
     : allNeedRepository ? 'Needs this project’s repository to read its code.'
-    : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; ${repositoryAction} to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
+    : `${sentence(independentTasks.map(startedName).join(' and '))} ${enabled ? 'runs now' : 'runs once this is on'}; ${repositoryAction} so ${repositoryTasks.map(startedName).join(' and ')} can run too.`;
   const missingStatus = needsSetup ? (allNeedRepository ? 'On · Code tasks need repository access set up' : 'On · Some tasks need repository access set up')
     : allNeedRepository ? 'On · Code tasks cannot run until a repository is connected' : 'On · Some tasks need a repository';
   const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && (repository === null || needsSetup);
@@ -58,7 +62,7 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, a
         : repository === null || needsSetup ? missingNote
           : repository === undefined ? 'Couldn’t check this project’s repository.'
             : allNeedRepository ? `It reads the code in ${repositoryName(repository)}, on its ${repository.branch} branch.`
-              : `When you start ${repositoryTasks.map((task) => startableEntry(task.task, task.name).started.toLowerCase()).join(' or ')}, Myco reads the code in ${repositoryName(repository)}, on its ${repository.branch} branch.`;
+              : `When you start ${repositoryTasks.map(startedName).join(' or ')}, Myco reads the code in ${repositoryName(repository)}, on its ${repository.branch} branch.`;
   const enabledStatus = taskState === 'loading' ? 'On · Checking task requirements'
     : taskState === 'error' ? 'On · Task requirements unavailable'
       : readsRepository && repositoryState === 'loading' ? 'On · Checking repository'
@@ -106,7 +110,7 @@ function CurationLimit({ projectId, value, revision }: { projectId: string; valu
   };
   return <SettingRow setting={CURATION_LIMIT.leaf} label="Groups curated per day" htmlFor="curation-daily-limit"
     note={`A group is a few spores that overlap. Myco curates each group in one run, and each run spends model tokens, so this is the most groups it takes on here in a day. It starts at ${CURATION_LIMIT.rule.default}.`} status={error ?? undefined} refused={error !== null}
-    control={<div className="flex items-center gap-2"><Input id="curation-daily-limit" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={shown}
+    control={<div className="flex flex-wrap items-center justify-end gap-s2"><Input id="curation-daily-limit" className="w-[96px] shrink-0" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={shown}
       onChange={event => { if (draft === null) setDraftRevision(revision); setDraft(event.target.value); }} />
       <Button pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(shown)) || Number(shown)<CURATION_LIMIT.rule.min || Number(shown)>CURATION_LIMIT.rule.max || Number(shown)===value}
         onClick={save}>Save daily limit</Button></div>} />;
