@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { BUDGET_DEFAULT_USD, type BudgetStatus } from '@goondocks/myco-shared/budget-status';
-import { runnerAgentLoginReady, storedKeyFailureTitle, type FleetRun, type RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
+import { runnerAgentLoginReady, runnerFallbackWords, storedKeyFailureTitle, type FleetRun, type RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import { agoWords, dayWords } from '@goondocks/myco-shared/time-words';
 import { ActionLink, Button, CommandBlock, ErrorState, Input, LoadingState, ShowMore, StatusChip, Switch, type Tone } from '../../../design';
 import { RUNNERS_KEY, useAgentPayers, type AgentPayersAnswer, type FleetAnswer } from '../../../hooks/use-fleet';
@@ -168,7 +168,7 @@ export function lastRunWords(runner: Pick<RunnerFleetRecord, 'busy' | 'lastCompl
  * How a runner is set to pay for the agent it uses for learning, and whether it can use that agent now, from the
  * runner's own reported readiness. What the server could not say reads as unknown.
  */
-export function payWords(runner: Pick<RunnerFleetRecord, 'id' | 'offers' | 'credentialChoices' | 'storedKeyFailures'>, payers: AgentPayersAnswer | undefined, storedUsable: Readonly<Record<string, boolean>> | undefined): string {
+export function payWords(runner: Pick<RunnerFleetRecord, 'id' | 'offers' | 'credentialChoices' | 'storedKeyFailures' | 'fallbackNotices'>, payers: AgentPayersAnswer | undefined, storedUsable: Readonly<Record<string, boolean>> | undefined): string {
   const today = payers?.today.find((entry) => entry.id === runner.id);
   const agent = today?.agent ?? runner.offers?.find((offer) => runnerAgentLoginReady(offer, runner.credentialChoices, storedUsable))?.id ?? null;
   if (agent === null) return runner.offers === null ? 'Which agent it can use is unknown' : 'No agent it can use now';
@@ -176,13 +176,17 @@ export function payWords(runner: Pick<RunnerFleetRecord, 'id' | 'offers' | 'cred
   const choices = runner.credentialChoices ?? {};
   const choice = Object.hasOwn(choices, agent) ? choices[agent]! : 'own';
   const set = choice === null ? `Who pays for ${label} needs choosing again`
-    : choice === 'own' ? `Set to pay for ${label} with its own sign-in` : `Set to pay for ${label} with the stored key`;
+    : choice === 'own' ? `Set to pay for ${label} with its own sign-in`
+      : choice === 'stored' ? `Set to pay for ${label} with the stored key`
+        : `Set to pay for ${label} with the stored key first, then its own sign-in`;
+  const fallback = runner.fallbackNotices?.find((entry) => entry.agent === agent);
+  if (fallback !== undefined) return `${set}. ${runnerFallbackWords(fallback.reason, fallback.slot)}`;
   if (runner.offers === null) return `${set}; whether it can use it now is unknown`;
   const offer = runner.offers.find((entry) => entry.id === agent);
   if (offer === undefined) return `${set}; ${label} is not on it now`;
   if (runnerAgentLoginReady(offer, runner.credentialChoices, storedUsable)) return `${set}, and can use it now`;
   const failure = runner.storedKeyFailures?.find((entry) => entry.agent === agent);
-  const why = choice === 'stored'
+  const why = choice !== 'own'
     ? (failure !== undefined ? storedKeyFailureTitle(failure.failure, failure.slot) : 'There is no stored key it can use')
     : offer.installed === false ? `${label} is not installed` : `It is not signed in to ${label}`;
   return `${set}, but can’t use it now. ${why}.`;

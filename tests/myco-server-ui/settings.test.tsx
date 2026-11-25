@@ -1494,6 +1494,18 @@ describe('Myco’s work', () => {
     expect(found('[data-add-runner]').textContent).toContain(`myco runner register ${window.location.origin}`);
   });
 
+  it('says a runner set to the stored key first is on its own sign-in while that key is out of credit', async () => {
+    server(base({
+      '/api/status': () => STATUS({}),
+      '/api/runners/agents': () => Response.json(payers([{ agent: 'claude-code', runners: [['rn_mini', 'homelab-mini', 'stored-first']] }], [['rn_mini', 'homelab-mini', 'claude-code']])),
+      '/api/runners': () => Response.json({ observedAt: NOW, legacyWorkers: [], queue: QUEUE, cursor: null, runners: [runner({ id: 'rn_mini', name: 'homelab-mini',
+        credentialChoices: { 'claude-code': 'stored-first' }, fallbackNotices: [{ agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW }] })] }),
+    }));
+    mount('/settings');
+    const mini = await waitFor(() => found('[data-runner-row="rn_mini"]'));
+    await waitFor(() => expect(mini.textContent).toContain('Set to pay for Claude Code with the stored key first, then its own sign-in. The Anthropic key ran out of API credit. Work continues on the runner’s own sign-in'));
+  });
+
   it('saves a typed budget against the revision it was read at, so a newer change by someone else refuses it', async () => {
     let revision = '5';
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
