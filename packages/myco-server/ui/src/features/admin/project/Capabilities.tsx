@@ -110,9 +110,9 @@ function CurationLimit({ projectId, value, revision }: { projectId: string; valu
   };
   return <SettingRow setting={CURATION_LIMIT.leaf} label="Groups curated per day" htmlFor="curation-daily-limit"
     note={`A group is a few spores that overlap. Myco curates each group in one run, and each run spends model tokens, so this is the most groups it takes on here in a day. It starts at ${CURATION_LIMIT.rule.default}.`} status={error ?? undefined} refused={error !== null}
-    control={<div className="flex flex-wrap items-center justify-end gap-s2"><Input id="curation-daily-limit" className="w-[96px] shrink-0" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={shown}
+    control={<div className="flex w-full items-center justify-end gap-s2"><Input id="curation-daily-limit" className="min-w-s12 flex-1" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={shown}
       onChange={event => { if (draft === null) setDraftRevision(revision); setDraft(event.target.value); }} />
-      <Button pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(shown)) || Number(shown)<CURATION_LIMIT.rule.min || Number(shown)>CURATION_LIMIT.rule.max || Number(shown)===value}
+      <Button className="shrink-0" pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(shown)) || Number(shown)<CURATION_LIMIT.rule.min || Number(shown)>CURATION_LIMIT.rule.max || Number(shown)===value}
         onClick={save}>Save daily limit</Button></div>} />;
 }
 
