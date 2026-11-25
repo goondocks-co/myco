@@ -143,11 +143,13 @@ use a small default weight. Weights affect placement, never test inclusion.
 New files and scenarios enter the shards automatically. Refresh slow-file and
 scenario weights from CI logs when jobs become unbalanced. Test jobs publish
 phase durations in their summaries and upload JUnit reports and logs.
-Use `npm run refresh:node-durations -- --rebaseline` to retire stale weights
-using three or more green main runs. For each file measured in every run, the
-refresh caps the old weight at 1.5 times the slowest measurement and keeps
-the new measurements as the floor. Files without that coverage keep their
-existing weight or rise to their recorded floor.
+
+`npm run refresh:node-durations` uses three green main runs by default and
+prints the planned pull request Node charge. With three or more distinct runs,
+it caps the old weight at 1.5 times the slowest measurement for files measured
+in every run. Every recorded measurement remains a floor. With fewer than
+three runs, or when a file is missing from any run, the refresh keeps the
+greater of the existing weight and the recorded floor.
 
 Aim for PR feedback within five minutes. Compare completed workflow elapsed time,
 including runner queues and the aggregate gate, rather than summing parallel job

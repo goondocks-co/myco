@@ -221,9 +221,8 @@ test('rebaselines only weights measured in every green main run', () => {
     ] }],
   })) };
   const weights = { stale: 300, partial: 160, unmeasured: 200, measured: 1 };
-  expect(mergeNodeDurationWeights(weights, workload)).toEqual({ ...weights, measured: 10 });
-  expect(mergeNodeDurationWeights(weights, workload, { rebaseline: true })).toEqual({ ...weights, stale: 150, measured: 10 });
-  expect(() => mergeNodeDurationWeights(weights, { runs: workload.runs.slice(0, 2) }, { rebaseline: true })).toThrow('three distinct CI runs');
+  expect(mergeNodeDurationWeights(weights, workload)).toEqual({ ...weights, stale: 150, measured: 10 });
+  expect(mergeNodeDurationWeights(weights, { runs: workload.runs.slice(0, 2) })).toEqual({ ...weights, measured: 10 });
 });
 
 

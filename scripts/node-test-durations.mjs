@@ -49,7 +49,11 @@ export function recordedNodeDurations(workload) {
   return weights;
 }
 
-export function mergeNodeDurationWeights(weights, workload, { rebaseline = false } = {}) {
+export function canRebaselineNodeDurations(workload) {
+  return new Set(workload.runs.map(run => run.source)).size >= REBASELINE_RUNS;
+}
+
+export function mergeNodeDurationWeights(weights, workload) {
   const recorded = recordedNodeDurations(workload);
   const merged = { ...weights };
   for (const [file, milliseconds] of Object.entries(recorded)) merged[file] = Math.max(weights[file] ?? 0, milliseconds);
@@ -66,9 +70,8 @@ export function mergeNodeDurationWeights(weights, workload, { rebaseline = false
     const carried = [...targets].reduce((sum, file) => sum + merged[file], 0);
     merged[source] = Math.max(recorded[source] ?? 0, merged[source] - carried);
   }
-  if (rebaseline) {
+  if (canRebaselineNodeDurations(workload)) {
     const samples = nodeDurationSamples(workload);
-    assert.ok(new Set(samples.map(sample => sample.source)).size >= REBASELINE_RUNS, 'Rebaselining requires three distinct CI runs');
     for (const [file, milliseconds] of Object.entries(recorded)) {
       if (samples.every(sample => sample.files[file] > 0)) {
         merged[file] = Math.min(merged[file], Math.ceil(milliseconds * REBASELINE_HEADROOM));
@@ -256,7 +259,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const workload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const target = new URL('./test-durations.json', import.meta.url);
   const durations = JSON.parse(fs.readFileSync(target, 'utf8'));
-  durations.files = mergeNodeDurationWeights(durations.files, workload, { rebaseline: process.argv.includes('--rebaseline') });
+  durations.files = mergeNodeDurationWeights(durations.files, workload);
   durations.files = Object.fromEntries(Object.entries(durations.files).sort(([left], [right]) => left.localeCompare(right)));
   const provenance = new URL('./test-duration-sources.json', import.meta.url);
   const sources = JSON.parse(fs.readFileSync(provenance, 'utf8'));
