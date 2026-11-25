@@ -141,10 +141,9 @@ describe('members', () => {
     expect(list.textContent).toContain('Ada · Admin · you');
     expect(list.textContent).toContain('Signs in with GitHub · 2 machines');
     expect(list.textContent).toContain('No GitHub account connected yet, so they can’t sign in here · 0 machines');
-    const menu = await personMenu('Ada');
-    expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
-    fireEvent.keyDown(menu, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    // Nothing on your own row needs a menu: you add your own machine from Machines.
+    const ada = within(list).getAllByRole('listitem').find((item) => item.querySelector('.font-medium')?.firstChild?.textContent === 'Ada')!;
+    expect(within(ada).queryByRole('button', { name: 'Manage' })).toBeNull();
     // Removing another member says their machines stay theirs (#1209).
     fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
@@ -156,17 +155,15 @@ describe('members', () => {
     mount(PEOPLE);
     fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove from this server' }));
     expect((await within(dialog).findByRole('alert')).textContent).toMatch(/nobody who can sign in/);
   });
 
   it('offers Connect GitHub only for a member with no account yet, and shows the one-time link the admin sends them', async () => {
     const { posts } = accessServer({}, { [`/api/members/${LIN}/link-github`]: () => Response.json({ key: 'k'.repeat(43), expiresAt: NOW_MS + 3_600_000 }, { status: 201 }) });
     mount(PEOPLE);
-    const ada = await personMenu('Ada');
-    expect(within(ada).queryByRole('menuitem', { name: 'Connect GitHub' })).toBeNull();
-    fireEvent.keyDown(ada, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    const list = await screen.findByRole('list', { name: 'Members' });
+    expect(within(list).queryAllByRole('button', { name: 'Connect GitHub' })).toEqual([]);
     fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Connect GitHub' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect a GitHub account to Lin' });
     expect(dialog.textContent).toMatch(/send it only to them/);
@@ -196,17 +193,17 @@ describe('invitations', () => {
     mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.invite }));
     let dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation' }));
-    await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'k'.repeat(43)}`));
-    dialog = screen.getByRole('dialog');
-    expect(dialog.textContent).toContain('On their machine, run:');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation link' }));
+    dialog = await screen.findByRole('dialog', { name: 'Invitation ready' });
+    // What the admin sends, then what the teammate runs with it.
+    expect([...dialog.querySelectorAll('code')].map((code) => code.textContent)).toEqual([`${window.location.origin}/join#${'k'.repeat(43)}`, `myco login ${window.location.origin}/join#${'k'.repeat(43)}`]);
     expect(dialog.textContent).toMatch(/shown only now/);
     expect(posts).toEqual([{ path: '/api/enrollment', body: { ttlMinutes: 60 } }]);
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: INVITE_CONTROLS.invite }));
     dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
-    expect(within(dialog).getByRole('button', { name: 'Create invitation' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Create invitation link' })).toBeTruthy();
     expect(dialog.querySelector('code')).toBeNull();
     expect(posts).toHaveLength(1);
   });
@@ -228,7 +225,7 @@ describe('invitations', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create link' }));
     await waitFor(() => expect(screen.getByRole('dialog').querySelector('code')?.textContent).toBe(`myco login ${window.location.origin}/join#${'m'.repeat(43)}`));
     dialog = screen.getByRole('dialog');
-    expect(dialog.textContent).toContain('On the machine you want to add, run:');
+    expect(dialog.textContent).toContain('On the machine to add, run:');
     expect(posts).toEqual([{ path: '/api/enrollment', body: { memberId: LIN, ttlMinutes: 1440 } }]);
     expect(REJOIN_HINT).toContain(`${INVITE_CONTROLS.page} → ${INVITE_CONTROLS.button} → ${INVITE_CONTROLS.field}`);
   });
@@ -238,7 +235,7 @@ describe('invitations', () => {
     mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.invite }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation link' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('That member has been removed.');
   });
 
@@ -269,7 +266,7 @@ describe('invitations', () => {
     mount(PEOPLE);
     fireEvent.click(within(await openMenu('More for this invitation')).getByRole('menuitem', { name: 'Withdraw' }));
     const dialog = await screen.findByRole('dialog', { name: 'Withdraw this invitation?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Withdraw' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Withdraw invitation' }));
     await waitFor(() => expect(posts).toEqual([{ path: '/api/enrollment/en_1/revoke', body: undefined }]));
   });
 });
@@ -315,7 +312,7 @@ describe('machines', () => {
     expect(within(dialog).getByText('None: only project and temporary folders.')).toBeTruthy();
     fireEvent.change(within(dialog).getByLabelText('Prompt file folder to add'), { target: { value: '~/notes/plans' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save folders' }));
     await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.prompt_file_roots', body: { value: ['~/notes/plans'] } }]));
   });
 
@@ -351,7 +348,7 @@ describe('machines', () => {
     fireEvent.change(within(captured).getByLabelText('Folder to capture'), { target: { value: '~/work' } });
     fireEvent.click(within(captured).getByRole('button', { name: 'Add' }));
     fireEvent.click(within(captured).getByRole('button', { name: 'Remove ~/Repos' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save folders' }));
     await waitFor(() => expect(puts).toEqual([{ path: '/api/machines/ada_5a2d54af/settings/capture.auto_join_roots', body: { value: ['~/work'] } }]));
     fireEvent.click(within(captured).getByRole('button', { name: 'Remove ~/work' }));
     expect(within(captured).getByText('None: every repository waits in Needs you until it’s connected.')).toBeTruthy();
@@ -387,12 +384,12 @@ describe('machines', () => {
     const connections = within(dialog).getByRole('region', { name: 'Connected repositories' });
     expect(connections.textContent).toContain('1 repository');
     fireEvent.click(within(connections).getByRole('button', { name: 'At next session start' }));
-    expect(connections.textContent).toContain('1 repository is configured from Needs you.');
-    expect(connections.textContent).toContain('Myco currently uses 1 cached connection.');
+    expect(connections.textContent).toContain('1 repository was connected from Needs you.');
+    expect(connections.textContent).toContain('Until its next session start, this machine still uses its earlier list of 1 repository.');
     expect(connections.querySelector('pre')?.textContent).toContain('proj_usable');
     expect(connections.querySelector('pre')?.textContent).not.toContain('broken');
     fireEvent.click(within(connections).getByRole('button', { name: 'At next session start' }));
-    fireEvent.click(within(connections).getByRole('button', { name: 'Currently applied connections' }));
+    fireEvent.click(within(connections).getByRole('button', { name: 'What it uses now' }));
     expect(connections.querySelector('pre')?.textContent).toContain('proj_old');
     expect(within(connections).getByRole('button', { name: 'Remove entries that no longer apply' })).toBeTruthy();
     fireEvent.click(within(plans).getByRole('button', { name: 'Clear the stored value' }));
@@ -427,14 +424,14 @@ describe('machines', () => {
     fireEvent.click(within(captured).getByRole('button', { name: 'Add' }));
     fireEvent.change(within(planned).getByLabelText('Plan folder to add'), { target: { value: '~/notes/plans' } });
     fireEvent.click(within(planned).getByRole('button', { name: 'Add' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save folders' }));
     await waitFor(() => expect(puts).toEqual(['capture.auto_join_roots', 'capture.plan_dirs']));
     expect((await within(captured).findByRole('alert')).textContent).toBe('Not saved: The server could not accept those folders.');
     await waitFor(() => expect(within(planned).getByRole('list', { name: 'Extra plan folders' }).textContent).toBe('~/notes/plans'));
     expect(within(planned).queryByRole('alert')).toBeNull();
     // The refused list keeps what the viewer typed, ready to change and save again.
     expect(within(captured).getByRole('list', { name: 'Folders it captures' }).textContent).toBe('~/Repos~/work');
-    expect((within(dialog).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(dialog).getByRole('button', { name: 'Save folders' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('lists an expired machine as a former one, closed until asked for, and offers it no Stop', async () => {
@@ -611,7 +608,7 @@ describe('Myco\'s runs', () => {
     mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: /^1 run, 1 still signed in/ }));
     fireEvent.click(within(await openMenu('More for this run')).getByRole('menuitem', { name: 'Stop' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop this run’s sign-in?' })).getByRole('button', { name: 'Stop' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop this run’s sign-in?' })).getByRole('button', { name: 'Stop its sign-in' }));
     await waitFor(() => expect(posts).toEqual([{ path: '/api/credentials/mt_runaaaaaaaaaa/revoke', body: undefined }]));
   });
 });

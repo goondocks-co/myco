@@ -180,7 +180,7 @@ function PaymentRow({ runner, payers, payersRead, storedUsable }: {
         control={payersRead.admin ? (
           <div className="flex flex-wrap items-center justify-end gap-s2">
             <ActionLink to={MODELS_AGENT}>Change for all runners</ActionLink>
-            <Button size="sm" onClick={() => setApart(true)}>{`Set ${runner.name} apart`}</Button>
+            <Button size="sm" onClick={() => setApart(true)}>{`Choose for ${runner.name} only`}</Button>
           </div>
         ) : <span />}
       />
@@ -207,7 +207,7 @@ function SetApartDialog({ runner, open, onClose, storedUsable }: { runner: Runne
   const agents = [...new Set([...(runner.offers?.map((offer) => offer.id) ?? []), ...Object.keys(runner.credentialChoices ?? {})])];
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
-      <DialogContent title={`Set ${runner.name} apart`} description={`Who pays for each agent on ${runner.name} alone. Changing it for all runners on Settings › Models sets ${runner.name} back to the same as every runner.`}>
+      <DialogContent title={`Who pays for ${runner.name}’s agents`} description={`Choose who pays for each agent on ${runner.name} only; each choice saves as you make it. Changing who pays for every runner, on Settings › Models, sets ${runner.name} back to match the rest.`}>
         <div className="flex flex-col">
           {agents.length === 0 && <p className="t-small text-muted">It reported no agents.</p>}
           {agents.map((agent) => <AgentSignIn key={agent} runner={runner} agent={agent} storedAvailable={storedUsable?.[agent] === true} />)}

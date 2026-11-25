@@ -15,10 +15,15 @@ export const VALIDITY_OPTIONS = [
 
 export const DEFAULT_VALIDITY = '60';
 
+/** The invitation link an admin sends: it opens a page with the command to run, and `myco login` takes it as it is. */
+export function joinLink(key: string, origin: string = window.location.origin): string {
+  if (!ENROLLMENT_KEY_PATTERN.test(key)) throw new Error('This link does not carry an invitation key');
+  return `${new URL(origin).origin}${JOIN_PATH}#${key}`;
+}
+
 /** The command that redeems an invitation, run on the machine joining. */
 export function loginCommand(key: string, origin: string = window.location.origin): string {
-  if (!ENROLLMENT_KEY_PATTERN.test(key)) throw new Error('This link does not carry an invitation key');
-  return commandLine(['myco', 'login', `${new URL(origin).origin}${JOIN_PATH}#${key}`], 'portable');
+  return commandLine(['myco', 'login', joinLink(key, origin)], 'portable');
 }
 
 /** When an open invitation stops working. The list holds only unexpired ones, so a past one has lapsed since it loaded. */

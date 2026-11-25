@@ -3,7 +3,7 @@ import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import { Button, CommandBlock, Dialog, DialogContent, DialogFooter, Select } from '../../../design';
 import { refusalText, useAccessActions } from '../../../hooks/use-access';
 import { formatDateTime } from '../../../lib/format';
-import { DEFAULT_VALIDITY, loginCommand, VALIDITY_OPTIONS } from './words';
+import { DEFAULT_VALIDITY, joinLink, loginCommand, VALIDITY_OPTIONS } from './words';
 
 /** What the dialog makes: an invitation for a new member, or a machine for a member already here. */
 export type InviteKind = 'invite' | 'machine';
@@ -22,17 +22,20 @@ export interface InviteDialogProps {
   people: ReadonlyArray<{ id: string; name: string }>;
 }
 
-const WORDS: Record<InviteKind, { title: string; description: string; caption: string; create: string }> = {
+/** Each kind's words, before the link is made and once it is: what the admin sends, and what happens with it, in order. */
+const WORDS: Record<InviteKind, { title: string; description: string; ready: string; caption: string; create: string }> = {
   invite: {
     title: INVITE_CONTROLS.invite,
-    description: 'Creates a one-time link for someone new. Whoever runs it joins this server as a member, with the machine they run it on.',
-    caption: 'On their machine, run:',
-    create: 'Create invitation',
+    description: 'You make a one-time link and send it to your teammate. On the machine where they use their coding agents, they run myco login with it. That machine joins this server, and they become a member.',
+    ready: 'Send this link to your teammate. Opening it shows them the command below, which they run on the machine where they use their coding agents. That machine then joins this server, and they become a member.',
+    caption: 'They run, on that machine:',
+    create: 'Create invitation link',
   },
   machine: {
     title: INVITE_CONTROLS.button,
-    description: 'Creates a one-time link that signs a machine in for a member already here, including a machine of theirs whose sign-in ended.',
-    caption: 'On the machine you want to add, run:',
+    description: 'You make a one-time link for someone already here. On the machine to add, they run myco login with it, and that machine signs in as theirs. It also brings back a machine whose sign-in ended.',
+    ready: 'Run this on the machine to add, or send it to the person it’s for. The machine signs in as theirs.',
+    caption: 'On the machine to add, run:',
     create: 'Create link',
   },
 };
@@ -70,10 +73,12 @@ function InviteBody({ target, people, onClose }: { target: InviteTarget; people:
 
   if (minted !== null) {
     return (
-      <DialogContent title={words.title} description={words.description}>
+      <DialogContent title={target.kind === 'invite' ? 'Invitation ready' : 'Link ready'} description={words.ready}>
+        {target.kind === 'invite' && <CommandBlock caption="The link to send:" command={joinLink(minted.key)} />}
         <CommandBlock caption={words.caption} command={loginCommand(minted.key)} />
         <p className="t-small text-muted" data-invite-note="">
-          It works once, until {formatDateTime(minted.expiresAt)}, and is shown only now: keep it private until it has been used.
+          It works once, until {formatDateTime(minted.expiresAt)}, and is shown only now. Anyone holding it can join, so send it only to them.
+          {target.kind === 'invite' && ' Once they’ve joined, choose Connect GitHub on their row so they can sign in to this page too.'}
         </p>
         <DialogFooter>
           <Button variant="primary" onClick={onClose}>Done</Button>

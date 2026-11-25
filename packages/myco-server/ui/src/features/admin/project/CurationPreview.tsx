@@ -50,7 +50,7 @@ export function CurationPreview({ projectId }: { projectId: string }) {
   const [shown, setShown] = useState<Shown | null>(null);
   // One ask at a time: set before the request goes out, so a second click in the same tick sends nothing.
   const asking = useRef(false);
-  const label = from === null ? 'Preview a group' : from.found ? 'Preview the next group' : 'Look further';
+  const label = from === null ? 'Preview one group' : from.found ? 'Preview the next group' : 'Look further';
   const start = () => {
     if (asking.current) return;
     asking.current = true;

@@ -380,7 +380,7 @@ test.describe('People and machines and the admin pages, as a member', () => {
         await expect(captured.getByRole('textbox', { name: 'Folder to capture' })).toBeVisible();
         await expect(dialog.getByRole('region', { name: 'Extra plan folders' })).toBeVisible();
         const connections = dialog.getByRole('region', { name: 'Connected repositories' });
-        await expect(connections).toContainText('1 repository is configured');
+        await expect(connections).toContainText('1 repository was connected');
         await expect(connections.getByRole('button', { name: 'Remove entries that no longer apply' })).toBeVisible();
         await expect(connections.locator('pre')).toHaveCount(0);
         await connections.getByRole('button', { name: 'At next session start' }).click();

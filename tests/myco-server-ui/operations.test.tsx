@@ -270,7 +270,7 @@ describe('automatic recovery under Backups', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(seen.requested).not.toContain('POST /api/recovery/exports/forget-unsettled');
     fireEvent.click(within(await openMenu('More for automatic recovery', offered)).getByRole('menuitem', { name: 'Forget the earlier export' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Forget it' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Forget the earlier export' }));
     expect((await within(offered).findByText(/attempt 3 requested is forgotten/)).textContent).toContain('the next attempt starts its own');
     expect(seen.requested).toContain('POST /api/recovery/exports/forget-unsettled');
   });

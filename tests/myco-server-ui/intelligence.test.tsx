@@ -923,7 +923,7 @@ describe('reviewed run evidence', () => {
       const open = await openReviewed({ run: { task }, source: { branch: 'audit-source', commit: 'a'.repeat(40) } });
       const read = within(open).getByRole('region', { name: 'What it read' });
       expect(read.textContent).toContain('Which files it read isn’t recorded: Myco kept no step log for this run. This doesn’t mean it read none.');
-      expect(read.textContent).toContain('It worked from audit-source @ aaaaaaa.');
+      expect(read.textContent).toContain('It worked from the audit-source branch, at commit aaaaaaa.');
       expect(within(open).queryByRole('region', { name: 'Sessions it read' })).toBeNull();
     });
   }

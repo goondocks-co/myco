@@ -80,9 +80,9 @@ describe('Projects', () => {
     mount('/projects');
     fireEvent.click(within(await openMenu('Live')).getByRole('menuitem', { name: 'Archive' }));
     expect(await screen.findByText('Archive Live?')).toBeTruthy();
-    expect(screen.getByText(/Capture from every agent stops until you unarchive/)).toBeTruthy();
+    expect(screen.getByText(/Capture from every agent stops, and Myco does no work here, until you unarchive it/)).toBeTruthy();
     expect(posts).toEqual([]);
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive project' }));
     await screen.findByRole('list', { name: 'Projects' });
     expect(posts).toEqual(['/api/projects/live/archive']);
   });
@@ -149,7 +149,7 @@ describe('an archived project\'s home and navigation', () => {
     const input = within(dialog).getByLabelText('Name') as HTMLInputElement;
     expect(input.value).toBe('Live');
     fireEvent.change(input, { target: { value: '  Myco  ' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename project' }));
     expect(await within(await screen.findByRole('list', { name: 'Projects' })).findByText('Myco')).toBeTruthy();
     expect(patches).toEqual([{ path: '/api/projects/live', body: { name: 'Myco' } }]);
     expect(screen.queryByRole('dialog')).toBeNull();

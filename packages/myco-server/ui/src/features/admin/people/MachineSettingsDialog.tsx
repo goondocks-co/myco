@@ -46,7 +46,7 @@ const FIELDS: readonly FolderField[] = [
   {
     leaf: 'capture.prompt_file_roots',
     title: 'Extra prompt file folders',
-    note: 'Myco may send openings of prose files named in prompts here to your Myco server and AI provider to choose memory. Use ~/ followed by a folder. Project and temporary folders already qualify. No extra folders are approved by default.',
+    note: 'When a prompt names a text file in one of these folders, Myco may read the start of it and send that to your Myco server and AI provider, to pick memory that fits. Files in the project’s own folder and in temporary folders already count; no other folder does until you add it. Write each as ~/ and a folder.',
     none: 'None: only project and temporary folders.',
     addLabel: 'Prompt file folder to add',
     placeholder: '~/tasks',
@@ -217,7 +217,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
   const cachedCount = Object.keys((connections?.effective ?? connections?.appliedValue ?? {}) as object).length;
 
   return (
-    <DialogContent title={`Settings for ${machine.name}`} description="This machine picks up a change at its next session start.">
+    <DialogContent title={`Settings for ${machine.name}`} description="Which folders this machine captures and reads. It picks up a change the next time an agent session starts on it.">
       {settings.error ? <p role="alert" className="t-small text-bad">{refusalWords(settings.error)}</p> : (
         <div className="flex flex-col gap-s5">
           {fields.map(({ field, stored }) => (
@@ -233,12 +233,12 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
           ))}
           {connections && <section aria-label="Connected repositories" className="flex flex-col gap-s2">
             <span className="t-body font-medium text-ink">Connected repositories</span>
-            <p className="t-small text-muted">{connectedCount} {connectedCount === 1 ? 'repository is' : 'repositories are'} configured from Needs you.</p>
+            <p className="t-small text-muted">{connectedCount} {connectedCount === 1 ? 'repository was' : 'repositories were'} connected from Needs you.</p>
             {connections.reason && <p className="t-small text-muted">{connections.reason}</p>}
-            {connections.application === 'pending' && <p className="t-small text-muted">Myco currently uses {cachedCount} cached {cachedCount === 1 ? 'connection' : 'connections'}.</p>}
+            {connections.application === 'pending' && <p className="t-small text-muted">Until its next session start, this machine still uses its earlier list of {cachedCount} {cachedCount === 1 ? 'repository' : 'repositories'}.</p>}
             {connections.configured && <StoredValue value={connections.stored ?? connections.value} />}
             <StoredValue summary="At next session start" value={connections.nextEffective ?? connections.effective ?? connections.value} />
-            {connections.application !== 'unreported' && connections.appliedValue !== undefined && <StoredValue summary="Currently applied connections" value={connections.effective ?? connections.appliedValue} />}
+            {connections.application !== 'unreported' && connections.appliedValue !== undefined && <StoredValue summary="What it uses now" value={connections.effective ?? connections.appliedValue} />}
             {(connections.nextSource ?? connections.source) === 'invalid' && <Button variant="ghost" pending={clear.isPending} onClick={() => clear.mutate(connections.leaf)}>Remove entries that no longer apply</Button>}
           </section>}
           {dismissed && <Dismissed machineId={machine.id} leaf={dismissed} />}
@@ -251,7 +251,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
               pending={save.isPending}
               onClick={() => save.mutate(changed.map(({ field, stored }) => ({ leaf: field.leaf, value: foldersOf(field.leaf, stored) })))}
             >
-              Save
+              Save folders
             </Button>
           </DialogFooter>
         </div>

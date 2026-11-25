@@ -60,11 +60,11 @@ it('retains a newer folder edit while the submitted revision settles', async () 
   render(<MachineSettingsDialog machine={{ id: 'mac', name: 'Local' }} onClose={() => {}} />, { wrapper });
   const add = async (folder: string) => { fireEvent.change(await screen.findByRole('textbox', { name: 'Plan folder to add' }), { target: { value: folder } }); fireEvent.click(screen.getByRole('button', { name: 'Add' })); };
   await add('plans/one');
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Save folders' }));
   await waitFor(() => expect(finish).toBeDefined());
   await add('plans/two');
   await act(async () => finish());
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(false));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save folders' }).hasAttribute('disabled')).toBe(false));
   expect(screen.getByRole('button', { name: 'Remove plans/two' })).toBeTruthy();
 });
 

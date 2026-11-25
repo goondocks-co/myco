@@ -109,7 +109,7 @@ describe('a runner’s machine page', () => {
     const writes = mount('member', RUNNER, { route: MACHINE });
     await verdictOf('Online');
     expect((screen.getByRole('switch', { name: 'homelab-mini runs Myco’s work' }) as HTMLButtonElement).disabled).toBe(true);
-    for (const name of ['Update homelab-mini now', 'Set homelab-mini apart', 'Remove homelab-mini…', 'More for homelab-mini']) expect(screen.queryByRole('button', { name })).toBeNull();
+    for (const name of ['Update homelab-mini now', 'Choose for homelab-mini only', 'Remove homelab-mini…', 'More for homelab-mini']) expect(screen.queryByRole('button', { name })).toBeNull();
     expect(screen.getByText('Which agent it would use and who pays are shown to an admin.')).toBeTruthy();
     expect(writes).toEqual([]);
   });
@@ -138,7 +138,7 @@ describe('a runner’s machine page', () => {
     await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/pause'));
     fireEvent.click(screen.getByRole('button', { name: 'Remove homelab-mini…' }));
     const dialog = await screen.findByRole('dialog', { name: 'Remove homelab-mini as a runner?' });
-    expect(dialog.textContent).toContain('the process on the machine isn’t ended');
+    expect(dialog.textContent).toContain('the program on the machine keeps running until you stop it there');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove homelab-mini' }));
     await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/remove'));
     expect(writes.filter((write) => write.includes('/api/machines/'))).toEqual([]);
@@ -231,7 +231,7 @@ describe('a runner’s machine page', () => {
 });
 
 describe('setting one machine apart', () => {
-  const apart = async () => { fireEvent.click(await screen.findByRole('button', { name: 'Set homelab-mini apart' })); return screen.findByRole('dialog'); };
+  const apart = async () => { fireEvent.click(await screen.findByRole('button', { name: 'Choose for homelab-mini only' })); return screen.findByRole('dialog'); };
 
   it('saves who pays for one agent on this runner alone, with the stored key offered only when one is usable', async () => {
     const writes = mount('admin', RUNNER, { route: MACHINE, storedCredentials: { 'claude-code': true } });

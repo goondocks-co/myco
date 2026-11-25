@@ -36,8 +36,8 @@ describe('release tracking in project settings', () => {
     const { container } = mount(<ReleaseTracking projectId="x" />);
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
     expect(screen.getByTestId('release-repository').textContent).toBe('https://github.com/goondocks-co/myco');
-    expect(container.textContent).toContain('packages/myco/ → refs/tags/myco/v*');
-    expect(screen.getByTestId('release-check').textContent).toContain('48 checked · 3 changed · 2 unknown · 0 not reached');
+    expect(container.textContent).toContain('packages/myco/ → myco/v*');
+    expect(screen.getByTestId('release-check').textContent).toContain('Checked 48 sessions; 3 release states changed, and Myco couldn’t tell for 2.');
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/projects/x/release-provenance/check' }]));
   });
@@ -51,19 +51,19 @@ describe('release tracking in project settings', () => {
       ? Response.json({ target: 'bun' })
       : Response.json({ releaseProvenance: reads++ === 0 ? requested : finished })) as typeof fetch;
     mount(<ReleaseTracking projectId="x" />);
-    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('check requested'));
-    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('0 checked'), { timeout: RELEASE_CHECK_REFRESH_MS * 2 });
-    expect(screen.getByTestId('release-check').textContent).not.toContain('check requested');
+    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('Another check is requested.'));
+    await waitFor(() => expect(screen.getByTestId('release-check').textContent).toContain('Checked 0 sessions'), { timeout: RELEASE_CHECK_REFRESH_MS * 2 });
+    expect(screen.getByTestId('release-check').textContent).not.toContain('Another check is requested.');
     expect(checkPending(finished.check)).toBe(false);
     expect(checkPending({ ...finished.check!, finishedAt: null })).toBe(true);
     expect(reads).toBe(2);
   });
 
-  it('names a failed check in the reader’s words, including a refusal of the App’s access', () => {
-    const stopped = (failure: string) => checkSummary(row({ check: { ...row().check!, status: 'unavailable', failure,
-      counts: { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 1, deferred: 4 } } }).check);
-    expect(stopped('rate_limited')).toContain('stopped: GitHub rate limit reached; it resets within the hour. Earlier states are kept.');
-    expect(stopped('account_not_approved')).toContain('stopped: the account that installed the App is not approved here.');
+  it('says what a stopped check means for the sessions it did not reach, and what happens next', () => {
+    const stopped = (failure: string) => checkSummary(row({ check: { ...row().check!, status: 'partial', failure, lookups: 50,
+      counts: { checked: 4, changed: 0, unchanged: 3, unknown: 1, unavailable: 1, deferred: 196 } } }).check);
+    expect(stopped('budget_exhausted')).toContain('Checked 4 sessions; no release state changed, and Myco couldn’t tell for 1. At least 197 sessions weren’t checked because this check used all 50 of its GitHub lookups; the next check carries on.');
+    expect(stopped('rate_limited')).toContain('At least 197 sessions weren’t checked because of this: GitHub rate limit reached; it resets within the hour. Sessions it didn’t reach keep their earlier state.');
     expect(stopped('repository_not_connected')).toContain('no repository is connected; connect one under Repository');
     expect(checkSummary(null)).toBe('Not checked yet');
   });

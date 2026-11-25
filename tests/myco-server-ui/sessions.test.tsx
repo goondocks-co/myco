@@ -518,7 +518,7 @@ describe('the session reading page', () => {
     for (const words of ['Project X', 'Claude Code', 'Ada’s studio Mac', 'Ada', 'main', '/repo', 'Released · v1.2.0', '1 turn · 1 prompt entry · 3 tool calls · 1 reply']) expect(factText).toContain(words);
     expect(within(about).getByRole('button', { name: 'Copy session id' })).toBeTruthy();
     expect(factText).not.toContain('s1');
-    expect(await within(about).findByText('Myco sent the session start block')).toBeTruthy();
+    expect(await within(about).findByText('Myco gave this session the project’s instructions when it started')).toBeTruthy();
     const raw = within(about).getByRole('region', { name: 'Raw data' });
     expect(within(raw).getByRole('button', { name: 'Raw data' }).getAttribute('aria-expanded')).toBe('false');
     expect(rawIdsInPage()).toEqual([]);
@@ -1290,7 +1290,7 @@ describe('the session reading page', () => {
     }));
     mount('/p/x/sessions/s1');
     const parent = await screen.findByTestId(`turn-${P1}`);
-    expect(within(parent).queryByText('Myco sent the session start block')).toBeNull();
+    expect(within(parent).queryByText('Myco gave this session the project’s instructions when it started')).toBeNull();
     expect(await within(parent).findByText('Ran /fork')).toBeTruthy();
     expect(within(parent).queryByRole('button', { name: 'Ran /fork' })).toBeNull();
     expect(within(parent).queryByText('/fork')).toBeNull();
@@ -1319,9 +1319,10 @@ describe('the session reading page', () => {
     expect(requested).not.toContain('/api/projects/x/sessions/s1/turns/' + P3);
     fireEvent.click(screen.getByRole('button', { name: 'About this session' }));
     const about = await screen.findByRole('dialog', { name: 'About this session' });
-    await within(about).findByText('Myco sent the session start block');
+    await within(about).findByText('Myco gave this session the project’s instructions when it started');
     expect(within(about).getByText('Read × 3')).toBeTruthy();
-    expect(within(about).getByText('Not recorded, including sub-agents')).toBeTruthy();
+    fireEvent.click(within(about).getByRole('button', { name: 'Technical details' }));
+    expect(within(about).getByText('This agent didn’t report how many it used')).toBeTruthy();
     expect(within(about).getByText('Wall time')).toBeTruthy();
   });
 

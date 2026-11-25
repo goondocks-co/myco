@@ -45,8 +45,6 @@ const SHARED_SRC = path.join(REPO_ROOT, 'packages', 'myco-shared', 'src');
 const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
   'features/admin/health/words.ts:myco server backup-credential --target cloudflare':
     'The exact operator command is required to add the missing backup access key',
-  'features/admin/workers.ts:Legacy worker — uses member credential':
-    'The migration inventory must name the credential class so the owner can distinguish legacy execution from runner enrollment',
   'features/admin/settings/catalogue.ts:agent.harnesses. … .credential':
     'A setting key assembled for the API, never shown as page copy',
   'myco-shared/prompt-identity.ts:harness-key':

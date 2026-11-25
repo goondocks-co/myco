@@ -158,7 +158,7 @@ async function expectReadingPage(page: Page, viewport: ViewportName, role: 'admi
 
   // The facts, what came of the session and the raw data sit in a panel.
   const about = await openAbout(page);
-  await expect(about.locator('[data-session-context]').getByText('Myco sent the session start block')).toBeVisible();
+  await expect(about.locator('[data-session-context]').getByText('Myco gave this session the project’s instructions when it started')).toBeVisible();
   const outcome = about.locator('[data-outcome]');
   // Two spores Myco's runs wrote, and the one an agent saved later to replace one of them, listed on the Spores tab.
   await expect(outcome.getByRole('link', { name: '3 spores from this session →' })).toHaveAttribute('href', /\/sessions\/[^/?]+\?tab=spores$/);

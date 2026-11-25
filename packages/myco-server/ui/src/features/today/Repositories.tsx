@@ -193,7 +193,7 @@ function ConnectBody({ item, viewerId, projects, onClose, onConnected }: {
     connect.mutate({ item, projectId: choice === MYCO_CHOOSES ? null : choice }, { onSuccess: () => { onConnected(item); onClose(); } });
   };
   return (
-    <DialogContent title={`Connect ${item.label}`} description={`${machine.charAt(0).toUpperCase()}${machine.slice(1)} starts capturing it at the next agent session there, and sends what it kept.`}>
+    <DialogContent title={`Connect ${item.label}`} description={`${machine.charAt(0).toUpperCase()}${machine.slice(1)} starts capturing it at the next agent session there, and sends any work it has been holding back for it.`}>
       <form className="flex flex-col gap-s3" onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <div className="flex flex-col gap-s2">
           <span className="t-body font-medium text-ink">Project</span>
@@ -202,7 +202,7 @@ function ConnectBody({ item, viewerId, projects, onClose, onConnected }: {
         {connect.error !== null && <p role="alert" className="t-small text-bad">{refusalWords(connect.error, item, viewerId)}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" pending={connect.isPending} disabled={choice === ''}>Connect</Button>
+          <Button type="submit" variant="primary" pending={connect.isPending} disabled={choice === ''}>Connect repository</Button>
         </DialogFooter>
       </form>
     </DialogContent>

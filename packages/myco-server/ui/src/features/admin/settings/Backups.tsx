@@ -72,7 +72,7 @@ export function BackupsSection() {
       nested
       id={BACKUP_COPIES_ANCHOR}
       title="Backups made here"
-      description="A backup made here holds up to 64 MiB of records for an additive restore. It reads records while the server runs, so it is not a consistent snapshot, and it leaves out attachment and transcript files, settings and secrets."
+      description="A backup made here brings back records that were deleted or lost: restoring it adds only the records this server is missing and changes nothing it still holds. To put the whole server back as it was at an earlier moment, use the recovery described below instead. A backup holds up to 64 MiB of records. It is read while the server keeps working, so records written during it may be partly in, and it leaves out attachment and transcript files, settings and secrets."
       actions={<Button variant="primary" disabled={!backupPermission.allowed} pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
     >
       {!backupPermission.allowed && <p className="t-small text-muted">{backupPermission.reason ?? 'Only an admin can manage backups.'}</p>}
@@ -168,8 +168,8 @@ export function BackupsSection() {
         open={confirming !== null}
         onOpenChange={(open) => { if (!open) { setConfirming(null); backups.restore.reset(); } }}
         title={confirming === null ? 'Restore this backup?' : `Restore the backup from ${backupDate(confirming.preview.header.createdAt)}?`}
-        description="Records this server already holds stay exactly as they are; only missing records are added."
-        confirmLabel="Restore"
+        description="Only the records this server is missing are added. Records it already holds stay exactly as they are, and nothing is deleted."
+        confirmLabel="Add the missing records"
         tone="primary"
         pending={backups.restore.isPending}
         confirmDisabled={confirming?.preview.restore?.allowed !== true}
@@ -313,7 +313,7 @@ function ForgetUnsettledExport({ forgettableAt, now }: { forgettableAt: number |
         onOpenChange={setConfirming}
         title="Forget the earlier export?"
         description="Only do this if that export is no longer running. The next attempt then starts an export of its own."
-        confirmLabel="Forget it"
+        confirmLabel="Forget the earlier export"
         pending={forget.isPending}
         error={forget.error === null ? null : `It was not forgotten: ${errorWords(forget.error).title.toLowerCase()}.`}
         onConfirm={() => forget.mutate(undefined, { onSuccess: () => setConfirming(false) })}

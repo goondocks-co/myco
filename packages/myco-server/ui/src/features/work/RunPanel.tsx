@@ -1,7 +1,7 @@
 import { paidByWords, runnerFallbackReasonWords } from '@goondocks/myco-shared/runner-fleet';
 import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
-import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
+import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, errorWords, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
 import { useTaskNames } from '../../hooks/use-tasks';
 import { useIsAdmin } from '../../hooks/use-me';
@@ -139,11 +139,12 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         open={confirmCancel}
         onOpenChange={setConfirmCancel}
         title="Cancel this run?"
-        description="The run stops. What it already saved stays."
+        description="The run stops now and doesn’t finish its work. What it already saved stays."
         confirmLabel="Cancel run"
+        cancelLabel="Keep it running"
         confirmDisabled={!canCancel}
         pending={cancel.isPending}
-        error={cancel.error instanceof ApiError ? cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.' : 'The server refused to cancel this run.' : cancel.error ? 'Could not reach the server.' : null}
+        error={cancel.error instanceof ApiError ? cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.' : `The server didn’t cancel this run: ${errorWords(cancel.error).title.toLowerCase()}. It is still running.` : cancel.error ? 'Could not reach the server. The run is still running.' : null}
         onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, { onSuccess: () => setConfirmCancel(false), onError: (error) => {
           if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
         } }); }}
@@ -232,7 +233,7 @@ function WhatItRead({ answer, projectId, now, latest }: { answer: RunDetailAnswe
       {files && <FilesReadPart evidence={latest} />}
       {repositoryTask && (
         <p className="t-small text-muted" data-run-source="">
-          {answer.source === null ? "The source it read wasn't recorded." : `It worked from ${answer.source.branch} @ ${answer.source.commit.slice(0, 7)}.`}
+          {answer.source === null ? "The source it read wasn't recorded." : `It worked from the ${answer.source.branch} branch, at commit ${answer.source.commit.slice(0, 7)}.`}
         </p>
       )}
     </section>
@@ -292,7 +293,7 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
   if (kind === 'map' && (run.result === 'produced' || run.result === 'failed_with_output')) {
     return (
       <div className="flex flex-col gap-s1 t-small text-ink-2">
-        <p>{answer.source === null ? 'A code map.' : 'A code map from the pinned source.'}</p>
+        <p>{answer.source === null ? 'A code map.' : 'A code map of the commit it worked from.'}</p>
         {answer.map?.replaced && <p className="text-muted">A newer map has replaced this run’s map.</p>}
         <OnwardLink to={projectPath(projectId, CODE_MAP_SUFFIX)}>Open the current code map</OnwardLink>
       </div>
@@ -341,14 +342,14 @@ function TechnicalDetails({ answer, startedBy, took }: {
             <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
             <FactRow term={run.retryKeyReason === undefined ? 'Started by' : 'Queued again by'}>{run.retryKeyReason !== undefined ? 'Myco' : startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}
-            {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Queue wait">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
+            {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Waited to start">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
             {run.completedAt !== null && <FactRow term="Finished">{dateWords(run.completedAt)}</FactRow>}
             {run.startedAt !== null && <FactRow term="Started">{new Date(run.startedAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</FactRow>}
-            {took !== null && <FactRow term="Execution">{took}</FactRow>}
+            {took !== null && <FactRow term="Ran for">{took}</FactRow>}
             <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}{run.costSource === 'partial' && ' (partial; some request usage is unknown)'}</FactRow>
             <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}{run.costSource === 'partial' && '. Includes only requests with reported usage; other request costs are unknown.'}</span></>}</FactRow>
           </FactsPanel>
-          {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}
+          {answer.source !== null ? <p className="break-words t-small text-ink-2">Code it worked from: the {answer.source.branch} branch, at commit {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Which commit it worked from wasn’t recorded for this run.</p>}
           {run.status === 'failed' && (run.error !== null || run.errorCode === 'repository_unprepared') && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>

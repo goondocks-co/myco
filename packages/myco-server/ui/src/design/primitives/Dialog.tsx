@@ -104,6 +104,8 @@ export interface ConfirmDialogProps {
   /** What the action will do and, for a paid action, what it will spend. */
   description: ReactNode;
   confirmLabel: string;
+  /** The way out without acting, where "Cancel" would read as the action itself, as in "Keep it running". */
+  cancelLabel?: string;
   /** `danger` for destructive actions, `primary` for paid or consequential ones. */
   tone?: 'danger' | 'primary';
   onConfirm: () => void;
@@ -117,7 +119,7 @@ export interface ConfirmDialogProps {
 
 /** The confirmation every destructive or paid action passes through. */
 export function ConfirmDialog({
-  open, onOpenChange, title, description, confirmLabel, tone = 'danger', onConfirm, pending = false, confirmDisabled = false, error = null, children,
+  open, onOpenChange, title, description, confirmLabel, cancelLabel = 'Cancel', tone = 'danger', onConfirm, pending = false, confirmDisabled = false, error = null, children,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
@@ -125,7 +127,7 @@ export function ConfirmDialog({
         {children}
         {error != null && error !== '' && <p role="alert" className="t-small text-bad">{error}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>{cancelLabel}</Button>
           <Button variant={tone} onClick={onConfirm} pending={pending} disabled={confirmDisabled}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogContent>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { RUNNER_PAYER_LABELS, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
-import { Button, ConfirmDialog, Input, MoreMenu } from '../../../design';
+import { Button, ConfirmDialog, errorWords, Input, MoreMenu } from '../../../design';
 import { postJson, type RunnerRow } from '../../../lib/api';
 import { harnessLabel } from '../../../lib/harness';
 import { SettingRow } from '../AdminFrame';
@@ -44,11 +44,11 @@ function RunnerControl({ runner, control, onClose }: { runner: RunnerRow; contro
       title={control === 'rename' ? `Rename ${runner.name}?` : `Replace the registration of ${runner.name}?`}
       description={control === 'rename'
         ? 'A runner’s name uses letters, numbers, dots, underscores or hyphens.'
-        : `On the machine, run myco runner register ${window.location.origin} --replace --name ${runner.name}, then enter its device code here. ${runner.name}’s current registration ends on approval, including any run it holds; that run can retry after its assignment expires. The replacement keeps ${runner.name}’s id and history, and the machine its request names becomes ${runner.name}’s machine.`}
+        : `On the machine, run myco runner register ${window.location.origin} --replace --name ${runner.name}, then enter its device code here. ${runner.name}’s current registration ends on approval, including any run it holds; that run can be tried again once its time runs out. The replacement keeps ${runner.name}’s id and history, and the machine its request names becomes ${runner.name}’s machine.`}
       confirmLabel={control === 'rename' ? 'Save name' : 'Approve replacement'}
       tone={control === 'rename' ? 'primary' : 'danger'}
       pending={change.isPending}
-      error={change.error?.message}
+      error={change.error ? `Nothing changed: ${errorWords(change.error).title.toLowerCase()}.` : null}
       confirmDisabled={control === 'rename' ? !RUNNER_NAME.test(name) : !ready}
       onConfirm={() => change.mutate()}
     >
@@ -57,7 +57,7 @@ function RunnerControl({ runner, control, onClose }: { runner: RunnerRow; contro
       </label>
       {control === 'recredential' && <div className="mt-s3 flex flex-col gap-s2 t-small text-ink-2">
         <Button size="sm" variant="secondary" disabled={!code.trim() || inspect.isPending} onClick={() => inspect.mutate(code)}>{inspect.isPending ? 'Checking…' : 'Check machine'}</Button>
-        {inspect.isError && <p role="alert" className="text-bad">{inspect.error.message}</p>}
+        {inspect.isError && <p role="alert" className="text-bad">{`That code couldn’t be checked: ${errorWords(inspect.error).title.toLowerCase()}.`}</p>}
         {preview?.code === code && <>
           <p>Request: {preview.subject === 'runner' ? `Runner named ${preview.runnerName ?? 'unnamed'}` : 'Member sign-in'}</p>
           {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <p key={agent}>{harnessLabel(agent)} paid by: {RUNNER_PAYER_LABELS[choice]}</p>)}
@@ -93,10 +93,10 @@ export function RemoveRunnerRow({ runner, captureContinues }: { runner: RunnerRo
         open={open}
         onOpenChange={(next) => { if (!next) setOpen(false); }}
         title={`Remove ${runner.name} as a runner?`}
-        description={`${runner.name} stops taking work at once. A run it holds can retry on another runner after its assignment expires; the process on the machine isn’t ended.${captureContinues ? ' Capture on this machine continues; stopping it is a separate action.' : ''} What it already did is kept.`}
+        description={`${runner.name} stops taking work at once. A run it holds can be tried again on another runner once its time runs out; the program on the machine keeps running until you stop it there.${captureContinues ? ' Capture on this machine continues; stopping it is a separate action.' : ''} What it already did is kept.`}
         confirmLabel={`Remove ${runner.name}`}
         pending={remove.isPending}
-        error={remove.error?.message}
+        error={remove.error ? `Nothing changed: ${errorWords(remove.error).title.toLowerCase()}.` : null}
         onConfirm={() => remove.mutate()}
       />
     </>

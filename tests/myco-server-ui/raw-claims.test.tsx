@@ -11,7 +11,8 @@ import { formatDateTime } from '../../packages/myco-server/ui/src/lib/format';
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
-const LABEL = 'Claim raw data with no recorded uploader';
+const LABEL = 'Take ownership of raw data with no known uploader';
+const CONFIRM = 'Take ownership';
 const OWNER = 'mem_owner';
 /** Where transferring ownership and claiming raw data live, under Settings › Advanced. */
 const OWNER_ACTIONS = '/settings/advanced#owner-actions';
@@ -65,34 +66,34 @@ describe('owner raw claims', () => {
     deployment({ preview: () => preview });
     fireEvent.click(await screen.findByRole('button', { name: LABEL }));
     const dialog = screen.getByRole('dialog');
-    const list = within(dialog).getByRole('list', { name: 'Raw data claim preview' });
+    const list = within(dialog).getByRole('list', { name: 'Raw data to take ownership of' });
     expect(within(dialog).queryByRole('table')).toBeNull();
     expect(within(list).getAllByText('Archive')).toHaveLength(3);
     expect(within(list).getByText('Second archive')).toBeTruthy();
     for (const project of preview.projects) for (const kind of project.kinds) {
-      const names = { blob: 'Raw blobs', event: 'Capture events', transcript: 'Transcripts' };
+      const names = { blob: 'Stored files', event: 'Captured events', transcript: 'Transcripts' };
       const at = (value: number | null) => value === null ? 'Unknown' : formatDateTime(value);
       expect(within(list).getByText(`${names[kind.kind]} · Count: ${kind.count} · Oldest: ${at(kind.oldestAt)} · Newest: ${at(kind.newestAt)}`)).toBeTruthy();
     }
-    expect(within(dialog).getByRole('button', { name: LABEL }).hasAttribute('disabled')).toBe(true);
+    expect(within(dialog).getByRole('button', { name: CONFIRM }).hasAttribute('disabled')).toBe(true);
   });
 
   it('previews project, all kinds, counts and dates and requires an explicitly reviewed revision', async () => {
     const { requests, client } = deployment();
     client.setQueryData(['transcript', 'proj_old', 'session_one'], { transcript: [] });
     await screen.findByRole('button', { name: LABEL });
-    const table = screen.getByRole('table', { name: 'Raw data with no recorded uploader' });
+    const table = screen.getByRole('table', { name: 'Raw data with no known uploader' });
     expect(within(table).getAllByText('Archive')).toHaveLength(3);
-    for (const name of ['Raw blobs', 'Capture events', 'Transcripts', '2', '3', '1']) expect(within(table).getByText(name)).toBeTruthy();
+    for (const name of ['Stored files', 'Captured events', 'Transcripts', '2', '3', '1']) expect(within(table).getByText(name)).toBeTruthy();
     expect(within(table).getAllByText('Unknown')).toHaveLength(2);
     expect(requests.filter((r) => r.method === 'POST')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
     const dialog = await screen.findByRole('dialog');
-    const confirm = within(dialog).getByRole('button', { name: LABEL });
+    const confirm = within(dialog).getByRole('button', { name: CONFIRM });
     expect(confirm.hasAttribute('disabled')).toBe(true);
     fireEvent.click(within(dialog).getByRole('checkbox'));
     fireEvent.click(confirm);
-    await screen.findByText('The reviewed raw data is now private to you.');
+    await screen.findByText('That raw data is now yours, and private to you.');
     expect(requests.filter((r) => r.method === 'POST')).toEqual([{ method: 'POST', path: '/api/raw-claims', body: { revision: 'reviewed-r1' } }]);
     expect(client.getQueryState(['transcript', 'proj_old', 'session_one'])?.isInvalidated).toBe(true);
   });
@@ -108,7 +109,7 @@ describe('owner raw claims', () => {
     const { requests } = deployment({ preview: () => ({ ...PREVIEW, complete: false }) });
     const button = await screen.findByRole('button', { name: LABEL });
     expect(button.hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText('Uploader checks are still running. Claiming is available when they finish.')).toBeTruthy();
+    expect(screen.getByText('Myco is still working out who uploaded what. You can take ownership once it finishes.')).toBeTruthy();
     fireEvent.click(button);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(requests.filter((r) => r.method === 'POST')).toHaveLength(0);
@@ -122,8 +123,8 @@ describe('owner raw claims', () => {
     await client.invalidateQueries({ queryKey: ['raw-claims'] });
     const dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('checkbox'));
-    fireEvent.click(within(dialog).getByRole('button', { name: LABEL }));
-    await screen.findByText('The reviewed raw data is now private to you.');
+    fireEvent.click(within(dialog).getByRole('button', { name: CONFIRM }));
+    await screen.findByText('That raw data is now yours, and private to you.');
     expect(requests.find((r) => r.method === 'POST')?.body).toEqual({ revision: 'reviewed-r1' });
   });
 
@@ -136,12 +137,15 @@ describe('owner raw claims', () => {
     fireEvent.click(await screen.findByRole('button', { name: LABEL }));
     let dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('checkbox'));
-    fireEvent.click(within(dialog).getByRole('button', { name: LABEL }));
-    await screen.findByText('The raw data changed. Review the refreshed preview before claiming it.');
-    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: CONFIRM }));
+    // The refusal is said inside the dialog, which takes nothing more until it is closed and the refreshed list reviewed.
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Nothing changed: the raw data changed while this was open. Close this and review the refreshed list.');
+    expect(within(dialog).getByRole('button', { name: CONFIRM }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
     dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: LABEL }).hasAttribute('disabled')).toBe(true);
+    expect(within(dialog).getByRole('button', { name: CONFIRM }).hasAttribute('disabled')).toBe(true);
     expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
   });
 });
@@ -161,7 +165,7 @@ describe('explicit initial ownership', () => {
     fireEvent.click(await screen.findByRole('option', { name }));
     fireEvent.click(screen.getByRole('button', { name: 'Record server owner' }));
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText(`Record ${name} as this server’s owner.`)).toBeTruthy();
+    expect(within(dialog).getByText(`${name} becomes this server’s owner: only they can make people admins or members, and hand ownership on.`)).toBeTruthy();
     expect(document.body.textContent).not.toContain(OWNER);
     expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
   });
@@ -187,9 +191,11 @@ describe('explicit initial ownership', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Record server owner' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('checkbox'));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Record server owner' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Record the owner' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Nothing changed: ownership changed while this was open. Close this, review the refreshed owner and choose again.');
+    expect(within(dialog).getByRole('button', { name: 'Record the owner' }).hasAttribute('disabled')).toBe(true);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await screen.findByText(/A server owner is recorded/);
-    expect(screen.getByText('Ownership changed. Review the refreshed owner and choose again.').closest('[role="alert"]')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Record server owner' })).toBeNull();
     expect(requests.filter((r) => r.method === 'POST')).toHaveLength(1);
   });
@@ -206,7 +212,7 @@ describe('explicit initial ownership', () => {
     fireEvent.click(option);
     fireEvent.click(button);
     const dialog = screen.getByRole('dialog');
-    const confirm = within(dialog).getByRole('button', { name: 'Record server owner' });
+    const confirm = within(dialog).getByRole('button', { name: 'Record the owner' });
     expect(confirm.hasAttribute('disabled')).toBe(true);
     fireEvent.click(within(dialog).getByRole('checkbox'));
     fireEvent.click(confirm);
@@ -224,9 +230,9 @@ describe('explicit initial ownership', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Next' }));
     fireEvent.click(button);
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText(/You will remain an admin and lose owner powers/)).toBeTruthy();
+    expect(within(dialog).getByText(/You stay an admin, but can no longer do those things/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('checkbox'));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Transfer ownership' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Make Next the owner' }));
     await waitFor(() => expect(requests.filter((r) => r.path === '/api/ownership/transfer' && r.method === 'POST')).toEqual([
       { method: 'POST', path: '/api/ownership/transfer', body: { member_id: 'mem_next', expected_revision: 'owner-r1' } },
     ]));
@@ -308,13 +314,12 @@ describe('explicit initial ownership', () => {
 
   it('owner can review an admin demotion but cannot demote or remove themselves', async () => {
     const { requests } = deployment({ path: '/people' });
-    fireEvent.keyDown(await manage('Ada'), { key: 'Enter' });
-    let menu = await screen.findByRole('menu');
-    expect(within(menu).queryByRole('menuitem', { name: 'Make member' })).toBeNull();
-    expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
-    fireEvent.keyDown(menu, { key: 'Escape' });
+    // Nothing on the owner's own row applies to them, so it offers no menu.
+    const list = await screen.findByRole('list', { name: 'Members' });
+    const ada = within(list).getAllByRole('listitem').find((li) => li.querySelector('.font-medium')?.firstChild?.textContent === 'Ada')!;
+    expect(within(ada).queryAllByRole('button')).toEqual([]);
     fireEvent.keyDown(await manage('Unlinked'), { key: 'Enter' });
-    menu = await screen.findByRole('menu');
+    const menu = await screen.findByRole('menu');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Make member' }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('They will lose server administration powers. Their membership and data stay.')).toBeTruthy();

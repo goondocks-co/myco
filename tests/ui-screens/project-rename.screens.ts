@@ -17,7 +17,7 @@ for (const { viewport, mode } of SHOT_MATRIX) {
       await rename.click();
       const dialog = page.getByRole('dialog', { name: `Rename ${project.name}` });
       await expect(dialog.getByRole('textbox', { name: 'Name', exact: true })).toHaveValue(project.name);
-      await expect(dialog.getByRole('button', { name: 'Rename', exact: true })).toBeInViewport();
+      await expect(dialog.getByRole('button', { name: 'Rename project', exact: true })).toBeInViewport();
       await expectFits(page, viewport);
       await expectNoRawIds(page);
       await expectAxeClean(page);

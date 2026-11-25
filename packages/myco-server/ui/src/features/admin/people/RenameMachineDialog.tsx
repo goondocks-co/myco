@@ -13,9 +13,9 @@ export interface RenameTarget {
 
 /**
  * Rename a machine: its name prefilled, checked as it is typed against the rule
- * the server holds it to, and the server's refusal said in words. Its member
- * sees the name beside their own work; admins see it on Settings › People and machines and
- * Health; everyone else sees the work as from its member.
+ * the server holds it to, and the server's refusal said in words. Its member and
+ * admins see the name wherever machines are listed; everyone else sees the work
+ * as from its member.
  */
 export function RenameMachineDialog({ machine, onClose }: { machine: RenameTarget | null; onClose: () => void }) {
   return (
@@ -41,7 +41,7 @@ function RenameBody({ machine, onClose }: { machine: RenameTarget; onClose: () =
   return (
     <DialogContent
       title={machine.named ? `Rename ${machine.name}` : 'Name this machine'}
-      description={`Its member sees this name beside their own work, and admins see it on ${INVITE_CONTROLS.page} and Health. Everyone else sees the work as from its member.`}
+      description={`Its member and admins see this name on Today, on ${INVITE_CONTROLS.page} and on the machine’s own page; its member also sees it on their sessions. Everyone else sees the work as from its member.`}
     >
       <form className="flex flex-col gap-s3" onSubmit={(event) => { event.preventDefault(); save(); }}>
         <Input
@@ -55,7 +55,7 @@ function RenameBody({ machine, onClose }: { machine: RenameTarget; onClose: () =
         {rename.error != null && <p role="alert" className="t-small text-bad">{renameRefusalWords(rename.error)}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={problem !== null || unchanged} pending={rename.isPending}>Rename</Button>
+          <Button type="submit" variant="primary" disabled={problem !== null || unchanged} pending={rename.isPending}>{machine.named ? 'Rename machine' : 'Name machine'}</Button>
         </DialogFooter>
       </form>
     </DialogContent>

@@ -32,7 +32,7 @@ export function RenameProjectDialog({ project, onClose }: {
           {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
           <DialogFooter>
             <Button variant="ghost" onClick={close}>Cancel</Button>
-            <Button type="submit" variant="primary" disabled={trimmed === ''} pending={pending}>Rename</Button>
+            <Button type="submit" variant="primary" disabled={trimmed === ''} pending={pending}>Rename project</Button>
           </DialogFooter>
         </form>
       </DialogContent>

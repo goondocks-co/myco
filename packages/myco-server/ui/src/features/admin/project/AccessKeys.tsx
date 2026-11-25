@@ -24,7 +24,7 @@ export function KeyOnce({ keyValue }: { keyValue: string }) {
         </div>
       </div>
       <CommandBlock caption="The agent reaches this server at:" command={`${window.location.origin}/mcp`} />
-      <p className="t-small text-muted">Give the agent this address and the key as its bearer token. The key is not shown again; rotate or revoke it here at any time.</p>
+      <p className="t-small text-muted">Give the agent this address, and the key to send as its bearer token. The key is not shown again; you can replace or revoke it here at any time.</p>
     </div>
   );
 }
@@ -41,7 +41,7 @@ function KeyRow({ grant, words, onRotate, onRevoke }: { grant: GrantRow; words: 
         <MoreMenu
           label={`More for ${keyName(grant)}`}
           items={[
-            { label: 'Rotate key', tone: 'danger', onSelect: onRotate },
+            { label: 'Replace with a new key', tone: 'danger', onSelect: onRotate },
             { label: 'Revoke key', tone: 'danger', onSelect: onRevoke },
           ]}
         />
@@ -157,9 +157,9 @@ export function AccessKeys({ projectId }: { projectId: string }) {
       <ConfirmDialog
         open={rotating !== null}
         onOpenChange={(open) => { if (!open) setRotating(null); }}
-        title={`Rotate ${rotating === null ? 'this key' : `“${keyName(rotating)}”`}?`}
-        description="The current key stops working the moment the new one exists. You see the new key once."
-        confirmLabel="Rotate key"
+        title={`Replace ${rotating === null ? 'this key' : `“${keyName(rotating)}”`} with a new key?`}
+        description="Myco makes a new key, and the current one stops working at once: the agent can’t read this project until you give it the new key. You see the new key only once. Its name and the notes it left stay."
+        confirmLabel="Make a new key"
         pending={actions.rotate.isPending}
         error={rotateError}
         onConfirm={() => {
@@ -175,7 +175,7 @@ export function AccessKeys({ projectId }: { projectId: string }) {
         open={revoking !== null}
         onOpenChange={(open) => { if (!open) setRevoking(null); }}
         title={`Revoke ${revoking === null ? 'this key' : `“${keyName(revoking)}”`}?`}
-        description="The agent loses access at once. What it already recorded stays."
+        description="The agent can no longer read this project or leave notes, from now on. What it already recorded stays. This can’t be undone; to let it back in, add a new key."
         confirmLabel="Revoke key"
         pending={actions.revoke.isPending}
         error={revokeError}

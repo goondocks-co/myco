@@ -738,7 +738,7 @@ describe('Today', () => {
     expect(dialog.textContent).toContain('Ada’s studio Mac starts capturing it at the next agent session there');
     fireEvent.click(within(dialog).getByRole('combobox', { name: /^Project(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Atlas web' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect repository' }));
     await waitFor(() => expect(posts).toEqual([{ path: '/api/uncaptured/mt_studio_machine/a1b2c3d4e5f60718/connect', body: { projectId: P_ATLAS } }]));
     // One left is its own line again.
     await waitFor(() => expect(panel.querySelector('[data-repositories]')).toBeNull());
@@ -760,7 +760,7 @@ describe('Today', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
     expect(within(dialog).getByRole('combobox', { name: /^Project(?::|$)/ }).textContent).toBe('Let Myco choose');
     const refusal = async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Connect repository' }));
       return (await within(dialog).findByRole('alert')).textContent;
     };
     expect(await refusal()).toBe('You can’t start a new project here. Choose an existing project for it.');
@@ -799,12 +799,12 @@ describe('Today', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Connect widget' });
     const field = within(dialog).getByRole('combobox', { name: /^Project(?::|$)/ });
     expect(field.textContent).toBe('Choose a project');
-    expect((within(dialog).getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole('button', { name: 'Connect repository' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(field);
     expect((await screen.findAllByRole('option')).map((o) => o.textContent)).toEqual(['Myco', 'Atlas web']);
     fireEvent.click(screen.getByRole('option', { name: 'Myco' }));
-    expect((within(dialog).getByRole('button', { name: 'Connect' }) as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect' }));
+    expect((within(dialog).getByRole('button', { name: 'Connect repository' }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Connect repository' }));
     await waitFor(() => expect(bodies).toEqual([{ projectId: P_MYCO }]));
   });
 

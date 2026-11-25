@@ -137,8 +137,9 @@ export function EmbeddingSwitchPanel({ sw, now }: { sw: EmbeddingSwitchStatus; n
         open={confirming}
         onOpenChange={setConfirming}
         title="Cancel the switch?"
-        description={`Search keeps using ${from}. The ${shortModel(sw.model)} results built so far are removed.`}
+        description={`Search keeps using ${from}, so what you can find doesn’t change. What was built for ${shortModel(sw.model)} so far is thrown away; switching again starts over and spends again.`}
         confirmLabel="Cancel the switch"
+        cancelLabel="Keep switching"
         pending={actions.cancelSwitch.isPending}
         error={actions.cancelSwitch.isError ? switchRefusalText(actions.cancelSwitch.error) : null}
         onConfirm={() => actions.cancelSwitch.mutate({ id: sw.id }, { onSuccess: () => setConfirming(false) })}

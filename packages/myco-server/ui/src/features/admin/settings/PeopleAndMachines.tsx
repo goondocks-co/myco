@@ -191,7 +191,7 @@ export function PeopleAndMachines() {
       )}
       {isAdmin && (
         <p className="t-small text-muted" data-owner-actions="">
-          Transferring ownership and claiming raw data with no recorded uploader are under <Link to={OWNER_ACTIONS}>Advanced › Owner actions</Link>.
+          Handing on ownership, and taking ownership of raw data with no known uploader, are under <Link to={OWNER_ACTIONS}>Advanced › Owner actions</Link>.
         </p>
       )}
       {isAdmin && <InviteDialog target={invite} onClose={() => setInvite(null)} people={choices} />}

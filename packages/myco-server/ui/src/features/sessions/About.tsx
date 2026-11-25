@@ -35,6 +35,7 @@ export function SessionAbout({ open, onClose, answer, projectId, projectName, no
         <SessionContext projectId={projectId} sessionId={session.sessionId} />
         <Facts answer={answer} projectName={projectName} projectId={projectId} now={now} live={live} />
         <WhatCameOfIt projectId={projectId} outcome={outcome} open={session.endedAt === null} now={now} sporesHref={sporesHref} />
+        <TechnicalDetails answer={answer} />
         <Disclosure summary="Not placed on a turn">
           <UnplacedRecords projectId={projectId} sessionId={session.sessionId} now={now} />
         </Disclosure>
@@ -57,8 +58,8 @@ function SessionContext({ projectId, sessionId }: { projectId: string; sessionId
   if (!start && unattached === 0) return null;
   return (
     <ul className="flex flex-col gap-s1 t-small text-muted" data-session-context="">
-      {start && <li>Myco sent the session start block</li>}
-      {unattached > 0 && <li>Myco added context {count(unattached, 'time')}{records.hasMore ? ' or more' : ''} in this session</li>}
+      {start && <li>Myco gave this session the project’s instructions when it started</li>}
+      {unattached > 0 && <li>Myco handed it spores or plans {count(unattached, 'time')}{records.hasMore ? ' or more' : ''} that no prompt shown here carries</li>}
     </ul>
   );
 }
@@ -95,13 +96,26 @@ function Facts({ answer, projectId, projectName, now, live }: { answer: SessionR
       <FactRow term="Tools">{answer.visibility.toolCalls === 'recorded' && (answer.metrics?.tools.length ?? 0) > 0 ? <ToolUsageLine tools={answer.metrics!.tools} /> : countEvidence(answer, 'toolCalls', 'tool call')}</FactRow>
       <FactRow term="Files">{fileEditWords(answer.fileEdits)}</FactRow>
       <FactRow term="Reported errors">{answer.reportedErrors == null || answer.visibility.reportedErrors === 'not_visible' ? 'Not visible' : `${count(answer.reportedErrors, 'call')} reported an error or a non-zero exit`}</FactRow>
-      <FactRow term="Nested calls">{answer.visibility.nestedToolCalls === 'not_visible' ? 'Not visible' : `${count(answer.nestedToolCalls, 'call')} run inside orchestration calls`}</FactRow>
       {session.launchParentSessionId !== null && <FactRow term="Launch">Launched by another agent</FactRow>}
-      <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
+      {answer.metrics?.tokens != null && <FactRow term="Tokens">{answer.metrics.tokens.toLocaleString()}, its sub-agents included</FactRow>}
       <FactRow term="Size">{[count(answer.turns, 'turn'), count(answer.promptEntries, 'prompt entry', 'prompt entries'), countEvidence(answer, 'toolCalls', 'tool call'), count(counts.responses, 'reply', 'replies')].join(' · ')}</FactRow>
       {release != null && <FactRow term="Release">{releaseStateLabel(release.state)}{release.ref !== null && release.state !== 'not_on_release_line' ? ` · ${shortRef(release.ref)}` : ''}</FactRow>}
       <Family projectId={projectId} session={session} />
     </FactsPanel>
+  );
+}
+
+/** What only someone checking how the session was recorded needs: calls made inside other calls, and tokens its agent didn't report. */
+function TechnicalDetails({ answer }: { answer: SessionResponse }) {
+  return (
+    <Disclosure summary="Technical details">
+      <FactsPanel>
+        <FactRow term="Calls inside other calls">{answer.visibility.nestedToolCalls === 'not_visible'
+          ? 'This agent doesn’t record them'
+          : `${count(answer.nestedToolCalls, 'tool call')} ran inside another call, such as one that started a sub-agent`}</FactRow>
+        {answer.metrics?.tokens == null && <FactRow term="Tokens">This agent didn’t report how many it used</FactRow>}
+      </FactsPanel>
+    </Disclosure>
   );
 }
 

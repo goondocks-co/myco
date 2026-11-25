@@ -94,8 +94,8 @@ export function Repository({ projectId }: { projectId: string }) {
         open={removing}
         onOpenChange={(next) => { if (!next) closeRemove(); }}
         title="Disconnect the repository?"
-        description="New code tasks need a repository before they can run. The project’s memory stays."
-        confirmLabel="Disconnect"
+        description="Myco stops reading this project’s code: the code map and learning from the code can’t run until a repository is connected again. Everything Myco already learned here stays."
+        confirmLabel="Disconnect repository"
         pending={actions.remove.isPending}
         error={actions.remove.error ? settingsRefusalText(actions.remove.error) : null}
         onConfirm={() => { if (connection !== null) actions.remove.mutate(connection.revision, { onSuccess: closeRemove }); }}

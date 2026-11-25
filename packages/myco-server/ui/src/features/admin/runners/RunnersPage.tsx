@@ -9,7 +9,6 @@ import { WorkTabs } from '../../work/WorkTabs';
 import { AdminPage, AdminSection } from '../AdminFrame';
 import { runnerDoing } from '../machine/words';
 import { machineOfWorker, useMachines } from '../machines';
-import { LEGACY_WORKER_LABEL } from '../workers';
 import { LegacyWorker } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
 import { agoWords } from '@goondocks/myco-shared/time-words';
@@ -37,7 +36,7 @@ function RunnersList() {
       {runners.isError && <><ErrorState error={runners.error} onRetry={() => void runners.refetch()} /><p className="t-small text-muted">Machine and queue information is unavailable. Last check failed {agoWords(runners.errorUpdatedAt)}.{runners.data !== undefined ? ` Last successful read ${agoWords(runners.data.observedAt)}; the rows below are stale.` : ' Last successful read unavailable.'}</p></>}
       {runners.isPending && <p className="t-body text-muted">Loading machines…</p>}
       {runners.data !== undefined && !runners.isError && <QueueWarning queue={runners.data.queue} />}
-      <AdminSection id="runners" title="Registered runners" description="A runner is a machine you’ve chosen to run Myco’s work. Each opens its machine’s page, where it is turned on or off, who pays is set apart, and it is updated or removed.">
+      <AdminSection id="runners" title="Registered runners" description="A runner is a machine you’ve chosen to run Myco’s work. Each opens its machine’s page, where it is turned on or off, who pays for it alone is chosen, and it is updated or removed.">
         {permission.allowed && <Button size="sm" onClick={() => setSetup(!setup)}>Add runner</Button>}
         {setup && <div className="rounded-card border border-line p-s4 t-small text-ink-2"><p>On the machine you want to use, run <code>myco runner register {window.location.origin}</code>. Open its device approval link, review the machine and approve it. If this machine has a legacy worker, let its assigned work finish and run <code>myco worker uninstall --server {window.location.origin}</code> on that machine. Then run <code>myco runner install</code> on that machine to start at login.</p><p className="mt-s2">Install a supported coding agent on that machine. Sign in there, or choose a stored key on its machine’s page after registration. Myco reports its sign-in; a model listing does not prove provider access.</p></div>}
         {pages.query.isError && <ErrorState error={pages.query.error} onRetry={() => void (pages.query.isFetchNextPageError ? pages.query.fetchNextPage() : pages.query.refetch())} />}
@@ -48,7 +47,7 @@ function RunnersList() {
         {(pages.query.hasNextPage || pages.query.isFetchingNextPage) && <ShowMore shown={pages.runners.length} total={pages.total} noun="runners" hasMore={pages.query.hasNextPage} pending={pages.query.isFetchingNextPage} onMore={() => void pages.query.fetchNextPage()} />}
       </AdminSection>
       <RemovedRunners />
-      <AdminSection id="legacy-workers" title={LEGACY_WORKER_LABEL} description="These machines can also run Myco’s work. Register each machine, let its work finish, then uninstall its legacy worker before installing the runner service.">
+      <AdminSection id="legacy-workers" title="Legacy workers" description="Machines that run Myco’s work the older way, signed in as their member instead of registered as runners. Register each as a runner, let its current work finish, then uninstall its legacy worker before installing the runner service.">
         {machines.error && <ErrorState error={machines.error} onRetry={machines.retry}><p>Machine names are unavailable.</p></ErrorState>}
         {runners.data?.legacyWorkers?.length === 0 && !runners.isError && <p className="t-small text-muted">{permission.allowed ? 'No legacy workers are remembered.' : 'None of your machines run a legacy worker.'}</p>}
         <div className="flex flex-col gap-s2">{runners.data?.legacyWorkers?.map(worker => <LegacyWorker key={worker.credentialId} worker={worker} name={machineOfWorker(machines.machines, worker)?.name ?? worker.machineId ?? 'A machine'} />)}</div>

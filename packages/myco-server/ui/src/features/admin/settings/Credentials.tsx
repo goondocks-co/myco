@@ -111,7 +111,7 @@ export function KeyRows({ secrets, uses }: { secrets: readonly SecretRow[]; uses
         open={removing !== null}
         onOpenChange={(open) => { if (!open) closeRemove(); }}
         title={`Remove the ${removing === null ? '' : keyLabel(removing.name)}?`}
-        description="Anything that uses this key stops working until a new one is stored. Work that chose it waits; it never falls back to another sign-in."
+        description="The key is deleted from this server and can’t be shown again; to use it later, enter it again. Work that uses it waits until a key is stored, and never falls back to another sign-in."
         confirmLabel="Remove key"
         pending={actions.deleteSecret.isPending}
         error={actions.deleteSecret.error ? settingsRefusalText(actions.deleteSecret.error) : null}
