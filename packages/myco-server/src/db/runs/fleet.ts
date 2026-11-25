@@ -1,5 +1,5 @@
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
-import { QUEUE_REASON_WORDS, runnerAgentLoginReady, runnerDisplay, storedKeyFailureWords, type RunnerFallbackNotice, type FleetQueue, type QueueReason, type StoredKeyFailureNotice } from '@goondocks/myco-shared/runner-fleet';
+import { QUEUE_REASON_WORDS, runnerAgentLoginReady, runnerOwnSignInReady, runnerDisplay, storedKeyFailureWords, type RunnerFallbackNotice, type FleetQueue, type QueueReason, type StoredKeyFailureNotice } from '@goondocks/myco-shared/runner-fleet';
 import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { credentialHoldReason, credentialHoldSlot } from '@goondocks/myco-shared/run-holds';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
@@ -131,23 +131,24 @@ export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRo
     if (runner === undefined || runner.state !== 'enabled' || runner.offers === null) continue;
     const choices = runner.credentialChoices;
     const stored = runner.offers.filter(offer => offer.installed !== false && (choices?.[offer.id] === 'stored' || choices?.[offer.id] === 'stored-first'));
-    const states = await Promise.all(stored.map(async offer => [offer.id, await keyState(offer.id)] as const));
-    const failures = states.flatMap(([agent, { availability: failure, since }]): StoredKeyFailureNotice[] => {
+    const states = await Promise.all(stored.map(async offer => [offer, await keyState(offer.id)] as const));
+    const failures = states.flatMap(([{ id: agent, ...offer }, { availability: failure, since }]): StoredKeyFailureNotice[] => {
       const slot = HARNESS_CREDENTIALS[agent]?.slot;
-      return choices?.[agent] === 'stored' && slot != null && isStoredKeyFailure(failure)
-        ? [{ agent, slot, failure, ...(since === null ? {} : { since }) }] : [];
+      const waiting = choices?.[agent] === 'stored-first' && !runnerOwnSignInReady(offer);
+      if (slot == null || failure === true || (!waiting && !(choices?.[agent] === 'stored' && isStoredKeyFailure(failure)))) return [];
+      return [{ agent, slot, failure: failure || 'no_key', ...(since === null ? {} : { since }) }];
     });
-    const fallbackNotices = states.flatMap(([agent, { availability, since }]): RunnerFallbackNotice[] => {
+    const fallbackNotices = states.flatMap(([{ id: agent, ...offer }, { availability, since }]): RunnerFallbackNotice[] => {
       const slot = HARNESS_CREDENTIALS[agent]?.slot;
-      if (choices?.[agent] !== 'stored-first' || slot == null || availability === true) return [];
+      if (choices?.[agent] !== 'stored-first' || !runnerOwnSignInReady(offer) || slot == null || availability === true) return [];
       return [{ agent, slot, reason: availability || 'no_key', since: Math.max(since ?? 0, runner.credentialChoiceTimes?.[agent] ?? runner.createdAt) }];
     });
     if (fallbackNotices.length > 0) runner.fallbackNotices = fallbackNotices;
     if (failures.length > 0) runner.storedKeyFailures = failures;
-    const usable = Object.fromEntries(states.map(([agent, state]) => [agent, state.availability === true || (choices?.[agent] === 'stored-first' && state.probeDue)]));
+    const usable = Object.fromEntries(states.map(([{ id: agent }, state]) => [agent, state.availability === true || (choices?.[agent] === 'stored-first' && state.probeDue)]));
     if (runner.readiness.state !== 'ready' || runner.offers.some(offer => runnerAgentLoginReady(offer, choices, usable))) continue;
     const first = failures[0];
-    const code = first?.failure ?? (fallbackNotices.length > 0 ? 'not_signed_in' : 'credential_unavailable');
+    const code = isStoredKeyFailure(first?.failure) ? first.failure : 'credential_unavailable';
     runner.readiness = { state: 'unknown', code, reason: first === undefined ? QUEUE_REASON_WORDS[code]
       : storedKeyFailureWords(first.failure, first.slot), observedAt: now };
     runner.display = runnerDisplay(runner);

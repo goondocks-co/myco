@@ -1,5 +1,5 @@
 import type { RunPayer } from '@goondocks/myco-shared/runner-fleet';
-import type { HarnessStop } from '@goondocks/myco-shared/run-diagnostic';
+import type { HarnessStop, StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
@@ -41,6 +41,7 @@ export interface RunWorker {
 export interface RunFields {
   payment?: RunPayer;
   fallbackQueued?: boolean;
+  retryKeyReason?: StoredKeyFailure;
   dryRun?: boolean;
   fleetWait?: { reason: import('@goondocks/myco-shared/runner-fleet').QueueReason; observedAt: number };
   requested: ExecutionProfile | null;

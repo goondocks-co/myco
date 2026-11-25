@@ -374,7 +374,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     words: row.status === 'queued' && !row.dryRun ? queuedWords(row, now) : runLineWords(kind, row, row.outcome),
     model: <ModelSummary run={row} variant="list" />,
     where: ranOn(row.worker, name)?.list ?? null,
-    by: startedByChip(row.startedBy, name),
+    by: row.retryKeyReason === undefined ? startedByChip(row.startedBy, name) : 'Queued again by Myco',
     tone: row.result === 'failed' ? 'bad' : row.status === 'skipped' && !isCarriedMap(kind, row) ? 'held' : live ? 'live' : 'plain',
     to: runPath(projectId, row.id),
   };

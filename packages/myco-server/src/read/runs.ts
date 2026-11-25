@@ -1,3 +1,4 @@
+import { isStoredKeyFailure, type StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { parseRepositoryFailure, parseHarnessStop, LATE_HARNESS_ERROR_NOTE, type HarnessStop } from '@goondocks/myco-shared/run-text';
 import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
@@ -34,6 +35,7 @@ export const RUN_REFUSALS_LIMIT = MAX_TOOL_CALLS;
 interface RunListRow {
   payment?: NonNullable<ReturnType<typeof recordedRunPayer>>;
   fallbackQueued?: boolean;
+  retryKeyReason?: StoredKeyFailure;
   result: RunResult | null;
   requested: ExecutionProfile | null;
   identity: RecordedIdentity;
@@ -276,6 +278,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     requested: requestedProfile(row.requested_profile),
     ...(payment === null ? {} : { payment }),
     ...(includeSignIn && row.fallback_run_id != null ? { fallbackQueued: true } : {}),
+    ...(includeSignIn && isStoredKeyFailure(row.retry_key_reason) ? { retryKeyReason: row.retry_key_reason } : {}),
     id: row.id as string,
     agentId: row.agent_id as string,
     task: text(row.task),

@@ -18,14 +18,17 @@ export const failureThreshold = (projectId: string, task: string) => `COALESCE((
     WHERE s.project_id=${projectId} AND s.task=${task} AND s.status='completed' AND s.dry_run=0 ORDER BY s.started_at DESC LIMIT 1),-1)`;
 const startedAfter = (run: string, threshold: string) => `${run}.started_at>${threshold}`;
 const admissionAfter = (run: string, threshold: string) => `${run}.started_at IS NULL AND ${run}.completed_at>${threshold}`;
+export const failureHandedOn = (run: string): string =>
+  `CASE WHEN json_valid(${run}.run_context) THEN json_extract(${run}.run_context,'$.fallbackRunId') END IS NOT NULL`;
+
 /** Failed starts and failed queued admissions both remain unresolved until a later run starts and completes. */
-export const unresolvedFailure = (run: string, threshold: string) => `(${run}.dry_run=0 AND (${startedAfter(run, threshold)} OR (${admissionAfter(run, threshold)})))`;
+export const unresolvedFailure = (run: string, threshold: string) => `(${run}.dry_run=0 AND NOT (${failureHandedOn(run)}) AND (${startedAfter(run, threshold)} OR (${admissionAfter(run, threshold)})))`;
 export function unresolvedFailureRows(projectId: string, task: string): string {
   const threshold = failureThreshold(projectId, task);
   const branch = (range: string, order: string) => `SELECT r.id,COALESCE(r.completed_at,r.started_at) AS at,
     COALESCE(r.started_at,r.completed_at) AS failed_at FROM agent_runs r INDEXED BY idx_agent_runs_task
     WHERE r.project_id=${projectId} AND r.task=${task} AND r.status='failed' AND r.dry_run=0 AND ${range}
-    AND NOT ${producedSql('r')} ORDER BY ${order} DESC LIMIT ${FAILURE_STREAK_SHOWN + 1}`;
+    AND NOT (${failureHandedOn('r')}) AND NOT ${producedSql('r')} ORDER BY ${order} DESC LIMIT ${FAILURE_STREAK_SHOWN + 1}`;
   return `SELECT * FROM (${branch(startedAfter('r', threshold), 'r.started_at')})
     UNION ALL SELECT * FROM (${branch(admissionAfter('r', threshold), 'r.completed_at')})`;
 }

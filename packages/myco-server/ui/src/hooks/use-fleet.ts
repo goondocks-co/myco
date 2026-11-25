@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
-import type { FleetQueue, RunnerCredentialChoice, RunnerFallbackNotice } from '@goondocks/myco-shared/runner-fleet';
+import type { FleetQueue, RunnerCredentialChoice, RunnerFallbackNotice, StoredKeyFailureNotice } from '@goondocks/myco-shared/runner-fleet';
 import { fetchJson, type RunnerRow, type WorkerRow } from '../lib/api';
 import { live } from '../lib/live';
 
@@ -24,7 +24,7 @@ export function useFleet() {
 
 /** `GET /api/runners/agents`: every agent a registered runner offers installed, what each runner pays with, and which agent each uses today. */
 export interface AgentPayersAnswer {
-  agents: Array<{ agent: string; storedUsable: boolean; storedFailure?: StoredKeyFailure; fallbacks?: Array<RunnerFallbackNotice & { runnerId: string }>; runners: Array<{ id: string; name: string; choice: RunnerCredentialChoice | null }> }>;
+  agents: Array<{ agent: string; storedUsable: boolean; storedFailure?: StoredKeyFailure; fallbacks?: Array<RunnerFallbackNotice & { runnerId: string }>; waiting?: Array<StoredKeyFailureNotice & { runnerId: string }>; runners: Array<{ id: string; name: string; choice: RunnerCredentialChoice | null }> }>;
   today: Array<{ id: string; name: string; agent: string | null }>;
 }
 

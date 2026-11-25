@@ -17,6 +17,7 @@ export interface KindSummary extends OutcomeCounts {
   alreadyCurrent: number;
   /** Failed runs that kept what they produced; their output is counted above. */
   failedWithOutput: number;
+  handedOn: number;
   latestAt: number | null;
   tokens: number;
   costUsd: number;
@@ -70,7 +71,7 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     if (entry === undefined) {
       entry = {
         kind: outcome.kind, projects: [], runs: {}, started: 0, alreadyCurrent: 0, spores: 0, sessions: 0, maps: 0, produced: 0, failed: 0, finished: 0,
-        failedWithOutput: 0, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
+        failedWithOutput: 0, handedOn: 0, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
         spend: { tokens: null, costUsd: null, durationMs: null }, currentMaps: [], listed: [], failures: [], failureGroups: [], kept: [],
       };
       byKind.set(outcome.kind, entry);
@@ -82,6 +83,7 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     entry.sessions += outcome.outcome.sessions;
     entry.maps += outcome.outcome.maps;
     entry.failed += outcome.failed;
+    entry.handedOn += outcome.handedOn ?? 0;
     entry.failedWithOutput += outcome.failedWithOutput;
     if (outcome.failure != null) {
       const groups = failureFacts.get(outcome.kind) ?? [];
@@ -106,12 +108,12 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     };
   }
   for (const entry of byKind.values()) {
-    entry.finished = sum(entry.runs, ['completed', 'failed']);
+    entry.finished = sum(entry.runs, ['completed', 'failed']) - entry.handedOn;
     entry.started = sum(entry.runs, ['completed', 'failed', 'running', 'claimed']);
     entry.produced = entry.finished - entry.failed;
     entry.listed = answer.timeline.filter((run) => run.kind === entry.kind);
     if (entry.kind === 'map') entry.currentMaps = answer.maps.filter((map) => entry.projects.includes(map.projectId));
-    entry.failures = entry.listed.filter((run) => run.result === 'failed');
+    entry.failures = entry.listed.filter((run) => run.result === 'failed' && !run.failure?.fallbackQueued);
     entry.kept = entry.listed.filter((run) => run.result === 'failed_with_output');
     entry.failureGroups = (failureFacts.get(entry.kind) ?? []).map((group) => ({
       ...group,

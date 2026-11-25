@@ -1,5 +1,5 @@
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { offersAgentInstalled, type RunnerCredentialChoice, type RunnerFallbackNotice } from '@goondocks/myco-shared/runner-fleet';
+import { offersAgentInstalled, type RunnerCredentialChoice, type RunnerFallbackNotice, type StoredKeyFailureNotice } from '@goondocks/myco-shared/runner-fleet';
 import type { ServerEnv } from '../core/adapters.js';
 import { applyFleetSignInAvailability, fleetSelectionContext } from '../db/runs/fleet.js';
 import { isStoredKeyFailure, type StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
@@ -12,7 +12,7 @@ export interface AgentPayer { id: string; name: string; choice: RunnerCredential
 
 /** `GET /api/runners/agents`: every agent a registered runner offers installed, who pays for it on each, and whether a stored key would work: a key the provider refused does not. */
 export interface AgentPayers {
-  agents: Array<{ agent: string; storedUsable: boolean; storedFailure?: StoredKeyFailure; fallbacks?: Array<RunnerFallbackNotice & { runnerId: string }>; runners: AgentPayer[] }>;
+  agents: Array<{ agent: string; storedUsable: boolean; storedFailure?: StoredKeyFailure; fallbacks?: Array<RunnerFallbackNotice & { runnerId: string }>; waiting?: Array<StoredKeyFailureNotice & { runnerId: string }>; runners: AgentPayer[] }>;
   /** The agent each registered runner would run learning from sessions with now, by the claim's preference rule; null where none it is signed in to is wanted. */
   today: Array<{ id: string; name: string; agent: string | null }>;
 }
@@ -47,9 +47,11 @@ export async function readAgentPayers(env: ServerEnv, now: number): Promise<Agen
     const { availability } = await selection.keyState(agent);
     const fallbacks = fleet.flatMap(row => (row.runnerDetails?.fallbackNotices ?? [])
       .filter(notice => notice.agent === agent).map(notice => ({ ...notice, runnerId: row.credentialId })));
+    const waiting = fleet.flatMap(row => row.runnerDetails?.credentialChoices?.[agent] !== 'stored-first' ? []
+      : (row.runnerDetails.storedKeyFailures ?? []).filter(notice => notice.agent === agent).map(notice => ({ ...notice, runnerId: row.credentialId })));
     return { agent, storedUsable: availability === true, runners,
       ...(isStoredKeyFailure(availability) ? { storedFailure: availability } : {}),
-      ...(fallbacks.length === 0 ? {} : { fallbacks }) };
+      ...(fallbacks.length === 0 ? {} : { fallbacks }), ...(waiting.length === 0 ? {} : { waiting }) };
   }));
   return { agents: agents.filter((entry): entry is NonNullable<typeof entry> => entry !== null), today };
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { agentHasStoredKey, isRunnerCredentialChoice, QUEUE_REASON_WORDS, RUNNER_CREDENTIAL_CHOICES, RUNNER_PAYER_LABELS, RUNNER_SIGN_IN_WORDS, runnerFallbackSince, runnerFallbackWords, type RunnerCredentialChoice, type RunnerSignInSource } from '@goondocks/myco-shared/runner-fleet';
+import { agentHasStoredKey, isRunnerCredentialChoice, QUEUE_REASON_WORDS, RUNNER_CREDENTIAL_CHOICES, RUNNER_PAYER_LABELS, RUNNER_SIGN_IN_WORDS, storedKeyFailureWords, type RunnerCredentialChoice, type RunnerSignInSource } from '@goondocks/myco-shared/runner-fleet';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 import { Button, ErrorState, Select } from '../../../design';
 import { useAgentPayers, type AgentPayersAnswer } from '../../../hooks/use-fleet';
@@ -10,6 +10,7 @@ import { settingsRefusalText, useSecrets, useSettingsActions } from '../../../ho
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { harnessLabel } from '../../../lib/harness';
 import { refreshFleet } from '../runners/LegacyWorker';
+import { RunnerFallbackStatus } from '../RunnerFallbackStatus';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import { keyKindWords } from './Credentials';
 import { KeyDialog, keyLabel } from './KeyDialog';
@@ -80,7 +81,9 @@ export function AgentWork({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
     ...(preferred !== null && !offered.includes(preferred) ? [{ value: preferred, label: `${harnessLabel(preferred)} (no runner offers it)` }] : []),
   ];
   // With no agent chosen, who pays is set for the agent runners use today, and the row says so.
-  const payingFor = preferred ?? today.find((runner) => runner.agent !== null)?.agent ?? null;
+  const todayAgent = today.find((runner) => runner.agent !== null)?.agent ?? null;
+  const attentionAgent = payers.data?.agents.find(entry => entry.waiting?.length || entry.fallbacks?.length)?.agent ?? null;
+  const payingFor = preferred ?? todayAgent ?? attentionAgent;
 
   const save = (value: string) => {
     setError(null);
@@ -101,7 +104,7 @@ export function AgentWork({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
           control={<Select id="agent-work-agent" label="Agent" value={preferred ?? NO_PREFERENCE} disabled={!admin || actions.setLeaf.isPending} options={options} onValueChange={save} />}
         />
         {payingFor !== null && payers.data !== undefined && (
-          <PaidBy agent={payingFor} chosen={preferred !== null} entry={payers.data.agents.find((entry) => entry.agent === payingFor)} />
+          <PaidBy agent={payingFor} forToday={preferred === null && payingFor === todayAgent} agents={payers.data.agents} />
         )}
         <CheckRow />
       </RowCard>
@@ -113,7 +116,8 @@ export function AgentWork({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
  * Who pays for an agent's work: one choice the server sets on every registered runner that offers the agent, all or
  * nothing, with one line per runner on what it uses now. A stored key with none usable saves nothing and offers to add one.
  */
-function PaidBy({ agent, chosen, entry }: { agent: string; chosen: boolean; entry: AgentPayersAnswer['agents'][number] | undefined }) {
+function PaidBy({ agent, forToday, agents }: { agent: string; forToday: boolean; agents: AgentPayersAnswer['agents'] }) {
+  const entry = agents.find(candidate => candidate.agent === agent);
   const admin = useIsAdmin();
   const client = useQueryClient();
   const secrets = useSecrets();
@@ -138,7 +142,14 @@ function PaidBy({ agent, chosen, entry }: { agent: string; chosen: boolean; entr
   const secret = slot === null ? undefined : secrets.data?.secrets.find((row) => row.name === slot);
   const kind = slot === null || secret === undefined ? null : keyKindWords(slot, secret.kind);
   const label = harnessLabel(agent);
-  const lead = chosen ? '' : `For ${label}, the agent your runners use today. `;
+  const lead = forToday ? `For ${label}, the agent your runners use today. ` : '';
+  const fallbacks = agents.flatMap(candidate => (candidate.fallbacks ?? []).map(notice => ({
+    ...notice, runnerName: candidate.runners.find(runner => runner.id === notice.runnerId)?.name ?? 'A runner',
+  })));
+  const waiting = entry?.waiting?.[0];
+  const waitingNames = runners.filter(runner => entry?.waiting?.some(notice => notice.runnerId === runner.id)).map(runner => runner.name);
+  const waitingStatus = waiting === undefined ? undefined : `${waitingNames.join(', ')} · ${storedKeyFailureWords(waiting.failure, waiting.slot)}`;
+  const fallbackStatus = fallbacks.length === 0 ? undefined : 'Using runners’ own sign-in while the key is unavailable.';
   const payerNote = value === 'stored'
     ? `${slot === null ? 'A stored key' : `${keyLabel(slot)}${secret?.maskedValue == null ? '' : ` ${secret.maskedValue}`}`}, billed to that account. If it stops working, the work waits; it never falls back to a runner’s own sign-in.`
     : value === 'stored-first' ? 'The runner uses a stored key when it works and its own sign-in while the key is unavailable.'
@@ -150,17 +161,14 @@ function PaidBy({ agent, chosen, entry }: { agent: string; chosen: boolean; entr
         setting="paid-by"
         label="2 · Paid by"
         htmlFor="agent-work-payer"
+        notice={<RunnerFallbackStatus notices={fallbacks} />}
         note={<>
           <span>{`${lead}${payerNote}`}</span>
           {(value === 'stored' || value === 'stored-first') && kind !== null && <span className="mt-s1 block" data-key-kind={secret?.kind}>{kind}</span>}
         </>}
-        status={error ?? undefined}
-        refused={error !== null}
+        status={error ?? waitingStatus ?? fallbackStatus}
+        refused={error !== null || waiting !== undefined}
         details={<>
-          {entry?.fallbacks?.map(({ runnerId, slot, reason, since }) => <p key={runnerId}
-            role={reason === 'out_of_credit' ? 'status' : 'alert'} className={reason === 'out_of_credit' ? 't-small text-ink-2' : 't-small text-bad'}>
-            {runners.find(runner => runner.id === runnerId)?.name} · Since {runnerFallbackSince(since)}. {runnerFallbackWords(reason, slot)}
-          </p>)}
           {missing && (
             <div role="alert" className="flex flex-wrap items-center gap-s2 t-small text-bad" data-paid-by-missing="">
               <span>{slot === null ? `${label} can’t use a stored key; nothing was saved.` : `No usable key is stored for ${label}, so nothing was saved.`}</span>

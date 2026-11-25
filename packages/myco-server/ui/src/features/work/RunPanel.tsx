@@ -1,4 +1,4 @@
-import { paidByWords } from '@goondocks/myco-shared/runner-fleet';
+import { paidByWords, runnerFallbackReasonWords } from '@goondocks/myco-shared/runner-fleet';
 import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
@@ -91,6 +91,10 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const at = run.completedAt ?? run.startedAt ?? run.queuedAt;
   const took = run.startedAt !== null && run.completedAt !== null ? tookWords(run.completedAt - run.startedAt) : null;
   const startedBy = startedByWords(run.startedBy, name);
+  const retryReason = run.retryKeyReason === undefined ? null
+    : run.retryKeyReason === 'out_of_credit' ? 'the stored key ran out of credit' : runnerFallbackReasonWords(run.retryKeyReason);
+  const queuedAgain = retryReason === null ? null : `Queued again by Myco: ${retryReason}`;
+  const attribution = queuedAgain ?? (startedBy === null ? null : startedKicker(startedBy));
   const spores = produced.spores;
   const cause = failed ? causeOf(answer) : null;
   const repositoryFailure = failed && run.errorCode === 'repository_unprepared';
@@ -103,7 +107,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const fleetWait = run.status === 'queued' ? fleetWaitWords(run) : null;
   const story = runStory({
     answer, calls: calls.rows, callsComplete: calls.complete, steps: stepsKnown(latest.coverage) ? latest.steps.rows : null,
-    startedBy: startedBy === null ? null : startedKicker(startedBy), cause: causeOf(answer), memberName: name, now,
+    startedBy: attribution, cause: causeOf(answer), memberName: name, now,
   });
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
@@ -112,7 +116,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
           {at !== null && <span>{capitalize(atWords(at, now))}</span>}
           {took !== null && <><span aria-hidden>·</span><span>took {took}</span></>}
-          {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
+          {attribution !== null && <><span aria-hidden>·</span><span data-started-by="">{attribution}</span></>}
         </p>
         {run.status === 'completed' && run.endedNote === LATE_HARNESS_ERROR_NOTE &&
           <p data-run-ended-note="" className="t-small text-muted">{lateSessionWords(diagnosticReaderCode(run.harnessStop?.code ?? null))}</p>}
@@ -335,14 +339,13 @@ function TechnicalDetails({ answer, startedBy, took }: {
             {run.harnessStop?.signal !== undefined && <FactRow term="Agent exit signal">{run.harnessStop.signal}</FactRow>}
             {Object.entries(run.harnessStop?.fields ?? {}).map(([field, value]) => <FactRow key={field} term={SESSION_ENDING_FIELD_LABELS[field] ?? 'Session detail'}>{value}</FactRow>)}
             <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
-            <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
+            <FactRow term={run.retryKeyReason === undefined ? 'Started by' : 'Queued again by'}>{run.retryKeyReason !== undefined ? 'Myco' : startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}
             {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Queue wait">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
             {run.completedAt !== null && <FactRow term="Finished">{dateWords(run.completedAt)}</FactRow>}
             {run.startedAt !== null && <FactRow term="Started">{new Date(run.startedAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</FactRow>}
             {took !== null && <FactRow term="Execution">{took}</FactRow>}
             <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}{run.costSource === 'partial' && ' (partial; some request usage is unknown)'}</FactRow>
-            {run.payment !== undefined && <FactRow term="Payment">{paidByWords(run.payment)}</FactRow>}
             <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}{run.costSource === 'partial' && '. Includes only requests with reported usage; other request costs are unknown.'}</span></>}</FactRow>
           </FactsPanel>
           {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}

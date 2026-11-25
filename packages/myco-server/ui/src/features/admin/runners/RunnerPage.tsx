@@ -1,6 +1,6 @@
 import { useAgentPayers } from '../../../hooks/use-fleet';
 import { useIsAdmin } from '../../../hooks/use-me';
-import { paidByWords, runnerFallbackSince, runnerFallbackWords, type RunPayer } from '@goondocks/myco-shared/runner-fleet';
+import { paidByWords, runnerFallbackSince, runnerFallbackWords, storedKeyFailureWords, type RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import { useParams } from 'react-router-dom';
 import { Breadcrumbs, Card, ErrorState, HealthDot, ListRow, ShowMore, StatusChip, type HealthTone } from '../../../design';
 import { usePaged, type Page } from '../../../hooks/use-paged';
@@ -48,6 +48,7 @@ export function RunnerPage() {
   const admin = useIsAdmin();
   const payers = useAgentPayers(admin);
   const fallbacks = admin ? (payers.data?.agents ?? []).flatMap(entry => entry.fallbacks ?? []).filter(notice => notice.runnerId === runnerId) : [];
+  const waiting = admin ? (payers.data?.agents ?? []).flatMap(entry => entry.waiting ?? []).filter(notice => notice.runnerId === runnerId) : [];
   const worked = workedWords(runs.rows);
   return (
     <AdminPage name="runner" scope="server" title={runner?.name ?? 'Runner'} lede="What this runner ran, newest first, across every project.">
@@ -65,6 +66,7 @@ export function RunnerPage() {
             className={reason === 'out_of_credit' ? 't-small text-ink-2' : 't-small text-bad'}>
             Since {runnerFallbackSince(since)}. {runnerFallbackWords(reason, slot)}
           </p>)}
+          {waiting.map(({ agent, slot, failure }) => <p key={agent} role="alert" className="t-small text-bad">{storedKeyFailureWords(failure, slot)}</p>)}
           {worked !== null && <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-small text-ink-2" data-runner-worked="">{worked}<SourceMark source="saw" /></p>}
           {runner.version !== null && <p className="t-meta text-muted">Runner version {runner.version}, as it last reported.</p>}
         </Card>

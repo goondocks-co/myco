@@ -44,6 +44,7 @@ export interface WorkOutcome {
   outcome: { spores: number; sessions: number; maps: number };
   failedWithOutput: number;
   failed: number;
+  handedOn?: number;
   failure: { runs: number; latestAt: number; latestRunId: string; unresolved: boolean } | null;
   latestAt: number | null;
   tokens: number;

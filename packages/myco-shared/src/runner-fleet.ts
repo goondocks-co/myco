@@ -56,11 +56,14 @@ export function storedRunnerCredentialChoices(text: string): StoredRunnerCredent
 /** Whether a runner's reported offer names `agent` as installed on its machine: the rule claims and sign-in choices share. */
 export const offersAgentInstalled = (offer: { id: string; installed?: boolean }, agent: string): boolean => offer.id === agent && offer.installed !== false;
 
+export const runnerOwnSignInReady = (offer: { authenticated: boolean; unavailableReason?: 'login_missing' }): boolean =>
+  offer.authenticated && offer.unavailableReason !== 'login_missing';
+
 /** Stored sign-in admits a reported agent independently of its machine's authentication status. */
 export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean; unavailableReason?: 'login_missing' }, choices?: StoredRunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
   const choice = choices?.[offer.id];
   if (!offersAgentInstalled(offer, offer.id) || choice === null) return false;
-  const own = offer.authenticated && offer.unavailableReason !== 'login_missing';
+  const own = runnerOwnSignInReady(offer);
   const stored = storedAvailable === undefined || storedAvailable[offer.id] === true;
   if (choice === 'stored-first') return own || stored;
   return offer.unavailableReason !== 'login_missing' && (choice === 'stored' ? stored : own);
@@ -118,7 +121,7 @@ export interface RunnerFleetRecord {
   updateState: RunnerUpdateState | null; updateRequest: RunnerUpdateRequest | null;
 }
 
-export interface StoredKeyFailureNotice { agent: string; slot: SecretSlotName; failure: StoredKeyFailure; since?: number }
+export interface StoredKeyFailureNotice { agent: string; slot: SecretSlotName; failure: RunnerFallbackReason; since?: number }
 export interface RunnerFallbackNotice { agent: string; slot: SecretSlotName; reason: RunnerFallbackReason; since: number }
 
 export function runnerFallbackReasonWords(reason: RunnerFallbackReason): string {
@@ -134,13 +137,14 @@ export function runnerFallbackSince(since: number): string {
   return new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(since);
 }
 
-export function storedKeyFailureTitle(failure: StoredKeyFailure, slot?: SecretSlotName): string {
+export function storedKeyFailureTitle(failure: RunnerFallbackReason, slot?: SecretSlotName): string {
   const key = slot === undefined ? 'The stored key' : `The ${secretSlotLabel(slot)} key`;
+  if (failure === 'no_key') return `${key} is missing or unusable`;
   return failure === 'out_of_credit' ? `${key} ran out of API credit` : `${key} was rejected`;
 }
 
-export function storedKeyFailureWords(failure: StoredKeyFailure, slot?: SecretSlotName, runEnded = false): string {
-  const next = failure === 'out_of_credit' ? 'Add credit with the provider, replace the key in Settings, or' : 'Replace the key in Settings or';
+export function storedKeyFailureWords(failure: RunnerFallbackReason, slot?: SecretSlotName, runEnded = false): string {
+  const next = failure === 'no_key' ? 'Add a usable key in Settings or' : failure === 'out_of_credit' ? 'Add credit with the provider, replace the key in Settings, or' : 'Replace the key in Settings or';
   const remedy = `${next} switch the runner to its own sign-in on Runners.`;
   const outcome = runEnded ? 'This run ended.' : 'Work that needs this key waits.';
   return `${storedKeyFailureTitle(failure, slot)}. ${outcome} ${remedy}${runEnded ? ' Start a new run when ready.' : ''}`;

@@ -67,6 +67,7 @@ export interface WorkOutcome {
   failedWithOutput: number;
   /** Failed runs that produced nothing. */
   failed: number;
+  handedOn?: number;
   /** Failed runs without output in this window, and whether a later run of this Project and task has resolved them. */
   failure: { runs: number; latestAt: number; latestRunId: string; unresolved: boolean } | null;
   /** The latest instant a run of this kind is shown at (`at` on a listed run). */
@@ -224,6 +225,11 @@ async function summaryOf(db: RelationalStore, set: ProjectSet, window: UtcWindow
   }
   for (const [id, outcome] of outcomes) {
     const head = headsBy.get(id);
+    const handedOn = num(head?.handed_on);
+    if (handedOn > 0) {
+      outcome.handedOn = handedOn;
+      outcome.failed -= handedOn;
+    }
     if (head?.failed_run == null || outcome.failed === 0) continue;
     outcome.failure = { runs: outcome.failed, latestAt: num(head.failed_at), latestRunId: String(head.failed_run), unresolved: num(head.unresolved) === 1 };
   }
@@ -262,7 +268,7 @@ function workRunOf(row: Record<string, unknown>, includeSignIn: boolean): WorkRu
       maps: kind === 'map' && produced ? 1 : 0,
     },
     sessionId: kind === 'title' ? titled : null,
-    failure: !failed ? null : { ...(includeSignIn && row.fallback_run_id != null ? { fallbackQueued: true } : {}), ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
+    failure: !failed ? null : { ...(row.fallback_run_id != null ? { fallbackQueued: true } : {}), ...(repositoryFailure === null ? {} : { repositoryFailure }), code: code ?? 'run_failed', cause: error ?? 'the run failed without saying why', ...(row.error_reason == null ? {} : { reason: String(row.error_reason) }), error, source: 'error' },
     tokens: orNull(row.tokens_used),
     costUsd: orNull(row.cost_usd),
   };

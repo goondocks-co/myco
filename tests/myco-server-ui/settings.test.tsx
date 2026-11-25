@@ -1032,13 +1032,18 @@ describe('Models', () => {
 
   it('saves stored-first without a key and shows the runner’s fallback on Models and Connections', async () => {
     let choice = 'own';
+    let ownReady = true;
     const { sent } = server(base({
-      '/api/settings': () => Response.json(leaves({ 'worker.harness': { value: 'claude-code' } })),
+      '/api/settings': () => Response.json(leaves(ownReady ? { 'worker.harness': { value: 'claude-code' } } : {})),
       '/api/runners/agents': () => Response.json({ today: [], agents: [{
-        agent: 'claude-code', storedUsable: false, runners: [{ id: 'mini', name: 'Mini', choice }],
-        ...(choice === 'own' ? {} : { storedFailure: 'out_of_credit', fallbacks: [
+        agent: 'claude-code', storedUsable: false, runners: [{ id: 'mini', name: 'Mini', choice }, { id: 'studio', name: 'Studio', choice }],
+        ...(choice === 'own' ? {} : { storedFailure: 'out_of_credit', ...(ownReady ? { fallbacks: [
           { runnerId: 'mini', agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW },
-        ] }),
+          { runnerId: 'studio', agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW },
+        ] } : { waiting: [{ runnerId: 'mini', agent: 'claude-code', slot: 'anthropic', failure: 'out_of_credit' }] }) }),
+      }, {
+        agent: 'codex', storedUsable: false, runners: [{ id: 'desk', name: 'Desk', choice: 'stored-first' }],
+        fallbacks: [{ runnerId: 'desk', agent: 'codex', slot: 'codex', reason: 'out_of_credit', since: NOW }],
       }] }),
       '/api/runners/sign-in': () => { choice = 'stored-first'; return Response.json({ saved: true }); },
     }));
@@ -1048,11 +1053,22 @@ describe('Models', () => {
     await pick('Paid by', label);
     await screen.findByRole('combobox', { name: `Paid by: ${label}` });
     expect(sent[0]).toMatchObject({ path: '/api/runners/sign-in', body: { agent: 'claude-code', choice: 'stored-first' } });
-    await screen.findByText(/Work continues on the runner’s own sign-in/);
+    const notice = await screen.findByRole('status', { name: 'Claude Code sign-in fallback' });
+    expect(notice.textContent).toContain('Mini, Studio');
+    expect(notice.textContent).toContain('Out of credit · using runners’ own sign-in');
+    expect(notice.textContent).toContain('Work continues on the runner’s own sign-in');
+    expect(screen.getByRole('status', { name: 'Codex sign-in fallback' }).textContent).toContain('Desk');
+    expect(statusOf('paid-by')).toContain('Using runners’ own sign-in');
     cleanup();
     mount('/settings/connections');
-    await screen.findByText('Out of credit', { exact: true });
-    await screen.findByText(/Work continues on the runner’s own sign-in/);
+    const key = within(await waitFor(() => connection('Anthropic key')));
+    await key.findByText('Out of credit', { exact: true });
+    await key.findByText(/Work continues on the runner’s own sign-in/);
+    cleanup();
+    ownReady = false;
+    mount('/settings/models');
+    await waitFor(() => expect(statusOf('paid-by')).toContain('Work that needs this key waits.'));
+    expect(screen.queryByRole('status', { name: 'Claude Code sign-in fallback' })).toBeNull();
   });
 
   it('folds each tuning group under Advanced with one line on whether it was changed', async () => {

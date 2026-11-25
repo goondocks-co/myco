@@ -77,6 +77,7 @@ export interface SettingRowProps {
   note?: ReactNode;
   /** Where the value stands: "Saved by Ada 2h ago", "Server default", or why a save was refused. */
   status?: ReactNode;
+  notice?: ReactNode;
   /** Status reads as a refusal. */
   refused?: boolean;
   details?: ReactNode;
@@ -94,12 +95,13 @@ export interface SettingRowProps {
  * control at the right, or under the words for a control that needs the width.
  * Rows stack into one column on a phone.
  */
-export function SettingRow({ label, htmlFor, note, status, refused = false, details, control, stacked = false, inline = false, setting }: SettingRowProps) {
+export function SettingRow({ label, htmlFor, note, status, notice, refused = false, details, control, stacked = false, inline = false, setting }: SettingRowProps) {
   const words = (
     <div className="flex min-w-0 flex-col gap-s1">
       {htmlFor != null
         ? <label htmlFor={htmlFor} className="t-body font-medium text-ink">{label}</label>
         : <span className="t-body font-medium text-ink">{label}</span>}
+      {notice}
       {note != null && <p className="max-w-measure t-small text-muted">{note}</p>}
       {status != null && (
         <p role={refused ? 'alert' : undefined} className={cn('t-meta', refused ? 'text-bad' : 'text-faint')} data-setting-status={setting}>

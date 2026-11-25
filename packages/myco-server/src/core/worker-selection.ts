@@ -1,3 +1,4 @@
+import type { FallbackRetry } from './runs.js';
 import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import type { HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
 import type { ServerEnv } from './adapters.js';
@@ -17,7 +18,7 @@ import { capabilitiesRequiredBy, REQUIRED_REPOSITORY_TASKS } from '@goondocks/my
 import { CAPABILITY_HOLDS, credentialHoldReason, credentialUnavailable, profileUnsupported, sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
-import { runnerAgentLoginReady, type RunnerFallbackReason, type RunnerSignInSource, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import { runnerAgentLoginReady, runnerOwnSignInReady, type RunnerCredentialChoice, type RunnerFallbackReason, type RunnerSignInSource, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
 import type { RunnerSecretAvailability } from '../db/settings/runner-secret-health.js';
 import { fixedTaskHarness, PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
@@ -122,21 +123,24 @@ export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ pr
  * selected agent's own slot.
  */
 type LoginPlan = { kind: 'worker-login' } | { kind: 'deployment'; slot: SecretSlotName; fallback: boolean } | { reason: string };
-export type LoginEvidence = { payer: RunnerSignInSource; fallbackReason?: RunnerFallbackReason; allowFallback?: boolean };
+export type LoginEvidence = { payer: RunnerSignInSource; fallbackReason?: RunnerFallbackReason; allowFallback?: boolean; observedChoice?: RunnerCredentialChoice };
 
-function loginPlan(harness: string, model: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices, retry?: RunnerFallbackReason): LoginPlan {
+function loginPlan(harness: string, model: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices, retry?: FallbackRetry): LoginPlan {
   const configured = profileSetting(settings.get(`agent.harnesses.${harness}.credential`));
   if (choices?.[harness] === null) return { reason: credentialUnavailable(harness) };
   const choice = choices?.[harness];
   const source = choices === undefined ? configured ?? 'worker-login' : choice === 'stored' || choice === 'stored-first' ? 'deployment' : 'worker-login';
-  if (retry !== undefined) return choices !== undefined && choice !== 'stored' ? { kind: 'worker-login' } : { reason: credentialUnavailable(harness) };
+  if (retry !== undefined) {
+    if (choices === undefined) return { reason: credentialUnavailable(harness) };
+    if (choice !== 'stored') return { kind: 'worker-login' };
+  }
   const unavailable = { reason: credentialUnavailable(harness) };
   if (source === 'worker-login') return { kind: 'worker-login' };
   if (source !== 'deployment') return unavailable;
   const declared = HARNESS_CREDENTIALS[harness];
   if (declared === undefined || declared.slot === null || declared.variables.length === 0) return unavailable;
   if (declared.modelProvider !== undefined && !model.startsWith(`${declared.modelProvider}/`)) return { kind: 'worker-login' };
-  return { kind: 'deployment', slot: declared.slot, fallback: choice === 'stored-first' };
+  return { kind: 'deployment', slot: declared.slot, fallback: retry === undefined && choice === 'stored-first' };
 }
 
 /** The step that turns a login plan into what a run is handed, or the holder that keeps it from running. */
@@ -151,7 +155,7 @@ export const availableLogin = (available: (harness: string, fallback?: boolean) 
 };
 
 /** Resolve a task against one worker's offers in preference order. */
-export async function selectExecution<L>(task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, login: LoginStep<L>, choices?: StoredRunnerCredentialChoices, retry?: RunnerFallbackReason): Promise<{ selected: Selected<L> | null; reason: string | null }> {
+export async function selectExecution<L>(task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, login: LoginStep<L>, choices?: StoredRunnerCredentialChoices, retry?: FallbackRetry): Promise<{ selected: Selected<L> | null; reason: string | null }> {
   const preference = harnessPreference(settings, task);
   let remaining = [...offers];
   let reason: string | null = null;
@@ -167,18 +171,22 @@ export async function selectExecution<L>(task: string, offers: readonly OfferedH
     const resolved = resolveExecutionProfile(task, harness, offer.profile, settings);
     if ('profile' in resolved) {
       const plan = loginPlan(harness, resolved.profile.model, settings, choices, retry);
-      const ownReady = offer.authenticated && offer.unavailableReason !== 'login_missing';
+      const ownReady = runnerOwnSignInReady(offer);
       let opened = 'reason' in plan ? plan : plan.kind === 'worker-login' && !ownReady ? null : await login(harness, plan);
       const fallback = !('reason' in plan) && plan.kind === 'deployment' && plan.fallback;
       const refusal = opened !== null && 'reason' in opened ? opened.reason : null;
       const failure = credentialHoldReason(refusal);
-      const fallbackReason = retry ?? (fallback && refusal !== null ? isStoredKeyFailure(failure) ? failure : 'no_key' : undefined);
+
       const useFallback = fallback && refusal !== null && ownReady;
       if (useFallback) opened = await login(harness, { kind: 'worker-login' });
       if (opened !== null && 'login' in opened) {
         const payer = !('reason' in plan) && plan.kind === 'deployment' && !useFallback ? 'stored' : 'own';
+        const retryChoice = retry === undefined ? undefined : choices?.[harness] ?? 'own';
+        const fallbackReason = useFallback ? isStoredKeyFailure(failure) ? failure : 'no_key'
+          : retryChoice === 'stored-first' && retry?.failedAgent === harness ? retry.reason : undefined;
         return { selected: { harness, profile: resolved.profile, login: opened.login, payer,
-          ...(fallbackReason === undefined ? {} : { fallbackReason }), ...(fallback && payer === 'stored' ? { allowFallback: true } : {}) }, reason: null };
+          ...(fallbackReason === undefined ? {} : { fallbackReason }), ...(fallback && payer === 'stored' ? { allowFallback: true } : {}),
+          ...(retryChoice !== undefined || fallback ? { observedChoice: retryChoice ?? 'stored-first' } : {}) }, reason: null };
       }
       reason ??= opened?.reason ?? null;
     } else reason ??= resolved.reason;

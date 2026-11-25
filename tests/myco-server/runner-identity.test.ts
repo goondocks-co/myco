@@ -33,6 +33,7 @@ import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { workerLiveness } from '@myco-server-worker/db/runs/status.js';
 import { commit } from '@myco-server-worker/db/index.js';
 import { runnerObservation, readWorkerFleet, pruneWorkerContacts, recordWorkerContact, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
+import { TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { prepareRecoveredTenant } from '@myco-server-worker/core/recovered-tenant.js';
@@ -1312,6 +1313,16 @@ describe('runner agent sign-in choice', () => {
       });
       expect((await read('/api/work/now')).needsYou).toContainEqual(expect.objectContaining({ information: true, at: since }));
       expect((await read('/api/status')).workers.fleet[0].runnerDetails.fallbackNotices[0]).toMatchObject({ reason: 'out_of_credit', since });
+      const signedOut = { ...offeredHarness('claude-code'), authenticated: false, unavailableReason: 'login_missing' };
+      expect(await r.json(r.asRunner(token, '/worker/claim', { harnesses: [signedOut], capabilities: WORKER_CAPABILITIES }))).toMatchObject({ claimed: false });
+      const waiting = (await read('/api/runners')).runners[0];
+      expect(waiting.readiness.reason).toContain('Work that needs this key waits.');
+      expect(waiting.storedKeyFailures).toMatchObject([{ failure: 'out_of_credit' }]);
+      expect(waiting.fallbackNotices).toBeUndefined();
+      expect((await read('/api/runners/agents')).agents[0].waiting).toMatchObject([{ runnerId, failure: 'out_of_credit' }]);
+      const work = await read('/api/work');
+      expect(work.summary.find((outcome: Json) => outcome.task === 'title-summary')).toMatchObject({ failed: 1, handedOn: 1, failure: { runs: 1, latestRunId: withoutKey.id, unresolved: true } });
+      expect(work.timeline.find((run: Json) => run.id === first.id)?.failure).toMatchObject({ fallbackQueued: true });
       const retry = (await r.claim(token)).run;
       expect(retry.credentialEnv).toEqual({});
       expect((await read(`/api/projects/proj_1/runs/${retry.id}`)).run).toMatchObject({
@@ -1328,10 +1339,13 @@ describe('runner agent sign-in choice', () => {
       const probe = (await r.claim(token)).run;
       expect(Object.keys(probe.credentialEnv)).toHaveLength(1);
       await end(probe, 'failed', '401 authentication_error: invalid x-api-key');
+      expect((await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'claude-code', choice: 'own' })).status).toBe(200);
       const afterProbe = (await r.claim(token)).run;
       expect(afterProbe.credentialEnv).toEqual({});
+      expect((await read(`/api/projects/proj_1/runs/${afterProbe.id}`)).run.payment).toEqual({ payer: 'own' });
       expect((await read('/api/runners/agents')).agents[0]).toMatchObject({ storedFailure: 'invalid_key' });
       await end(afterProbe, 'completed');
+      expect((await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'claude-code', choice: 'stored-first' })).status).toBe(200);
       r.advance(60 * 60_000);
       await r.queueTitling();
       const recovered = (await r.claim(token)).run;
@@ -1340,6 +1354,55 @@ describe('runner agent sign-in choice', () => {
       expect((await read('/api/runners/agents')).agents[0].fallbacks).toBeUndefined();
       await r.queueTitling();
       expect(Object.keys((await r.claim(token)).run.credentialEnv)).toHaveLength(1);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('takes a queued retry on the newly chosen stored key and settles a second refusal without requeueing', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      const store = deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey);
+      await store.put('anthropic', 'sk-ant-api-fixture-initial', OWNER, r.now());
+      const { runnerId, token } = await r.register('mini', { 'claude-code': 'stored-first' });
+      const end = (run: Json) => r.json(r.asRunner(token, '/worker/end', {
+        projectId: 'proj_1', runId: run.id, attemptId: run.attemptId, status: 'failed',
+        error: 'Your credit balance is too low to access the Anthropic API.',
+      }));
+      await r.queueTitling();
+      await end((await r.claim(token)).run);
+      expect((await r.asSession(`/api/runners/${runnerId}/sign-in`, { agent: 'claude-code', choice: 'stored' })).status).toBe(200);
+      expect((await r.claim(token)).claimed).toBe(false);
+      await store.put('anthropic', 'sk-ant-api-fixture-replacement', OWNER, r.now());
+      const retry = (await r.claim(token)).run;
+      expect(Object.keys(retry.credentialEnv)).toHaveLength(1);
+      const detail = await r.json(r.asSession(`/api/projects/proj_1/runs/${retry.id}`, {}, OWNER_SUB, 'GET'));
+      expect(detail.run.payment).toEqual({ payer: 'stored' });
+      await end(retry);
+      expect((await r.json(r.asSession('/api/projects/proj_1/runs?status=queued', {}, OWNER_SUB, 'GET'))).rows).toHaveLength(0);
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('records the other agent’s own sign-in without assigning it the failed key', async () => {
+    const r = rig();
+    try {
+      r.e.env.SECRET_WRAP_KEY = { get: async () => btoa('k'.repeat(32)) };
+      await deploymentSecretStore(r.e.db, r.e.serverEnv.wrappingKey)
+        .put('anthropic', 'sk-ant-api-fixture-initial', OWNER, r.now());
+      const { token } = await r.register('mini', { 'claude-code': 'stored-first' });
+      await r.queueTitling();
+      const first = (await r.claim(token)).run;
+      await r.asRunner(token, '/worker/end', {
+        projectId: 'proj_1', runId: first.id, attemptId: first.attemptId, status: 'failed',
+        error: 'Your credit balance is too low to access the Anthropic API.',
+      });
+      const settings = settingsWriter(r.e.db);
+      await settings.setLeaf('worker.harness', 'codex', OWNER, r.now());
+      await settings.setLeaf(`agent.reasoning_map.codex.${TASK_TIERS['title-summary']}`, 'gpt-5.5', OWNER, r.now());
+      const { run: retry } = await r.json(r.asRunner(token, '/worker/claim', { harnesses: [offeredHarness('codex')], capabilities: WORKER_CAPABILITIES }));
+      expect(retry).toMatchObject({ harness: 'codex', credentialEnv: {} });
+      const detail = await r.json(r.asSession(`/api/projects/proj_1/runs/${retry.id}`, {}, OWNER_SUB, 'GET'));
+      expect(detail.run.payment).toEqual({ payer: 'own' });
+      expect(detail.run.retryKeyReason).toBe('out_of_credit');
     } finally { r.e.sqlite.close(); }
   });
 

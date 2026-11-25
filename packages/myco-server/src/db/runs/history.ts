@@ -19,7 +19,7 @@ import { read, readSet, type BindValue } from '../index.js';
 import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { LIVE_RUN_STATUSES } from '../run-statuses.js';
 import { WORK_HISTORY_READY_SQL, WORK_TASKS, WORK_WINDOW_SPANS } from './history-schema.js';
-import { failureThreshold, unresolvedFailure } from './outcomes.js';
+import { failureHandedOn, failureThreshold, unresolvedFailure } from './outcomes.js';
 import { runNotRetiring } from './evidence-schema.js';
 
 /** A window read by supported UTC days, its end excluded. */
@@ -68,8 +68,15 @@ const heads = bySet((all, tag) => read<[string, number, number, number, number],
       WHERE c.project_id=h.project_id AND c.task=h.task AND c.status='failed' AND c.produced=0 AND c.at>=MAX(?4,h.threshold) AND c.at<?5 AND ${unresolvedFailure('r', 'h.threshold')}) END AS unresolved FROM (
     SELECT p.project_id,p.task,${failureThreshold('p.project_id', 'p.task')} AS threshold,
       (SELECT MAX(c.at) FROM work_run_contribution c INDEXED BY idx_work_run_latest WHERE c.project_id=p.project_id AND c.task=p.task AND c.at>=?4 AND c.at<?5) AS latest_at,
-      (SELECT c.run_id FROM work_run_contribution c INDEXED BY idx_work_run_failed WHERE c.project_id=p.project_id AND c.task=p.task AND c.status='failed' AND c.produced=0 AND c.at>=?4 AND c.at<?5 ORDER BY c.at DESC,c.run_id DESC LIMIT 1) AS failed_run,
-      (SELECT MAX(c.at) FROM work_run_contribution c INDEXED BY idx_work_run_failed WHERE c.project_id=p.project_id AND c.task=p.task AND c.status='failed' AND c.produced=0 AND c.at>=?4 AND c.at<?5) AS failed_at
+      (SELECT c.run_id FROM work_run_contribution c INDEXED BY idx_work_run_failed CROSS JOIN agent_runs r ON r.project_id=c.project_id AND r.id=c.run_id
+        WHERE c.project_id=p.project_id AND c.task=p.task AND c.status='failed' AND c.produced=0 AND c.at>=?4 AND c.at<?5
+          AND NOT (${failureHandedOn('r')}) ORDER BY c.at DESC,c.run_id DESC LIMIT 1) AS failed_run,
+      (SELECT MAX(c.at) FROM work_run_contribution c INDEXED BY idx_work_run_failed CROSS JOIN agent_runs r ON r.project_id=c.project_id AND r.id=c.run_id
+        WHERE c.project_id=p.project_id AND c.task=p.task AND c.status='failed' AND c.produced=0 AND c.at>=?4 AND c.at<?5
+          AND NOT (${failureHandedOn('r')})) AS failed_at,
+      (SELECT COUNT(*) FROM work_run_contribution c INDEXED BY idx_work_run_failed CROSS JOIN agent_runs r ON r.project_id=c.project_id AND r.id=c.run_id
+        WHERE c.project_id=p.project_id AND c.task=p.task AND c.status='failed' AND c.produced=0 AND c.at>=?4 AND c.at<?5
+          AND ${failureHandedOn('r')}) AS handed_on
     FROM (SELECT DISTINCT project_id,task FROM work_daily d WHERE ${setIn(all, 'd.project_id')} AND d.day BETWEEN ?2 AND ?3) p) h` }));
 const queued = bySet((all, tag) => read<[string, string], Row>({ name: `runs.workQueued${tag}`, sql: `SELECT t.project_id,t.task,t.queued_count AS runs,
     (SELECT MAX(d.queued_at) FROM task_due d WHERE d.project_id=t.project_id AND d.task=t.task AND d.origin=t.origin) AS latest
@@ -155,7 +162,7 @@ const failedSince = (a: string, keys: { from: string; where: string }): string =
   ['idx_agent_runs_failed_unstarted', `${a}.started_at IS NULL AND COALESCE(${a}.queued_at,${a}.completed_at)>=?2`],
 ].map(([index, since]) =>
   `SELECT ${a}.project_id,${a}.id,${a}.task,${a}.dry_run,${a}.started_at,${a}.queued_at,${a}.completed_at,${a}.subject,${a}.error_code FROM ${keys.from} agent_runs ${a} INDEXED BY ${index}
-    WHERE ${keys.where} AND ${a}.status='failed' AND ${since}`).join(' UNION ALL ');
+    WHERE ${keys.where} AND ${a}.status='failed' AND NOT (${failureHandedOn(a)}) AND ${since}`).join(' UNION ALL ');
 /** Every task ?1 names in each Project that accepts capture. */
 const VISIBLE_TASKS = { from: 'projects p CROSS JOIN (SELECT DISTINCT value FROM json_each(?1)) t CROSS JOIN', where: 'p.archived_at IS NULL AND r.project_id=p.project_id AND r.task=t.value' };
 /**
@@ -203,6 +210,7 @@ const COLUMNS = `id, agent_id, task, subject, status, provider, model, usage_dat
   ${requestedProfileValue()} AS requested_profile,
   ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
   runner_payer,runner_fallback_reason,runner_secret_slot,${contextValue('fallbackRunId')} AS fallback_run_id,
+  (SELECT p.runner_secret_outcome FROM agent_runs p WHERE p.project_id=agent_runs.project_id AND p.id=agent_runs.runner_fallback_from) AS retry_key_reason,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by,
   harness, leased_by, lease_expires_at, leased_runner_id, leased_runner_credential_id,

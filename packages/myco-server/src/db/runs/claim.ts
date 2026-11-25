@@ -492,10 +492,9 @@ const claimMemberAuthority = assertion<[token: string, now: number]>({ name: 'ru
   when: `EXISTS (SELECT 1 FROM member_credentials c JOIN members m ON m.id=c.member_id
     WHERE c.id=?1 AND c.revoked_at IS NULL AND c.expires_at>?2 AND m.revoked_at IS NULL)` });
 
-const admitPayerChoice = assertion<[runnerId: string, agentPath: string, retry: number]>({
+const admitPayerChoice = assertion<[runnerId: string, agentPath: string, choice: string]>({
   name: 'runs.admitFallbackPayer', refusal: CLAIM_SELECTION_REFUSED, when: `EXISTS (SELECT 1 FROM runners WHERE id=?1
-    AND (json_extract(credential_choices,?2)='stored-first'
-      OR (?3=1 AND COALESCE(json_extract(credential_choices,?2),'own')='own')))`,
+    AND COALESCE(json_extract(credential_choices,?2),'own')=?3)`,
 });
 
 /** Authority and admission are asserted before any claim companion can commit. */
@@ -504,8 +503,8 @@ export function workerClaimAssertions(form: ClaimForm, claim: WorkerClaim, admis
   const session = quietSession(claim.input);
   const candidate = form.kind === 'queued' ? form.candidate : form.pull;
   return [
-    ...(claim.worker.kind !== 'runner' || (claim.login?.allowFallback !== true && claim.login?.fallbackReason === undefined) ? [] : [
-      admitPayerChoice.bind(claim.worker.runnerId, `$."${claim.harness}"`, form.kind === 'queued' && form.candidate.fallbackRetry !== undefined ? 1 : 0),
+    ...(claim.worker.kind !== 'runner' || claim.login?.observedChoice === undefined ? [] : [
+      admitPayerChoice.bind(claim.worker.runnerId, `$."${claim.harness}"`, claim.login.observedChoice),
     ]),
     claim.worker.kind === 'runner' ? claimRunnerAuthority.bind(claim.worker.credentialId, claim.worker.runnerId) : claimMemberAuthority.bind(claim.worker.tokenId, claim.now),
     definition.guard.bind(...authority),

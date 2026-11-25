@@ -1,3 +1,4 @@
+import type { StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import type { Bound } from '../db/index.js';
 import type { ProjectCapability } from './settings.js';
 import type { DispatchLimits } from './limits.js';
@@ -212,8 +213,10 @@ export interface QueuedRunRef {
  * credential the row names; a worker must never take it. `expireLeases` clears the column when it
  * requeues, which is what makes a run it held claimable again.
  */
+export interface FallbackRetry { reason: StoredKeyFailure; failedAgent: string | null }
+
 export interface ClaimCandidate {
-  fallbackRetry?: { reason: import('@goondocks/myco-shared/runner-fleet').RunnerFallbackReason; subject: string | null };
+  fallbackRetry?: FallbackRetry & { subject: string | null };
   projectId: string;
   id: string;
   task: string;

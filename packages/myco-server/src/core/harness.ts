@@ -6,7 +6,7 @@ import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
 import { budgetHold } from '../db/runs/budget-policy.js';
 import { retryOnRunnerSignIn } from '../db/runs/payer-retry.js';
-import type { RunnerFallbackReason } from '@goondocks/myco-shared/runner-fleet';
+import type { FallbackRetry } from './runs.js';
 import type { LoginEvidence } from './worker-selection.js';
 import { pullBudgetAdmission, pullCapacityAvailable } from './pulled-admission.js';
 import { recordPulledBudgetHold, clearPulledBudgetHolds } from '../db/runs/pulled-budget-hold.js';
@@ -835,7 +835,7 @@ export async function selectWorkerExecution(env: ServerEnv, task: string, offers
 function workerSelector(env: ServerEnv, offers: readonly OfferedHarness[], now: number, worker?: WorkerPrincipal) {
   let choices: Promise<Awaited<ReturnType<typeof runnerCredentialChoices>> | undefined> | undefined;
   const login = claimLogin(env, now);
-  return async (task: string, settings: ReadonlyMap<string, string>, retry?: RunnerFallbackReason): Promise<{ selected: SelectedExecution | null; reason: string | null }> => {
+  return async (task: string, settings: ReadonlyMap<string, string>, retry?: FallbackRetry): Promise<{ selected: SelectedExecution | null; reason: string | null }> => {
     choices ??= worker?.kind === 'runner' ? runnerCredentialChoices(env.db, worker.runnerId) : Promise.resolve(undefined);
     const { selected, reason } = await selectExecution(task, offers, settings, login, await choices, retry);
     if (selected === null) return { selected: null, reason };
@@ -950,7 +950,7 @@ export async function claimNextRun(
       continue;
     }
     await recordQueueHolder(env.db, { projectId: candidate.projectId }, candidate.id, 'worker', { from: CARDS_PENDING_HOLD });
-    const { selected } = await select(candidate.task, settings, candidate.fallbackRetry?.reason);
+    const { selected } = await select(candidate.task, settings, candidate.fallbackRetry);
     chosen = selected;
     if (chosen !== null) {
       const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,chosen.harness,chosen.profile);
