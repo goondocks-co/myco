@@ -2,12 +2,13 @@
  * `GET /api/runners/{runnerId}/runs`: one runner's page of recent runs across Projects, newest claim first, with the
  * runner's name, state and last check-in.
  */
+import { isAdmin } from '../auth/roles.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { runnerAttempts, runnerFacts, type RunnerAttemptKey, type RunnerAttemptRow } from '../db/runners/recent-runs.js';
 import { decodeCursor, encodeCursor } from '../read/scope.js';
 import { badRequest, notFound, ok } from './scope.js';
-import { runAccounting } from '../read/accounting.js';
+import { recordedRunPayer, runAccounting } from '../read/accounting.js';
 import { requestedProfile } from '@goondocks/myco-shared/execution-profile';
 
 /** The most runs one page of a runner's history lists, and the page it lists when none is asked for. */
@@ -53,9 +54,11 @@ export async function handleRunnerRuns(env: ServerEnv, ctx: OwnerContext): Promi
   if (runner === null) return notFound();
   const listed = rows.slice(0, limit);
   const last = listed.at(-1);
+  const includeSignIn = isAdmin(ctx.member.role);
   const runs = listed.map((row) => ({
     attemptId: row.attempt_id, claimedAt: Number(row.claimed_at), projectId: row.project_id, projectName: row.project_name, runId: row.run_id,
     task: row.task, completedAt: row.completed_at === null ? null : Number(row.completed_at), outcome: outcomeOf(row),
+    ...(!includeSignIn || row.runner_payer === null ? {} : { payment: recordedRunPayer(includeSignIn, row.runner_payer, row.runner_fallback_reason) }),
     runnerVersion: row.runner_version, agentVersion: row.agent_version, harness: row.harness,
     requested: requestedProfile(row.requested_profile), identity: runAccounting(row.usage_data).identity,
   }));

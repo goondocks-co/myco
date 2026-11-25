@@ -1,3 +1,4 @@
+import type { RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
@@ -43,6 +44,7 @@ export interface WorkOutcome {
   outcome: { spores: number; sessions: number; maps: number };
   failedWithOutput: number;
   failed: number;
+  handedOn?: number;
   failure: { runs: number; latestAt: number; latestRunId: string; unresolved: boolean } | null;
   latestAt: number | null;
   tokens: number;
@@ -56,6 +58,7 @@ export type RunResult = 'produced' | 'unchanged' | 'failed' | 'failed_with_outpu
 
 /** One run the timeline lists: one that produced something, or one that failed. */
 export interface WorkRun {
+  payment?: RunPayer;
   dryRun: boolean;
   requested: ExecutionProfile | null;
   queuedAt: number | null;
@@ -77,7 +80,7 @@ export interface WorkRun {
   outcome: { spores: number; sessions: number; maps: number };
   sessionId: string | null;
   /** `reason` is why the run failed in the reader's words, where the worker that ran it gave one. */
-  failure: { cause: string; code?: string | null; reason?: string | null; error?: string | null; repositoryFailure?: RepositoryFailure | null; source: 'report' | 'error' } | null;
+  failure: { fallbackQueued?: boolean; cause: string; code?: string | null; reason?: string | null; error?: string | null; repositoryFailure?: RepositoryFailure | null; source: 'report' | 'error' } | null;
   tokens: number | null;
   costUsd: number | null;
 }

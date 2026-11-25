@@ -1,3 +1,4 @@
+import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { composedStatements } from '../composed-statements.js';
 import { read, rows, type BindValue } from '../index.js';
@@ -17,7 +18,9 @@ export async function subjectsRetrying(db: RelationalStore, keys: readonly { pro
   if (keys.length === 0 || terms.length === 0) return new Set();
   const admitted = `CASE r.task ${terms.map((term) => `WHEN '${term.task}' THEN (${term.sql})`).join(' ')} ELSE 0 END`;
   const sql = `SELECT r.project_id AS projectId,r.id AS runId,
-    (r.subject IS NOT NULL AND r.error_code IS NOT '${SUBJECT_INTERRUPTED_REPEATED}' AND ${subjectCanRetry('r.project_id', 'r.task', 'r.subject')} AND ${admitted}) AS retrying
+    (r.subject IS NOT NULL AND r.error_code IS NOT '${SUBJECT_INTERRUPTED_REPEATED}' AND ${subjectCanRetry('r.project_id', 'r.task', 'r.subject')} AND ${admitted}) OR EXISTS (SELECT 1 FROM agent_runs next WHERE next.project_id=r.project_id
+      AND next.id=CASE WHEN json_valid(r.run_context) THEN json_extract(r.run_context,'$.fallbackRunId') END
+      AND next.runner_fallback_from=r.id AND next.${IN_FLIGHT_RUN_STATUSES}) AS retrying
     FROM json_each(?1) k JOIN agent_runs r ON r.project_id=json_extract(k.value,'$.projectId') AND r.id=json_extract(k.value,'$.runId')`;
   const statement = retryReads(sql, (name) => read<BindValue[], { projectId: string; runId: string; retrying: number }>({ name, sql }));
   return new Set((await rows(db, statement.bind(JSON.stringify(keys), now))).filter((row) => Number(row.retrying) === 1).map((row) => `${row.projectId}/${row.runId}`));

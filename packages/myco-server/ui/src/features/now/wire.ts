@@ -27,6 +27,7 @@ export interface NowWaiting {
 }
 
 export interface NowNeed {
+  information?: true;
   key: string;
   projectId: string | null;
   what: string;

@@ -156,6 +156,18 @@ describe('Health', () => {
     expect(await screen.findByText(/^The Anthropic key ran out of API credit\./)).toBeTruthy();
     expect(await screen.findByText(/^The Codex \(OpenAI\) key ran out of API credit\./)).toBeTruthy();
   });
+  it('shows one dated sign-in fallback notice per agent with the affected runners', async () => {
+    const fallbackNotices = [{ agent: 'claude-code', slot: 'anthropic', reason: 'out_of_credit', since: NOW }];
+    server(routes({ '/api/status': () => Response.json({ ...STATUS, workers: { ...STATUS.workers,
+      fleet: ['Mini', 'Studio'].map(name => ({ runnerDetails: { id: name, name, fallbackNotices } })),
+    } }) }));
+    mount('/status/health#status');
+    const notice = await screen.findByRole('status', { name: 'Claude Code sign-in fallback' });
+    expect(notice.textContent).toContain('Mini, Studio');
+    expect(notice.textContent).toContain('Since');
+    expect(notice.textContent).toContain('Work continues on the runner’s own sign-in');
+  });
+
   it('shows learning progress, its last outcome and daily spend, and surfaces a failed read', async () => {
     server(routes());
     mount('/status/health#status');

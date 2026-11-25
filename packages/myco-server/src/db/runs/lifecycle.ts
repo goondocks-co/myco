@@ -84,14 +84,14 @@ export async function getRun(db: RelationalStore, scope: ReadScope, runId: strin
   return rows[0] ?? null;
 }
 
-const workerExecution = read<[project: string, run: string, attempt: string], { execution_overrides: string | null; stored: number }>({ name: 'runs.workerExecution', sql:
-  `SELECT execution_overrides, runner_secret_slot IS NOT NULL AS stored
+const workerExecution = read<[project: string, run: string, attempt: string], { execution_overrides: string | null; stored: number; fallbackAllowed: number }>({ name: 'runs.workerExecution', sql:
+  `SELECT execution_overrides, runner_secret_slot IS NOT NULL AS stored, runner_fallback_allowed AS fallbackAllowed
     FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND status = 'running' AND dispatched_by = ?3` });
 
 /** Read the requested profile only for the dispatched attempt ending its lease. */
-export async function getWorkerExecution(db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string): Promise<{ profile: ExecutionProfile | null; stored: boolean }> {
+export async function getWorkerExecution(db: RelationalStore, scope: ReadScope, runId: string, dispatchedBy: string): Promise<{ profile: ExecutionProfile | null; stored: boolean; fallbackAllowed: boolean }> {
   const [[row]] = await readSet(db, workerExecution.bind(scope.projectId, runId, dispatchedBy));
-  return { profile: requestedProfile(row?.execution_overrides), stored: row?.stored === 1 };
+  return { profile: requestedProfile(row?.execution_overrides), stored: row?.stored === 1, fallbackAllowed: row?.fallbackAllowed === 1 };
 }
 
 /** A run row with the Project it belongs to: what a read keyed by credential answers; a credential spans every Project of its Deployment. */

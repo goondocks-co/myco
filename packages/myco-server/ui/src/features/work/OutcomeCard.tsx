@@ -173,7 +173,7 @@ export function FailureBlock({ kind, group, window, where, when, machineOf, open
   // Failures with the same headline, reason and machine share a line with every time they happened.
   const groups = new Map<string, { cause: string; detail: string | null; times: string[] }>();
   for (const run of failures) {
-    const cause = failureWords(run.failure);
+    const cause = failureWords(run.failure, run.harness);
     const machine = machineOf(run.id);
     const detail = failureDetail(run.failure);
     const key = `${cause}\u0000${detail ?? ''}\u0000${machine ?? ''}`;
@@ -216,7 +216,7 @@ export function KeptNote({ summary }: { summary: Pick<KindSummary, 'kind' | 'fai
   const { kind, kept, failedWithOutput } = summary;
   if (failedWithOutput === 0) return null;
   const one = failedWithOutput === 1;
-  const cause = one && kept.length === 1 ? failureWords(kept[0]!.failure) : null;
+  const cause = one && kept.length === 1 ? failureWords(kept[0]!.failure, kept[0]!.harness) : null;
   const why = cause === null ? null : cause.trim().replace(/\.$/, '');
   const saved = {
     learn: 'spores saved from recent sessions',

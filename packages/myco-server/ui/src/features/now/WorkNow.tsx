@@ -1,3 +1,4 @@
+import { runnerFallbackSince } from '@goondocks/myco-shared/runner-fleet';
 import type { ReactNode } from 'react';
 import { Card, ChipGroup, HealthDot, Link, ListRow, ReadState, ReadUnavailable, StatusChip } from '../../design';
 import { formatElapsed, formatUntil } from '../../lib/format';
@@ -29,6 +30,8 @@ export function WorkNow({ answer, pending, error, onRetry, now, projectName }: W
       <ReadState data={answer} pending={pending} error={error} onRetry={onRetry} label="what Myco is doing now">
         {(data) => {
           const across = data.scope === 'deployment';
+          const needsAttention = data.needsYou.filter(item => !item.information);
+          const information = data.needsYou.filter(item => item.information);
           const where = (projectId: string | null): ReactNode => (across && projectId !== null ? <ChipGroup items={[projectName(projectId) ?? 'A project']} /> : null);
           return (
             <div className="flex flex-col gap-s3">
@@ -46,9 +49,12 @@ export function WorkNow({ answer, pending, error, onRetry, now, projectName }: W
                 {sameWaits(data.waiting).map((group) => <WaitingRow key={group[0]!.key} item={group[0]!} now={now}
                   kicker={group.length === 1 ? where(group[0]!.projectId) : across ? <ChipGroup items={group.map((item) => (item.projectId === null ? null : projectName(item.projectId)) ?? 'A project')} /> : null} />)}
               </Part>
-              <Part title="Stuck or failing" part="needsYou" data={data} onRetry={onRetry} empty="Nothing is stuck or failing." count={data.needsYou.length} tone="warn">
-                {data.needsYou.map((item) => <NeedRow key={item.key} item={item} now={now} kicker={where(item.projectId)} />)}
+              <Part title="Stuck or failing" part="needsYou" data={data} onRetry={onRetry} empty="Nothing is stuck or failing." count={needsAttention.length} tone="warn">
+                {needsAttention.map((item) => <NeedRow key={item.key} item={item} now={now} kicker={where(item.projectId)} />)}
               </Part>
+              {information.length > 0 && <Part title="For your information" part="needsYou" data={data} onRetry={onRetry} empty="" count={information.length}>
+                {information.map(item => <NeedRow key={item.key} item={item} now={now} kicker={where(item.projectId)} />)}
+              </Part>}
             </div>
           );
         }}
@@ -125,10 +131,10 @@ function NeedRow({ item, now, kicker }: { item: NowNeed; now: number; kicker: Re
     <li data-now-need={item.key}>
       <ListRow
         to={item.runId === null || item.projectId === null ? undefined : runPath(item.projectId, item.runId)}
-        leading={<HealthDot tone="warn" label="Stuck or failing" />}
+        leading={<HealthDot tone={item.information ? 'faint' : 'warn'} label={item.information ? 'Information' : 'Stuck or failing'} />}
         kicker={kicker}
         title={item.what}
-        meta={`${item.why}${retry}`}
+        meta={`${item.information ? `Since ${runnerFallbackSince(item.at)}. ` : ''}${item.why}${retry}`}
         trailing={item.runId === null || item.projectId === null ? undefined : <span className="hidden whitespace-nowrap text-ink-2 sm:inline">Open run →</span>}
         wrap
       />

@@ -9,6 +9,7 @@
  *
  * A member reads both, as on Myco's work.
  */
+import { isAdmin } from '../auth/roles.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, notFound, ok, projectSetParam, resolveProjectSet } from './scope.js';
@@ -82,6 +83,6 @@ export async function handleFinishedRuns(env: ServerEnv, ctx: OwnerContext): Pro
   if (cursor === null) return badRequest('cursor is not one this route answered; pass the cursor of the previous page, or omit it for the newest page');
   const set = await scope(env, ctx);
   if (set instanceof Response) return set;
-  const page = await readFinishedRuns(env.db, set, { ...runWindow(window, ctx.now), filters, limit, ...(cursor === undefined ? {} : { cursor }) });
+  const page = await readFinishedRuns(env.db, set, { ...runWindow(window, ctx.now), filters, limit, ...(cursor === undefined ? {} : { cursor }) }, isAdmin(ctx.member.role));
   return ok({ rows: page.rows, cursor: page.cursor === null ? null : JSON.stringify([page.cursor.completedAt, page.cursor.projectId, page.cursor.runId]) });
 }

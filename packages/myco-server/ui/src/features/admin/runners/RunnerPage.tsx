@@ -1,3 +1,6 @@
+import { useAgentPayers } from '../../../hooks/use-fleet';
+import { useIsAdmin } from '../../../hooks/use-me';
+import { paidByWords, runnerFallbackSince, runnerFallbackWords, storedKeyFailureWords, type RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import { useParams } from 'react-router-dom';
 import { Breadcrumbs, Card, ErrorState, HealthDot, ListRow, ShowMore, StatusChip, type HealthTone } from '../../../design';
 import { usePaged, type Page } from '../../../hooks/use-paged';
@@ -11,7 +14,7 @@ import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** How one claim by this runner came out, as `GET /api/runners/{id}/runs` answers it. */
 type RunnerRunOutcome = 'running' | 'worked' | 'changed_nothing' | 'failed' | 'handed_on' | 'other';
-interface RunnerRun extends DriftFacts { attemptId: string; claimedAt: number; projectId: string; projectName: string | null; runId: string; task: string | null; completedAt: number | null; outcome: RunnerRunOutcome }
+interface RunnerRun extends DriftFacts { payment?: RunPayer | null; attemptId: string; claimedAt: number; projectId: string; projectName: string | null; runId: string; task: string | null; completedAt: number | null; outcome: RunnerRunOutcome }
 interface RunnerRunsPage extends Page<RunnerRun> {
   runner: { id: string; name: string; state: string; lastSeenAt: number | null; version: string | null };
 }
@@ -42,6 +45,10 @@ export function RunnerPage() {
   const now = Date.now();
   const runs = usePaged<RunnerRun, RunnerRunsPage>(['runners', runnerId, 'runs'], `/api/runners/${encodeURIComponent(runnerId)}/runs`, { freshness: { follows: ['fleet', 'runs'] }, rowKey: runKey });
   const runner = runs.pages?.[0]?.runner;
+  const admin = useIsAdmin();
+  const payers = useAgentPayers(admin);
+  const fallbacks = admin ? (payers.data?.agents ?? []).flatMap(entry => entry.fallbacks ?? []).filter(notice => notice.runnerId === runnerId) : [];
+  const waiting = admin ? (payers.data?.agents ?? []).flatMap(entry => entry.waiting ?? []).filter(notice => notice.runnerId === runnerId) : [];
   const worked = workedWords(runs.rows);
   return (
     <AdminPage name="runner" scope="server" title={runner?.name ?? 'Runner'} lede="What this runner ran, newest first, across every project.">
@@ -55,6 +62,11 @@ export function RunnerPage() {
             <SourceMark source={runner.lastSeenAt === null ? 'none' : 'saw'} />
             {runner.state !== 'enabled' && <StatusChip tone="neutral">{runner.state === 'paused' ? 'Paused' : 'Removed'}</StatusChip>}
           </p>
+          {fallbacks.map(({ agent, reason, slot, since }) => <p key={agent} role={reason === 'out_of_credit' ? 'status' : 'alert'}
+            className={reason === 'out_of_credit' ? 't-small text-ink-2' : 't-small text-bad'}>
+            Since {runnerFallbackSince(since)}. {runnerFallbackWords(reason, slot)}
+          </p>)}
+          {waiting.map(({ agent, slot, failure }) => <p key={agent} role="alert" className="t-small text-bad">{storedKeyFailureWords(failure, slot)}</p>)}
           {worked !== null && <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-small text-ink-2" data-runner-worked="">{worked}<SourceMark source="saw" /></p>}
           {runner.version !== null && <p className="t-meta text-muted">Runner version {runner.version}, as it last reported.</p>}
         </Card>
@@ -71,7 +83,7 @@ export function RunnerPage() {
                   to={runPath(run.projectId, run.runId)}
                   leading={<HealthDot tone={outcome.tone} label={outcome.words} />}
                   title={`${taskWords(run.task).charAt(0).toUpperCase()}${taskWords(run.task).slice(1)}${run.projectName === null ? '' : ` · ${run.projectName}`}`}
-                  meta={`${outcome.words} · started ${atWords(run.claimedAt, now)}`}
+                  meta={[`${outcome.words} · started ${atWords(run.claimedAt, now)}`, run.payment == null ? null : paidByWords(run.payment)].filter(Boolean).join(' · ')}
                   wrap
                 />
               </li>

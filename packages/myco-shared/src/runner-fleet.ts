@@ -3,7 +3,36 @@ import { HARNESS_CREDENTIALS } from './harness-providers.js';
 import { secretSlotLabel, type SecretSlotName } from './secret-slots.js';
 import type { RunnerBlockedVersion, RunnerUpdateRequest, RunnerUpdateResult, RunnerUpdateState } from './runner-update.js';
 
-export type RunnerCredentialChoice = 'own' | 'stored';
+export const RUNNER_CREDENTIAL_CHOICES = ['own', 'stored', 'stored-first'] as const;
+export type RunnerCredentialChoice = typeof RUNNER_CREDENTIAL_CHOICES[number];
+export type RunnerSignInSource = 'own' | 'stored';
+export type RunnerFallbackReason = StoredKeyFailure | 'no_key';
+export const RUNNER_KEY_RECHECK_MS = 60 * 60_000;
+
+export interface RunPayer {
+  payer: RunnerSignInSource;
+  fallbackReason?: RunnerFallbackReason;
+}
+export function paidByWords(payer: RunPayer): string {
+  return `Paid by ${RUNNER_SIGN_IN_WORDS[payer.payer]}${payer.fallbackReason === undefined ? '' : `: ${runnerFallbackReasonWords(payer.fallbackReason)}`}`;
+}
+export const RUNNER_PAYER_LABELS: Readonly<Record<RunnerCredentialChoice, string>> = {
+  own: 'Each runner’s own sign-in',
+  stored: 'A stored key',
+  'stored-first': 'A stored key first, then the runner’s own sign-in',
+};
+export const RUNNER_SIGN_IN_WORDS: Readonly<Record<RunnerSignInSource, string>> = {
+  own: 'the runner’s own sign-in', stored: 'the stored key',
+};
+export const agentHasStoredKey = (agent: string): boolean => {
+  const manifest = HARNESS_CREDENTIALS[agent];
+  return manifest?.slot != null && manifest.variables.length > 0;
+};
+export const isRunnerCredentialChoice = (value: unknown): value is RunnerCredentialChoice =>
+  RUNNER_CREDENTIAL_CHOICES.some(choice => choice === value);
+export const runnerCredentialChoiceAllowed = (agent: string, choice: unknown): choice is RunnerCredentialChoice =>
+  Object.hasOwn(HARNESS_CREDENTIALS, agent) && isRunnerCredentialChoice(choice)
+    && (choice !== 'stored-first' || agentHasStoredKey(agent));
 export type RunnerCredentialChoices = Readonly<Record<string, RunnerCredentialChoice>>;
 /** Null marks a persisted source this build cannot use. */
 export type StoredRunnerCredentialChoices = Readonly<Record<string, RunnerCredentialChoice | null>>;
@@ -12,7 +41,7 @@ export type StoredRunnerCredentialChoices = Readonly<Record<string, RunnerCreden
 export function parseRunnerCredentialChoices(text: string): RunnerCredentialChoices {
   const value: unknown = JSON.parse(text);
   if (value === null || typeof value !== 'object' || Array.isArray(value)
-    || Object.entries(value).some(([agent, choice]) => !Object.hasOwn(HARNESS_CREDENTIALS, agent) || (choice !== 'own' && choice !== 'stored'))) throw new Error('invalid runner sign-in choices');
+    || Object.entries(value).some(([agent, choice]) => !runnerCredentialChoiceAllowed(agent, choice))) throw new Error('invalid runner sign-in choices');
   return value as RunnerCredentialChoices;
 }
 
@@ -21,21 +50,29 @@ export function storedRunnerCredentialChoices(text: string): StoredRunnerCredent
   const value: unknown = JSON.parse(text);
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid runner sign-in choices');
   return Object.fromEntries(Object.entries(value).filter(([agent]) => Object.hasOwn(HARNESS_CREDENTIALS, agent))
-    .map(([agent, choice]) => [agent, choice === 'own' || choice === 'stored' ? choice : null]));
+    .map(([agent, choice]) => [agent, runnerCredentialChoiceAllowed(agent, choice) ? choice : null]));
 }
 
 /** Whether a runner's reported offer names `agent` as installed on its machine: the rule claims and sign-in choices share. */
 export const offersAgentInstalled = (offer: { id: string; installed?: boolean }, agent: string): boolean => offer.id === agent && offer.installed !== false;
 
+export const runnerOwnSignInReady = (offer: { authenticated: boolean; unavailableReason?: 'login_missing' }): boolean =>
+  offer.authenticated && offer.unavailableReason !== 'login_missing';
+
 /** Stored sign-in admits a reported agent independently of its machine's authentication status. */
 export function runnerAgentLoginReady(offer: { id: string; authenticated: boolean; installed?: boolean; unavailableReason?: 'login_missing' }, choices?: StoredRunnerCredentialChoices, storedAvailable?: Readonly<Record<string, boolean>>): boolean {
-  return offer.unavailableReason !== 'login_missing' && offersAgentInstalled(offer, offer.id) && choices?.[offer.id] !== null && (choices?.[offer.id] === 'stored' ? storedAvailable === undefined || storedAvailable[offer.id] === true : offer.authenticated);
+  const choice = choices?.[offer.id];
+  if (!offersAgentInstalled(offer, offer.id) || choice === null) return false;
+  const own = runnerOwnSignInReady(offer);
+  const stored = storedAvailable === undefined || storedAvailable[offer.id] === true;
+  if (choice === 'stored-first') return own || stored;
+  return offer.unavailableReason !== 'login_missing' && (choice === 'stored' ? stored : own);
 }
 
 export interface HarnessSignInFailure {
   name: string;
   hint: string;
-  source: RunnerCredentialChoice;
+  source: RunnerSignInSource;
 }
 
 export const STORED_SIGN_IN_HINT = 'Update this agent’s stored key in Settings → Connections.';
@@ -71,7 +108,9 @@ export interface RunnerFleetRecord {
   offers: Array<{ id: string; installed?: boolean; authenticated: boolean; unavailableReason?: 'login_missing'; signInFailure?: HarnessSignInFailure; profile?: { model: string; efforts: readonly string[] } }> | null;
   offersObservedAt: number | null;
   credentialChoices?: StoredRunnerCredentialChoices;
+  credentialChoiceTimes?: Record<string, number>;
   storedKeyFailures?: StoredKeyFailureNotice[];
+  fallbackNotices?: RunnerFallbackNotice[];
   capabilities: string[] | null; labels: string[] | null; preference: string | null;
   os: string | null; arch: string | null; version: string | null;
   readiness: { state: RunnerAvailability; code?: RunnerAvailability | StoredKeyFailure | 'not_signed_in' | 'credential_unavailable' | 'updating' | 'registration'; reason: string; observedAt: number | null };
@@ -82,15 +121,30 @@ export interface RunnerFleetRecord {
   updateState: RunnerUpdateState | null; updateRequest: RunnerUpdateRequest | null;
 }
 
-export interface StoredKeyFailureNotice { agent: string; slot: SecretSlotName; failure: StoredKeyFailure }
+export interface StoredKeyFailureNotice { agent: string; slot: SecretSlotName; failure: RunnerFallbackReason; since?: number }
+export interface RunnerFallbackNotice { agent: string; slot: SecretSlotName; reason: RunnerFallbackReason; since: number }
 
-export function storedKeyFailureTitle(failure: StoredKeyFailure, slot?: SecretSlotName): string {
+export function runnerFallbackReasonWords(reason: RunnerFallbackReason): string {
+  return reason === 'no_key' ? 'no usable key is stored' : reason === 'out_of_credit' ? 'the stored key ran out of API credit' : 'the stored key was rejected';
+}
+
+export function runnerFallbackWords(reason: RunnerFallbackReason, slot: SecretSlotName): string {
+  const key = reason === 'no_key' ? `No usable ${secretSlotLabel(slot)} key is stored` : storedKeyFailureTitle(reason, slot);
+  return `${key}. Work continues on the runner’s own sign-in and returns to the key when it works again.`;
+}
+
+export function runnerFallbackSince(since: number): string {
+  return new Intl.DateTimeFormat('en', { dateStyle: 'medium' }).format(since);
+}
+
+export function storedKeyFailureTitle(failure: RunnerFallbackReason, slot?: SecretSlotName): string {
   const key = slot === undefined ? 'The stored key' : `The ${secretSlotLabel(slot)} key`;
+  if (failure === 'no_key') return `${key} is missing or unusable`;
   return failure === 'out_of_credit' ? `${key} ran out of API credit` : `${key} was rejected`;
 }
 
-export function storedKeyFailureWords(failure: StoredKeyFailure, slot?: SecretSlotName, runEnded = false): string {
-  const next = failure === 'out_of_credit' ? 'Add credit with the provider, replace the key in Settings, or' : 'Replace the key in Settings or';
+export function storedKeyFailureWords(failure: RunnerFallbackReason, slot?: SecretSlotName, runEnded = false): string {
+  const next = failure === 'no_key' ? 'Add a usable key in Settings or' : failure === 'out_of_credit' ? 'Add credit with the provider, replace the key in Settings, or' : 'Replace the key in Settings or';
   const remedy = `${next} switch the runner to its own sign-in on Runners.`;
   const outcome = runEnded ? 'This run ended.' : 'Work that needs this key waits.';
   return `${storedKeyFailureTitle(failure, slot)}. ${outcome} ${remedy}${runEnded ? ' Start a new run when ready.' : ''}`;

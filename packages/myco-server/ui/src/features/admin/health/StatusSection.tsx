@@ -6,6 +6,7 @@ import { formatCount } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { useAttention } from '../../../hooks/use-attention';
 import { transcriptStopWords, harnessHealthWords } from '../../today/words';
+import { RunnerFallbackStatus } from '../RunnerFallbackStatus';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords, lastLearningWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
@@ -110,6 +111,8 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
       <QueueWarning queue={queue} />
       {[...keyFailures.values()].filter(({ slot }) => !queue?.reasons.some(reason => reason.keySlot === slot))
         .map(({ slot, failure }) => <Card key={slot}>{storedKeyFailureWords(failure, slot)}</Card>)}
+      <RunnerFallbackStatus notices={(data.workers.fleet ?? []).flatMap(({ runnerDetails: runner }) =>
+        runner === undefined ? [] : (runner.fallbackNotices ?? []).map(notice => ({ ...notice, runnerName: runner.name })))} />
       <SearchByMeaning now={now} />
 
       <div className="flex flex-col gap-s2">

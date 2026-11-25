@@ -1,3 +1,4 @@
+import { paidByWords, type RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import { EFFORT_UNAPPLIED, profileModelVerdict } from '@goondocks/myco-shared/execution-profile';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import type { CostProvenance, RecordedIdentity } from '@goondocks/myco-shared/worker-usage';
@@ -6,6 +7,7 @@ interface ModelEvidence {
   requested: ExecutionProfile | null;
   identity: RecordedIdentity;
   harness: string | null;
+  payment?: RunPayer | null;
 }
 
 /** Launch intent beside the model identities reported for this attempt. */
@@ -15,7 +17,7 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
   const models = known ? [...new Set(identity.models.map((model) => model.model))] : [];
   const verdict = known && run.requested !== null && run.harness !== null ? profileModelVerdict(run.harness, run.requested, identity.primary) : 'match';
   const mismatch = verdict === 'mismatch';
-  if (variant !== 'details' && run.requested === null && !known) return null;
+  if (variant !== 'details' && run.requested === null && !known && run.payment == null) return null;
   const different = mismatch ? <span className="text-warn" data-model-mismatch="">Ran a different model than requested</span>
     : verdict === 'unconfirmed' && <span className="text-muted" data-model-unconfirmed="">Can’t confirm the model: the provider chooses which model this name runs</span>;
   const effortSkipped = known && identity.warnings?.includes(EFFORT_UNAPPLIED) === true
@@ -24,7 +26,7 @@ export function ModelSummary({ run, variant = 'summary' }: { run: ModelEvidence;
     const model = run.requested?.model;
     const asked = model === undefined ? null : `Asked for ${displayModel(model)}${run.requested?.effort == null ? '' : `, ${run.requested.effort} effort`}`;
     const actual = known ? `${identity.status === 'reported' ? 'ran' : 'launched'} ${models.join(', ')}` : null;
-    return <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary=""><span>{[asked, actual].filter(Boolean).join(' · ')}</span>{different}{effortSkipped}</div>;
+    return <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary=""><span>{[asked, actual].filter(Boolean).join(' · ')}</span>{run.payment != null && <span>{paidByWords(run.payment)}</span>}{different}{effortSkipped}</div>;
   }
   return (
     <div className="flex flex-col gap-s1 break-words t-meta text-muted" data-model-summary="">

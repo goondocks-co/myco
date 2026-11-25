@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
-import { QUEUE_REASON_WORDS, type RunnerCredentialChoice } from '@goondocks/myco-shared/runner-fleet';
+import { agentHasStoredKey, isRunnerCredentialChoice, QUEUE_REASON_WORDS, RUNNER_CREDENTIAL_CHOICES, RUNNER_PAYER_LABELS, RUNNER_SIGN_IN_WORDS, storedKeyFailureWords, type RunnerCredentialChoice, type RunnerSignInSource } from '@goondocks/myco-shared/runner-fleet';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 import { Button, ErrorState, Select } from '../../../design';
 import { useAgentPayers, type AgentPayersAnswer } from '../../../hooks/use-fleet';
@@ -10,22 +10,18 @@ import { settingsRefusalText, useSecrets, useSettingsActions } from '../../../ho
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { harnessLabel } from '../../../lib/harness';
 import { refreshFleet } from '../runners/LegacyWorker';
+import { RunnerFallbackStatus } from '../RunnerFallbackStatus';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import { keyKindWords } from './Credentials';
 import { KeyDialog, keyLabel } from './KeyDialog';
 import type { LeafGroup } from './catalogue';
 import type { LeafRow } from './wire';
 
-/** Who pays for an agent's work, as a list: each choice one runner sign-in source. */
-const PAYERS: ReadonlyArray<{ id: RunnerCredentialChoice; label: string }> = [
-  { id: 'own', label: 'Each runner’s own sign-in' },
-  { id: 'stored', label: 'A stored key' },
-];
 /** The agent choice's value while no agent is chosen. */
 const NO_PREFERENCE = '__none__';
 
 /** `GET /api/runners/check`, as the server answers it. */
-interface AgentWorkCheck { task: string; observedAt: number; reason: keyof typeof QUEUE_REASON_WORDS | 'budget'; takers: Array<{ agent: string; runners: Array<{ id: string; name: string | null }> }> }
+interface AgentWorkCheck { task: string; observedAt: number; reason: keyof typeof QUEUE_REASON_WORDS | 'budget'; takers: Array<{ agent: string; runners: Array<{ id: string; name: string | null; payer?: RunnerSignInSource }> }> }
 
 const HOLD_WORDS: Readonly<Record<AgentWorkCheck['reason'], string>> = {
   ...QUEUE_REASON_WORDS,
@@ -35,7 +31,7 @@ const HOLD_WORDS: Readonly<Record<AgentWorkCheck['reason'], string>> = {
 /** The answer of a check in one sentence: which runner would take the work, or the one thing in the way. */
 export function checkWords(check: AgentWorkCheck): string {
   if (check.takers.length === 0) return `Not now. ${HOLD_WORDS[check.reason]}`;
-  const names = check.takers.flatMap((taker) => taker.runners.map((runner) => runner.name ?? 'a legacy worker'));
+  const names = check.takers.flatMap((taker) => taker.runners.map((runner) => (runner.name ?? 'a legacy worker') + (runner.payer === undefined ? '' : ` using ${RUNNER_SIGN_IN_WORDS[runner.payer]}`)));
   const who = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(', ')} or ${names.at(-1)!}`;
   const agents = [...new Set(check.takers.map((taker) => harnessLabel(taker.agent)))].join(' or ');
   const hold = HOLD_WORDS[check.reason];
@@ -54,7 +50,7 @@ function agentNote(preferred: string | null, next: readonly string[], today: Age
   return `${lead}${todayWords(today)}`;
 }
 
-const CHOICE_WORDS: Readonly<Record<RunnerCredentialChoice, string>> = { own: 'its own sign-in', stored: 'the stored key' };
+const CHOICE_WORDS: Readonly<Record<RunnerCredentialChoice, string>> = { own: 'its own sign-in', stored: 'the stored key', 'stored-first': RUNNER_PAYER_LABELS['stored-first'] };
 
 /** Why the server refused to change who pays, in plain words. */
 function signInRefusal(error: unknown, agent: string): string {
@@ -85,7 +81,9 @@ export function AgentWork({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
     ...(preferred !== null && !offered.includes(preferred) ? [{ value: preferred, label: `${harnessLabel(preferred)} (no runner offers it)` }] : []),
   ];
   // With no agent chosen, who pays is set for the agent runners use today, and the row says so.
-  const payingFor = preferred ?? today.find((runner) => runner.agent !== null)?.agent ?? null;
+  const todayAgent = today.find((runner) => runner.agent !== null)?.agent ?? null;
+  const attentionAgent = payers.data?.agents.find(entry => entry.waiting?.length || entry.fallbacks?.length)?.agent ?? null;
+  const payingFor = preferred ?? todayAgent ?? attentionAgent;
 
   const save = (value: string) => {
     setError(null);
@@ -106,7 +104,7 @@ export function AgentWork({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
           control={<Select id="agent-work-agent" label="Agent" value={preferred ?? NO_PREFERENCE} disabled={!admin || actions.setLeaf.isPending} options={options} onValueChange={save} />}
         />
         {payingFor !== null && payers.data !== undefined && (
-          <PaidBy agent={payingFor} chosen={preferred !== null} entry={payers.data.agents.find((entry) => entry.agent === payingFor)} />
+          <PaidBy agent={payingFor} forToday={preferred === null && payingFor === todayAgent} agents={payers.data.agents} />
         )}
         <CheckRow />
       </RowCard>
@@ -118,7 +116,8 @@ export function AgentWork({ group, rows }: { group: LeafGroup; rows: ReadonlyMap
  * Who pays for an agent's work: one choice the server sets on every registered runner that offers the agent, all or
  * nothing, with one line per runner on what it uses now. A stored key with none usable saves nothing and offers to add one.
  */
-function PaidBy({ agent, chosen, entry }: { agent: string; chosen: boolean; entry: AgentPayersAnswer['agents'][number] | undefined }) {
+function PaidBy({ agent, forToday, agents }: { agent: string; forToday: boolean; agents: AgentPayersAnswer['agents'] }) {
+  const entry = agents.find(candidate => candidate.agent === agent);
   const admin = useIsAdmin();
   const client = useQueryClient();
   const secrets = useSecrets();
@@ -137,27 +136,38 @@ function PaidBy({ agent, chosen, entry }: { agent: string; chosen: boolean; entr
     setError(null);
     setMissing(false);
     if (choice === 'stored' && entry?.storedUsable !== true) { setMissing(true); return; }
-    set.mutate(choice as RunnerCredentialChoice, { onError: (failure) => setError(signInRefusal(failure, agent)) });
+    if (!isRunnerCredentialChoice(choice)) return;
+    set.mutate(choice, { onError: (failure) => setError(signInRefusal(failure, agent)) });
   };
   const secret = slot === null ? undefined : secrets.data?.secrets.find((row) => row.name === slot);
   const kind = slot === null || secret === undefined ? null : keyKindWords(slot, secret.kind);
   const label = harnessLabel(agent);
-  const lead = chosen ? '' : `For ${label}, the agent your runners use today. `;
+  const lead = forToday ? `For ${label}, the agent your runners use today. ` : '';
+  const fallbacks = agents.flatMap(candidate => (candidate.fallbacks ?? []).map(notice => ({
+    ...notice, runnerName: candidate.runners.find(runner => runner.id === notice.runnerId)?.name ?? 'A runner',
+  })));
+  const waiting = entry?.waiting?.[0];
+  const waitingNames = runners.filter(runner => entry?.waiting?.some(notice => notice.runnerId === runner.id)).map(runner => runner.name);
+  const waitingStatus = waiting === undefined ? undefined : `${waitingNames.join(', ')} · ${storedKeyFailureWords(waiting.failure, waiting.slot)}`;
+  const fallbackStatus = fallbacks.length === 0 ? undefined : 'Using runners’ own sign-in while the key is unavailable.';
   const payerNote = value === 'stored'
     ? `${slot === null ? 'A stored key' : `${keyLabel(slot)}${secret?.maskedValue == null ? '' : ` ${secret.maskedValue}`}`}, billed to that account. If it stops working, the work waits; it never falls back to a runner’s own sign-in.`
+    : value === 'stored-first' ? 'The runner uses a stored key when it works and its own sign-in while the key is unavailable.'
     : value === 'own' ? `Each runner pays with its own sign-in to ${label}.` : 'Runners differ. Choose one to set it on every runner.';
   return (
     <>
       <SettingRow
+        stacked
         setting="paid-by"
         label="2 · Paid by"
         htmlFor="agent-work-payer"
+        notice={<RunnerFallbackStatus notices={fallbacks} />}
         note={<>
           <span>{`${lead}${payerNote}`}</span>
-          {value === 'stored' && kind !== null && <span className="mt-s1 block" data-key-kind={secret?.kind}>{kind}</span>}
+          {(value === 'stored' || value === 'stored-first') && kind !== null && <span className="mt-s1 block" data-key-kind={secret?.kind}>{kind}</span>}
         </>}
-        status={error ?? undefined}
-        refused={error !== null}
+        status={error ?? waitingStatus ?? fallbackStatus}
+        refused={error !== null || waiting !== undefined}
         details={<>
           {missing && (
             <div role="alert" className="flex flex-wrap items-center gap-s2 t-small text-bad" data-paid-by-missing="">
@@ -174,10 +184,13 @@ function PaidBy({ agent, chosen, entry }: { agent: string; chosen: boolean; entr
           <Select
             id="agent-work-payer"
             label="Paid by"
+            wrap
+            className="max-w-measure"
             value={value}
             placeholder="Differs by runner"
             disabled={!admin || set.isPending || runners.length === 0}
-            options={PAYERS.map((payer) => ({ value: payer.id, label: payer.label }))}
+            options={RUNNER_CREDENTIAL_CHOICES.filter(choice => choice !== 'stored-first' || agentHasStoredKey(agent))
+              .map(choice => ({ value: choice, label: RUNNER_PAYER_LABELS[choice] }))}
             onValueChange={choose}
           />
         )}

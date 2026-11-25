@@ -1,3 +1,4 @@
+import type { Bound } from '../db/index.js';
 import { workerClaimWrite, workerClaimAssertions, workerCredentialGate, runnerAssignmentWrite } from '../db/runs/claim.js';
 import { knowledgeInputForExecution } from './knowledge-execution.js';
 import { reserveForStage } from './budget-policy.js';
@@ -15,12 +16,12 @@ import { type ClaimCandidate, type ClaimedRunRow, type ClaimedInput, type Pulled
 import { recordPricedAttemptWrite as recordAttemptStatement } from './attempt-accounting.js';
 import { estimateForClaim } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
-import { capabilityOf } from './worker-selection.js';
+import { capabilityOf, type LoginEvidence } from './worker-selection.js';
 import { admitRunnerSecret, reserveRunnerSecretProbe, type RunnerSecretVersion } from '../db/settings/runner-secret-health.js';
 
 /** What a claim takes: a queued row it moves to `running`, or a pulled item it creates the running row for. */
 export type ClaimForm = { kind: 'queued'; candidate: ClaimCandidate } | { kind: 'pulled'; pull: PulledCandidate };
-export type WorkerClaim = { worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; agentVersion?: string | null; now: number; profile: ExecutionProfile; capabilities?: readonly string[]; input?: ClaimedInput; settingsGuard?: Readonly<Record<string,number>>; storedKey?: RunnerSecretVersion };
+export type WorkerClaim = { worker: WorkerPrincipal; leaseExpiresAt: number; harness: string; agentVersion?: string | null; now: number; profile: ExecutionProfile; capabilities?: readonly string[]; input?: ClaimedInput; settingsGuard?: Readonly<Record<string,number>>; storedKey?: RunnerSecretVersion; login?: LoginEvidence; queuedStageWrites?: (attemptId: string) => Bound[] };
 type ClaimResult = {row:ClaimedRunRow;issued:Awaited<ReturnType<typeof mintWrite>>['issued'];input?:ClaimedInput} | null;
 
 /** Move one queued row to `running` through the claim capability. */
@@ -55,7 +56,7 @@ async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'|'se
   const claimStatement = workerClaimWrite(form,claim,admission,dispatchedBy);
   const row = await commitWorkerClaim(db, setup, claimStatement, [recordAttemptStatement({ projectId: candidate.projectId }, { runId: candidate.id, attemptId: dispatchedBy, worker: claim.worker, now: claim.now, price: admission.budget, agentVersion: claim.agentVersion ?? null }),
     ...(claim.input === undefined ? [] : [claimedInputWrite(db, { projectId: candidate.projectId }, candidate.id, dispatchedBy, claim.input)]),
-    ...(form.kind === 'pulled' ? form.pull.claimed?.(dispatchedBy) ?? [] : []),
+    ...(form.kind === 'pulled' ? form.pull.claimed?.(dispatchedBy) ?? [] : claim.queuedStageWrites?.(dispatchedBy) ?? []),
     ...(claim.storedKey === undefined ? [] : [reserveRunnerSecretProbe(claim.storedKey, claim.now, { id: dispatchedBy, project: candidate.projectId, run: candidate.id })]),
     ...(contact === null ? [] : [contact]),
     ...(claim.worker.kind === 'runner' ? [runnerAssignmentWrite.bind(claim.now, claim.worker.runnerId, candidate.projectId, candidate.id, dispatchedBy)] : []),

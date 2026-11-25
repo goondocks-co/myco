@@ -267,7 +267,7 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
       : (all ? scopedRows : scopedRows.slice(0, RUNS_SHOWN)).map((row) => pageRowLine(row, kind, projectId, now, name));
   const lines = lineItems.filter((item) => matches(item.words) || matches(item.where ?? ''));
   const groups = summary.failureGroups
-    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(failureWords(run.failure)) || matches(failureDetail(run.failure) ?? '')) }))
+    .map((group) => ({ ...group, failures: group.failures.filter((run) => matches(failureWords(run.failure, run.harness)) || matches(failureDetail(run.failure) ?? '')) }))
     .filter((group) => !searching || group.failures.length > 0 || matches(projectName(group.projectId) ?? '') || matches('failed'));
   const whole = matches(headline);
   const failed = summary.produced === 0 && summary.failed > 0 && summary.spores === 0;
@@ -374,7 +374,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     words: row.status === 'queued' && !row.dryRun ? queuedWords(row, now) : runLineWords(kind, row, row.outcome),
     model: <ModelSummary run={row} variant="list" />,
     where: ranOn(row.worker, name)?.list ?? null,
-    by: startedByChip(row.startedBy, name),
+    by: row.retryKeyReason === undefined ? startedByChip(row.startedBy, name) : 'Queued again by Myco',
     tone: row.result === 'failed' ? 'bad' : row.status === 'skipped' && !isCarriedMap(kind, row) ? 'held' : live ? 'live' : 'plain',
     to: runPath(projectId, row.id),
   };

@@ -11,6 +11,7 @@ import { attemptHarnessSql } from '../runs/attempt-harness.js';
 
 /** One attempt this runner claimed, with the run it belongs to and how that run stands. */
 export interface RunnerAttemptRow {
+  runner_payer: string | null; runner_fallback_reason: string | null;
   attempt_id: string;
   claimed_at: number;
   project_id: string;
@@ -32,7 +33,7 @@ export interface RunnerAttemptRow {
   usage_data: string | null;
 }
 
-const columns = `a.attempt_id,a.claimed_at,a.project_id,(SELECT p.name FROM projects p WHERE p.project_id=a.project_id) AS project_name,
+const columns = `a.runner_payer,a.runner_fallback_reason,a.attempt_id,a.claimed_at,a.project_id,(SELECT p.name FROM projects p WHERE p.project_id=a.project_id) AS project_name,
   a.run_id,r.task,r.status,r.completed_at,r.error_code,${runResultSql('r')} AS result,
   a.runner_version,a.agent_version,${attemptHarnessSql('a')} AS harness,${requestedProfileValue('r.')} AS requested_profile,r.usage_data,
   NOT EXISTS(SELECT 1 FROM agent_run_attempts l WHERE l.project_id=a.project_id AND l.run_id=a.run_id

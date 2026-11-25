@@ -33,15 +33,18 @@ export async function unclaimedQueued(db: RelationalStore): Promise<boolean> {
   const [rows] = await readSet(db, anyQueued.bind());
   return rows[0]!.queued === 1;
 }
-const heads = read<[tasks: string, excludedRuns: string], ClaimCandidate & { queuedAt: number }>({ name: 'runs.queueHeads', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.instruction,r.dispatch_spec AS dispatchSpec,r.queued_at AS queuedAt
+const heads = read<[tasks: string, excludedRuns: string], ClaimCandidate & { queuedAt: number; fallbackFrom: string | null; fallbackReason: NonNullable<ClaimCandidate['fallbackRetry']>['reason'] | null; subject: string | null; failedAgent: string | null }>({ name: 'runs.queueHeads', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.instruction,r.dispatch_spec AS dispatchSpec,r.queued_at AS queuedAt,
+  r.runner_fallback_from AS fallbackFrom,COALESCE(origin.runner_secret_outcome,r.runner_fallback_reason) AS fallbackReason,r.subject,origin.harness AS failedAgent
   FROM json_each(?1) tasks CROSS JOIN json_each('["manual","automatic"]') origins
   JOIN agent_runs r ON (r.project_id,r.id)=(SELECT d.project_id,d.run_id FROM task_due d
     WHERE d.task=tasks.value AND d.origin=origins.value AND d.claimable=1
       AND NOT EXISTS(SELECT 1 FROM json_each(?2) held WHERE json_extract(held.value,'$[0]')=d.project_id AND json_extract(held.value,'$[1]')=d.run_id) ORDER BY d.queued_at,d.run_id,d.project_id LIMIT 1)
+  LEFT JOIN agent_runs origin ON origin.project_id=r.project_id AND origin.id=r.runner_fallback_from
   ORDER BY r.queued_at,r.id,r.project_id` });
 export async function queueHeads(db: RelationalStore, excluded: readonly string[], waiting: readonly string[] = []): Promise<ClaimCandidate[]> {
   const [rows] = await readSet(db, heads.bind(JSON.stringify(BUDGET_WORKER_TASKS.filter(task => !excluded.includes(task))), JSON.stringify(waiting)));
-  return rows;
+  return rows.map(({ fallbackFrom, fallbackReason, subject, failedAgent, ...row }) => fallbackFrom !== null && fallbackReason !== null
+    ? { ...row, fallbackRetry: { reason: fallbackReason, subject, failedAgent } } : row);
 }
 
 const candidateBudget = [false, true].map(active => [false, true].map(observed => {
@@ -120,7 +123,7 @@ export async function readTaskBudgetHolds(db: RelationalStore): Promise<BudgetHo
 const queuedRuns = read<[string, number], QueuedRunRef>({ name: 'runs.queuedAcrossProjects', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.queued_at AS queuedAt,
   ${taskHoldSql('d.source_hold', 'd.origin')} AS heldBy,r.dispatch_spec AS dispatchSpec,r.dispatched_by AS dispatchedBy,d.origin,${contextValue(BUDGET_QUOTE_USD_KEY)} AS budgetQuoteUsd
   FROM task_due d JOIN agent_runs r ON r.project_id=d.project_id AND r.id=d.run_id
-  WHERE d.origin<>'automatic' OR r.task IS NULL OR d.task NOT IN (SELECT value FROM json_each(?1))
+  WHERE r.runner_fallback_from IS NOT NULL OR d.origin<>'automatic' OR r.task IS NULL OR d.task NOT IN (SELECT value FROM json_each(?1))
   ORDER BY d.queued_at,d.run_id,d.project_id LIMIT ?2` });
 export async function listQueuedAcrossProjects(db: RelationalStore, limit: number, excludeAutomaticTasks: readonly string[] = []): Promise<QueuedRunRef[]> {
   const [rows] = await readSet(db, queuedRuns.bind(JSON.stringify(excludeAutomaticTasks), limit));

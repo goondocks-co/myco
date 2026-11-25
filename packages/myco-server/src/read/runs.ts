@@ -1,8 +1,9 @@
+import { isStoredKeyFailure, type StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { parseRepositoryFailure, parseHarnessStop, LATE_HARNESS_ERROR_NOTE, type HarnessStop } from '@goondocks/myco-shared/run-text';
 import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
-import { runAccounting } from './accounting.js';
+import { recordedRunPayer, runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, keysetPage, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
@@ -32,6 +33,9 @@ export const RUN_REFUSALS_LIMIT = MAX_TOOL_CALLS;
 
 /** A run as the list shows it: what ran, how it ended, and what it cost. The error text stays in the detail; the list carries only that there is one. */
 interface RunListRow {
+  payment?: NonNullable<ReturnType<typeof recordedRunPayer>>;
+  fallbackQueued?: boolean;
+  retryKeyReason?: StoredKeyFailure;
   result: RunResult | null;
   requested: ExecutionProfile | null;
   identity: RecordedIdentity;
@@ -161,6 +165,7 @@ interface RunToolCallRow {
 type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'legacy-worker'; memberId: string | null };
 
 export interface RunAttemptRow {
+  payment?: ReturnType<typeof recordedRunPayer>;
   attemptId: string;
   claimedAt: number;
   /** The executor that took this attempt, kept once the run moves to another; a runner is never read through a member credential. */
@@ -267,9 +272,13 @@ const waitFields = (wait: QueuedWait | undefined) => ({ wait_reason: wait?.reaso
 function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, string>, includeSignIn = false): RunListRow {
   // Terminal runs have no current worker lease.
   const ended = isTerminalRunStatus(row.status);
+  const payment = recordedRunPayer(includeSignIn, row.runner_payer, row.runner_fallback_reason, row.runner_secret_slot);
   return {
     result: text(row.result) as RunResult | null,
     requested: requestedProfile(row.requested_profile),
+    ...(payment === null ? {} : { payment }),
+    ...(includeSignIn && row.fallback_run_id != null ? { fallbackQueued: true } : {}),
+    ...(includeSignIn && isStoredKeyFailure(row.retry_key_reason) ? { retryKeyReason: row.retry_key_reason } : {}),
     id: row.id as string,
     agentId: row.agent_id as string,
     task: text(row.task),
@@ -501,6 +510,7 @@ function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
 /** A step count while its history is still being counted is null, so the attempt answers no coverage rather than zero received. */
 const attemptOf = (received: ReadonlyMap<string, number> | null, includeSignIn = false) => (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
+  ...(!includeSignIn || row.runner_payer === null ? {} : { payment: recordedRunPayer(includeSignIn, row.runner_payer, row.runner_fallback_reason) }),
   executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'legacy-worker', memberId: row.memberId },
   steps: row.total === null || received === null ? null : { total: Number(row.total), received: received.get(row.attemptId) ?? 0, overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
   waitedFor: visibleRunHolder(row.waitedFor, includeSignIn),

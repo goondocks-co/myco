@@ -1,3 +1,4 @@
+import { recordedRunPayer } from './accounting.js';
 import { interruptedEndings } from '../db/runs/interruptions.js';
 /**
  * The Runs page: when runs finished, per runner and hour, and what failed, grouped by cause, runner, agent and task
@@ -120,6 +121,8 @@ export const FINISHED_RUNS_PAGE = 50;
 
 /** One finished run as the page lists it, with the runner that ran it. */
 export interface FinishedRun {
+  payment?: NonNullable<ReturnType<typeof recordedRunPayer>>;
+  fallbackQueued?: boolean;
   dryRun: boolean;
   projectId: string; projectName: string | null; runId: string; task: string | null; result: RunResult; errorCode: string | null;
   harness: string | null; model: string | null; runner: { id: string; name: string | null } | null;
@@ -130,13 +133,16 @@ export interface FinishedRun {
  * A page of the runs that finished in the window, newest first, and the cursor of the next page; null when none is left.
  * A page that stopped at its inspection bound may list fewer rows than asked, none included, and still give a cursor.
  */
-export async function readFinishedRuns(db: RelationalStore, set: ProjectSet, page: EndedRunPage) {
+export async function readFinishedRuns(db: RelationalStore, set: ProjectSet, page: EndedRunPage, includeSignIn = false) {
   const { rows, next } = await endedRuns(db, set, page);
   const endings = await interruptedEndings(db, rows.map(row => ({ projectId: row.project_id, runId: row.id })));
   return {
     rows: rows.map((row): FinishedRun => {
       const ending = endings.find(end => end.projectId === row.project_id && end.runId === row.id);
+      const payment = recordedRunPayer(includeSignIn, row.runner_payer, row.runner_fallback_reason, row.runner_secret_slot);
       return {
+        ...(payment === null ? {} : { payment }),
+        ...(!includeSignIn || row.fallback_run_id === null ? {} : { fallbackQueued: true }),
         ...(ending === undefined ? {} : { interruptionMachine: ending.machine }),
         dryRun: Number(row.dry_run) === 1,
         projectId: row.project_id, projectName: row.project_name, runId: row.id, task: named(row.task), result: row.result, errorCode: named(row.error_code),

@@ -1,3 +1,5 @@
+import { type RunPayer } from '@goondocks/myco-shared/runner-fleet';
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import { parseExecutionIdentity, type CostProvenance, type RecordedIdentity } from '@goondocks/myco-shared/worker-usage';
 
 const provenanceOf = (value: unknown): CostProvenance | null =>
@@ -15,4 +17,12 @@ export function runAccounting(raw: unknown, canonicalProvenance?: unknown): { id
   } catch {
     return { identity: { status: 'unknown', reason: 'stored_accounting_unreadable' }, costProvenance: canonical };
   }
+}
+
+/** Report only the source the claim recorded, including a recorded stored-key generation on older runs. */
+export function recordedRunPayer(includeSignIn: boolean, payer: unknown, reason: unknown, storedSlot?: unknown): RunPayer | null {
+  if (!includeSignIn) return null;
+  if (payer === 'stored' || typeof storedSlot === 'string') return { payer: 'stored' };
+  if (payer !== 'own') return null;
+  return { payer, ...(reason === 'no_key' || isStoredKeyFailure(reason) ? { fallbackReason: reason } : {}) };
 }

@@ -1,3 +1,4 @@
+import { paidByWords, runnerFallbackReasonWords } from '@goondocks/myco-shared/runner-fleet';
 import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
@@ -90,6 +91,10 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const at = run.completedAt ?? run.startedAt ?? run.queuedAt;
   const took = run.startedAt !== null && run.completedAt !== null ? tookWords(run.completedAt - run.startedAt) : null;
   const startedBy = startedByWords(run.startedBy, name);
+  const retryReason = run.retryKeyReason === undefined ? null
+    : run.retryKeyReason === 'out_of_credit' ? 'the stored key ran out of credit' : runnerFallbackReasonWords(run.retryKeyReason);
+  const queuedAgain = retryReason === null ? null : `Queued again by Myco: ${retryReason}`;
+  const attribution = queuedAgain ?? (startedBy === null ? null : startedKicker(startedBy));
   const spores = produced.spores;
   const cause = failed ? causeOf(answer) : null;
   const repositoryFailure = failed && run.errorCode === 'repository_unprepared';
@@ -102,7 +107,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const fleetWait = run.status === 'queued' ? fleetWaitWords(run) : null;
   const story = runStory({
     answer, calls: calls.rows, callsComplete: calls.complete, steps: stepsKnown(latest.coverage) ? latest.steps.rows : null,
-    startedBy: startedBy === null ? null : startedKicker(startedBy), cause: causeOf(answer), memberName: name, now,
+    startedBy: attribution, cause: causeOf(answer), memberName: name, now,
   });
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
@@ -111,11 +116,12 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
           {at !== null && <span>{capitalize(atWords(at, now))}</span>}
           {took !== null && <><span aria-hidden>·</span><span>took {took}</span></>}
-          {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
+          {attribution !== null && <><span aria-hidden>·</span><span data-started-by="">{attribution}</span></>}
         </p>
         {run.status === 'completed' && run.endedNote === LATE_HARNESS_ERROR_NOTE &&
           <p data-run-ended-note="" className="t-small text-muted">{lateSessionWords(diagnosticReaderCode(run.harnessStop?.code ?? null))}</p>}
         {ran && summary !== null && <p className="t-body text-ink-2" data-run-summary="">{summary}</p>}
+        {run.payment !== undefined && <p className="t-small text-ink-2">{paidByWords(run.payment)}</p>}
         {run.task !== null && <TaskName projectId={projectId} task={run.task} />}
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{queuedWords(run, now)}</p>}
@@ -150,7 +156,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {repositoryFailure ? <p>{admin
             ? <ActionLink to={projectRepositoryPath(projectId, true)}>Check repository settings</ActionLink>
             : 'Ask an admin to check the repository in Project settings.'}</p>
-            : <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>}
+            : !run.fallbackQueued && <p>{kept ? 'What it saved is kept.' : kind === null ? 'Open the technical details below to see where it stopped.' : failureNextStep(kind, false)}</p>}
         </div>
       )}
 
@@ -252,7 +258,7 @@ function headlineOf({ run, read, produced }: RunDetailAnswer): string {
 }
 
 function causeOf({ run }: RunDetailAnswer): string {
-  return storedRunFailureWords(run.errorCode, run.harness) ?? runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
+  return storedRunFailureWords(run.errorCode, run.harness, run.fallbackQueued) ?? runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null);
 }
 
 function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: string }) {
@@ -333,7 +339,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
             {run.harnessStop?.signal !== undefined && <FactRow term="Agent exit signal">{run.harnessStop.signal}</FactRow>}
             {Object.entries(run.harnessStop?.fields ?? {}).map(([field, value]) => <FactRow key={field} term={SESSION_ENDING_FIELD_LABELS[field] ?? 'Session detail'}>{value}</FactRow>)}
             <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
-            <FactRow term="Started by">{startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
+            <FactRow term={run.retryKeyReason === undefined ? 'Started by' : 'Queued again by'}>{run.retryKeyReason !== undefined ? 'Myco' : startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}
             {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Queue wait">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
             {run.completedAt !== null && <FactRow term="Finished">{dateWords(run.completedAt)}</FactRow>}

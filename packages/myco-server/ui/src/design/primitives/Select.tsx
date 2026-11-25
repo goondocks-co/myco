@@ -83,6 +83,7 @@ export interface SelectProps {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  wrap?: boolean;
   id?: string;
 }
 
@@ -93,7 +94,7 @@ export const SEARCHABLE_AFTER = 8;
  * The one select. Every select in the dashboard looks and sizes the same; with
  * more than eight options it becomes a SearchableSelect.
  */
-export function Select({ label, value, onValueChange, options, placeholder, disabled, className, id }: SelectProps) {
+export function Select({ label, value, onValueChange, options, placeholder, disabled, className, wrap = false, id }: SelectProps) {
   if (options.length > SEARCHABLE_AFTER) {
     return (
       <SearchableSelect
@@ -113,12 +114,12 @@ export function Select({ label, value, onValueChange, options, placeholder, disa
   const name = visible === undefined ? label : visible.toLowerCase().startsWith(label.toLowerCase()) ? visible : `${label}: ${visible}`;
   return (
     <SelectRoot value={value} onValueChange={onValueChange} disabled={disabled}>
-      <SelectTrigger id={id} aria-label={name} className={className}>
+      <SelectTrigger id={id} aria-label={name} className={cn(wrap && "h-auto min-h-control py-s2 [&>span]:overflow-visible [&>span]:whitespace-normal", className)}>
         <SelectValue placeholder={placeholder ?? label}>{selected === undefined ? undefined : selected.short ?? selected.label}</SelectValue>
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent className={wrap ? "w-[var(--radix-select-trigger-width)]" : undefined}>
         {options.map((option) => (
-          <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+          <SelectItem key={option.value} value={option.value} className={wrap ? "h-auto min-h-control-sm py-s2 whitespace-normal" : undefined}>{option.label}</SelectItem>
         ))}
       </SelectContent>
     </SelectRoot>

@@ -1,3 +1,4 @@
+import { RUNNER_PAYER_STEPS } from './schema-steps-runner-payer.js';
 import { RUNNER_SECRET_HEALTH_STEPS } from './schema-steps-runner-secret-health.js';
 import { TELEMETRY_EXACT_STEPS } from './schema-steps-telemetry-exact.js';
 import { NOTE_ORIGIN_STEPS } from './schema-steps-note-origin.js';
@@ -2441,6 +2442,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...SESSION_CURRENT_STEPS.map(stamp),
   ...TURN_LEAD_STEPS.map(stamp),
   ...RUNNER_SECRET_HEALTH_STEPS.map(stamp),
+  ...RUNNER_PAYER_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

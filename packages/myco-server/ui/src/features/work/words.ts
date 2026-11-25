@@ -1,5 +1,5 @@
 import { GITHUB_ACCESS_FAILURES } from '@goondocks/myco-shared/repository';
-import { RUN_FAILURE_WORDS, interruptionWords } from '@goondocks/myco-shared/run-control';
+import { RUN_FAILURE_WORDS, interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared/run-control';
 /**
  * Myco's work in words: every sentence the page and the run panel show, built
  * from the numbers the server answers. A run reads as what it came to, a
@@ -425,7 +425,9 @@ export function fullErrorWords(code: string | null | undefined, machine: string 
 }
 
 /** A coded failure uses the dashboard's sentence; an uncoded report retains its own words. */
-export function failureWords(failure: WorkRun['failure'] | undefined): string {
+export function failureWords(failure: WorkRun['failure'] | undefined, agent?: string | null): string {
+  const fallback = failure?.fallbackQueued ? storedRunFailureWords(failure.code, agent, true) : null;
+  if (fallback !== null) return fallback;
   return failure?.source === 'report' && failure.code == null ? causeSentence(failure.cause ?? '') : runErrorWords(failure?.code, failure?.reason ?? null, failure?.repositoryFailure ?? null);
 }
 

@@ -1,4 +1,4 @@
-import type { RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import { RUNNER_PAYER_LABELS, type RunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import { harnessLabel } from '../lib/harness';
 import { ACCOUNT_UNLINKED, DEVICE_CODE_REFUSAL, DEVICE_MEMBERSHIP_REFUSAL, OWNER_UNCLAIMED } from '@goondocks/myco-shared/setup-guidance';
 import { useLocation } from 'react-router-dom';
@@ -88,7 +88,7 @@ export function Device() {
                     <FactRow term="Requested">{preview.ageSeconds} seconds ago</FactRow>
                     <FactRow term="Code">{preview.code}</FactRow>
                     <FactRow term="Access">A runner takes Myco’s queued work and runs it on that machine with the agent sign-ins you approve. It is not a member: it cannot read project memory, capture sessions or administer the server.</FactRow>
-                    {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <FactRow key={agent} term={`${harnessLabel(agent)} signs in with`}>{choice === 'stored' ? 'The server’s stored key' : 'This machine’s sign-in'}</FactRow>)}
+                    {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <FactRow key={agent} term={`${harnessLabel(agent)} signs in with`}>{choice === 'stored-first' ? RUNNER_PAYER_LABELS[choice] : choice === 'stored' ? 'The server’s stored key' : 'This machine’s sign-in'}</FactRow>)}
                   </FactsPanel>
                   <p className="t-body text-muted">Agents with no requested choice use this machine’s sign-in. Stored keys are shared with this runner only for agents explicitly approved here.</p>
                   <p className="t-body text-muted">Runner name, machine name and operating system are reported by the requesting machine.</p>

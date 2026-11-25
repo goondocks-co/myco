@@ -9,7 +9,7 @@ import type { RelationalStore, ServerEnv } from '../../core/adapters.js';
 import { credentialLive } from '../liveness.js';
 import { applyFleetSignInAvailability } from '../runs/fleet.js';
 import { readWorkerFleet } from '../../core/worker-contacts.js';
-import { harnessCredentialAvailability } from '../../core/secrets.js';
+import { harnessKeyState } from '../../core/secrets.js';
 import type { MachineScope } from '../../read/machines.js';
 import { visibleProjectSql } from '../storage/visible-projects.js';
 
@@ -39,7 +39,7 @@ export async function readSetupProgress(env: ServerEnv, scope: MachineScope, now
   if (row === undefined) throw new Error('Setup observations unavailable');
   // Members receive only the queue boolean, with no runner inventory or outcome history.
   const fleet = scope.all ? (await readWorkerFleet(env.db, now, true)).filter(row => row.recent && row.eligible) : [];
-  if (scope.all) await applyFleetSignInAvailability(fleet, now, harnessCredentialAvailability(env.db, env.wrappingKey));
+  if (scope.all) await applyFleetSignInAvailability(fleet, now, harnessKeyState(env.db, env.wrappingKey));
   const runnersReady = scope.all ? fleet.filter(row => row.runner !== null && row.runnerDetails?.readiness.state === 'ready').length : null;
   const produced = outputs?.[0] as { produced: number } | undefined;
   if (scope.all && produced === undefined) throw new Error('Setup work observation unavailable');

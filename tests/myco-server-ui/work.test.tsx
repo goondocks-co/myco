@@ -367,6 +367,20 @@ describe('Myco’s work', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('keeps the handed-on attempt in history without calling its work an unresolved failure', async () => {
+    const work: WorkAnswer = { ...WEEK_WORK,
+      summary: [outcome({ kind: 'title', task: 'title-summary', runs: { failed: 1, queued: 1 }, handedOn: 1 })],
+      timeline: [workRun({ kind: 'title', task: 'title-summary', status: 'failed', result: 'failed',
+        failure: { source: 'error', cause: 'The stored key ran out of credit', code: 'stored_key_out_of_credit', fallbackQueued: true } })],
+    };
+    server(week({ work }));
+    mount('/work');
+    const title = await findCard('title');
+    expect(title.textContent).toContain('Failed');
+    expect(title.textContent).not.toContain('Myco tries again later');
+    expect(document.querySelector('[data-lede]')?.textContent).not.toContain('none has worked since');
+  });
+
   it('keeps a map failure in one project open when the map worked in another', async () => {
     const answer: WorkAnswer = {
       ...WEEK_WORK,

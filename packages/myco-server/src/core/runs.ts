@@ -1,3 +1,4 @@
+import type { StoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import type { Bound } from '../db/index.js';
 import type { ProjectCapability } from './settings.js';
 import type { DispatchLimits } from './limits.js';
@@ -212,7 +213,10 @@ export interface QueuedRunRef {
  * credential the row names; a worker must never take it. `expireLeases` clears the column when it
  * requeues, which is what makes a run it held claimable again.
  */
+export interface FallbackRetry { reason: StoredKeyFailure; failedAgent: string | null }
+
 export interface ClaimCandidate {
+  fallbackRetry?: FallbackRetry & { subject: string | null };
   projectId: string;
   id: string;
   task: string;
@@ -231,6 +235,7 @@ export interface ClaimedRunRow {
 
 /** A pulled run the claim creates: its identity, single-flight subject, built input and its stage's reassertion. */
 export interface PulledCandidate {
+  key?: string;
   projectId: string;
   id: string;
   task: string;

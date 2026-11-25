@@ -1,3 +1,5 @@
+import type { FallbackRetry } from './runs.js';
+import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
 import type { HarnessSignInFailure } from '@goondocks/myco-shared/runner-fleet';
 import type { ServerEnv } from './adapters.js';
 /**
@@ -13,10 +15,10 @@ import type { ServerEnv } from './adapters.js';
  * which `tests/meta/read-layer-credential-blind.test.ts` holds for every read.
  */
 import { capabilitiesRequiredBy, REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { CAPABILITY_HOLDS, credentialUnavailable, profileUnsupported, sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
+import { CAPABILITY_HOLDS, credentialHoldReason, credentialUnavailable, profileUnsupported, sourceReadUnavailable } from '@goondocks/myco-shared/run-holds';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { PROFILE_HARNESSES, HARNESS_ASKING, canReadSource, type ExecutionProfile, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
-import { runnerAgentLoginReady, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
+import { runnerAgentLoginReady, runnerOwnSignInReady, type RunnerCredentialChoice, type RunnerFallbackReason, type RunnerSignInSource, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 import type { SecretSlotName } from '@goondocks/myco-shared/secret-slots';
 import type { RunnerSecretAvailability } from '../db/settings/runner-secret-health.js';
 import { fixedTaskHarness, PROFILE_SETTING_LEAVES, profileSetting, resolveExecutionProfile, taskOverride, taskTierRefusal } from './execution-profile.js';
@@ -120,34 +122,40 @@ export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ pr
  * leaves the run's environment unchanged; a server login reads only the
  * selected agent's own slot.
  */
-type LoginPlan = { kind: 'worker-login' } | { kind: 'deployment'; slot: SecretSlotName } | { reason: string };
+type LoginPlan = { kind: 'worker-login' } | { kind: 'deployment'; slot: SecretSlotName; fallback: boolean } | { reason: string };
+export type LoginEvidence = { payer: RunnerSignInSource; fallbackReason?: RunnerFallbackReason; allowFallback?: boolean; observedChoice?: RunnerCredentialChoice };
 
-function loginPlan(harness: string, model: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices): LoginPlan {
+function loginPlan(harness: string, model: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices, retry?: FallbackRetry): LoginPlan {
   const configured = profileSetting(settings.get(`agent.harnesses.${harness}.credential`));
   if (choices?.[harness] === null) return { reason: credentialUnavailable(harness) };
-  const source = choices === undefined ? configured ?? 'worker-login' : choices[harness] === 'stored' ? 'deployment' : 'worker-login';
+  const choice = choices?.[harness];
+  const source = choices === undefined ? configured ?? 'worker-login' : choice === 'stored' || choice === 'stored-first' ? 'deployment' : 'worker-login';
+  if (retry !== undefined) {
+    if (choices === undefined) return { reason: credentialUnavailable(harness) };
+    if (choice !== 'stored') return { kind: 'worker-login' };
+  }
   const unavailable = { reason: credentialUnavailable(harness) };
   if (source === 'worker-login') return { kind: 'worker-login' };
   if (source !== 'deployment') return unavailable;
   const declared = HARNESS_CREDENTIALS[harness];
   if (declared === undefined || declared.slot === null || declared.variables.length === 0) return unavailable;
   if (declared.modelProvider !== undefined && !model.startsWith(`${declared.modelProvider}/`)) return { kind: 'worker-login' };
-  return { kind: 'deployment', slot: declared.slot };
+  return { kind: 'deployment', slot: declared.slot, fallback: retry === undefined && choice === 'stored-first' };
 }
 
 /** The step that turns a login plan into what a run is handed, or the holder that keeps it from running. */
 export type LoginStep<L> = (harness: string, plan: Exclude<LoginPlan, { reason: string }>) => Promise<{ login: L } | { reason: string }>;
 
-type Selected<L> = { harness: string; profile: ExecutionProfile; login: L };
+type Selected<L> = { harness: string; profile: ExecutionProfile; login: L } & LoginEvidence;
 
 /** Availability checks return no credential material. */
-export const availableLogin = (available: (harness: string) => Promise<RunnerSecretAvailability>): LoginStep<true> => async (harness, plan) => {
-  const result = plan.kind === 'worker-login' ? true : await available(harness);
+export const availableLogin = (available: (harness: string, fallback?: boolean) => Promise<RunnerSecretAvailability>): LoginStep<true> => async (harness, plan) => {
+  const result = plan.kind === 'worker-login' ? true : await available(harness, plan.fallback);
   return result === true ? { login: true } : { reason: credentialUnavailable(harness, result || undefined) };
 };
 
 /** Resolve a task against one worker's offers in preference order. */
-export async function selectExecution<L>(task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, login: LoginStep<L>, choices?: StoredRunnerCredentialChoices): Promise<{ selected: Selected<L> | null; reason: string | null }> {
+export async function selectExecution<L>(task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, login: LoginStep<L>, choices?: StoredRunnerCredentialChoices, retry?: FallbackRetry): Promise<{ selected: Selected<L> | null; reason: string | null }> {
   const preference = harnessPreference(settings, task);
   let remaining = [...offers];
   let reason: string | null = null;
@@ -162,9 +170,24 @@ export async function selectExecution<L>(task: string, offers: readonly OfferedH
     const offer = remaining.find((entry) => entry.id === harness)!;
     const resolved = resolveExecutionProfile(task, harness, offer.profile, settings);
     if ('profile' in resolved) {
-      const plan = loginPlan(harness, resolved.profile.model, settings, choices);
-      const opened = 'reason' in plan ? plan : plan.kind === 'worker-login' && !offer.authenticated ? null : await login(harness, plan);
-      if (opened !== null && 'login' in opened) return { selected: { harness, profile: resolved.profile, login: opened.login }, reason: null };
+      const plan = loginPlan(harness, resolved.profile.model, settings, choices, retry);
+      const ownReady = runnerOwnSignInReady(offer);
+      let opened = 'reason' in plan ? plan : plan.kind === 'worker-login' && !ownReady ? null : await login(harness, plan);
+      const fallback = !('reason' in plan) && plan.kind === 'deployment' && plan.fallback;
+      const refusal = opened !== null && 'reason' in opened ? opened.reason : null;
+      const failure = credentialHoldReason(refusal);
+
+      const useFallback = fallback && refusal !== null && ownReady;
+      if (useFallback) opened = await login(harness, { kind: 'worker-login' });
+      if (opened !== null && 'login' in opened) {
+        const payer = !('reason' in plan) && plan.kind === 'deployment' && !useFallback ? 'stored' : 'own';
+        const retryChoice = retry === undefined ? undefined : choices?.[harness] ?? 'own';
+        const fallbackReason = useFallback ? isStoredKeyFailure(failure) ? failure : 'no_key'
+          : retryChoice === 'stored-first' && retry?.failedAgent === harness ? retry.reason : undefined;
+        return { selected: { harness, profile: resolved.profile, login: opened.login, payer,
+          ...(fallbackReason === undefined ? {} : { fallbackReason }), ...(fallback && payer === 'stored' ? { allowFallback: true } : {}),
+          ...(retryChoice !== undefined || fallback ? { observedChoice: retryChoice ?? 'stored-first' } : {}) }, reason: null };
+      }
       reason ??= opened?.reason ?? null;
     } else reason ??= resolved.reason;
     remaining = remaining.filter((entry) => entry.id !== harness);
@@ -201,7 +224,7 @@ export async function fleetSelection<L>(task: string, reports: readonly FleetRep
 interface PreviewReport extends FleetReport { credentialId: string }
 
 /** One way a start now could run: the agent and profile, and the workers heard from lately that would run it so. */
-export interface PreviewExecution { harness: string; profile: ExecutionProfile; credentialIds: string[] }
+export interface PreviewExecution { harness: string; profile: ExecutionProfile; credentialIds: string[]; payers: Map<string, RunnerSignInSource> }
 
 /**
  * What a run of `task` started now would run under, judged worker by worker:
@@ -228,8 +251,12 @@ export async function previewSelection(task: string, reports: readonly PreviewRe
     const { tier, model, effort } = selected.profile;
     const key = JSON.stringify([selected.harness, tier, model, effort]);
     const known = executions.get(key);
-    if (known === undefined) executions.set(key, { harness: selected.harness, profile: selected.profile, credentialIds: [report.credentialId] });
-    else known.credentialIds.push(report.credentialId);
+    if (known === undefined) executions.set(key, { harness: selected.harness, profile: selected.profile,
+      credentialIds: [report.credentialId], payers: new Map([[report.credentialId, selected.payer]]) });
+    else {
+      known.credentialIds.push(report.credentialId);
+      known.payers.set(report.credentialId, selected.payer);
+    }
   }
   return executions.size > 0 ? { executions: [...executions.values()], heldBy: null } : { executions: [], heldBy: reasons.sort()[0] ?? 'worker' };
 }

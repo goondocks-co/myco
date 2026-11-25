@@ -5,6 +5,9 @@ import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
 import { budgetHold } from '../db/runs/budget-policy.js';
+import { retryOnRunnerSignIn } from '../db/runs/payer-retry.js';
+import type { FallbackRetry } from './runs.js';
+import type { LoginEvidence } from './worker-selection.js';
 import { pullBudgetAdmission, pullCapacityAvailable } from './pulled-admission.js';
 import { recordPulledBudgetHold, clearPulledBudgetHolds } from '../db/runs/pulled-budget-hold.js';
 import { fleetExecution } from './fleet-execution.js';
@@ -228,6 +231,7 @@ interface StoredSpec {
   actor: string;
   timeoutSeconds: number;
   params?: Record<string, string>;
+  pulledKey?: string;
   options?: DispatchOptions;
 }
 
@@ -820,7 +824,7 @@ async function recordCapabilityHolds(env: ServerEnv, reported: readonly string[]
   for (const [hold, tasks] of held) await recordTaskHolder(env.db, tasks, ['worker','budget', ...CAPABILITY_HOLDS.filter((other) => other !== hold)], hold, true);
 }
 
-type SelectedExecution = { harness: string; profile: ExecutionProfile } & ClaimLogin;
+type SelectedExecution = { harness: string; profile: ExecutionProfile } & ClaimLogin & LoginEvidence;
 
 /** Resolve a task against one worker's offers in preference order, opening the chosen agent's login. */
 export async function selectWorkerExecution(env: ServerEnv, task: string, offers: readonly OfferedHarness[], settings: ReadonlyMap<string, string>, worker?: WorkerPrincipal): Promise<{ selected: SelectedExecution | null; reason: string | null }> {
@@ -831,10 +835,12 @@ export async function selectWorkerExecution(env: ServerEnv, task: string, offers
 function workerSelector(env: ServerEnv, offers: readonly OfferedHarness[], now: number, worker?: WorkerPrincipal) {
   let choices: Promise<Awaited<ReturnType<typeof runnerCredentialChoices>> | undefined> | undefined;
   const login = claimLogin(env, now);
-  return async (task: string, settings: ReadonlyMap<string, string>): Promise<{ selected: SelectedExecution | null; reason: string | null }> => {
+  return async (task: string, settings: ReadonlyMap<string, string>, retry?: FallbackRetry): Promise<{ selected: SelectedExecution | null; reason: string | null }> => {
     choices ??= worker?.kind === 'runner' ? runnerCredentialChoices(env.db, worker.runnerId) : Promise.resolve(undefined);
-    const { selected, reason } = await selectExecution(task, offers, settings, login, await choices);
-    return { selected: selected === null ? null : { harness: selected.harness, profile: selected.profile, ...selected.login }, reason };
+    const { selected, reason } = await selectExecution(task, offers, settings, login, await choices, retry);
+    if (selected === null) return { selected: null, reason };
+    const { login: material, ...execution } = selected;
+    return { selected: { ...execution, ...material }, reason };
   };
 }
 
@@ -944,7 +950,7 @@ export async function claimNextRun(
       continue;
     }
     await recordQueueHolder(env.db, { projectId: candidate.projectId }, candidate.id, 'worker', { from: CARDS_PENDING_HOLD });
-    const { selected } = await select(candidate.task, settings);
+    const { selected } = await select(candidate.task, settings, candidate.fallbackRetry);
     chosen = selected;
     if (chosen !== null) {
       const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,chosen.harness,chosen.profile);
@@ -959,7 +965,8 @@ export async function claimNextRun(
       break;
     }
     held = true;
-    excluded.push(candidate.task);
+    if (candidate.fallbackRetry === undefined) excluded.push(candidate.task);
+    else { refusedHeads.add(headKey(candidate)); waitingHeads.add(headKey(candidate)); }
     candidate = await next();
   }
   const pull = async (): Promise<ClaimOutcome | null> => {
@@ -991,7 +998,16 @@ export async function claimNextRun(
     await skipCandidate(candidate, skip);
     return claimNextRun(env, worker);
   };
-  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params, dryRun: candidate.task === CURATION_TASK && (await getRun(env.db, scope, candidate.id))?.dryRun === 1 });
+  const retry = candidate.fallbackRetry;
+  const pulledKey = stored?.pulledKey;
+  const stage = retry === undefined || pulledKey === undefined ? undefined : pulledStages().find(stage => stage.task === candidate.task);
+  const pulledRetry = stage === undefined || pulledKey === undefined || retry?.subject == null ? null
+    : { stage, item: { projectId: candidate.projectId, key: pulledKey, subject: retry.subject, observed: null } };
+  const retryInput = pulledRetry === null ? null : await pulledRetry.stage.build(env, pulledRetry.item, worker.now);
+  if (pulledRetry !== null && retryInput === null) return skipRefused(NOTHING_DUE);
+  const built = retryInput === null
+    ? await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params, dryRun: candidate.task === CURATION_TASK && (await getRun(env.db, scope, candidate.id))?.dryRun === 1 })
+    : { unchanged: false as const, input: retryInput };
   if (built === null && candidate.task === CURATION_TASK && stored?.options?.dryRun === true) return skipRefused('no_qualifying_group');
   if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
   const builder = inputBuilderFor(candidate.task);
@@ -1004,7 +1020,7 @@ export async function claimNextRun(
   // A run with nothing to say to its harness is ended here, before anything is
   // minted: handed out, it would end its turn having called nothing, and the
   // worker would report a run that did nothing as a run that finished.
-  const instruction = instructionFor(built, candidate.instruction, builder !== null);
+  const instruction = instructionFor(built, candidate.instruction, builder !== null || pulledRetry !== null);
   if (instruction === null) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { failed: uninstructedError(candidate.task), errorCode: 'task_start_failed' });
     emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip: 'uninstructed' });
@@ -1016,8 +1032,12 @@ export async function claimNextRun(
   const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
   const claimed = await claimQueuedRun(env, candidate, {
     worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, agentVersion: reportedAgentVersion(worker.harnesses, harness), profile, now: worker.now, capabilities:worker.capabilities,
-    settingsGuard:policy.revisions, storedKey: chosen.storedKey,
+    settingsGuard:policy.revisions, storedKey: chosen.storedKey, login: chosen,
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
+    ...(pulledRetry === null || retryInput === null ? {} : {
+      queuedStageWrites: (attemptId: string) => pulledRetry.stage.claimed?.(env.db, pulledRetry.item, retryInput,
+        { runId: candidate.id, dispatchedBy: attemptId }, worker.now) ?? [],
+    }),
   });
   const row=claimed?.row ?? null;
   const minted=claimed?.issued;
@@ -1107,7 +1127,7 @@ async function pullAtClaim(
     const input = await stage.build(env, item, worker.now);
     if (input === null) return null;
     const runId = `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
-    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
+    const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, key: item.key, input,
       assertions: [...selection.assertions,queuedPriority(queues,limits,worker.now)],
       claimed: (dispatchedBy: string) => [
         ...(stage.claimed?.(env.db, item, input, { runId, dispatchedBy }, worker.now) ?? []),
@@ -1115,7 +1135,7 @@ async function pullAtClaim(
           projectId: item.projectId, runId, attemptId: dispatchedBy }),
       ] }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, agentVersion: reportedAgentVersion(worker.harnesses, chosen.harness), profile, now: worker.now, capabilities:worker.capabilities,
-      settingsGuard:policy.revisions, storedKey: chosen.storedKey,
+      settingsGuard:policy.revisions, storedKey: chosen.storedKey, login: chosen,
     });
     if (claimed === null) {
       if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
@@ -1175,7 +1195,7 @@ export async function endLeasedRun(
   const clock = worker.clock ?? (() => worker.now);
   const prepared = await prepareWorkerEnd(env, { worker: worker.principal, clock }, run);
   if ('held' in prepared) return { ended: false, reason: prepared.reason };
-  const { row, unmet, status, update, errorCode, context, runnerSecretOutcome } = prepared;
+  const { row, unmet, status, update, errorCode, context, runnerSecretOutcome, fallbackRunId } = prepared;
   const now = clock();
   const statement = runUpdateStatement({ projectId: run.projectId }, run.runId, {
     ...update, completed_at: now,
@@ -1184,7 +1204,8 @@ export async function endLeasedRun(
   const accounting = settleAttemptCostStatement({projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
     typeof update.cost_usd==='number'?update.cost_usd:null,typeof update.cost_source==='string'?update.cost_source:null);
   const [, changed, retired] = await commit(env.db, accounting, statement,
-    retireEndedAttemptCredentialWrite(now, HARNESS_MEMBER_ID, { tokenId: row.dispatchedBy, projectId: run.projectId, runId: run.runId }));
+    retireEndedAttemptCredentialWrite(now, HARNESS_MEMBER_ID, { tokenId: row.dispatchedBy, projectId: run.projectId, runId: run.runId }),
+    ...(fallbackRunId === undefined ? [] : [retryOnRunnerSignIn(run.projectId, run.runId, row.dispatchedBy, fallbackRunId)]));
   if (changed!.results.length === 0) return { ended: false, reason: 'the lease is no longer held' };
   emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.results.length === 1 });
   if (unmet !== null) {

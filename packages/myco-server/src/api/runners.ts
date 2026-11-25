@@ -1,4 +1,3 @@
-import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { setAgentCredentialChoice, setRunnerCredentialChoice } from '../auth/runners.js';
 import { readAgentPayers, runnersOffering } from '../read/agent-payers.js';
 import { isAdmin } from '../auth/roles.js';
@@ -20,7 +19,7 @@ import { fleetTotals, pageRunners, parseFleetPage } from '../core/fleet-page.js'
 import { readAgentWorkCheck } from '../read/agent-work-check.js';
 import { requestByUserCode } from '../auth/device.js';
 import { sha256Hex } from '../hash.js';
-import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
+import { runnerCredentialChoiceAllowed, type RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
 import { parseRunnerUpdateReport, readRunnerUpdateReceipt, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
 import { emit } from '../telemetry.js';
 import { ok, parseJsonObject, readJsonObject, withRunnerSignInRefusal } from './scope.js';
@@ -103,8 +102,8 @@ export async function handleAgentPayers(env: ServerEnv, ctx: OwnerContext): Prom
  */
 export const handleAgentSignIn = withRunnerSignInRefusal(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
   const body = await readJsonObject(ctx.request);
-  if (typeof body?.agent !== 'string' || !Object.hasOwn(HARNESS_CREDENTIALS, body.agent)
-    || (body.choice !== 'own' && body.choice !== 'stored')) return Response.json({ error: 'invalid_sign_in' }, { status: 400 });
+  if (typeof body?.agent !== 'string'
+    || !runnerCredentialChoiceAllowed(body.agent, body.choice)) return Response.json({ error: 'invalid_sign_in' }, { status: 400 });
   const offering = runnersOffering(await readWorkerFleet(env.db, ctx.now, true), body.agent).map((runner) => runner.id);
   if (!await setAgentCredentialChoice(env.db, env.wrappingKey, ctx.member.id, offering, body.agent, body.choice, ctx.now)) return Response.json({ error: 'conflict' }, { status: 409 });
   return ok(await readAgentPayers(env, ctx.now));
@@ -176,8 +175,8 @@ export const handleRecredentialRunner = withRunnerSignInRefusal(async (env: Serv
 /** An administrator chooses the sign-in used for one runner's next runs of an agent. */
 export const handleRunnerCredentialChoice = withRunnerSignInRefusal(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
   const body = await readJsonObject(ctx.request);
-  if (typeof body?.agent !== 'string' || !Object.hasOwn(HARNESS_CREDENTIALS, body.agent)
-    || (body.choice !== 'own' && body.choice !== 'stored')) return Response.json({ error: 'invalid_sign_in' }, { status: 400 });
+  if (typeof body?.agent !== 'string'
+    || !runnerCredentialChoiceAllowed(body.agent, body.choice)) return Response.json({ error: 'invalid_sign_in' }, { status: 400 });
   const choices = await setRunnerCredentialChoice(env.db, env.wrappingKey, ctx.member.id, ctx.params.runnerId ?? '', body.agent, body.choice, ctx.now);
   return choices === null ? Response.json({ error: 'not_found' }, { status: 404 }) : ok({ credentialChoices: choices });
 });

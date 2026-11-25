@@ -18,14 +18,17 @@ export const failureThreshold = (projectId: string, task: string) => `COALESCE((
     WHERE s.project_id=${projectId} AND s.task=${task} AND s.status='completed' AND s.dry_run=0 ORDER BY s.started_at DESC LIMIT 1),-1)`;
 const startedAfter = (run: string, threshold: string) => `${run}.started_at>${threshold}`;
 const admissionAfter = (run: string, threshold: string) => `${run}.started_at IS NULL AND ${run}.completed_at>${threshold}`;
+export const failureHandedOn = (run: string): string =>
+  `CASE WHEN json_valid(${run}.run_context) THEN json_extract(${run}.run_context,'$.fallbackRunId') END IS NOT NULL`;
+
 /** Failed starts and failed queued admissions both remain unresolved until a later run starts and completes. */
-export const unresolvedFailure = (run: string, threshold: string) => `(${run}.dry_run=0 AND (${startedAfter(run, threshold)} OR (${admissionAfter(run, threshold)})))`;
+export const unresolvedFailure = (run: string, threshold: string) => `(${run}.dry_run=0 AND NOT (${failureHandedOn(run)}) AND (${startedAfter(run, threshold)} OR (${admissionAfter(run, threshold)})))`;
 export function unresolvedFailureRows(projectId: string, task: string): string {
   const threshold = failureThreshold(projectId, task);
   const branch = (range: string, order: string) => `SELECT r.id,COALESCE(r.completed_at,r.started_at) AS at,
     COALESCE(r.started_at,r.completed_at) AS failed_at FROM agent_runs r INDEXED BY idx_agent_runs_task
     WHERE r.project_id=${projectId} AND r.task=${task} AND r.status='failed' AND r.dry_run=0 AND ${range}
-    AND NOT ${producedSql('r')} ORDER BY ${order} DESC LIMIT ${FAILURE_STREAK_SHOWN + 1}`;
+    AND NOT (${failureHandedOn('r')}) AND NOT ${producedSql('r')} ORDER BY ${order} DESC LIMIT ${FAILURE_STREAK_SHOWN + 1}`;
   return `SELECT * FROM (${branch(startedAfter('r', threshold), 'r.started_at')})
     UNION ALL SELECT * FROM (${branch(admissionAfter('r', threshold), 'r.completed_at')})`;
 }
@@ -41,8 +44,8 @@ export async function unresolvedFailures(db: RelationalStore, pairs: readonly Ou
     return latest ? [{ ...pair, runId: latest.id, at: latest.at, failures: Math.min(rows.length, FAILURE_STREAK_SHOWN), hasMore: rows.length > FAILURE_STREAK_SHOWN }] : [];
   });
 }
-const reasons = read<[string], { projectId: string; runId: string; harness: string | null; error_code: string | null; error: string | null; reason: string | null; refusal: string | null }>({
-  name: 'runs.failureReasons', sql: `SELECT r.project_id AS projectId,r.id AS runId,r.harness,r.error_code,r.error,${contextValue(FAILURE_REASON_KEY)} AS reason,
+const reasons = read<[string], { projectId: string; runId: string; harness: string | null; error_code: string | null; error: string | null; reason: string | null; refusal: string | null; fallbackRunId: string | null }>({
+  name: 'runs.failureReasons', sql: `SELECT r.project_id AS projectId,r.id AS runId,r.harness,r.error_code,r.error,${contextValue(FAILURE_REASON_KEY)} AS reason,${contextValue('fallbackRunId')} AS fallbackRunId,
     (SELECT CASE WHEN json_valid(e.payload) THEN CASE WHEN json_type(e.payload,'$.failure.message')='text'
       THEN json_extract(e.payload,'$.failure.message') END END FROM agent_run_events e INDEXED BY ${FAILED_CALL_INDEX}
       WHERE e.project_id=r.project_id AND e.run_id=r.id AND ${FAILED_CALL_SQL} ORDER BY e.recorded_at DESC LIMIT 1) AS refusal
@@ -54,7 +57,7 @@ export async function failureReasons(db: RelationalStore, runs: ReadonlyArray<{ 
     const code = visibleRunErrorCode(row.error_code, includeSignIn);
     const words = code === null ? 'Myco didn’t record why.' : RUN_FAILURE_WORDS[code] ?? RUN_FAILURE_WORDS.run_failed!;
     const credentialFailure = row.error_code === STORED_KEY_READER_CODES.out_of_credit || row.error_code === STORED_KEY_READER_CODES.invalid_key;
-    const detail = credentialFailure ? storedRunFailureWords(code, row.harness) ?? words : [row.refusal, row.reason, row.error].find(value => value?.trim()) ?? words;
+    const detail = credentialFailure ? storedRunFailureWords(code, row.harness, row.fallbackRunId != null) ?? words : [row.refusal, row.reason, row.error].find(value => value?.trim()) ?? words;
     return [`${row.projectId}\0${row.runId}`, detail];
   }));
 }

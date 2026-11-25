@@ -1,4 +1,4 @@
-import { harnessSignInFailureWords, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
+import { agentHasStoredKey, harnessSignInFailureWords, RUNNER_PAYER_LABELS, runnerFallbackSince, runnerFallbackWords, storedKeyFailureWords } from '@goondocks/myco-shared/runner-fleet';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -199,7 +199,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
           {inspect.isError && <p role="alert" className="text-bad">{inspect.error.message}</p>}
           {preview?.code === value && <>
             <p>Request: {preview.subject === 'runner' ? `Runner named ${preview.runnerName ?? 'unnamed'}` : 'Member sign-in'}</p>
-            {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <p key={agent}>{harnessLabel(agent)} signs in with: {choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}</p>)}
+            {Object.entries(preview.credentialChoices ?? {}).map(([agent, choice]) => <p key={agent}>{harnessLabel(agent)} signs in with: {choice === 'stored-first' ? RUNNER_PAYER_LABELS[choice] : choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}</p>)}
             <p>Machine: {preview.machineName}</p><p>Operating system: {preview.os}</p><p>Request source: {preview.ip}</p><p>Your IP address: {preview.approverIp}</p>
             {preview.subject !== 'runner' || preview.runnerName !== runner.name || preview.replacingRunnerId !== runner.id ? <p role="alert" className="text-bad">This request does not match {runner.name}. Start a replacement request for this runner.</p> : <p>Approving ends the current registration, including its assigned work. The replacement keeps this runner’s history and ID.</p>}
           </>}
@@ -218,12 +218,17 @@ function AgentSignIn({ runner, agent, allowed, storedAvailable }: { runner: Runn
     onSuccess: () => refreshFleet(client),
   });
   return <div className="mt-s3 border-t border-line pt-s3 t-small" aria-label={`${harnessLabel(agent)} sign-in`}>
-    <p>{harnessLabel(agent)} · {choice === null ? 'Choose how this agent signs in' : `Signs in with: ${choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}`}</p>
+    <p>{harnessLabel(agent)} · {choice === null ? 'Choose how this agent signs in' : `Signs in with: ${choice === 'stored-first' ? RUNNER_PAYER_LABELS[choice] : choice === 'stored' ? 'the server’s stored key' : 'this machine’s sign-in'}`}</p>
     {allowed && <div className="mt-s2 flex flex-wrap items-center gap-s2">
       <Button size="sm" variant="secondary" disabled={choice === 'own' || change.isPending} onClick={() => change.mutate('own')}>Use this machine’s sign-in</Button>
       <Button size="sm" variant="secondary" disabled={!storedAvailable || choice === 'stored' || change.isPending} onClick={() => change.mutate('stored')}>Use the server’s stored key</Button>
-      {!storedAvailable && !runner.storedKeyFailures?.some(failure => failure.agent === agent) && <span className="text-muted">No stored key this agent can use.</span>}
+      {agentHasStoredKey(agent) && <Button size="sm" variant="secondary" disabled={choice === 'stored-first' || change.isPending} onClick={() => change.mutate('stored-first')}>{RUNNER_PAYER_LABELS['stored-first']}</Button>}
+      {choice !== 'stored-first' && !storedAvailable && !runner.storedKeyFailures?.some(failure => failure.agent === agent) && <span className="text-muted">No stored key this agent can use.</span>}
     </div>}
+    {runner.fallbackNotices?.filter(notice => notice.agent === agent).map(({ slot, reason, since }) => <p key={slot}
+      role={reason === 'out_of_credit' ? 'status' : 'alert'} className={reason === 'out_of_credit' ? 'mt-s2 text-ink-2' : 'mt-s2 text-bad'}>
+      Since {runnerFallbackSince(since)}. {runnerFallbackWords(reason, slot)}
+    </p>)}
     {change.isError && <ErrorState error={change.error} onRetry={() => change.reset()} />}
   </div>;
 }
