@@ -12,7 +12,7 @@ const originalFetch = globalThis.fetch;
 const clients: QueryClient[] = [];
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()); globalThis.fetch = originalFetch; });
 const NOW = Date.now();
-const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', connected: true, version: '2.0.0-alpha.2', channel: 'alpha', latestVersion: '2.0.0-alpha.3', updateAvailable: true, lastSeenAt: NOW, lastCheckAt: NOW, offersObservedAt: NOW,
+const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', machineId: null, state: 'enabled', connected: true, version: '2.0.0-alpha.2', channel: 'alpha', latestVersion: '2.0.0-alpha.3', updateAvailable: true, lastSeenAt: NOW, lastCheckAt: NOW, offersObservedAt: NOW,
   display: 'Online', revision: 1, createdAt: NOW, createdBy: 'mem_1', removedAt: null, os: 'macOS', arch: 'arm64', readiness: { state: 'ready', reason: 'Reports a signed-in agent; provider access is untested.', observedAt: NOW }, offers: [{ id: 'claude-code', authenticated: true }], capabilities: [], labels: [], preference: null, models: [], lastReason: 'no_work', lastAttempted: null, lastCompleted: null, lastFailed: null,
   lastResult: { fromVersion: '2.0.0-alpha.1', toVersion: '2.0.0-alpha.2', result: 'updated', at: NOW }, blockedVersion: null, updateState: null, updateRequest: null, busy: null };
 
@@ -31,6 +31,10 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
     if (path === '/api/members') return Response.json({ members: [] });
     if (path === '/api/projects') return Response.json({ projects: [] });
     if (path === '/api/status') return Response.json({ schema: { expected: 80, found: 80, matches: true }, capabilities: [], projects: [], workers: { available: true, fleet: legacy, runsQueued: 0, workersBusy: 0 } });
+    if (path === '/api/runners/agents') return Response.json({ agents: [{ agent: 'claude-code', storedUsable: false, runners: [{ id: 'rn_mini', name: 'homelab-mini', choice: runner.credentialChoices?.['claude-code'] ?? 'own' }] }], today: [{ id: 'rn_mini', name: 'homelab-mini', agent: 'claude-code' }] });
+    if (path.startsWith('/api/machines/')) return Response.json({ machine: null, contactFacts: 'ready' });
+    if (path === '/api/runs/hours') return Response.json({ counted: true, window: { name: 'day', since: NOW - 23 * 3_600_000, until: NOW, sliceMs: 3_600_000 }, lanes: [{ runnerId: 'rn_mini', name: 'homelab-mini', hours: [{ hour: NOW, worked: 3, unchanged: 2, failed: 1 }], checkins: [] }] });
+    if (path === '/api/runners/removed') return Response.json({ runners: [], cursor: null });
     if (path === '/api/runners') return options.fail ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ observedAt: NOW, storedCredentials: options.storedCredentials ?? {}, runners: options.rows ?? [runner], legacyWorkers: legacy, queue: options.queue ?? { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false } });
     if (path === '/api/device/preview') return Response.json({ subject: 'runner', runnerName: options.previewName ?? 'homelab-mini', replacingRunnerId: options.previewRunnerId ?? 'rn_mini', machineName: 'Mini in the office', os: 'macOS', ip: '192.0.2.1', approverIp: '192.0.2.2', ageSeconds: 12, scope: 'runner', expiresAt: NOW + 60000 });
     if (path === '/api/runners/rn_mini/update') {
@@ -44,7 +48,7 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
       runner = { ...runner, credentialChoices: { ...runner.credentialChoices, [body.agent]: body.choice } };
       return Response.json({ credentialChoices: runner.credentialChoices });
     }
-    if (path.startsWith('/api/runners/rn_mini/')) { writes.push(`${init?.method} ${path}`); return Response.json({ changed: true }); }
+    if (init?.method === 'POST' && /^\/api\/runners\/rn_[^/]+\/[a-z-]+$/.test(path)) { writes.push(`${init.method} ${path}`); return Response.json({ changed: true }); }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -53,139 +57,93 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
   return writes;
 }
 
+const MACHINE = '/settings/people/runners/rn_mini';
+const card = (name: string) => screen.getByText(name).closest('li')!;
+/** The verdict a machine page leads with, once drawn. */
+const verdictOf = (label: string) => waitFor(() => { const element = document.querySelector<HTMLElement>(`[data-machine-verdict="${label}"]`); expect(element).not.toBeNull(); return element!; });
+
 describe('Runners page', () => {
-  it('shows reported version, channel, available update and last result, and requests the next idle update', async () => {
-    const writes = mount('admin', { ...RUNNER, busy: { projectId: 'proj_1', projectName: 'Myco', task: 'title-summary', at: NOW, status: 'running', runId: 'run_1', leaseExpiresAt: NOW + 60000 } });
-    const article = (await screen.findByText('homelab-mini')).closest('article');
-    expect(article?.textContent).toContain('Writing a title for Myco');
-    expect(article?.textContent).toContain('2.0.0-alpha.2');
-    expect(article?.textContent).toContain('Update available');
-    expect(article?.querySelector('details')?.open).toBe(false);
-    expect(article?.querySelector('details')?.textContent).toContain('2.0.0-alpha.3');
-    expect(article?.textContent).toContain('Updated');
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Update now' }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Update now' }));
-    await waitFor(() => expect(writes.length).toBe(1));
-    await waitFor(() => expect(screen.getByText('homelab-mini').closest('article')?.textContent).toContain('waiting for the current task to finish'));
-    expect(writes).toEqual(['POST /api/runners/rn_mini/update']);
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Update now' }) as HTMLButtonElement).disabled).toBe(true));
+  it('lists one row per runner with how it stands, what it is doing or last did, and its machine page, and no controls', async () => {
+    const lease = { projectId: 'proj_1', projectName: 'Myco', task: 'title-summary', at: NOW, status: 'running', runId: 'run_1', leaseExpiresAt: NOW + 60000 };
+    const rows: RunnerRow[] = [
+      { ...RUNNER, id: 'busy', name: 'Busy machine', display: 'Busy', busy: lease },
+      { ...RUNNER, id: 'hold', name: 'Hold machine', display: 'Not ready', readiness: { state: 'unknown', code: 'incompatible', reason: 'detail', observedAt: NOW } },
+      { ...RUNNER, id: 'paused', name: 'Paused machine', display: 'Paused', state: 'paused' },
+      { ...RUNNER, id: 'stale', name: 'Stale machine', display: 'Offline', connected: false, lastSeenAt: NOW - 1800000 },
+      { ...RUNNER, id: 'on_mac', name: 'Joined machine', machineId: 'mac_1' },
+    ];
+    const writes = mount('admin', RUNNER, { rows });
+    await screen.findByText('Busy machine');
+    expect(card('Busy machine').textContent).toContain('Writing a title for Myco');
+    expect(card('Hold machine').textContent).toContain('Its agent needs an update');
+    expect(card('Paused machine').textContent).toContain('Paused; it takes no new work');
+    expect(card('Stale machine').textContent).toContain('last seen 30 min ago');
+    expect(within(card('Busy machine')).getByRole('link', { name: 'Its machine' }).getAttribute('href')).toBe('/settings/people/runners/busy');
+    expect(within(card('Joined machine')).getByRole('link', { name: 'Its machine' }).getAttribute('href')).toBe('/settings/people/machines/mac_1#runner-on_mac');
+    for (const name of ['Update now', 'Use this machine’s sign-in', 'More actions for Busy machine']) expect(screen.queryByRole('button', { name })).toBeNull();
+    expect(writes).toEqual([]);
+  });
+});
+
+describe('a runner’s machine page', () => {
+  it('leads with Working only while it holds a run, then its learning agent and payer, its recent runs and the release it reported, and updates it between runs', async () => {
+    const writes = mount('admin', { ...RUNNER, busy: { projectId: 'proj_1', projectName: 'Myco', task: 'title-summary', at: NOW, status: 'running', runId: 'run_1', leaseExpiresAt: NOW + 60000 } }, { route: MACHINE });
+    expect((await verdictOf('Working')).textContent).toContain('Writing a title for Myco');
+    expect(screen.getByText(/It reported macOS, arm64, version 2.0.0-alpha.2/)).toBeTruthy();
+    expect(await screen.findByText('For learning from sessions: Claude Code, paid by its own sign-in')).toBeTruthy();
+    expect(screen.getByText(/other work may use another agent\. It is the only runner with Claude Code\./)).toBeTruthy();
+    expect(await screen.findByText(/^Since .+: 6 runs, 3 worked, 2 changed nothing, 1 failed\./)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'See its runs' }).getAttribute('href')).toBe('/work/history?runner=rn_mini');
+    expect(screen.getByText(/A newer release, 2.0.0-alpha.3, is out\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Update homelab-mini now' }));
+    await waitFor(() => expect(writes).toEqual(['POST /api/runners/rn_mini/update']));
   });
 
-  it('keeps the page and runner reports readable to a member without update controls', async () => {
-    const writes = mount('member');
-    await screen.findByText('homelab-mini');
-    for (const name of ['Update now', 'More actions for homelab-mini', 'Rename', 'Pause', 'Remove', 'Replace registration', 'Add runner', 'Forget this worker'])
-      expect(screen.queryByRole('button', { name })).toBeNull();
-    expect(screen.getByRole('link', { name: 'Runners' })).toBeTruthy();
+  it('says Online for a runner waiting for work, never Working', async () => {
+    mount('admin', RUNNER, { route: MACHINE });
+    expect((await verdictOf('Online')).textContent).toContain('Waiting for work.');
+    expect(document.querySelector('[data-machine-verdict="Working"]')).toBeNull();
+  });
+
+  it('shows a member the runner without any control', async () => {
+    const writes = mount('member', RUNNER, { route: MACHINE });
+    await verdictOf('Online');
+    expect((screen.getByRole('switch', { name: 'homelab-mini runs Myco’s work' }) as HTMLButtonElement).disabled).toBe(true);
+    for (const name of ['Update homelab-mini now', 'Set homelab-mini apart', 'Remove homelab-mini…', 'More for homelab-mini']) expect(screen.queryByRole('button', { name })).toBeNull();
+    expect(screen.getByText('Which agent it would use and who pays are shown to an admin.')).toBeTruthy();
     expect(writes).toEqual([]);
   });
 
-  it('shows a failed release block, expiry and cleanup state and lets administrators explicitly retry', async () => {
-    const blocked = { ...RUNNER, lastResult: { fromVersion: RUNNER.version!, toVersion: RUNNER.latestVersion!, result: 'rolled_back' as const, reason: 'Health check failed', at: NOW },
-      blockedVersion: { version: RUNNER.latestVersion!, until: NOW + 3600000, reason: 'Launch failed' }, updateState: { phase: 'cleanup_pending' as const, since: NOW, reason: 'Guardian cleanup failed' } };
-    const writes = mount('admin', blocked);
-    const article = (await screen.findByText('homelab-mini')).closest('article');
-    expect(article?.textContent).toContain('Rolled back');
-    expect(article?.textContent).toContain('Health check failed');
-    expect(article?.textContent).toContain('Blocked release: 2.0.0-alpha.3');
-    expect(article?.textContent).toContain(new Date(blocked.blockedVersion.until).toLocaleString());
-    expect(article?.textContent).toContain('Finishing update cleanup');
-    expect(article?.textContent).not.toContain('execution held');
-    expect(article?.textContent).toContain('Guardian cleanup failed');
-    fireEvent.click(screen.getByRole('button', { name: 'Clear block and update' }));
-    await waitFor(() => expect(writes.length).toBe(1));
+  it('says an offline runner could use its agent by the sign-ins it last reported, and holds the update', async () => {
+    mount('admin', { ...RUNNER, connected: false, display: 'Offline', lastSeenAt: NOW - 3 * 3_600_000, offersObservedAt: NOW - 3 * 3_600_000 }, { route: MACHINE });
+    expect((await verdictOf('Offline')).textContent).toContain('last seen 3 h ago');
+    expect(await screen.findByText(/It could use it, by the sign-ins it reported 3 h ago\./)).toBeTruthy();
+    expect(screen.queryByText(/can use it now/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Update homelab-mini now' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('shows updating and probation holds to members without a retry control', async () => {
-    for (const [phase, words] of [['updating', 'Updating'], ['probation', 'Checking update health']] as const) {
-      mount('member', { ...RUNNER, updateState: { phase, since: NOW, reason: 'Waiting for service health' } });
-      const article = (await screen.findByText('homelab-mini')).closest('article');
-      expect(article?.textContent).toContain(words);
-      expect(article?.textContent).toContain('Waiting for service health');
-      expect(screen.queryByRole('button', { name: 'Clear block and update' })).toBeNull();
-      cleanup(); clients.splice(0).forEach(client => client.clear());
-    }
+  it('shows a held release with its end, its update phase since when, and a missing channel', async () => {
+    mount('admin', { ...RUNNER, channel: null, lastCheckAt: NOW - 3_600_000, blockedVersion: { version: '2.0.0-alpha.3', until: NOW - 60_000, reason: 'Launch failed' }, updateState: { phase: 'cleanup_pending', since: NOW - 120_000, reason: 'Guardian cleanup failed' } }, { route: MACHINE });
+    const release = await screen.findByText('homelab-mini is on 2.0.0-alpha.2');
+    const row = release.closest('[data-setting]')!;
+    expect(row.textContent).toContain('It reported no release channel, so it can’t be updated from here.');
+    expect(row.textContent).toContain('It last checked for an update 1 h ago.');
+    expect(row.textContent).toMatch(/Finishing update cleanup since .+: Guardian cleanup failed\./);
+    expect(row.textContent).toMatch(/Release 2.0.0-alpha.3 was held back until .+; that hold has ended: Launch failed\./);
   });
 
-  it('disables update for an offline runner or one that cannot report its installed release channel', async () => {
-    for (const runner of [{ ...RUNNER, connected: false }, { ...RUNNER, channel: null }]) {
-      const writes = mount('admin', runner);
-      const article = (await screen.findByText('homelab-mini')).closest('article');
-      expect((await within(article!).findByRole('button', { name: 'Update now' }) as HTMLButtonElement).disabled).toBe(true);
-      expect(writes).toEqual([]);
-      cleanup();
-      clients.splice(0).forEach(client => client.clear());
-    }
-  });
-  it('does not offer an update when the reported release is current or older', async () => {
-    mount('admin', { ...RUNNER, latestVersion: '2.0.0-alpha.1', updateAvailable: false });
-    const article = (await screen.findByText('homelab-mini')).closest('article')!;
-    expect(article.textContent).not.toContain('Update available');
-    expect(within(article).queryByRole('button', { name: 'Update now' })).toBeNull();
-    expect(within(article).getByRole('button', { name: 'More actions for homelab-mini' })).toBeTruthy();
-  });
-  it('renders every display state, lease without contact, persistent history and unavailable facts', async () => {
-    const lease = { projectId: 'proj_1', projectName: 'Myco', task: 'title-summary', at: NOW, status: 'running', runId: 'run_1', leaseExpiresAt: NOW + 60000 };
-    const rows: RunnerRow[] = [
-      { ...RUNNER, id: 'busy', name: 'Busy machine', display: 'Busy', busy: lease, lastSeenAt: null, connected: false },
-      { ...RUNNER, id: 'idle', name: 'Idle machine' },
-      { ...RUNNER, id: 'empty', name: 'No agent machine', display: 'Not ready', offers: [], readiness: { state: 'unknown', reason: 'Reported no signed-in eligible agent.', observedAt: NOW } },
-      { ...RUNNER, id: 'settling', name: 'Waking machine', display: 'Not ready', readiness: { state: 'settling', reason: 'Waiting to settle after waking.', observedAt: NOW } },
-      { ...RUNNER, id: 'paused', name: 'Paused machine', display: 'Paused', state: 'paused', busy: lease },
-      { ...RUNNER, id: 'removed', name: 'Removed machine', display: 'Removed', state: 'removed', connected: false },
-      { ...RUNNER, id: 'stale', name: 'Stale machine', display: 'Offline', connected: false, lastSeenAt: NOW - 1800000 },
-      { ...RUNNER, id: 'never', name: 'New machine', display: 'Never contacted', connected: false, lastSeenAt: null },
-      { ...RUNNER, id: 'unknown', name: 'Unknown machine', display: 'Not ready', offers: null, models: [], lastCompleted: { ...lease, status: 'completed' } },
-    ];
-    mount('member', RUNNER, { rows });
-    for (const row of rows) {
-      const article = (await screen.findByText(row.name)).closest('article')!;
-      expect(article.textContent).toContain(row.display);
-      expect(article.textContent).not.toContain('Stopped');
-    }
-    const busy = screen.getByText('Busy machine').closest('article')!;
-    expect(busy.textContent).toContain('Assignment valid until');
-    expect(busy.textContent).toContain('Myco');
-    expect(screen.getByText('Paused machine').closest('article')!.textContent).toContain('Busy · draining');
-    expect(screen.getByText('Unknown machine').closest('article')!.textContent).toContain('Agent sign-in status unavailable');
-    expect(screen.getByText('Unknown machine').closest('article')!.textContent).toContain('Last completed');
-  });
-
-  it('names readiness holds and keeps removed and paused outcomes ahead of replacement waiting', async () => {
-    const holds = [
-      ['updating', 'Finishing an update'], ['registration', 'Waiting for registration approval'],
-      ['user_active', 'Waiting until the machine is idle'], ['incompatible', 'Agent needs an update'],
-      ['not_signed_in', 'No signed-in agent'],
-    ] as const;
-    const rows: RunnerRow[] = holds.map(([code], index) => ({ ...RUNNER, id: `rn_hold_${index}`, name: `Hold ${index}`, display: 'Not ready', readiness: { state: 'unknown', code, reason: `${code} detail`, observedAt: NOW } }));
-    rows.push({ ...RUNNER, id: 'rn_paused', name: 'Paused replacement', state: 'paused', display: 'Paused', awaitingReplacement: true });
-    rows.push({ ...RUNNER, id: 'rn_removed', name: 'Removed replacement', state: 'removed', display: 'Removed', awaitingReplacement: true });
-    mount('member', RUNNER, { rows });
-    for (const [index, [, words]] of holds.entries()) {
-      const article = (await screen.findByText(`Hold ${index}`)).closest('article')!;
-      expect(article.textContent).toContain(words);
-      expect(article.querySelector('details')?.textContent).toContain(`${holds[index][0]} detail`);
-    }
-    expect(screen.getByText('Paused replacement').closest('article')?.textContent).toContain('Paused — waiting to resume');
-    expect(screen.getByText('Removed replacement').closest('article')?.textContent).toContain('Removed — can no longer run work');
-  });
-
-  it('describes pause draining, removal authority and replacement through the device flow', async () => {
-    const writes = mount('admin');
-    const choose = async (name: string) => {
-      fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for homelab-mini' }), { key: 'Enter' });
-      fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name }));
-    };
-    await choose('Pause');
-    expect((await screen.findByRole('dialog')).textContent).toContain('Its assigned run can finish');
-    fireEvent.click(screen.getByRole('button', { name: 'Pause runner' }));
+  it('turns the runner off, removes it on its own, and replaces its registration through the device flow', async () => {
+    const writes = mount('admin', RUNNER, { route: MACHINE });
+    fireEvent.click(await screen.findByRole('switch', { name: 'homelab-mini runs Myco’s work' }));
     await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/pause'));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await choose('Remove');
-    expect((await screen.findByRole('dialog')).textContent).toContain('does not terminate it');
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    await choose('Replace registration');
-    expect((await screen.findByRole('dialog')).textContent).toContain('same runner ID');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove homelab-mini…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove homelab-mini as a runner?' });
+    expect(dialog.textContent).toContain('the process on the machine isn’t ended');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove homelab-mini' }));
+    await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/remove'));
+    expect(writes.filter((write) => write.includes('/api/machines/'))).toEqual([]);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More for homelab-mini' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace its registration' }));
     fireEvent.change(screen.getByLabelText('Device code'), { target: { value: 'BCDF-GHJK' } });
     expect((screen.getByRole('button', { name: 'Approve replacement' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Check machine' }));
@@ -194,18 +152,46 @@ describe('Runners page', () => {
     await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/recredential'));
   });
 
-  it('refuses a replacement preview for a different runner name or target', async () => {
-    for (const options of [{ previewName: 'another-mini' }, { previewRunnerId: 'rn_other' }]) {
-      const writes = mount('admin', RUNNER, options);
-      fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions for homelab-mini' }), { key: 'Enter' });
-      fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace registration' }));
-      fireEvent.change(screen.getByLabelText('Device code'), { target: { value: 'BCDF-GHJK' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Check machine' }));
-      await screen.findByText(/This request does not match homelab-mini/);
-      expect((screen.getByRole('button', { name: 'Approve replacement' }) as HTMLButtonElement).disabled).toBe(true);
-      expect(writes).toEqual([]);
-      cleanup(); clients.splice(0).forEach(client => client.clear());
-    }
+  it('refuses a replacement preview for a different runner', async () => {
+    const writes = mount('admin', RUNNER, { route: MACHINE, previewRunnerId: 'rn_other' });
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for homelab-mini' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace its registration' }));
+    fireEvent.change(screen.getByLabelText('Device code'), { target: { value: 'BCDF-GHJK' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Check machine' }));
+    await screen.findByText(/This request does not match homelab-mini/);
+    expect((screen.getByRole('button', { name: 'Approve replacement' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(writes).toEqual([]);
+  });
+
+  it('lists each runner registration on one machine with its own controls and links, whichever checked in last', async () => {
+    const older = { ...RUNNER, machineId: 'mac_1', lastSeenAt: NOW - 60_000 };
+    const newer = { ...RUNNER, id: 'rn_mini2', name: 'mini-two', machineId: 'mac_1', lastSeenAt: NOW };
+    const writes = mount('admin', RUNNER, { route: '/settings/people/machines/mac_1', rows: [older, newer] });
+    const first = await waitFor(() => { const card = document.querySelector<HTMLElement>('[data-runner-card="rn_mini"]'); expect(card).not.toBeNull(); return card!; });
+    const second = document.querySelector<HTMLElement>('[data-runner-card="rn_mini2"]')!;
+    expect(first.id).toBe('runner-rn_mini');
+    expect(within(first).getByRole('link', { name: 'homelab-mini’s check-ins' }).getAttribute('href')).toBe('/work/runners/rn_mini');
+    expect(within(second).getByRole('link', { name: 'mini-two’s check-ins' }).getAttribute('href')).toBe('/work/runners/rn_mini2');
+    fireEvent.click(within(first).getByRole('button', { name: 'Remove homelab-mini…' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Remove homelab-mini as a runner?' })).getByRole('button', { name: 'Remove homelab-mini' }));
+    await waitFor(() => expect(writes).toEqual(['POST /api/runners/rn_mini/remove']));
+  });
+
+  it('leads an old runner anchor to that runner’s card on its machine', async () => {
+    mount('admin', RUNNER, { route: '/runners#runner-rn_mini2', rows: [RUNNER, { ...RUNNER, id: 'rn_mini2', name: 'mini-two', machineId: 'mac_1' }] });
+    await waitFor(() => expect(document.querySelector('[data-runner-card="rn_mini2"]')).not.toBeNull());
+    expect(screen.getByRole('heading', { level: 1, name: 'mini-two' })).toBeTruthy();
+  });
+
+  it('shows the legacy worker on a machine with no registered runner, its work, and the way to a runner', async () => {
+    const legacy: WorkerRow = { credentialId: 'mt_legacy', machineId: 'mac_legacy', offers: [{ id: 'codex', authenticated: true }], capabilities: [], lastReason: null, lastSeenAt: NOW, eligible: true, recent: true,
+      busy: { runId: 'run_9', projectId: 'proj_1', task: 'title-summary', leaseExpiresAt: NOW + 60_000 } };
+    mount('admin', RUNNER, { route: '/settings/people/machines/mac_legacy', rows: [], legacy: [legacy] });
+    expect((await verdictOf('Working')).textContent).toContain('as a legacy worker');
+    const card = document.querySelector('[data-legacy-on-machine]')!;
+    expect(card.textContent).toContain('It runs Myco’s work as a legacy worker, with no registered runner');
+    expect(card.textContent).toContain(`myco runner register ${window.location.origin}`);
+    expect(screen.queryByText('No')).toBeNull();
   });
 
   it('shows a failed read as unavailable without inventing an empty fleet or queue', async () => {
@@ -244,50 +230,37 @@ describe('Runners page', () => {
 
 });
 
-describe('runner sign-in controls', () => {
-  it('shows the default machine choice and disables stored sign-in without a usable key', async () => {
-    mount('admin');
-    expect(await screen.findByText('Claude Code · Signs in with: this machine’s sign-in')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Use the server’s stored key' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('No stored key this agent can use.')).toBeTruthy();
-  });
+describe('setting one machine apart', () => {
+  const apart = async () => { fireEvent.click(await screen.findByRole('button', { name: 'Set homelab-mini apart' })); return screen.findByRole('dialog'); };
 
-  it('saves the per-agent choice and renders the chosen stored key without displaying key material', async () => {
-    const writes = mount('admin', RUNNER, { storedCredentials: { 'claude-code': true } });
-    const stored = await screen.findByRole('button', { name: 'Use the server’s stored key' });
-    expect((stored as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(stored);
-    await screen.findByText('Claude Code · Signs in with: the server’s stored key');
+  it('saves who pays for one agent on this runner alone, with the stored key offered only when one is usable', async () => {
+    const writes = mount('admin', RUNNER, { route: MACHINE, storedCredentials: { 'claude-code': true } });
+    const dialog = await apart();
+    expect(within(dialog).getByText('Claude Code · Paid by its own sign-in')).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use the server’s stored key' }));
+    await within(dialog).findByText('Claude Code · Paid by the stored key');
     expect(writes).toEqual(['POST /api/runners/rn_mini/sign-in {"agent":"claude-code","choice":"stored"}']);
-    fireEvent.click(screen.getByRole('button', { name: 'Use this machine’s sign-in' }));
-    await screen.findByText('Claude Code · Signs in with: this machine’s sign-in');
   });
 
-  it('asks an administrator to choose again for an unrecognized persisted sign-in source', async () => {
-    mount('admin', { ...RUNNER, credentialChoices: { 'claude-code': null } });
-    expect(await screen.findByText('Claude Code · Choose how this agent signs in')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Use this machine’s sign-in' }) as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it('hides sign-in choices from members even when a response contains them', async () => {
-    mount('member', { ...RUNNER, credentialChoices: { 'claude-code': 'stored' } });
-    await screen.findByText('homelab-mini');
-    expect(screen.queryByText(/Signs in with:/)).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Use this machine’s sign-in' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Use the server’s stored key' })).toBeNull();
+  it('disables the stored key without a usable one, and asks again for a choice this server can no longer use', async () => {
+    mount('admin', { ...RUNNER, credentialChoices: { 'claude-code': null } }, { route: MACHINE });
+    const dialog = await apart();
+    expect(within(dialog).getByText('Claude Code · Choose who pays for this agent')).toBeTruthy();
+    expect((within(dialog).getByRole('button', { name: 'Use the server’s stored key' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByText('No stored key this agent can use.')).toBeTruthy();
   });
 });
 
-it('shows a failed agent sign-in while another agent keeps the runner online', async () => {
+it('shows a failed agent sign-in and a stored-key failure for another agent on the machine page while the runner stays online', async () => {
   mount('admin', { ...RUNNER, storedKeyFailures: [{ agent: 'cursor', slot: 'cursor', failure: 'invalid_key' }], offers: [
     { id: 'claude-code', authenticated: false, unavailableReason: 'login_missing',
       signInFailure: { name: 'Claude Code', source: 'own', hint: 'Open a GUI Terminal on this Mac, run claude, then /login.' } },
     { id: 'codex', authenticated: true },
-  ] });
+  ] }, { route: MACHINE });
   const failure = await screen.findByText('Claude Code could not sign in at launch. Open a GUI Terminal on this Mac, run claude, then /login.');
   expect(await screen.findByText(/^Cursor · The Cursor key was rejected\./)).toBeTruthy();
   expect(failure.closest('details')).toBeNull();
-  expect((await screen.findByText('homelab-mini')).closest('article')?.textContent).toContain('Online');
+  await verdictOf('Online');
 });
 
 describe('Runner page', () => {
@@ -295,11 +268,11 @@ describe('Runner page', () => {
     runnerVersion: null, agentVersion: null, harness: 'claude-code', requested: null, identity: { status: 'not_recorded' }, ...drift });
   const facts = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', lastSeenAt: NOW - 5_000, version: '2.0.0-alpha.2' };
 
-  it('opens from its card: its last check-in, how its recent runs went, and each run linked, older runs on request', async () => {
-    mount('member', RUNNER, { runs: (cursor) => cursor === null
+  it('opens from its machine page: its last check-in, how its recent runs went, and each run linked, older runs on request', async () => {
+    mount('member', RUNNER, { route: MACHINE, runs: (cursor) => cursor === null
       ? { runner: facts, rows: [ran('run_new', 'running', 1), ran('run_ok', 'worked', 20), ran('run_bad', 'failed', 40)], cursor: 'next' }
       : { runner: facts, rows: [ran('run_old', 'changed_nothing', 90)], cursor: null } });
-    fireEvent.click(await screen.findByRole('link', { name: 'Recent runs and check-ins' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'homelab-mini’s check-ins' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'homelab-mini' })).toBeTruthy();
     expect(screen.getByText(/Last checked in just now/)).toBeTruthy();
     expect(screen.getByText(/1 of the last 2 finished runs worked/)).toBeTruthy();

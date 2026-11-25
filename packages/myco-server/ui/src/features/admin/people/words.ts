@@ -1,5 +1,5 @@
 /**
- * People & machines in words: every sentence the pages show about members,
+ * People and machines in words: every sentence the pages show about members,
  * invitations and machines, from what the server answers. None names an id.
  */
 import { ENROLLMENT_KEY_PATTERN, JOIN_PATH } from '@goondocks/myco-shared/member-protocol';

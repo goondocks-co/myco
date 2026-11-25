@@ -1,5 +1,5 @@
 /**
- * Deployment access on People & machines: members, invitations, machines and
+ * Deployment access on Settings › People and machines and each machine's page: members, invitations, machines and
  * Myco's run credentials, as an admin administers them. Every destructive act
  * sits in a ⋯ menu behind a confirm that keeps the server's refusal in view.
  */
@@ -15,7 +15,6 @@ import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { formatUntil } from '../../packages/myco-server/ui/src/lib/format';
 import { agoWords, dateTimeWords, dayWords } from '../../packages/myco-shared/src/time-words';
-import { FLEET_WORDS } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
 import { invitationExpiry, loginCommand } from '../../packages/myco-server/ui/src/features/admin/people/words';
 
@@ -93,8 +92,29 @@ function accessServer(credentials: { member?: unknown[]; run?: unknown[] }, rout
       cursor: null,
     }),
     '/api/machines': () => Response.json({ machines, cursor: null }),
+    ...Object.fromEntries(machines.map((row) => [`/api/machines/${row.machineId}`, () => Response.json({ machine: row, contactFacts: 'ready' })])),
+    '/api/runners': () => Response.json({ observedAt: NOW_MS, runners: [], legacyWorkers: [], queue: { observedAt: NOW_MS, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false }, cursor: null }),
+    '/api/runners/removed': () => Response.json({ runners: [], cursor: null }),
+    '/api/uncaptured': () => Response.json({ items: [], cursor: null }),
     ...routes,
   });
+}
+
+const PEOPLE = '/settings/people';
+const ADA_MACHINE = '/settings/people/machines/ada_5a2d54af';
+
+/** Opens a person's Manage menu and answers the menu. */
+async function personMenu(name: string): Promise<HTMLElement> {
+  const list = await screen.findByRole('list', { name: 'Members' });
+  const row = within(list).getAllByRole('listitem').find((item) => item.querySelector('.font-medium')?.firstChild?.textContent === name)!;
+  fireEvent.keyDown(within(row).getByRole('button', { name: 'Manage' }), { key: 'Enter' });
+  return screen.findByRole('menu');
+}
+
+/** Opens the machine page's confirmation to stop it capturing. */
+async function openRemove(): Promise<HTMLElement> {
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop capturing…' }));
+  return screen.findByRole('dialog', { name: 'Stop Ada’s MacBook capturing?' });
 }
 
 /** Opens a ⋯ menu by its name and answers the menu. */
@@ -116,27 +136,25 @@ async function menuItems(trigger: HTMLElement): Promise<string[]> {
 describe('members', () => {
   it('lists people with their role and account, marks you, and the remove confirm says what stops', async () => {
     accessServer({});
-    mount('/people');
+    mount(PEOPLE);
     const list = await screen.findByRole('list', { name: 'Members' });
-    expect(within(list).getByText('Ada')).toBeTruthy();
-    expect(within(list).getByText('You')).toBeTruthy();
-    expect(within(list).getByText('Admin')).toBeTruthy();
-    expect(list.textContent).toContain('GitHub connected · 2 machines');
-    expect(list.textContent).toContain('No GitHub account yet · 0 machines');
-    const menu = await openMenu('More for Ada');
+    expect(list.textContent).toContain('Ada · Admin · you');
+    expect(list.textContent).toContain('Signs in with GitHub · 2 machines');
+    expect(list.textContent).toContain('No GitHub account connected yet, so they can’t sign in here · 0 machines');
+    const menu = await personMenu('Ada');
     expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
     fireEvent.keyDown(menu, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     // Removing another member says their machines stay theirs (#1209).
-    fireEvent.click(within(await openMenu('More for Lin')).getByRole('menuitem', { name: 'Remove' }));
+    fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
     expect(dialog.textContent).toContain(MEMBER_KEEPS_MACHINES);
   });
 
   it('says the server\'s refusal in the person\'s words, and keeps the confirm open', async () => {
     accessServer({}, { [`/api/members/${LIN}/revoke`]: () => Response.json({ error: 'last_member' }, { status: 409 }) });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Lin')).getByRole('menuitem', { name: 'Remove' }));
+    mount(PEOPLE);
+    fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog', { name: 'Remove Lin?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
     expect((await within(dialog).findByRole('alert')).textContent).toMatch(/nobody who can sign in/);
@@ -144,9 +162,12 @@ describe('members', () => {
 
   it('offers Connect GitHub only for a member with no account yet, and shows the one-time link the admin sends them', async () => {
     const { posts } = accessServer({}, { [`/api/members/${LIN}/link-github`]: () => Response.json({ key: 'k'.repeat(43), expiresAt: NOW_MS + 3_600_000 }, { status: 201 }) });
-    mount('/people');
-    expect(await menuItems(await screen.findByRole('button', { name: 'More for Ada' }))).not.toContain('Connect GitHub');
-    fireEvent.click(within(await openMenu('More for Lin')).getByRole('menuitem', { name: 'Connect GitHub' }));
+    mount(PEOPLE);
+    const ada = await personMenu('Ada');
+    expect(within(ada).queryByRole('menuitem', { name: 'Connect GitHub' })).toBeNull();
+    fireEvent.keyDown(ada, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Connect GitHub' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect a GitHub account to Lin' });
     expect(dialog.textContent).toMatch(/send it only to them/);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create link' }));
@@ -158,8 +179,8 @@ describe('members', () => {
 
   it('says why a link was not created, in the person\'s words', async () => {
     accessServer({}, { [`/api/members/${LIN}/link-github`]: () => Response.json({ error: 'member_linked' }, { status: 409 }) });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Lin')).getByRole('menuitem', { name: 'Connect GitHub' }));
+    mount(PEOPLE);
+    fireEvent.click(within(await personMenu('Lin')).getByRole('menuitem', { name: 'Connect GitHub' }));
     const dialog = await screen.findByRole('dialog', { name: 'Connect a GitHub account to Lin' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create link' }));
     expect((await within(dialog).findByRole('alert')).textContent).toMatch(/already has a GitHub account connected/);
@@ -172,7 +193,7 @@ describe('invitations', () => {
     const { posts } = accessServer({}, {
       '/api/enrollment': (init) => init?.method === 'POST' ? Response.json({ key: 'k'.repeat(43), id: 'en_1', expiresAt: NOW_MS + 60_000, role: 'member', projectId: null }, { status: 201 }) : Response.json({ invitations: [] }),
     });
-    mount('/people');
+    mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.invite }));
     let dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation' }));
@@ -194,7 +215,7 @@ describe('invitations', () => {
     const { posts } = accessServer({}, {
       '/api/enrollment': (init) => init?.method === 'POST' ? Response.json({ key: 'm'.repeat(43), id: 'en_2', expiresAt: NOW_MS + 86_400_000, role: 'member', projectId: null }, { status: 201 }) : Response.json({ invitations: [] }),
     });
-    mount('/people');
+    mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.button }));
     let dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
     // The viewer is picked first; the field lists every live person.
@@ -214,7 +235,7 @@ describe('invitations', () => {
 
   it('says a refused invitation in words, inside the dialog', async () => {
     accessServer({}, { '/api/enrollment': (init) => init?.method === 'POST' ? Response.json({ error: 'member_revoked' }, { status: 409 }) : Response.json({ invitations: [] }) });
-    mount('/people');
+    mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: INVITE_CONTROLS.invite }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.invite });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Create invitation' }));
@@ -225,7 +246,7 @@ describe('invitations', () => {
 
   it('counts down to an invitation 60 minutes out, never "just now", and names whom a machine is for', async () => {
     accessServer({}, { '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() + 60 * 60_000), invitation(Date.now() + 60 * 60_000, LIN)] }) });
-    mount('/people');
+    mount(PEOPLE);
     const list = await screen.findByRole('list', { name: 'Invitations' });
     expect(within(list).getByText('A new teammate')).toBeTruthy();
     expect(within(list).getByText('A machine for Lin')).toBeTruthy();
@@ -235,7 +256,7 @@ describe('invitations', () => {
 
   it('says an invitation past its expiry has expired, not that it expires', async () => {
     accessServer({}, { '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() - 5 * 60_000)] }) });
-    mount('/people');
+    mount(PEOPLE);
     expect(await screen.findByText(/^by you · expired$/)).toBeTruthy();
     expect(screen.queryByText(/expires/)).toBeNull();
   });
@@ -245,7 +266,7 @@ describe('invitations', () => {
       '/api/enrollment': () => Response.json({ invitations: [invitation(Date.now() + 60 * 60_000)] }),
       '/api/enrollment/en_1/revoke': () => Response.json({ revoked: true }),
     });
-    mount('/people');
+    mount(PEOPLE);
     fireEvent.click(within(await openMenu('More for this invitation')).getByRole('menuitem', { name: 'Withdraw' }));
     const dialog = await screen.findByRole('dialog', { name: 'Withdraw this invitation?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Withdraw' }));
@@ -274,15 +295,17 @@ describe('machines', () => {
         return Response.json({ applied: true });
       },
     });
-    mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
+    mount(PEOPLE);
+    const machines = await screen.findByRole('group', { name: 'Machines' });
     // Two runtimes of one claimed machine are one row; a credential with no claim is not a machine.
-    const triggers = within(machines).getAllByRole('button', { name: /^More for / });
-    expect(triggers.map((t) => t.getAttribute('aria-label'))).toEqual(['More for Lin’s desk', 'More for Ada’s MacBook']);
-    const offers = [];
-    for (const trigger of triggers) offers.push((await menuItems(trigger)).includes('Its settings'));
-    expect(offers).toEqual([false, true]);
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    await waitFor(() => expect(within(machines).getAllByRole('link', { name: 'Manage' }).map((link) => link.getAttribute('href'))).toEqual(['/settings/people/machines/lin_77aa00bb', ADA_MACHINE]));
+    cleanup();
+    mount('/settings/people/machines/lin_77aa00bb');
+    await screen.findByRole('heading', { level: 1, name: 'Lin’s desk' });
+    expect(screen.queryByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action })).toBeNull();
+    cleanup();
+    mount(ADA_MACHINE);
+    fireEvent.click(await screen.findByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
     expect(await within(dialog).findByText('None: only project and temporary folders.')).toBeTruthy();
     // A folder that names the whole home is refused before it is ever sent.
@@ -312,8 +335,8 @@ describe('machines', () => {
         return Response.json({ applied: true });
       },
     });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    mount(ADA_MACHINE);
+    fireEvent.click(await screen.findByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
     const captured = await within(dialog).findByRole('region', { name: 'Folders it captures' });
     expect(within(captured).getByRole('list', { name: 'Folders it captures' }).textContent).toBe('~/Repos');
@@ -349,8 +372,8 @@ describe('machines', () => {
         return Response.json({ applied: true });
       },
     });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    mount(ADA_MACHINE);
+    fireEvent.click(await screen.findByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
     const plans = await within(dialog).findByRole('region', { name: 'Extra plan folders' });
     expect(within(plans).getByRole('list').textContent).toBe('docs/plans');
@@ -395,8 +418,8 @@ describe('machines', () => {
         return Response.json({ applied: true });
       },
     });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Its settings' }));
+    mount(ADA_MACHINE);
+    fireEvent.click(await screen.findByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action }));
     const dialog = await screen.findByRole('dialog', { name: 'Settings for Ada’s MacBook' });
     const captured = await within(dialog).findByRole('region', { name: 'Folders it captures' });
     const planned = within(dialog).getByRole('region', { name: 'Extra plan folders' });
@@ -414,21 +437,16 @@ describe('machines', () => {
     expect((within(dialog).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('says a machine is allowed to write, never that it is writing, and names whose it is', async () => {
-    accessServer({ member: [credential()] });
-    mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
-    await waitFor(() => expect(machines.textContent).toContain('Ada · allowed to write · first signed in'));
-    expect(machines.textContent).not.toMatch(/\bwriting\b/);
-  });
-
   it('lists an expired machine as a former one, closed until asked for, and offers it no Stop', async () => {
     accessServer({ member: [credential({ expiresAt: 1, live: false })] });
-    mount('/people');
-    fireEvent.click(await screen.findByRole('button', { name: 'Show former machines (1)' }));
-    const machines = await screen.findByRole('list', { name: 'Former machines' });
-    expect(machines.textContent).toContain('expired');
-    expect(await menuItems(within(machines).getByRole('button', { name: 'More for Ada’s MacBook' }))).not.toContain('Stop');
+    mount(PEOPLE);
+    fireEvent.click(await screen.findByRole('button', { name: 'Former machines (1)' }));
+    const machines = await screen.findByLabelText('Former machines');
+    expect(machines.textContent).toContain('Offline');
+    cleanup();
+    mount(ADA_MACHINE);
+    expect((await screen.findByText('Offline')).closest('[data-machine-verdict]')?.textContent).toContain('Its sign-in expired');
+    expect(screen.queryByRole('button', { name: 'Stop capturing…' })).toBeNull();
   });
 
   it('says, before a machine is stopped, how it writes again, and stops every live runtime on it', async () => {
@@ -437,44 +455,39 @@ describe('machines', () => {
     }, {
       '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 2, revokedBy: ADA }),
     });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
+    mount(ADA_MACHINE);
+    const dialog = await openRemove();
     expect(dialog.textContent).toContain(REJOIN_FOR_ADMIN);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     await waitFor(() => expect(posts.map((p) => p.path)).toEqual(['/api/machines/ada_5a2d54af/stop']));
   });
 
   it('keeps a refused stop in view, in words', async () => {
     accessServer({ member: [credential()] }, { '/api/machines/ada_5a2d54af/stop': () => new Response(null, { status: 503 }) });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    mount(ADA_MACHINE);
+    const dialog = await openRemove();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
   });
 
   it('uses the machine Stop decision, including the owner credential protection', async () => {
     const { posts } = accessServer({ member: [credential({ memberId: LIN })] }, {
-      '/api/machines': () => Response.json({ machines: machineRows([credential({ memberId: LIN }) as CredentialRow]).map((machine) => ({
-        ...machine, canStop: false, stopReason: "Only the owner can stop the owner's machines. You can stop your own.",
-      })), cursor: null }),
+      '/api/machines/ada_5a2d54af': () => Response.json({ machine: { ...machineRows([credential({ memberId: LIN }) as CredentialRow])[0], canStop: false,
+        stopReason: "Only the owner can stop the owner's machines. You can stop your own." }, contactFacts: 'ready' }),
     });
-    mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
-    expect(await within(machines).findByText(/Only the owner can stop the owner's machines/)).toBeTruthy();
-    expect(await menuItems(within(machines).getByRole('button', { name: 'More for Ada’s MacBook' }))).not.toContain('Stop');
+    mount(ADA_MACHINE);
+    expect(await screen.findByText(/Only the owner can stop the owner's machines/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Stop capturing…' })).toBeNull();
     expect(posts).toEqual([]);
   });
 
   it('keeps a zero-revocation Stop outcome visible as an unsuccessful action', async () => {
     accessServer({ member: [credential()] }, { '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 0, revokedBy: ADA }) });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    mount(ADA_MACHINE);
+    const dialog = await openRemove();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('No sign-in was stopped');
-    expect(screen.getByRole('dialog', { name: 'Stop Ada’s MacBook?' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Stop Ada’s MacBook capturing?' })).toBeTruthy();
   });
 
   it('retries one machine-scoped stop after a refusal', async () => {
@@ -489,27 +502,28 @@ describe('machines', () => {
       { member: ids.map((id, i) => credential({ id, lineageRoot: id, lineageStartedAt: NOW_MS - (i + 1) * 60_000 })) },
       { '/api/machines/ada_5a2d54af/stop': stop },
     );
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Stop Ada’s MacBook?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
+    mount(ADA_MACHINE);
+    const dialog = await openRemove();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
     expect(asked).toEqual(['machine']);
     fails = false;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Stop Ada’s MacBook?' })).toBeNull());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Stop Ada’s MacBook capturing?' })).toBeNull());
     expect(asked).toEqual(['machine', 'machine']);
   });
 
   it('uses the canonical summary when a live sign-in lies beyond the first credential page', async () => {
     const asked: string[] = [];
-    accessServer({}, {
-      '/api/machines': () => Response.json({ machines: [{
+    const summary = {
         machineId: 'ada_5a2d54af', name: 'Ada’s MacBook', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false },
         claimedAt: NOW_MS - 90 * 86_400_000, credentialCount: 2, liveCredentialCount: 1, bytesWritten: 0,
         firstSeenAt: NOW_MS - 90 * 86_400_000, standing: 'allowed', stoppedBy: null,
         offers: null, lastContactAt: null, capture: [], lastCaptureAt: null, lastRunAt: null,
-      }], cursor: null }),
+      };
+    accessServer({}, {
+      '/api/machines': () => Response.json({ machines: [summary], cursor: null }),
+      '/api/machines/ada_5a2d54af': () => Response.json({ machine: summary, contactFacts: 'ready' }),
       '/api/credentials': (_init, url) => {
         if (url?.searchParams.get('purpose') === 'run') return Response.json({ rows: [], cursor: null });
         const cursor = url?.searchParams.get('cursor') ?? null;
@@ -517,12 +531,9 @@ describe('machines', () => {
         return Response.json(cursor === null ? { rows: [expired], cursor: 'page-2' } : { rows: [live], cursor: null });
       },
     });
-    mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
-    await waitFor(() => expect(machines.textContent).toContain('allowed to write'));
+    mount(ADA_MACHINE);
+    expect(await screen.findByRole('button', { name: 'Stop capturing…' })).toBeTruthy();
     expect(asked).toEqual([]);
-    expect(within(machines).getAllByRole('listitem')).toHaveLength(1);
-    expect(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'Stop' })).toBeTruthy();
   });
 
   it('lists what every sign-in of a machine wrote, merged newest first', async () => {
@@ -533,8 +544,8 @@ describe('machines', () => {
       '/api/projects': () => Response.json({ projects: [{ projectId: 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11', name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: NOW_MS, archivedAt: null, archivedBy: null }] }),
       '/api/machines/ada_5a2d54af/activity': () => Response.json({ rows: [event('e-new', 'session.start', NOW_MS - 60_000), event('e-old', 'prompt', NOW_MS - 9 * 86_400_000)], cursor: null }),
     });
-    mount('/people');
-    fireEvent.click(within(await openMenu('More for Ada’s MacBook')).getByRole('menuitem', { name: 'What it wrote' }));
+    mount(ADA_MACHINE);
+    fireEvent.click(await screen.findByRole('button', { name: 'What it sent' }));
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(2));
     const rows = within(dialog).getAllByRole('listitem').map((li) => li.textContent ?? '');
@@ -542,34 +553,28 @@ describe('machines', () => {
     expect(rows[1]).toContain('Prompt');
     expect(rawIdsIn(dialog)).toEqual([]);
   });
+});
 
-  it('shows what the machine last reported as a worker, in its own words', async () => {
-    accessServer({ member: [credential()] });
-    mount('/people');
-    expect(await screen.findByText(/^Legacy worker — uses member credential · Waiting for work · last checked in \d+s ago$/)).toBeTruthy();
-    expect(screen.getByText(/Reports Codex signed in; their providers aren’t tested here\./)).toBeTruthy();
-    expect(screen.getByText('Last check for work: nothing it could take.')).toBeTruthy();
-  });
-
-  it('says a machine the worker record does not hold has no record, never that it never ran', async () => {
-    accessServer({ member: [credential()] }, { '/api/status': () => Response.json(status({ fleet: [] })) });
-    mount('/people');
-    expect(await screen.findByText(FLEET_WORDS.absent)).toBeTruthy();
-    expect(screen.queryByText(/never/i)).toBeNull();
-  });
-
-  it('says the worker record is unknown rather than empty when the server cannot be asked', async () => {
-    accessServer({ member: [credential()] }, { '/api/status': () => Response.json(status({ available: false, fleet: [] })) });
-    mount('/people');
-    expect(await screen.findByText(FLEET_WORDS.unavailable)).toBeTruthy();
-    expect(screen.queryByText(FLEET_WORDS.absent)).toBeNull();
-  });
-
-  it('does not show a cached worker record as current after the refresh fails', async () => {
-    accessServer({ member: [credential()] }, { '/api/status': () => new Response(null, { status: 500 }) });
-    mount('/people', (client) => client.setQueryData(['status'], status()));
-    expect(await screen.findByText(FLEET_WORDS.unavailable)).toBeTruthy();
-    expect(screen.queryByText(/Waiting for work/)).toBeNull();
+describe('a machine that captures and runs Myco’s work', () => {
+  it('lets a non-owner admin stop its capture and remove its runner as two actions, each saying what carries on', async () => {
+    const runner = { id: 'rn_mini', name: 'mini', machineId: 'ada_5a2d54af', state: 'enabled', display: 'Online', connected: true, busy: null, revision: 1, createdAt: NOW_MS, createdBy: ADA, removedAt: null,
+      lastSeenAt: NOW_MS, offersObservedAt: NOW_MS, offers: [], os: null, arch: null, version: null, channel: null, latestVersion: null, lastCheckAt: null, lastResult: null, blockedVersion: null, updateState: null, updateRequest: null,
+      readiness: { state: 'ready', reason: '', observedAt: NOW_MS }, capabilities: [], labels: [], preference: null, models: [], lastReason: null, lastAttempted: null, lastCompleted: null, lastFailed: null };
+    const { posts } = accessServer({ member: [credential()] }, {
+      '/api/runners': () => Response.json({ observedAt: NOW_MS, runners: [runner], legacyWorkers: [], queue: { observedAt: NOW_MS, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false }, cursor: null }),
+      '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 1, revokedBy: ADA }),
+      '/api/runners/rn_mini/remove': () => Response.json({ changed: true }),
+    });
+    mount(ADA_MACHINE);
+    const stop = await openRemove();
+    expect(stop.textContent).toContain('mini stays registered as a runner; removing it is a separate action.');
+    fireEvent.click(within(stop).getByRole('button', { name: 'Stop capturing' }));
+    await waitFor(() => expect(posts.map((post) => post.path)).toEqual(['/api/machines/ada_5a2d54af/stop']));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove mini…' }));
+    const remove = await screen.findByRole('dialog', { name: 'Remove mini as a runner?' });
+    expect(remove.textContent).toContain('Capture on this machine continues');
+    fireEvent.click(within(remove).getByRole('button', { name: 'Remove mini' }));
+    await waitFor(() => expect(posts.map((post) => post.path)).toEqual(['/api/machines/ada_5a2d54af/stop', '/api/runners/rn_mini/remove']));
   });
 });
 
@@ -579,8 +584,8 @@ describe('Myco\'s runs', () => {
       member: [credential()],
       run: [credential({ id: 'mt_runaaaaaaaaaa', memberId: 'mem_harness', machineId: 'harness', runtimeLabel: null, purpose: 'run', lineageStartedAt: NOW_MS - 5 * 60_000 })],
     });
-    mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
+    mount(PEOPLE);
+    const machines = await screen.findByRole('group', { name: 'Machines' });
     await waitFor(() => expect(machines.textContent).toContain('Ada’s MacBook'));
     expect(machines.textContent).not.toContain('A run started');
     fireEvent.click(await screen.findByRole('button', { name: /^1 run, 1 still signed in/ }));
@@ -593,8 +598,8 @@ describe('Myco\'s runs', () => {
       id: `mt_run_${String(i).padStart(10, '0')}`, memberId: 'mem_harness', machineId: 'harness', runtimeLabel: null, purpose: 'run', lineageStartedAt: NOW_MS - i,
     }));
     accessServer({ member: [credential({ lineageStartedAt: NOW_MS - 86_400_000 })], run: archive });
-    mount('/people');
-    expect(await screen.findByText(/^Legacy worker — uses member credential · Waiting for work/)).toBeTruthy();
+    mount(PEOPLE);
+    expect(await within(await screen.findByRole('group', { name: 'Machines' })).findByText('Ada’s MacBook')).toBeTruthy();
     expect(await screen.findByRole('button', { name: /^50 runs, 50 still signed in/ })).toBeTruthy();
   });
 
@@ -603,7 +608,7 @@ describe('Myco\'s runs', () => {
       { run: [credential({ id: 'mt_runaaaaaaaaaa', memberId: 'mem_harness', machineId: 'harness', runtimeLabel: null, purpose: 'run' })] },
       { '/api/credentials/mt_runaaaaaaaaaa/revoke': () => Response.json({ revoked: true }) },
     );
-    mount('/people');
+    mount(PEOPLE);
     fireEvent.click(await screen.findByRole('button', { name: /^1 run, 1 still signed in/ }));
     fireEvent.click(within(await openMenu('More for this run')).getByRole('menuitem', { name: 'Stop' }));
     fireEvent.click(within(await screen.findByRole('dialog', { name: 'Stop this run’s sign-in?' })).getByRole('button', { name: 'Stop' }));
@@ -619,7 +624,7 @@ describe('Connecting a GitHub account', () => {
       '/auth/link': () => Response.json({ error: 'link_requires_admin' }, { status: 403 }),
     });
     mount('/link');
-    expect(await screen.findByText(/Ask an owner or admin to connect it from People & machines/)).toBeTruthy();
+    expect(await screen.findByText(/Ask an owner or admin to connect it from Settings › People and machines/)).toBeTruthy();
   });
 });
 
@@ -671,7 +676,7 @@ it('shows reported update preferences separately from waiting changes and confir
       return Response.json({ applied: true });
     },
   });
-  mount('/me/machines');
+  mount(ADA_MACHINE);
   let updates = await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' });
   expect(await within(updates).findByText('Automatic updates: Not reported')).toBeTruthy();
   fireEvent.click(within(updates).getByRole('combobox', { name: /^Release channel for Ada/ }));
@@ -680,29 +685,25 @@ it('shows reported update preferences separately from waiting changes and confir
   expect(within(updates).getByText('Release channel: alpha · last reported by this machine')).toBeTruthy();
   reported = true;
   cleanup();
-  mount('/me/machines');
+  mount(ADA_MACHINE);
   updates = await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' });
   expect(await within(updates).findByText('Release channel: beta · last reported by this machine')).toBeTruthy();
   expect(within(updates).queryByText(/Waiting for this machine/)).toBeNull();
 });
 
-it('lists former machines on My machines below the live ones, closed and counted, each saying why, and offers them no settings', async () => {
+it('lists former machines below the live ones, closed and counted, each saying how it stands, and reads no machine settings for the list', async () => {
   const read: string[] = [];
   const old = (id: string, over: Record<string, unknown>) => credential({ id: `mt_${id}aaaaaaaaaa`, lineageRoot: `mt_${id}aaaaaaaaaa`, machineId: `ada_${id}`, expiresAt: 1, live: false, ...over });
   accessServer({ member: [credential(), old('old1', { runtimeLabel: 'Ada’s old laptop' }), old('old2', { runtimeLabel: 'Ada’s old desk', revokedAt: 1, revokedBy: LIN }), old('old3', { runtimeLabel: 'Ada’s copy', revokedAt: 1, revokedBy: 'lineage-replay' })] },
-    Object.fromEntries(['ada_5a2d54af', 'ada_old1', 'ada_old2', 'ada_old3'].map((m) => [`/api/machines/${m}/settings`, () => { read.push(m); return Response.json({ leaves: [{ leaf: 'update.automatic', effective: null, nextEffective: null, application: 'unreported' }] }); }])));
-  mount('/me/machines');
-  expect(await within(await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' })).findByText('Automatic updates: Not reported')).toBeTruthy();
-  expect(screen.queryByRole('list', { name: 'Former machines' })).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: 'Show former machines (3)' }));
-  const former = await screen.findByRole('list', { name: 'Former machines' });
-  expect(former.textContent).toMatch(/^Ada’s old laptopexpired · first signed in .+Ada’s old deskstopped by Lin · .+Ada’s copystopped: used from two places · /);
-  expect(within(former).queryByRole('combobox')).toBeNull();
-  expect(await menuItems(within(former).getByRole('button', { name: 'More for Ada’s old laptop' }))).not.toContain(MACHINE_SETTINGS_CONTROLS.action);
-  expect(read).toEqual(['ada_5a2d54af']);
+    Object.fromEntries(['ada_5a2d54af', 'ada_old1', 'ada_old2', 'ada_old3'].map((m) => [`/api/machines/${m}/settings`, () => { read.push(m); return Response.json({ leaves: [] }); }])));
+  mount(PEOPLE);
+  fireEvent.click(await screen.findByRole('button', { name: 'Former machines (3)' }));
+  const former = await screen.findByLabelText('Former machines');
+  expect(former.textContent).toMatch(/^Ada’s old laptop.*Offline.*Ada’s old desk.*Removed.*Ada’s copy.*Removed/);
+  expect(read).toEqual([]);
 });
 
-it('offers no update controls for an admin’s own or another member’s machine on People & machines', async () => {
+it('offers no update controls on the list of machines', async () => {
   let reads = 0;
   const settings = () => { reads += 1; return Response.json({ leaves: [
     { leaf: 'update.channel', effective: 'alpha', nextEffective: 'alpha', application: 'applied' },
@@ -712,8 +713,8 @@ it('offers no update controls for an admin’s own or another member’s machine
     '/api/machines/ada_5a2d54af/settings': settings,
     '/api/machines/lin_77aa00bb/settings': settings,
   });
-  mount('/people');
-  const machines = await screen.findByRole('list', { name: 'Machines' });
+  mount(PEOPLE);
+  const machines = await screen.findByRole('group', { name: 'Machines' });
   await within(machines).findByText('Ada’s MacBook');
   await within(machines).findByText('Lin’s desk');
   expect(screen.queryByRole('combobox', { name: /Automatic updates|Release channel/ })).toBeNull();

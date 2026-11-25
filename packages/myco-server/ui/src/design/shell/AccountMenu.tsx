@@ -1,7 +1,6 @@
 import { type ReactNode } from 'react';
 import * as Menu from '@radix-ui/react-dropdown-menu';
-import { Check, ChevronRight, ChevronsUpDown, Laptop, LogOut, Monitor, Moon, Sun } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Check, ChevronRight, ChevronsUpDown, LogOut, Monitor, Moon, Sun } from 'lucide-react';
 import { APPEARANCE_DENSITIES, APPEARANCE_THEMES } from '../../lib/appearance-values';
 import { cn } from '../../lib/cn';
 import { useAppearance, type Density, type FontKey, type Mode, type Theme } from '../../providers/appearance';
@@ -47,8 +46,6 @@ export interface AccountMenuProps {
   login?: string;
   /** "Admin" or "Member", under the name. */
   role?: string;
-  /** Where the member's own machines are listed. */
-  machinesHref?: string;
   onSignOut: () => void;
   /** Only the avatar, for a compact header. */
   compact?: boolean;
@@ -82,9 +79,8 @@ function Segment({ value, children, label }: { value: string; children: ReactNod
  * accent, density, code font), the member's machines, and sign out.
  * Appearance is kept in this browser only.
  */
-export function AccountMenu({ name, login, role, machinesHref, onSignOut, compact = false, align = 'start', side }: AccountMenuProps) {
+export function AccountMenu({ name, login, role, onSignOut, compact = false, align = 'start', side }: AccountMenuProps) {
   const { effective, set } = useAppearance();
-  const navigate = useNavigate();
   const handle = login != null && login !== '' && login !== name ? `@${login}` : null;
   return (
     <Menu.Root>
@@ -179,12 +175,6 @@ export function AccountMenu({ name, login, role, machinesHref, onSignOut, compac
           </Menu.Sub>
 
           <Menu.Separator className="my-s1 h-px bg-line" />
-          {machinesHref != null && (
-            <MenuItem onSelect={() => navigate(machinesHref)}>
-              <Laptop aria-hidden className="size-s4" />
-              My machines
-            </MenuItem>
-          )}
           <MenuItem onSelect={onSignOut}>
             <LogOut aria-hidden className="size-s4" />
             Sign out

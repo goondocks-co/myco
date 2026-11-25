@@ -14,7 +14,7 @@ import type { InvitationRow } from '../../packages/myco-server/src/auth/enrollme
 import type { GrantRow } from '../../packages/myco-server/src/auth/grants.ts';
 import type { ActivityRow, CredentialRow, credentialActivity, listCredentials } from '../../packages/myco-server/src/read/credentials.ts';
 import type { machineActivity } from '../../packages/myco-server/src/read/machines.ts';
-import type { DashboardMachineRow, DashboardMachinesAnswer } from '../../packages/myco-server/src/api/machines.ts';
+import type { DashboardMachineAnswer, DashboardMachineRow, DashboardMachinesAnswer } from '../../packages/myco-server/src/api/machines.ts';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -45,9 +45,10 @@ const READS: [
   Reads<ActivityAnswer, Ui.ActivityPage>,
   Reads<DashboardMachineRow, Ui.MachineRow>,
   Reads<DashboardMachinesAnswer, Ui.MachinesAnswer>,
+  Reads<DashboardMachineAnswer, Ui.MachineAnswer>,
   Reads<MachineActivityAnswer, Ui.ActivityPage>,
   Reads<{ grants: GrantRow[] }, Ui.GrantsAnswer>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true, true, true, true, true, true, true];
 
 describe("the admin pages' shared wire shapes", () => {
   it('are held to the server declarations by the tests typecheck', () => {

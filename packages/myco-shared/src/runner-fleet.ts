@@ -101,6 +101,11 @@ export interface FleetRun {
 }
 export interface RunnerFleetRecord {
   id: string; name: string; state: 'enabled' | 'paused' | 'removed'; revision: number;
+  /**
+   * The machine id bound to the runner's approved registration, the one a member sign-in on the same machine claims; null
+   * for a registration approved without one. Readable by every member, as the runner list is.
+   */
+  machineId: string | null;
   createdAt: number; createdBy: string | null; removedAt: number | null;
   lastSeenAt: number | null; updateAvailable?: boolean; awaitingReplacement?: boolean; updateMetadataUnavailable?: boolean; connected: boolean; display: RunnerDisplay;
   busy: (FleetRun & { leaseExpiresAt: number }) | null;
@@ -145,7 +150,7 @@ export function storedKeyFailureTitle(failure: RunnerFallbackReason, slot?: Secr
 
 export function storedKeyFailureWords(failure: RunnerFallbackReason, slot?: SecretSlotName, runEnded = false): string {
   const next = failure === 'no_key' ? 'Add a usable key in Settings or' : failure === 'out_of_credit' ? 'Add credit with the provider, replace the key in Settings, or' : 'Replace the key in Settings or';
-  const remedy = `${next} switch the runner to its own sign-in on Runners.`;
+  const remedy = `${next} set the runner apart to use its own sign-in on its machine page.`;
   const outcome = runEnded ? 'This run ended.' : 'Work that needs this key waits.';
   return `${storedKeyFailureTitle(failure, slot)}. ${outcome} ${remedy}${runEnded ? ' Start a new run when ready.' : ''}`;
 }
@@ -173,7 +178,7 @@ export const QUEUE_REASON_WORDS: Readonly<Record<QueueReason, string>> = {
   invalid_key: storedKeyFailureWords('invalid_key'),
   capacity: 'Waiting for capacity.',
   no_runner: 'No recently seen runner can currently take this work.',
-  credential_unavailable: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change its sign-in on Runners.',
+  credential_unavailable: 'The chosen stored key is unavailable for this agent. Add a usable key in Settings or change who pays in Settings › Models.',
   model_profile: 'Waiting for a machine with the agent and model this work needs.',
   settling: 'Waiting for machines to settle after waking.',
   dispatch_ceiling: 'The work limit is holding this work; the next server check will decide again.',

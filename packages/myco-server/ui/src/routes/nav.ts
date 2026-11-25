@@ -1,8 +1,7 @@
-import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, MEASURES_PATH, SETTINGS_SECTIONS } from './declarations';
-export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, MEASURES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
-import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
+import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MACHINES_PATH, RUNNER_MACHINES_PATH, MEASURES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
+export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, MACHINES_PATH, RUNNER_MACHINES_PATH, MEASURES_PATH, SETTINGS_SECTIONS, MOVED_SETTINGS_SECTIONS } from './declarations';
 import {
-  Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -96,6 +95,8 @@ export const HEALTH_ANCHORS = {
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
 
+/** Settings › People and machines: who can sign in, and the machines that write here or run Myco's work. */
+export const PEOPLE_SETTINGS_PATH = SETTINGS_SECTIONS.find((section) => section.id === 'people')!.to;
 /** The anchor a location's hash names, decoded; a hash that does not decode names itself as written. */
 export function anchorOf(hash: string): string {
   const raw = hash.replace(/^#/, '');
@@ -120,21 +121,21 @@ const STORED_KEYS_ANCHOR = 'credentials';
 export const STORED_KEYS_ADDRESS = `${SETTINGS_SECTIONS.find((section) => section.id === 'connections')!.to}#${STORED_KEYS_ANCHOR}`;
 /** Which agent runners use and who pays for it, under Settings › Models. */
 export const AGENT_PAYER_ADDRESS = `${SETTINGS_SECTIONS.find((section) => section.id === 'models')!.to}#workers`;
-
-/** Who is a member, and the machines that write here. */
-export const PEOPLE_PAGE: ServerPage = { label: INVITE_CONTROLS.page, icon: Users, to: PEOPLE_PATH };
 /** Every project, listed with its session count. */
 export const PROJECTS_PATH = '/projects';
 
 /**
- * The nav foot: People is readable by every member; other pages require an
- * admin. Health carries the count of what needs an admin.
+ * The nav foot of an admin. Health carries the count of what needs an admin.
  */
 export const ADMIN_PAGES: readonly ServerPage[] = [
   { label: 'Projects', icon: FolderKanban, to: PROJECTS_PATH },
-  PEOPLE_PAGE,
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },
+];
+
+/** The nav foot of a member who is not an admin: the one part of Settings every member reads. */
+export const MEMBER_PAGES: readonly ServerPage[] = [
+  { label: 'Settings', icon: Settings2, to: PEOPLE_SETTINGS_PATH },
 ];
 
 /**
@@ -208,12 +209,25 @@ export function projectPath(projectId: string, suffix = ''): string {
   return `/p/${encodeURIComponent(projectId)}${suffix}`;
 }
 
-/** Where one run of Myco's work opens: its panel over the project's work. */
 /** One runner's own page: its recent runs and check-ins. */
 export function runnerPath(runnerId: string): string {
   return `${RUNNERS_PATH}/${encodeURIComponent(runnerId)}`;
 }
 
+/** One machine's page, by the machine id its sign-ins and its runner registration carry. */
+export function machinePath(machineId: string): string {
+  return `${MACHINES_PATH}/${encodeURIComponent(machineId)}`;
+}
+
+/**
+ * A runner registration's place on a machine page: its card on the page of the machine its registration is bound to, or
+ * the runner's own page where none is bound.
+ */
+export function runnerMachinePath(runner: { id: string; machineId: string | null }): string {
+  return runner.machineId == null ? `${RUNNER_MACHINES_PATH}/${encodeURIComponent(runner.id)}` : `${machinePath(runner.machineId)}#runner-${encodeURIComponent(runner.id)}`;
+}
+
+/** Where one run of Myco's work opens: its panel over the project's work. */
 export function runPath(projectId: string, runId: string): string {
   return projectPath(projectId, `${RUN_SUFFIX}/${encodeURIComponent(runId)}`);
 }
@@ -254,12 +268,12 @@ export function clearProjectHref(
 const SERVER_TITLES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.entries(ALL_PROJECTS_FORMS).map(([suffix, form]) => [form.replace(/\/+$/, ''), pageOf(suffix)?.label ?? 'Not found'])),
   [PROJECTS_PATH]: 'Projects',
-  [MY_MACHINES_PATH]: 'My machines',
   [MEASURES_PATH]: 'Is Myco helping?',
   [RUNS_PATH]: 'Myco’s work',
   [RUNNERS_PATH]: 'Myco’s work',
   ...Object.fromEntries(ADMIN_PAGES.map((page) => [page.to, page.label])),
   ...Object.fromEntries(SETTINGS_SECTIONS.map((section) => [section.to, 'Settings'])),
+  ...Object.fromEntries(MOVED_SETTINGS_SECTIONS.map((section) => [section.from, 'Settings'])),
 };
 
 /** The page a path shows, in the words of the nav. */
@@ -269,6 +283,7 @@ export function titleOf(pathname: string): string {
   }
   const path = pathname.replace(/\/+$/, '');
   if (path.startsWith(`${RUNNERS_PATH}/`)) return 'Myco’s work';
+  if (path.startsWith(`${MACHINES_PATH}/`) || path.startsWith(`${RUNNER_MACHINES_PATH}/`)) return 'Settings';
   return SERVER_TITLES[path] ?? 'Not found';
 }
 

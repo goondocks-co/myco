@@ -64,7 +64,7 @@ export function ModelListingNote({ harness }: { harness: string }) {
   return (
     <p className="px-s4 pt-s4 t-small text-muted" data-model-listing={harness}>
       {`Models listed by your machines ${agoWords(listed.listedAt, Date.now())}, each with its own sign-in to ${harnessLabel(harness)}.`}
-      {serverLogin && ' Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.'}
+      {serverLogin && ' Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices, set on Models or on each runner’s machine page.'}
     </p>
   );
 }

@@ -1,4 +1,4 @@
-import { MY_MACHINES_PATH } from '../../packages/myco-server/ui/src/routes/declarations';
+import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/declarations';
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 const { readFileSync, mkdtempSync } = fs;
@@ -27,7 +27,7 @@ describe('member recovery copy', () => {
     expect(MEMBER_HELP).not.toContain('member join <server-url> --project <id>');
     const architecture = source('docs/architecture/myco-2.0.md');
     expect(architecture).not.toContain('Access › Runtimes › Settings');
-    expect(architecture).toContain('My machines › Its settings');
+    expect(architecture).toContain('its machine page › Change folders');
   });
 
   it('points config users to the machine settings controls the dashboard currently serves', async () => {
@@ -38,6 +38,6 @@ describe('member recovery copy', () => {
       mycoHome: root, cwd: root, renew: false, stderr: (line) => err.push(line),
     })).toBe(false);
     expect(err.join('\n')).toContain(machineSettingsLocation('https://member-test.invalid'));
-    expect(MY_MACHINES_PATH).toBe(MACHINE_SETTINGS_CONTROLS.path);
+    expect(SETTINGS_SECTIONS.find((section) => section.id === 'people')?.to).toBe(MACHINE_SETTINGS_CONTROLS.path);
   });
 });

@@ -2,7 +2,7 @@ import { movedPaths } from './declarations';
 import { Navigate, useLocation, useParams, type RouteObject } from 'react-router-dom';
 import { useIsAdmin } from '../hooks/use-me';
 import {
-  HEALTH_ANCHORS, HEALTH_PATH, keptFilters, KNOWLEDGE_SUFFIX, MY_MACHINES_PATH, PEOPLE_PATH, PLANS_SUFFIX, PROJECT_SETTINGS_ANCHORS,
+  HEALTH_ANCHORS, HEALTH_PATH, keptFilters, KNOWLEDGE_SUFFIX, PEOPLE_SETTINGS_PATH, PLANS_SUFFIX, PROJECT_SETTINGS_ANCHORS,
   PROJECT_SETTINGS_SUFFIX, projectPath, RUN_SUFFIX, RUNNERS_PATH, runnerPath, RUNS_PATH, UPKEEP_ADDRESS, WORK_SUFFIX,
 } from './nav';
 
@@ -39,8 +39,8 @@ export const MOVED: readonly MovedAddress[] = [
   // Agent runs became Myco's work, and a run its panel there.
   { from: movedPaths.runs, to: (at) => `${projectPath(project(at), WORK_SUFFIX)}${at.search}` },
   { from: movedPaths.run, to: (at) => `${projectPath(project(at), `${RUN_SUFFIX}/${encodeURIComponent(at.params.runId ?? '')}`)}${at.search}` },
-  // Access became People & machines for an admin and My machines for a member; a project's access keys are in its settings.
-  { from: movedPaths.access, to: ({ admin }) => (admin ? PEOPLE_PATH : MY_MACHINES_PATH) },
+  // Access became Settings › People and machines; a project's access keys are in its settings.
+  { from: movedPaths.access, to: () => PEOPLE_SETTINGS_PATH },
   { from: movedPaths.projectAccess, to: (at) => `${projectPath(project(at), PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
   // Status became whether the server is well, on Health; Operations became Upkeep, under Settings › Advanced.
   { from: movedPaths.status, to: ({ search }) => `${HEALTH_PATH}${search}#${HEALTH_ANCHORS.status}` },
@@ -51,11 +51,13 @@ export const MOVED: readonly MovedAddress[] = [
   { from: movedPaths.serverRunner, to: ({ params, search }) => `${runnerPath(params.runnerId ?? '')}${search}` },
 ];
 
+/** Leads a moved address to where its page is now, keeping its fragment unless the destination names one. */
 function Moved({ address }: { address: MovedAddress }) {
   const params = useParams();
-  const { search } = useLocation();
+  const { search, hash } = useLocation();
   const admin = useIsAdmin();
-  return <Navigate to={address.to({ params, search, admin })} replace />;
+  const to = address.to({ params, search, admin });
+  return <Navigate to={to.includes('#') ? to : `${to}${hash}`} replace />;
 }
 
 /** One route per old address, each leading to where its page is now. */

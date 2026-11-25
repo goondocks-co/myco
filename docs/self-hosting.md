@@ -40,7 +40,7 @@ Rerun `myco setup` after an interruption, including a partial Cloudflare create.
 
 Open **Today** and follow **Get started** for the next action. The checklist reflects what Myco can verify, including a live captured session, a ready runner and recent work that produced results. Imported history alone does not complete live capture. See [The dashboard](dashboard.md#get-started).
 
-Creating a server does not start a runner. Choose a machine for Myco's work only when you want it to run tasks; for a loopback Deployment it must be this machine. Follow [Runners](runners.md) for sign-in, capacity and updates, and [Join a Myco](quickstart.md) for capture checks. To invite teammates, use **People & machines** → **Invite a teammate**; **Connect GitHub** gives them dashboard sign-in.
+Creating a server does not start a runner. Choose a machine for Myco's work only when you want it to run tasks; for a loopback Deployment it must be this machine. Follow [Runners](runners.md) for sign-in, capacity and updates, and [Join a Myco](quickstart.md) for capture checks. To invite teammates, use **Settings › People and machines** → **Invite a teammate**; **Connect GitHub** gives them dashboard sign-in.
 
 For automatic work, enable **Work on its own** in **Settings** → **Myco’s work**. The project switches **Context for sessions**, **Code map** and **Learning** are on by default. Scheduling starts off.
 

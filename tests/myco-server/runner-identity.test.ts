@@ -241,6 +241,32 @@ describe('runner registration through the device flow', () => {
       expect(empty()).toEqual(none);
     } finally { r.e.sqlite.close(); }
   });
+
+  it('names the machine a registration was approved for, to every member, with or without a contact, and moves it only on an approved replacement', async () => {
+    const r = rig();
+    try {
+      const machineOf = async (path: string) => ((await r.json(r.asSession(path, null, MEMBER_SUB, 'GET'))).runners as Array<{ machineId: string | null }>)[0]?.machineId;
+      const candidate = bearer();
+      const started = await r.json(r.post('/auth/runner/start', { name: 'mini', machineId: 'mini_a1', machineName: 'Mac mini', os: 'darwin', candidate }));
+      const { runnerId } = await r.json(r.asSession('/api/device/approve-runner', { user_code: started.user_code }));
+      expect(await machineOf('/api/runners')).toBe('mini_a1');
+      // A contact reporting another id, and then no contact at all, leave the registration's machine as approved.
+      await r.json(r.asRunner(candidate, '/runners/contact', { machineId: 'mini_other' }));
+      r.e.sqlite.run('DELETE FROM runner_contacts');
+      expect(await machineOf('/api/runners')).toBe('mini_a1');
+      const replacing = await r.json(r.post('/auth/runner/start', { name: 'mini', machineId: 'mini_b2', machineName: 'Mac mini', os: 'darwin', candidate: bearer(), replace: true }));
+      expect((await r.asSession(`/api/runners/${String(runnerId)}/recredential`, { user_code: replacing.user_code })).status).toBe(200);
+      expect(await machineOf('/api/runners')).toBe('mini_b2');
+      // A server from before the registration carried the id approves the same way and leaves it unset or as it was:
+      // the approval record still names the machine.
+      r.e.sqlite.run('UPDATE runners SET machine_id = NULL WHERE id = ?', [String(runnerId)]);
+      expect(await machineOf('/api/runners')).toBe('mini_b2');
+      r.e.sqlite.run(`UPDATE runners SET machine_id = 'mini_a1' WHERE id = ?`, [String(runnerId)]);
+      expect(await machineOf('/api/runners')).toBe('mini_b2');
+      expect((await r.asSession(`/api/runners/${String(runnerId)}/remove`, {})).status).toBe(200);
+      expect(await machineOf('/api/runners/removed')).toBe('mini_b2');
+    } finally { r.e.sqlite.close(); }
+  });
 });
 
 describe('a runner-only machine', () => {

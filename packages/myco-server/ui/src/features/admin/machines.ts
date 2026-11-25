@@ -2,7 +2,7 @@
 import { useMemo } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchJson, type WorkerRow } from '../../lib/api';
-import type { MachinesAnswer } from './wire';
+import type { MachineRow, MachinesAnswer } from './wire';
 import { live } from '../../lib/live';
 
 /** What a worker says of where it runs. */
@@ -35,6 +35,25 @@ export interface Machine {
   capturedAgents: string[];
   /** When it last captured anything, or null when it has not lately. */
   lastCaptureAt: number | null;
+  /** The projects it captured for lately, newest first. */
+  capturedProjects: string[];
+  /** `building` while the server is still gathering machines' latest contact and capture, so an empty one means not yet known. */
+  facts?: 'ready' | 'building';
+}
+
+/** A machine summary as the pages read it, named `standIn` when it reported no name of its own. */
+export function toMachine(row: MachineRow, standIn: string): Machine {
+  return {
+    key: row.machineId, machineId: row.machineId,
+    name: row.name ?? standIn,
+    named: row.name !== null, memberId: row.member.id,
+    standing: row.standing, stoppedBy: row.stoppedBy, firstSeenAt: row.firstSeenAt,
+    liveCredentialCount: row.liveCredentialCount, credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
+    canStop: row.canStop === true, stopReason: row.stopReason ?? null,
+    capturedAgents: [...new Set((row.capture ?? []).map((entry) => entry.agent).filter((agent): agent is string => agent !== null))],
+    lastCaptureAt: row.lastCaptureAt ?? null,
+    capturedProjects: [...new Set((row.capture ?? []).map((entry) => entry.projectId))],
+  };
 }
 
 /** The machine a worker names. */
@@ -58,16 +77,7 @@ export function useMachines(options: { enabled?: boolean } = {}) {
   const rows = useMemo(() => [...new Map((query.data?.pages.flatMap((answer) => answer.machines) ?? []).map((row) => [row.machineId, row])).values()], [query.data]);
   const machines = useMemo(() => {
     const unnamed = rows.filter((row) => row.name === null);
-    return rows.map((row): Machine => ({
-      key: row.machineId, machineId: row.machineId,
-      name: row.name ?? (unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.findIndex((item) => item.machineId === row.machineId) + 1}`),
-      named: row.name !== null, memberId: row.member.id,
-      standing: row.standing, stoppedBy: row.stoppedBy, firstSeenAt: row.firstSeenAt,
-      liveCredentialCount: row.liveCredentialCount, credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
-      canStop: row.canStop === true, stopReason: row.stopReason ?? null,
-      capturedAgents: [...new Set((row.capture ?? []).map((entry) => entry.agent).filter((agent): agent is string => agent !== null))],
-      lastCaptureAt: row.lastCaptureAt ?? null,
-    }));
+    return rows.map((row): Machine => toMachine(row, unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.findIndex((item) => item.machineId === row.machineId) + 1}`));
   }, [rows]);
   return {
     machines, isPending: query.isPending, error: query.error, hasMore: query.hasNextPage,

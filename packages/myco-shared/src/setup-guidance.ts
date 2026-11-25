@@ -32,7 +32,7 @@ export const SIGN_IN_RESTART = {
   reason: `Sign-in may have taken too long. Reopen the original link and sign in again. If your owner link has expired, run ${OWNER_SETUP_COMMAND} again on the machine that created this Myco for a fresh link.`,
 } as const;
 export const SIGN_IN_UNCONFIGURED = (origin: string): string => `GitHub sign-in is not set up for this Myco (${origin}). On the machine that created it, run ${OWNER_SETUP_COMMAND} to finish sign-in, then reload this page. Manual path: myco server github-app --target local --url ${origin} for self-hosting, or myco server github-app --target cloudflare --url ${origin} for Cloudflare.`;
-export const ACCOUNT_UNLINKED = 'Your GitHub account is not connected to a member of this Myco. Ask an owner or admin to connect it from People & machines, then open the link they send while signed in to this account.';
+export const ACCOUNT_UNLINKED = 'Your GitHub account is not connected to a member of this Myco. Ask an owner or admin to connect it from Settings › People and machines, then open the link they send while signed in to this account.';
 export const SIGN_IN_WAIT = 'If nobody approves within 10 minutes, this stops; the approval page says what is missing.';
 export const SETUP_CREATE_GUIDANCE = {
   loopbackOnly: 'Guided local setup is loopback only. Keep this Myco’s configuration and use myco server status --target local.',
@@ -83,9 +83,9 @@ export const runnerCheckIn = (offered: readonly string[], withheld: readonly str
   `Checked in: offering ${offered.join(', ') || 'none'}; unavailable: ${withheld.join(', ') || 'none'} (checked ${new Date(at).toISOString()}).${offered.length === 0 ? ' Run myco runner doctor to check which coding agents can run.' : ''}`;
 
 /** Where a member changes this machine's capture settings in the dashboard. */
-export const MACHINE_SETTINGS_CONTROLS = { page: 'My machines', path: '/me/machines', action: 'Its settings' } as const;
+export const MACHINE_SETTINGS_CONTROLS = { page: 'Settings › People and machines', path: '/settings/people', action: 'Change folders' } as const;
 export const machineSettingsLocation = (serverUrl: string | null): string =>
-  `the dashboard${serverUrl === null ? '' : ` (${serverUrl}${MACHINE_SETTINGS_CONTROLS.path})`}, under ${MACHINE_SETTINGS_CONTROLS.page} › ${MACHINE_SETTINGS_CONTROLS.action} for this machine`;
+  `the dashboard${serverUrl === null ? '' : ` (${serverUrl}${MACHINE_SETTINGS_CONTROLS.path})`}, under ${MACHINE_SETTINGS_CONTROLS.page}: open this machine and choose ${MACHINE_SETTINGS_CONTROLS.action}`;
 
 /** The machine's global tools use this Deployment; capture keeps its own routing. */
 export const harnessToolsElsewhere = (harness: string, machine: string, address?: string): string =>

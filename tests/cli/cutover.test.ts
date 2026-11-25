@@ -187,8 +187,8 @@ describe('myco cutover', () => {
     const settingsBytes = fs.readFileSync(settingsFile(), 'utf8');
     fs.chmodSync(settingsFile(), 0o600);
     const first = await successfulCutover(m);
-    expect(first.out.join('\n')).toContain('My machines › Its settings');
-    expect(first.out.join('\n')).toContain(`${SERVER}/me/machines`);
+    expect(first.out.join('\n')).toContain('Settings › People and machines: open this machine and choose Change folders');
+    expect(first.out.join('\n')).toContain(`${SERVER}/settings/people`);
 
     // The folder is connected; the claim names the 2.0 home, so a 1.4 daemon that comes back defers.
     expect(listRegistryEntries(m.mycoHome).map((e) => [e.root, e.projectId])).toEqual([[m.root, PROJECT]]);

@@ -47,8 +47,6 @@ const MECHANISM_ALLOWED: Readonly<Record<string, string>> = {
     'The exact operator command is required to add the missing backup access key',
   'features/admin/workers.ts:Legacy worker — uses member credential':
     'The migration inventory must name the credential class so the owner can distinguish legacy execution from runner enrollment',
-  'features/admin/workers.ts:Run assigned; lease valid until …':
-    'An assignment deadline distinguishes authoritative Busy from a recent contact',
   'features/admin/settings/catalogue.ts:agent.harnesses. … .credential':
     'A setting key assembled for the API, never shown as page copy',
   'myco-shared/prompt-identity.ts:harness-key':

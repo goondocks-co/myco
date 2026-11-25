@@ -118,7 +118,7 @@ async function expectWaitingRepositories(within: Locator, role: 'admin' | 'membe
   if (role === 'admin') {
     await expect(notes.getByRole('button', { name: 'Connect field-notes' })).toHaveCount(0);
     await expect(notes.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
-    await expect(notes).toContainText('Only the member who claimed this machine can change which folders are recorded or connect repositories.');
+    await expect(notes).toContainText('Only the member this machine belongs to can change which folders are recorded or connect repositories.');
     const gadget = rows.filter({ hasText: 'gadget isn’t being captured yet' });
     await expect(gadget).toHaveAttribute('data-needs-you-item', 'warn');
     await expect(gadget).toContainText('It’s outside the folders Ada’s studio Mac captures.');

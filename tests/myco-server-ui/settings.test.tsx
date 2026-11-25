@@ -1439,7 +1439,7 @@ describe('Repositories', () => {
 });
 
 const QUEUE = { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false };
-const runner = (over: Record<string, unknown>) => ({ state: 'enabled', display: 'Online', busy: null, lastCompleted: null, lastFailed: null, lastAttempted: null,
+const runner = (over: Record<string, unknown>) => ({ machineId: null, state: 'enabled', display: 'Online', connected: true, busy: null, lastCompleted: null, lastFailed: null, lastAttempted: null,
   offers: [{ id: 'claude-code', authenticated: true }], credentialChoices: {}, storedKeyFailures: [], ...over });
 const STATUS = (budget: Record<string, unknown>) => Response.json({ workers: { available: true, fleet: [] }, budget: { active: true, reason: null, dailyUsd: 30, automaticUsd: 4, manualUsd: 0.56, liveUsd: 0, unconfirmed: null, heldHeads: [], pricedExposure: null, state: 'ready', ...budget } });
 
@@ -1456,7 +1456,7 @@ describe('Myco’s work', () => {
         ? { observedAt: NOW, legacyWorkers: [], queue: QUEUE, storedCredentials: { 'claude-code': false }, totals: { active: 2 }, cursor: 'page_2',
           runners: [runner({ id: 'rn_mini', name: 'homelab-mini', lastCompleted: run('canopy-map', 13 * 3_600_000) })] }
         : { observedAt: NOW, legacyWorkers: [], queue: QUEUE, cursor: null, runners: [runner({ id: 'rn_win', name: 'win-box', display: 'Not ready',
-          lastFailed: run('extract-curate', 2 * 3_600_000), lastAttempted: run('extract-curate', 2 * 3_600_000), credentialChoices: { 'claude-code': 'stored' },
+          lastFailed: run('extract-curate', 2 * 3_600_000), lastAttempted: run('extract-curate', 2 * 3_600_000), credentialChoices: { 'claude-code': 'stored' }, connected: false,
           storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'out_of_credit' }] })] }),
     }));
     mount('/settings');
@@ -1482,12 +1482,12 @@ describe('Myco’s work', () => {
     const mini = await waitFor(() => found('[data-runner-row="rn_mini"]'));
     await waitFor(() => expect(mini.textContent).toContain('Set to pay for Claude Code with its own sign-in, and can use it now'));
     expect(mini.textContent).toContain('Last ran a code map update 13 h ago');
-    expect(within(mini).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/work/runners/rn_mini');
+    expect(within(mini).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/settings/people/runners/rn_mini');
     expect(document.querySelector('[data-runner-row="rn_win"]')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /^Show more/ }));
     const win = await waitFor(() => found('[data-runner-row="rn_win"]'));
     expect(win.textContent).toContain('Last run, learning, failed 2 h ago');
-    expect(win.textContent).toContain('Set to pay for Claude Code with the stored key, but can’t use it now.');
+    expect(win.textContent).toContain('Set to pay for Claude Code with the stored key, but couldn’t use it when last seen.');
     expect(win.textContent).toContain('ran out of API credit');
     expect(win.textContent).toContain('Not ready');
     fireEvent.click(screen.getByRole('button', { name: 'Add a runner' }));
@@ -1548,7 +1548,7 @@ describe('Myco’s work', () => {
 });
 
 describe('People and machines', () => {
-  it('lists who can sign in, never Myco, and the viewer\'s machines page by page with what each captures, how it updates and whether it runs work', async () => {
+  it('lists who can sign in, never Myco, and every machine page by page, each leading to its page, with the former ones folded', async () => {
     const machine = { machineId: 'm_ada', name: 'ada-mbp', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false }, claimedAt: 0, credentialCount: 1,
       liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: NOW, lastRunAt: null, lastCaptureAt: NOW - 60_000,
       capture: [{ agent: 'claude-code', lastEventAt: NOW - 60_000, projectId: P_X }, { agent: 'codex', lastEventAt: NOW - 120_000, projectId: P_X }] };
@@ -1557,8 +1557,7 @@ describe('People and machines', () => {
       '/api/machines': (_init, url) => Response.json(url!.searchParams.get('cursor') === null
         ? { machines: [{ ...machine, machineId: 'm_lin', name: 'lin-pc', member: { id: LIN, label: null, revoked: false } }], cursor: 'page_2' }
         : { machines: [machine, { ...machine, machineId: 'm_old', name: 'old-mac', liveCredentialCount: 0, standing: 'expired' }], cursor: null }),
-      '/api/machines/m_ada/settings': () => Response.json({ leaves: [{ leaf: 'update.automatic', effective: true }, { leaf: 'capture.auto_join_roots', effective: ['~/Repos'] }] }),
-      '/api/status': () => Response.json({ workers: { available: true, fleet: [{ credentialId: 'cred_1', machineId: 'm_ada', runnerDetails: {} }] } }),
+      '/api/runners': () => Response.json({ observedAt: NOW, legacyWorkers: [], queue: QUEUE, cursor: null, runners: [runner({ id: 'rn_ada', name: 'ada-mbp', machineId: 'm_ada', display: 'Offline', connected: false }), runner({ id: 'rn_mini', name: 'homelab-mini' })] }),
     }));
     mount('/settings/people');
     const people = await screen.findByRole('group', { name: 'Who can sign in?' });
@@ -1567,45 +1566,42 @@ describe('People and machines', () => {
     expect(people.textContent).toContain('Signs in with GitHub · 1 machine');
     expect(people.textContent).toContain('No GitHub account connected yet');
     expect(people.textContent).not.toContain('harness');
-    expect(within(people).getAllByRole('link', { name: 'Manage' })[0]!.getAttribute('href')).toBe('/people#people');
-    const machines = screen.getByRole('group', { name: 'Your machines' });
-    await waitFor(() => expect(machines.textContent).toContain('None of yours among the machines read so far.'));
-    expect(machines.textContent).not.toContain('None of your machines can write here now');
+    const machines = screen.getByRole('group', { name: 'Machines' });
+    await waitFor(() => expect(machines.textContent).toContain('lin-pc'));
+    expect(machines.textContent).toContain('Runners that are machines of their own are listed once every machine is read.');
     fireEvent.click(within(machines).getByRole('button', { name: /^Show more/ }));
-    const row = await waitFor(() => { const element = machines.querySelector<HTMLElement>('[data-list-row="machine"]'); expect(element?.textContent).toContain('updates itself'); return element!; });
-    expect(machines.querySelectorAll('[data-list-row="machine"]')).toHaveLength(1);
-    expect(row.textContent).toContain('Captures Claude Code, Codex · updates itself · captures repositories under ~/Repos · also a runner');
-    expect(row.textContent).toContain('Captured 1 min ago');
-    expect(machines.textContent).toContain('1 former machine of yours is no longer connected.');
-    expect(within(machines).getByRole('link', { name: 'See on My machines' }).getAttribute('href')).toBe('/me/machines');
-    expect(within(row).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/me/machines');
+    const row = await waitFor(() => found('#machine-m_ada'));
+    expect(row.textContent).toContain('Captures Claude Code, Codex · runs Myco’s work as ada-mbp');
+    expect(row.textContent).toContain('Capturing');
+    expect(within(row).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/settings/people/machines/m_ada');
+    const mini = await waitFor(() => found('#runner-rn_mini'));
+    expect(within(mini).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/settings/people/runners/rn_mini');
+    expect(machines.querySelector('#runner-rn_ada')).toBeNull();
+    expect(within(machines).getByRole('button', { name: 'Former machines (1)' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Advanced › Owner actions' }).getAttribute('href')).toBe('/settings/advanced#owner-actions');
     fireEvent.click(screen.getByRole('button', { name: 'Invite a teammate' }));
     expect(await screen.findByRole('button', { name: 'Create invitation' })).toBeTruthy();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 
-  it('says a failed machine read failed, and a machine whose settings or runner state could not be read says so', async () => {
+  it('says a failed machine read failed, and that whether a machine runs Myco’s work is unknown when the runners could not be read', async () => {
     server(base({ '/api/machines': () => new Response(null, { status: 500 }) }));
     mount('/settings/people');
-    const machines = await screen.findByRole('group', { name: 'Your machines' });
+    const machines = await screen.findByRole('group', { name: 'Machines' });
     await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
-    expect(machines.textContent).not.toContain('None of your machines can write here now');
+    expect(machines.textContent).not.toContain('No machine can write here now');
     cleanup();
     server(base({
       '/api/machines': () => Response.json({ machines: [{ machineId: 'm_ada', name: 'ada-mbp', live: true, canStop: true, stopReason: null, member: { id: ADA, label: 'Ada', revoked: false }, claimedAt: 0, credentialCount: 1,
         liveCredentialCount: 1, bytesWritten: 0, firstSeenAt: 0, standing: 'allowed', stoppedBy: null, offers: null, lastContactAt: null, lastRunAt: null, lastCaptureAt: null, capture: [] }], cursor: null }),
-      '/api/machines/m_ada/settings': () => new Response(null, { status: 500 }),
-      '/api/status': () => new Response(null, { status: 500 }),
+      '/api/runners': () => new Response(null, { status: 500 }),
     }));
     mount('/settings/people');
     const row = await waitFor(() => found('[data-list-row="machine"]'));
-    await waitFor(() => expect(row.textContent).toContain('how it updates and what it captures could not be read'));
-    expect(row.textContent).toContain('whether it runs Myco’s work is unknown');
-    expect(row.textContent).toContain('Nothing captured lately');
+    await waitFor(() => expect(row.textContent).toContain('whether it runs Myco’s work is unknown'));
+    expect(row.textContent).toContain('Has not captured an agent lately');
   });
 });
-
 
 it('shows retired task preferences as metadata outside the task-overrides editor', async () => {
   const historic = { 'title-summary': { provider: 'anthropic', reasoningLevel: 'low' }, 'container-smoke': { model: 'haiku' } };
@@ -1668,7 +1664,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     mount('/settings/advanced#model-sizes');
     await group('Codex model sizes');
     expect(document.querySelector('[data-model-listing="codex"]')?.textContent)
-      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.');
+      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices, set on Models or on each runner’s machine page.');
   });
 
   it('keeps a stored model no machine listed, and says so in plain words', async () => {

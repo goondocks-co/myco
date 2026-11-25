@@ -1,7 +1,8 @@
 import { useLocation } from 'react-router-dom';
 import { ErrorState, LoadingState, Link, TabLinks } from '../../../design';
+import { useIsAdmin } from '../../../hooks/use-me';
 import { useSettings } from '../../../hooks/use-settings';
-import { anchorOf, HEALTH_ANCHORS, MEASURES_PATH, MOVED_SETTINGS_SECTIONS, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
+import { anchorOf, HEALTH_ANCHORS, machinePath, MEASURES_PATH, MOVED_SETTINGS_SECTIONS, MY_MACHINES_PATH, PEOPLE_PATH, SETTINGS_PATH, SETTINGS_SECTIONS, type SettingsSectionId } from '../../../routes/nav';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { ADVANCED_ANCHOR, ADVANCED_ANCHORS, AdvancedSection, GroupCard } from './AdvancedGroups';
 import { AgentWork } from './AgentWork';
@@ -10,7 +11,7 @@ import { Connections } from './Connections';
 import { CREDENTIALS_ANCHOR } from './Credentials';
 import { GITHUB_ANCHOR } from './GitHubApp';
 import { MycosWork } from './MycosWork';
-import { PeopleAndMachines, SIGN_IN_ANCHOR } from './PeopleAndMachines';
+import { PEOPLE_ANCHORS, PeopleAndMachines, SIGN_IN_ANCHOR } from './PeopleAndMachines';
 import { QuickJobs } from './QuickJobs';
 import { PROJECTS_ANCHOR, Repositories } from './Repositories';
 import { TELEMETRY_ANCHOR } from './TelemetryKeys';
@@ -28,7 +29,7 @@ const ANCHOR_SECTION: ReadonlyMap<string, SettingsSectionId> = new Map<string, S
   [TELEMETRY_ANCHOR, 'connections'],
   [GITHUB_ANCHOR, 'repositories'],
   [PROJECTS_ANCHOR, 'repositories'],
-  [SIGN_IN_ANCHOR, 'people'],
+  ...Object.values(PEOPLE_ANCHORS).map((anchor) => [anchor, 'people'] as const),
 ]);
 
 /**
@@ -61,7 +62,11 @@ export function healthAddress(search: string, hash: string): string | null {
 }
 
 /** Anchors an older page named that are now another anchor. */
-const ANCHOR_ALIASES: Readonly<Record<string, string>> = { 'models-advanced': ADVANCED_ANCHOR };
+const ANCHOR_ALIASES: Readonly<Record<string, string>> = { 'models-advanced': ADVANCED_ANCHOR, people: SIGN_IN_ANCHOR, 'your-machines': PEOPLE_ANCHORS.machines };
+
+/** The anchor that names one machine on People and machines' list; on an older address it leads to that machine's page. */
+const MACHINE_ANCHOR = /^machine-(.+)$/;
+const MACHINE_LIST_ADDRESSES: readonly string[] = [PEOPLE_PATH, MY_MACHINES_PATH];
 
 /** The section an address of Settings shows, current or older: null for an address Settings never had. */
 function sectionAt(pathname: string): SettingsSectionId | null {
@@ -81,6 +86,8 @@ export function settingsAddress(pathname: string, search: string, hash: string):
   if (section === null) return null;
   const moved = MOVED_SETTINGS_SECTIONS.find((s) => s.from === pathname.replace(/(.)\/+$/, '$1'));
   const named = anchorOf(hash) || (moved !== undefined && 'anchor' in moved ? moved.anchor : '');
+  const machine = MACHINE_ANCHOR.exec(named);
+  if (machine !== null && moved !== undefined && MACHINE_LIST_ADDRESSES.includes(moved.from)) return machinePath(machine[1]!);
   const anchor = ANCHOR_ALIASES[named] ?? named;
   const target = `${sectionPath(ANCHOR_SECTION.get(anchor) ?? section)}${anchor === '' ? '' : `#${anchor}`}`;
   return target === `${pathname}${hash}` ? null : target;
@@ -92,16 +99,21 @@ export function useSettingsRedirect(): string | null {
   return settingsAddress(pathname, search, hash);
 }
 
+/** The sections that read the server's settings; the others read their own lists. */
+const READS_SETTINGS: ReadonlySet<SettingsSectionId> = new Set(['work', 'models', 'advanced']);
+
 /**
  * Settings: what this server holds for every member, in six sections, each at
- * its own address. Every change saves as it is made and says who made it.
+ * its own address. Every change saves as it is made and says who made it. A member who is not an admin reads People and
+ * machines alone.
  */
 export function SettingsPage({ section }: { section: SettingsSectionId }) {
-  const settings = useSettings();
+  const admin = useIsAdmin();
+  const settings = useSettings({ enabled: READS_SETTINGS.has(section) });
   // Connections scrolls to its anchor itself, once its lists have loaded.
   useAnchorScroll(section === 'people' || section === 'repositories' || (section !== 'connections' && !settings.isPending));
 
-  const tabs = SETTINGS_SECTIONS.map((s) => ({ to: s.to, label: s.label, active: s.id === section }));
+  const tabs = SETTINGS_SECTIONS.filter((s) => admin || s.id === 'people').map((s) => ({ to: s.to, label: s.label, active: s.id === section }));
   return (
     <AdminPage
       name={`settings-${section}`}

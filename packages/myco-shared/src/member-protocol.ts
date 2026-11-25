@@ -290,12 +290,12 @@ export function filesNamedByToolInput(toolInput: unknown): string[] | undefined 
 
 /**
  * The dashboard controls an administrator uses to let a machine that already
- * belongs to a member sign in again: People & machines → Add a machine → For,
+ * belongs to a member sign in again: Settings › People and machines → Add a machine → For,
  * with that member picked. The dashboard renders these words and the member's
  * notices quote them, so the two cannot drift apart.
  */
 export const INVITE_CONTROLS = {
-  page: 'People & machines',
+  page: 'Settings › People and machines',
   invite: 'Invite a teammate',
   button: 'Add a machine',
   field: 'For',

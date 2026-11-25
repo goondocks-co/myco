@@ -49,7 +49,7 @@ Obtain the Myco address or the administrator's one-time invitation command. An i
 myco setup --join <address>
 ```
 
-Open the printed approval page in a browser signed in to that dashboard, check the code and machine, and approve. An administrator invites a new teammate through **People & machines** → **Invite a teammate** and connects their dashboard account with **Connect GitHub**. Invitations and join codes expire and work once; a refusal needs a fresh invitation.
+Open the printed approval page in a browser signed in to that dashboard, check the code and machine, and approve. An administrator invites a new teammate through **Settings › People and machines** → **Invite a teammate** and connects their dashboard account with **Connect GitHub**. Invitations and join codes expire and work once; a refusal needs a fresh invitation.
 
 Setup resumes when rerun. `myco login <address>` is the manual sign-in and agent-setup path; login already provisions agents. Use `myco member provision --refresh` only when refreshing existing setup is needed. A bare host uses HTTPS; a loopback Deployment needs its full `http://127.0.0.1:8787` address.
 
@@ -57,7 +57,7 @@ For a new owner, run `myco setup --create cloudflare` or `myco setup --create lo
 
 ## 3. Connect repositories
 
-Git repositories under `~/Repos` auto-join the default Deployment on the first agent hook. An existing project with that Git remote is reused, otherwise one is created. Change **Folders it captures** under **My machines** for other parent folders.
+Git repositories under `~/Repos` auto-join the default Deployment on the first agent hook. An existing project with that Git remote is reused, otherwise one is created. Change **Folders it captures** on the machine's page under **Settings › People and machines** for other parent folders.
 
 For a repository elsewhere, run inside it:
 
@@ -92,7 +92,7 @@ Review every destination and proposed agent and service change before `myco cuto
 
 Importing spores and their history from a Myco 1.4 vault requires an admin. An admin must first enable **Allow spore import** under **Settings → Advanced → New repositories and past sessions**; it is off by default, including after an update. Saving a single spore remains available to members. When the Deployment leaves 1.4 spores in the vault by this policy, cutover still completes once sessions and plans have moved, and agent setup proceeds. The vault stays untouched; an admin can enable the setting later and run `myco import --legacy <vault>` on the machine holding it.
 
-Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. Changed agent settings and the 1.4 service are backed up under `~/.myco/backups/cutover-<stamp>/`; its `restore.md` describes how to undo those changes. Keep those backups. If earlier copies on other Deployments are reported, review them there before using `myco cutover --dismiss-earlier-copies` to acknowledge the reported copies locally. This contacts no Deployment and deletes no history; new or changed copies are reported again. Run it separately from the move or preview, with only `--legacy-home` if needed. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders under **My machines** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
+Cutover preserves original vaults, verifies copies and records history and transcript progress separately in `~/.myco/member/cutover.json`. Changed agent settings and the 1.4 service are backed up under `~/.myco/backups/cutover-<stamp>/`; its `restore.md` describes how to undo those changes. Keep those backups. If earlier copies on other Deployments are reported, review them there before using `myco cutover --dismiss-earlier-copies` to acknowledge the reported copies locally. This contacts no Deployment and deletes no history; new or changed copies are reported again. Run it separately from the move or preview, with only `--legacy-home` if needed. A partial import remains unfinished; fix the named problem and rerun. It reports old extra plan folders; add wanted folders on the machine's page under **Settings › People and machines** → **Change folders** → **Extra plan folders**. Verify imported history and a new captured session before retiring old data. See [Moving from 1.4](https://myco.sh/upgrade#upgrading-from-myco-14) for fallback routing and additional homes.
 
 ## 5. Optional: enroll a runner
 

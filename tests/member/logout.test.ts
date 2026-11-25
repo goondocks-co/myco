@@ -495,7 +495,7 @@ describe('Deployment-scoped logout', () => {
       const out: string[] = [];
       expect(await logoutCli([A, '--local-only'], { ...deps, fetch: rig.fetch, stdout: (s) => out.push(s) })).toBe(true);
       expect(out.join('\n')).toContain('Credential may stay valid on the server until it expires');
-      expect(out.join('\n')).toContain('› machine_1 › Stop');
+      expect(out.join('\n')).toContain('› machine_1 › Remove');
       expect((await rig.fetch(`${A}/members/status`, { method: 'POST', headers: rig.headers(), body: '{}' })).status).toBe(200);
     } finally { Array.prototype.splice.call(ROUTES, index, 0, route); rig.env.sqlite.close(); }
   });
@@ -867,7 +867,7 @@ describe('Deployment-scoped logout', () => {
     const lines: string[] = [];
     expect(await logoutCli([A, '--local-only'], { ...deps, stdout: (s) => lines.push(s) })).toBe(true);
     expect(lines.join('\n')).toContain('may stay valid on the server until it expires');
-    expect(lines.join('\n')).toContain('People & machines');
+    expect(lines.join('\n')).toContain('Settings › People and machines');
   });
 
   for (const status of [200, 403, 404, 410]) it(`local-only removes local state after unconfirmed revocation HTTP ${status}`, async () => {

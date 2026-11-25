@@ -1,14 +1,15 @@
 /**
- * The admin pages and My machines, at every viewport (desktop, tablet, phone) in both modes.
+ * The admin pages and each machine's page, at every viewport (desktop, tablet, phone) in both modes.
  *
- * Signed in as the owner: People & machines, every Settings section, a
- * project's settings and Health. Signed in as a member who
- * is not an admin: the read-only People directory, My machines and its Rename
- * dialog. Other admin pages say they are for an admin.
+ * Signed in as the owner: every Settings section, a machine's page for each
+ * kind of machine, a project's settings and Health. Signed in as a member who
+ * is not an admin: Settings › People and machines read-only, their machine's
+ * page and its Rename and folder dialogs. Other admin pages say they are for an admin.
  *
  * On the fixture the owner has two machines (one named, one whose runtime gave
- * no name), the member one; two invitations are open; the owner's machine has
- * checked in as a worker; one project has an access key about to expire; and
+ * no name), the member one, which is also a runner; one machine runs Myco's
+ * work as two runners, another as one quiet for hours, and one runner is removed;
+ * two invitations are open; one project has an access key about to expire; and
  * imported sessions are titled. Each check asserts that content, that the
  * page's key parts start on screen, that nothing scrolls sideways, that no raw
  * id reaches the page's text, that axe-core finds nothing serious or critical,
@@ -21,6 +22,9 @@ import {
   expectAxeClean, expectFits, expectNoRawIds, expectQuiet, openPage, shoot, SHOT_MATRIX, type ViewportName,
 } from './checks.ts';
 import { SCREENS_ENV, screensEnv } from './env.ts';
+import { MACHINE_IDS } from './machine-ids.ts';
+
+const machinePage = (id: string): string => `/settings/people/machines/${id}`;
 
 const onFixture = (): boolean => process.env[SCREENS_ENV.fixture] === '1';
 
@@ -36,44 +40,42 @@ async function expectOneLine(page: Page, selector: string): Promise<void> {
   expect(new Set(tops).size, `${selector} on one line`).toBe(1);
 }
 
-async function expectPeople(page: Page): Promise<void> {
-  await expect(page.getByRole('heading', { level: 1, name: INVITE_CONTROLS.page })).toBeInViewport();
-  await expect(page.getByRole('button', { name: INVITE_CONTROLS.invite })).toBeInViewport();
-  await expect(page.getByRole('button', { name: INVITE_CONTROLS.button })).toBeInViewport();
-  for (const name of ['People', 'Invitations', 'Machines']) await expect(page.getByRole('heading', { level: 2, name })).toBeVisible();
-  if (!onFixture()) return;
-  const machines = page.locator('section#machines');
-  await expect(machines.getByText('Ada’s studio Mac', { exact: true })).toBeVisible();
-  await expect(machines.getByText('Lin’s build box', { exact: true })).toBeVisible();
-  // The runtime that gave no name reads as a stand-in, never as its machine's id.
-  await expect(machines.getByText('A machine', { exact: true })).toBeVisible();
-  await expect(page.locator('body')).not.toContainText('ada_7c1e9f02');
-  await expect(page.locator('section#people').getByText('Ada', { exact: true })).toBeVisible();
-  await expect(page.locator('section#people').getByText('Owner', { exact: true })).toBeVisible();
-  await expect(page.locator('section#invitations').locator('li')).toHaveCount(2);
-  await page.getByRole('button', { name: 'More for Lin', exact: true }).click();
-  await expect(page.getByRole('menuitem', { name: 'Make admin' })).toBeVisible();
-  await expect(page.getByRole('menuitem', { name: 'Remove' })).toBeVisible();
-  await page.keyboard.press('Escape');
-}
-
 async function expectMemberPeople(page: Page): Promise<void> {
-  await expect(page.getByRole('heading', { level: 1, name: INVITE_CONTROLS.page })).toBeInViewport();
-  const directory = page.locator('section#people');
-  await expect(directory.getByRole('heading', { level: 2, name: 'People' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeInViewport();
+  const tabs = page.getByRole('navigation', { name: 'Settings sections' });
+  await expect(tabs.getByRole('link')).toHaveText(['People and machines']);
+  const directory = page.locator('section#sign-in');
   await expect(directory.getByRole('list', { name: 'Members' })).toBeVisible();
-  await expect(directory.getByText('Owner', { exact: true })).toBeVisible();
-  await expect(directory.getByText('Member', { exact: true })).toBeVisible();
+  await expect(directory).toContainText('· Owner');
+  await expect(directory).toContainText('· Member');
   await expect(page.getByTestId('admin-only')).toHaveCount(0);
   await expect(page.getByRole('button', { name: INVITE_CONTROLS.invite })).toHaveCount(0);
   await expect(page.getByRole('button', { name: INVITE_CONTROLS.button })).toHaveCount(0);
-  await expect(directory.getByRole('button', { name: /^More for / })).toHaveCount(0);
-  for (const section of ['invitations', 'machines', 'runs', 'ownership']) await expect(page.locator(`section#${section}`)).toHaveCount(0);
+  await expect(directory.getByRole('button', { name: 'Manage' })).toHaveCount(0);
+  for (const section of ['invitations', 'runs']) await expect(page.locator(`section#${section}`)).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Your machines' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
   if (onFixture()) {
-    await expect(directory.getByText('Ada', { exact: true })).toBeVisible();
-    await expect(directory.getByText('Lin', { exact: true })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Machines' }).getByText('Lin’s build box', { exact: true })).toBeVisible();
+    await expect(page.getByText('Ada’s studio Mac', { exact: true })).toHaveCount(0);
   }
+}
+
+/** A machine with two runner registrations: one card for each, each with its own controls, and the verdict from the online one. */
+async function expectTwoRunners(page: Page): Promise<void> {
+  await expectMachine(page, 'homelab-mini and homelab-mini-2', 'Online', [WORK, CAPTURE, CURRENT]);
+  for (const id of ['rn_homelab', 'rn_homelab2']) await expect(page.locator(`[data-runner-card="${id}"]`)).toBeVisible();
+  await expect(page.locator('[data-runner-card="rn_homelab2"]').getByRole('button', { name: 'Remove homelab-mini-2…' })).toBeVisible();
+  await expect(page.locator('[data-runner-card="rn_homelab2"]').getByRole('link', { name: 'homelab-mini-2’s check-ins' })).toHaveAttribute('href', '/work/runners/rn_homelab2');
+}
+
+/** A machine's page leads with its verdict and its name, and answers each question in order. */
+async function expectMachine(page: Page, name: string, verdict: string | RegExp, sections: readonly string[]): Promise<void> {
+  await expect(page.getByRole('heading', { level: 1, name })).toBeInViewport();
+  await expect(page.locator('[data-machine-verdict]')).toBeInViewport();
+  await expect(page.locator('[data-machine-verdict] p').first()).toHaveText(verdict);
+  await expect(page.locator('main section h2')).toHaveText([...sections]);
+  await expect(page.locator('body')).not.toContainText(/ada_|lin_|homelab_|closet_|retired_/);
 }
 
 async function expectSettings(page: Page, viewport: ViewportName): Promise<void> {
@@ -135,16 +137,23 @@ async function expectConnections(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: 'Add a connection' })).toBeVisible();
 }
 
-/** People and machines: who can sign in and the owner's own machines, each leading to its page. */
+/** People and machines: who can sign in, open invitations, every machine leading to its page, and Myco's run sign-ins. */
 async function expectPeopleSection(page: Page): Promise<void> {
   await expectSection(page, 'People and machines', 'Who can sign in?');
-  await expect(page.getByRole('heading', { name: 'Your machines' })).toBeVisible();
+  for (const name of ['Open invitations', 'Machines', 'Myco’s run sign-ins']) await expect(page.getByRole('heading', { level: 2, name })).toBeVisible();
   await expect(page.getByRole('button', { name: INVITE_CONTROLS.invite })).toBeVisible();
+  await expect(page.getByRole('button', { name: INVITE_CONTROLS.button })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Advanced › Owner actions' })).toBeVisible();
   if (!onFixture()) return;
-  const machines = page.getByRole('group', { name: 'Your machines' });
-  await expect(machines.getByText('Ada’s studio Mac', { exact: true })).toBeVisible();
-  await expect(machines.getByText('Lin’s build box', { exact: true })).toHaveCount(0);
+  const machines = page.getByRole('group', { name: 'Machines' });
+  for (const name of ['Ada’s studio Mac', 'Lin’s build box', 'A machine', 'homelab-mini and homelab-mini-2', 'closet-pc']) await expect(machines.getByText(name, { exact: true })).toBeVisible();
+  await expect(machines.locator(`#machine-${MACHINE_IDS.buildbox}`)).toContainText('runs Myco’s work as lin-buildbox');
+  await expect(machines.locator(`#machine-${MACHINE_IDS.buildbox} a`)).toHaveAttribute('href', machinePage(MACHINE_IDS.buildbox));
+  await expect(page.locator('section#invitations li')).toHaveCount(2);
+  await page.locator('section#sign-in li', { hasText: 'Lin' }).getByRole('button', { name: 'Manage' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Make admin' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Remove' })).toBeVisible();
+  await page.keyboard.press('Escape');
 }
 
 /** Repositories: the GitHub App with its setup checklist open while a step remains, then every project's repository. */
@@ -242,15 +251,6 @@ async function expectUpkeep(page: Page): Promise<void> {
   await expect(page.locator('section#maintenance')).toBeVisible();
 }
 
-async function expectMyMachines(page: Page): Promise<void> {
-  await expect(page.getByRole('heading', { level: 1, name: 'My machines' })).toBeInViewport();
-  if (!onFixture()) return;
-  await expect(page.getByText('Lin’s build box', { exact: true })).toBeInViewport();
-  await expect(page.getByText('Ada’s studio Mac', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: INVITE_CONTROLS.button })).toHaveCount(0);
-  await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
-}
-
 const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (page: Page, viewport: ViewportName) => Promise<void> }> = [
   { name: 'settings', path: () => '/settings', rendered: (page, viewport) => expectSettings(page, viewport) },
   { name: 'settings-models', path: () => '/settings/models', rendered: (page) => expectModels(page) },
@@ -263,10 +263,21 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
   { name: 'settings-backups', path: () => '/status/health#backups', rendered: (page) => expectBackups(page) },
   { name: 'settings-upkeep', path: () => '/status/health#upkeep', rendered: (page) => expectUpkeep(page) },
 ];
+const WORK = 'Does it do Myco’s work?';
+const CAPTURE = 'What does it capture?';
+const CURRENT = 'How does it stay current?';
+const STOP = 'Stop it capturing';
+/** A machine's page for each kind of machine the fixture holds, opened by the owner. */
+const MACHINE_PAGES: typeof ADMIN_PAGES = onFixture() ? [
+  { name: 'machine-two-runners', path: () => machinePage(MACHINE_IDS.homelab), rendered: (page) => expectTwoRunners(page) },
+  { name: 'machine-capturing', path: () => machinePage(MACHINE_IDS.studio), rendered: (page) => expectMachine(page, 'Ada’s studio Mac', 'Capturing', [WORK, CAPTURE, CURRENT, STOP]) },
+  { name: 'machine-both', path: () => machinePage(MACHINE_IDS.buildbox), rendered: (page) => expectMachine(page, 'Lin’s build box', 'Capturing', [WORK, CAPTURE, CURRENT, STOP]) },
+  { name: 'machine-offline', path: () => machinePage(MACHINE_IDS.closet), rendered: (page) => expectMachine(page, 'closet-pc', 'Offline', [WORK, CAPTURE, CURRENT]) },
+  { name: 'machine-removed', path: () => machinePage(MACHINE_IDS.retired), rendered: (page) => expectMachine(page, 'old-laptop', 'Removed', [CAPTURE, WORK]) },
+] : [];
 const OWNER_PAGES = [
-  { name: 'people', path: () => '/people', rendered: (page: Page) => expectPeople(page) },
   { name: 'measures', path: () => '/measures', rendered: async (page: Page) => { await expect(page.getByRole('heading', { level: 1, name: 'Is Myco helping?' })).toBeVisible(); } },
-  ...ADMIN_PAGES,
+  ...ADMIN_PAGES, ...MACHINE_PAGES,
 ] as const;
 
 test.describe('admin pages, as the owner', () => {
@@ -294,10 +305,10 @@ test.describe('admin pages, as the owner', () => {
   }
 });
 
-test.describe('My machines and the admin pages, as a member', () => {
+test.describe('People and machines and the admin pages, as a member', () => {
   for (const { viewport, mode } of SHOT_MATRIX) {
     test(`people directory member ${viewport} ${mode}`, async ({ browser }) => {
-      const { context, page, watch } = await openPage(browser, { path: '/people', viewport, mode, cookie: screensEnv('memberCookie') });
+      const { context, page, watch } = await openPage(browser, { path: '/settings/people', viewport, mode, cookie: screensEnv('memberCookie') });
       try {
         await expectMemberPeople(page);
         await page.waitForLoadState('networkidle');
@@ -313,17 +324,20 @@ test.describe('My machines and the admin pages, as a member', () => {
   }
 
   for (const { viewport, mode } of SHOT_MATRIX) {
-    test(`my machines member ${viewport} ${mode}`, async ({ browser }) => {
-      const { context, page, watch } = await openPage(browser, { path: '/me/machines', viewport, mode, cookie: screensEnv('memberCookie') });
+    test(`own machine member ${viewport} ${mode}`, async ({ browser }) => {
+      test.skip(!onFixture(), 'the fixture names the member\'s machine');
+      const { context, page, watch } = await openPage(browser, { path: machinePage(MACHINE_IDS.buildbox), viewport, mode, cookie: screensEnv('memberCookie') });
       try {
         await expect(page.locator('main')).toHaveCount(1);
-        await expectMyMachines(page);
+        await expectMachine(page, 'Lin’s build box', 'Capturing', [WORK, CAPTURE, CURRENT, STOP]);
+        await expect(page.getByRole('switch', { name: 'lin-buildbox runs Myco’s work' })).toBeDisabled();
+        await expect(page.getByRole('button', { name: 'Change folders' })).toBeVisible();
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
         await expectNoRawIds(page);
         await expectAxeClean(page);
         expectQuiet(watch);
-        await shoot(page, 'member-my-machines', viewport, mode);
+        await shoot(page, 'member-own-machine', viewport, mode);
       } finally {
         await context.close();
       }
@@ -333,7 +347,7 @@ test.describe('My machines and the admin pages, as a member', () => {
   for (const { viewport, mode } of SHOT_MATRIX) {
     test(`rename a machine member ${viewport} ${mode}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the fixture names the member\'s machine');
-      const { context, page, watch } = await openPage(browser, { path: '/me/machines', viewport, mode, cookie: screensEnv('memberCookie') });
+      const { context, page, watch } = await openPage(browser, { path: machinePage(MACHINE_IDS.buildbox), viewport, mode, cookie: screensEnv('memberCookie') });
       try {
         await page.getByRole('button', { name: 'More for Lin’s build box' }).click();
         await page.getByRole('menuitem', { name: 'Rename' }).click();
@@ -356,10 +370,9 @@ test.describe('My machines and the admin pages, as a member', () => {
   for (const { viewport, mode } of SHOT_MATRIX) {
     test(`machine settings member ${viewport} ${mode}`, async ({ browser }) => {
       test.skip(!onFixture(), 'the fixture names the member\'s machine');
-      const { context, page, watch } = await openPage(browser, { path: '/me/machines', viewport, mode, cookie: screensEnv('memberCookie') });
+      const { context, page, watch } = await openPage(browser, { path: machinePage(MACHINE_IDS.buildbox), viewport, mode, cookie: screensEnv('memberCookie') });
       try {
-        await page.getByRole('button', { name: 'More for Lin’s build box' }).click();
-        await page.getByRole('menuitem', { name: 'Its settings' }).click();
+        await page.getByRole('button', { name: 'Change folders' }).click();
         const dialog = page.getByRole('dialog', { name: 'Settings for Lin’s build box' });
         await expect(dialog).toBeVisible();
         const captured = dialog.getByRole('region', { name: 'Folders it captures' });
@@ -388,7 +401,7 @@ test.describe('My machines and the admin pages, as a member', () => {
     });
   }
 
-  for (const { name, path } of ADMIN_PAGES) {
+  for (const { name, path } of ADMIN_PAGES.filter((entry) => entry.name !== 'settings-people')) {
     test(`${name} member says it is for an admin`, async ({ browser }) => {
       const { context, page, watch } = await openPage(browser, { path: path(), viewport: 'desktop', mode: 'dark', cookie: screensEnv('memberCookie') });
       try {
@@ -411,7 +424,8 @@ test.describe('old admin addresses', () => {
     ['/status', /\/status\/health#status$/],
     ['/status/health?window=7#measures', /\/measures\?window=7$/],
     ['/operations', /\/settings\/advanced#upkeep$/],
-    ['/access', /\/people$/],
+    ['/access', /\/settings\/people$/],
+    ['/me/machines', /\/settings\/people#machines$/],
   ] as const) {
     test(`${from} leads to its new page`, async ({ browser }) => {
       const { context, page } = await openPage(browser, { path: from, destination: to, viewport: 'desktop', mode: 'dark', cookie: screensEnv('ownerCookie') });

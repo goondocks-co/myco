@@ -27,7 +27,7 @@ Titling never opens the member's files.
 
 A prose file must be under the session's credential project root, a machine
 temporary folder, or an extra root approved through the machine setting
-`capture.prompt_file_roots`. The default is an empty list. My machines offers
+`capture.prompt_file_roots`. The default is an empty list. A machine's page offers
 “Extra prompt file folders”; the existing machine settings writer validates the
 list, and normal member deliveries carry changes into the cache without a new
 session start.

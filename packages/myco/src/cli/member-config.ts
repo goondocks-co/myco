@@ -4,7 +4,7 @@ import { setUpdatePreferences } from '@myco/member/automatic-update-state.js';
 import { MACHINE_SETTING_SPECS, MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS } from '@goondocks/myco-shared/member-protocol';
 /**
  * `myco config` reads Deployment settings and this machine's settings. A release channel is also set locally;
- * capture settings are edited on My machines. Other Member leaves have no active reader and refuse writes.
+ * capture settings are edited on the machine's page under Settings › People and machines. Other Member leaves have no active reader and refuse writes.
  */
 import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 import { machineBlockOf } from '../member/machine-settings.js';
@@ -20,7 +20,7 @@ export const MEMBER_TIER_LEAVES = [
 ] as const;
 
 /**
- * The Member leaves this machine honours. My machines edits capture folders and requests installation preferences;
+ * The Member leaves this machine honours. The machine's page edits capture folders and requests installation preferences;
  * the member caches capture folders and applies update requests when it reads its settings.
  */
 export const MACHINE_SETTING_LEAVES: readonly string[] = [...Object.keys(MACHINE_SETTING_SPECS), ...MACHINE_UPDATE_LEAVES];

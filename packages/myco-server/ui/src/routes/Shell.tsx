@@ -18,7 +18,7 @@ import { memberDisplayName } from '../lib/member-name';
 import { signOut } from '../lib/session';
 import { NotAMember } from '../pages/NotAMember';
 import {
-  ADMIN_PAGES, HEALTH_PATH, MY_MACHINES_PATH, NAV_PAGES, PEOPLE_PAGE, pageHref, pageIsOpen, PHONE_PAGES, projectOf, titleOf,
+  ADMIN_PAGES, HEALTH_PATH, MEMBER_PAGES, NAV_PAGES, pageHref, pageIsOpen, PHONE_PAGES, projectOf, titleOf,
 } from './nav';
 import { scopeProjects } from './scope';
 
@@ -59,7 +59,6 @@ export function Shell() {
       name={name}
       login={me.data?.login}
       role={me.data?.owner === true ? 'Owner' : member?.role === 'admin' ? 'Admin' : 'Member'}
-      machinesHref={MY_MACHINES_PATH}
       onSignOut={() => void signOut()}
       compact={placement !== 'row'}
       align={placement === 'header' ? 'end' : 'start'}
@@ -140,9 +139,9 @@ function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
           )}
         </>
       )}
-      foot={admin ? (
-        <NavSection label="Admin">
-          {ADMIN_PAGES.map((page) => (
+      foot={(
+        <NavSection label={admin ? 'Admin' : 'Server'}>
+          {(admin ? ADMIN_PAGES : MEMBER_PAGES).map((page) => (
             <NavItem
               key={page.to}
               to={page.to}
@@ -152,10 +151,6 @@ function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
               onNavigate={closeMenu}
             />
           ))}
-        </NavSection>
-      ) : (
-        <NavSection label="People">
-          <NavItem to={PEOPLE_PAGE.to} label={PEOPLE_PAGE.label} icon={PEOPLE_PAGE.icon} onNavigate={closeMenu} />
         </NavSection>
       )}
       account={account(collapsed)}

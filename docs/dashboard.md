@@ -6,7 +6,7 @@ The dashboard is where your team sees what its agents did and what Myco learned 
 myco open
 ```
 
-You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **People & machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. For a brand-new server, the owner starts with `myco setup`; see [Run your own Myco](self-hosting.md) for guided creation and the manual owner commands.
+You sign in with GitHub. Your GitHub account reaches the dashboard through your sign-in as a member. An administrator connects it from **Settings › People and machines**: they choose **Connect GitHub** on your row and send you the link it makes. Open that link while signed in to GitHub as yourself. For a brand-new server, the owner starts with `myco setup`; see [Run your own Myco](self-hosting.md) for guided creation and the manual owner commands.
 
 ## Get started
 
@@ -69,27 +69,30 @@ An administrator sets what Myco does in each project under **Project settings**:
 
 ## Your machines
 
-**My machines** is in the account menu, for every member. It lists each of your machines with the agents that captured on it lately. From there you can:
+**Settings › People and machines** lists your machines, for every member, and an administrator sees every machine there, including runners nobody signed in on. **Manage** opens a machine's own page. It leads with what the machine is doing (Working while a runner on it holds a run, Capturing, Online while a runner waits for work, Quiet since a day, Offline or Removed), whose it is and since when, then answers:
 
-- choose **Folders it captures** and **Extra plan folders** through **Its settings**;
-- see what the machine wrote;
-- stop it, which ends its sign-in.
+- **Does it do Myco's work?** One card for each runner registered on the machine, each with its own controls: turn it on or off, the agent the server would use for learning from sessions and who pays, whether other runners with that agent pay the same way, setting this runner apart, its other signed-in agents as it last reported them, its recent runs, and removing it as a runner. A machine runs as a runner when its registration was approved for it, whatever its later check-ins report. A legacy worker on the machine is shown with the way to move it to a runner. Otherwise, the one command that makes it a runner.
+- **What does it capture?** The agents set up on it, the folders whose repositories it captures by themselves (**Change folders** holds **Folders it captures**, **Extra plan folders** and the rest of its folder settings), repositories waiting outside them with **Connect**, when it last captured, and **What it sent**.
+- **How does it stay current?** Its update preferences, and for a runner the release it reported with **Update now**.
+- **Stop it capturing** ends its sign-ins, so it sends nothing more; a runner on it keeps taking work until it is removed in its own card. What it sent is kept. The ⋯ menu beside its name renames it.
+
+A machine is described only by what the server recorded. A runner reports its operating system, CPU type and version; a machine that only captures reports none of these, so its page leaves them out.
 
 ### Machine names
 
-A machine is named for its host name when it signs in. You see your own work as **on** the machine's name, or **on your machine**. Other members see it as **from** you, never your machine. Administrators can inspect other members' machine names on **People & machines**. On Today, Sessions and Myco's work, even an administrator sees another member's work as **from** that member.
+A machine is named for its host name when it signs in. You see your own work as **on** the machine's name, or **on your machine**. Other members see it as **from** you, never your machine. Administrators can inspect other members' machine names on **Settings › People and machines**. On Today, Sessions and Myco's work, even an administrator sees another member's work as **from** that member.
 
 ## For administrators
 
-The server pages sit at the foot of the menu. **People & machines** is readable by every member; managing people and opening the other server pages require an administrator.
+The server pages sit at the foot of the menu. Every member can open **Settings › People and machines**; managing people and opening the other server pages require an administrator. The addresses `/people` and `/me/machines` lead there.
 
 ### Projects
 
 **Projects** lists every project with its session count, when it last sent a session, and its archive state. Open a project to see its work, or use its project settings to change what Myco does there.
 
-### People & machines
+### People and machines
 
-**People & machines** lists the server's members, each with their machines and the invitations still open.
+**Settings › People and machines** lists the server's members, the invitations still open, every machine, and the sign-ins Myco's own runs used. A person's **Manage** holds what you may do to them:
 
 - **Invite a teammate** makes a one-time link for someone new. It is good for an hour or a day, and it shows the exact `myco login` command to send.
 - **Add a machine** makes the same kind of link for a member who is already here. Use it for a second machine of theirs, or one whose sign-in ended.

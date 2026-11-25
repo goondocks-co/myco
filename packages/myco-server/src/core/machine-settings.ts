@@ -256,7 +256,7 @@ export async function dismissMachineRoot(db: RelationalStore, input: { machineId
     if ('refused' in dismissed) {
       const full = Object.keys(dismissed.current ?? {}).length >= MACHINE_SETTING_SPECS[DISMISSED_ROOTS_LEAF].maxItems;
       return { applied: false, reason: 'invalid_value', detail: full
-        ? `this machine already holds ${MACHINE_SETTING_SPECS[DISMISSED_ROOTS_LEAF].maxItems} dismissed repositories; ask again about some under My machines, in this machine's settings, or with POST /api/uncaptured/${machineId}/{rootKey}/restore for one`
+        ? `this machine already holds ${MACHINE_SETTING_SPECS[DISMISSED_ROOTS_LEAF].maxItems} dismissed repositories; ask again about some on this machine's page under Settings › People and machines, or with POST /api/uncaptured/${machineId}/{rootKey}/restore for one`
         : dismissed.refused };
     }
     const quiet = folder === null ? null : await leafEdit<string[]>(db, machineId, QUIET_ROOTS_LEAF, (current) => current.includes(folder) ? current : [...current, folder]);

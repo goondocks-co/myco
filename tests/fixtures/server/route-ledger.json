@@ -182,6 +182,7 @@
   "session:member GET /api/embedding/switch",
   "session:member GET /api/kpis",
   "session:member GET /api/machines",
+  "session:member GET /api/machines/{machineId}",
   "session:member GET /api/machines/{machineId}/activity",
   "session:member GET /api/machines/{machineId}/settings",
   "session:member GET /api/members",

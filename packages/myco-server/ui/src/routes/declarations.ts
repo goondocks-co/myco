@@ -14,6 +14,9 @@ export const RUNS_PATH = '/work/history';
 export const SETTINGS_PATH = '/settings';
 export const HEALTH_PATH = '/status/health';
 export const MY_MACHINES_PATH = '/me/machines';
+/** One machine's page, by the machine id its sign-ins claim; a runner that reported no machine id has its page by runner id. */
+export const MACHINES_PATH = `${SETTINGS_PATH}/people/machines`;
+export const RUNNER_MACHINES_PATH = `${SETTINGS_PATH}/people/runners`;
 /** "Is Myco helping?": the measures of what Myco serves and how it is used, across the server. */
 export const MEASURES_PATH = '/measures';
 export const SETTINGS_SECTIONS = [
@@ -29,14 +32,16 @@ export const MOVED_SETTINGS_SECTIONS = [
   { from: `${SETTINGS_PATH}/capture`, to: 'advanced' },
   { from: `${SETTINGS_PATH}/backups`, to: 'advanced', anchor: 'backups' },
   { from: `${SETTINGS_PATH}/access`, to: 'people' },
+  { from: PEOPLE_PATH, to: 'people' },
+  { from: MY_MACHINES_PATH, to: 'people', anchor: 'machines' },
 ] as const satisfies ReadonlyArray<{ from: string; to: (typeof SETTINGS_SECTIONS)[number]['id']; anchor?: string }>;
 
 export const adminRoutesPaths = {
   runs: RUNS_PATH,
   runners: RUNNERS_PATH,
   runner: `${RUNNERS_PATH}/:runnerId`,
-  people: PEOPLE_PATH,
-  machines: MY_MACHINES_PATH,
+  machine: `${MACHINES_PATH}/:machineId`,
+  runnerMachine: `${RUNNER_MACHINES_PATH}/:runnerId`,
   projectSettings: `/p/:projectId${PROJECT_SETTINGS_SUFFIX}`,
   health: HEALTH_PATH,
 } as const;

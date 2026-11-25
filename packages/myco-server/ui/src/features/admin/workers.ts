@@ -6,17 +6,8 @@
  * and a check's outcome describes that one check rather than the queue. A worker is named
  * by its machine and a run by its project's name: never by an id.
  */
-import type { HealthTone } from '../../design';
 import type { WorkerRow } from '../../lib/api';
-import { formatUntil } from '../../lib/format';
 import { harnessLabel } from '../../lib/harness';
-import { agoWords } from '@goondocks/myco-shared/time-words';
-
-/** Seconds matter for a 2-second poll, so this says them under a minute; from a minute on it is `agoWords`. */
-function sinceWords(at: number, now: number): string {
-  const delta = Math.max(0, now - at);
-  return delta < 60_000 ? `${Math.max(1, Math.round(delta / 1000))}s ago` : agoWords(at, now);
-}
 
 /** Why the last check for work took nothing, in an owner's words. Each describes that one check, not the whole queue. */
 export const REASON_WORDS: Record<NonNullable<WorkerRow['lastReason']>, string> = {
@@ -43,37 +34,7 @@ const TASK_WORDS: Readonly<Record<string, string>> = {
 /** A task in words: "learning", "titling", else "a task". */
 export const taskWords = (task: string | null): string => (task === null ? 'a task' : TASK_WORDS[task] ?? 'a task');
 
-/** One worker's state in one line without its name, and the tone of its dot: for a row that already names its machine. */
-export function workerState(worker: WorkerRow, now: number, project: (projectId: string) => string | null): { tone: HealthTone; line: string } {
-  if (worker.runnerDetails !== undefined) {
-    const runner = worker.runnerDetails;
-    return { tone: runner.display === 'Busy' || runner.display === 'Online' ? 'ok' : runner.display === 'Not ready' ? 'bad' : 'faint',
-      line: `${runner.display} · ${runner.busy === null ? runner.readiness.reason : `Run assigned; lease valid until ${new Date(runner.busy.leaseExpiresAt).toLocaleString()}`}${runner.lastSeenAt === null ? ' · Never contacted' : ` · ${runner.connected ? 'Seen' : 'Not seen recently; last seen'} ${sinceWords(runner.lastSeenAt, now)}`}` };
-  }
-  if (worker.busy !== null) {
-    const name = project(worker.busy.projectId);
-    return {
-      tone: 'ok',
-      line: `Running ${taskWords(worker.busy.task)}${name === null ? '' : ` in ${name}`} · due to check in within ${formatUntil(worker.busy.leaseExpiresAt, now)}`,
-    };
-  }
-  if (worker.lastSeenAt === 0) return { tone: 'faint', line: 'No contact recorded' };
-  if (!worker.recent) return { tone: 'faint', line: `Not checking in now · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
-  if (!worker.eligible) return { tone: 'bad', line: `It can’t take work now · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
-  // An unreadable report is not a report of nothing: it cannot make a worker read as ready.
-  const ready = worker.offers?.some((o) => o.authenticated) === true;
-  const polling = worker.offers === null
-    ? 'Waiting for work, with no readable report of its agents'
-    : ready ? 'Waiting for work' : 'Waiting for work, but reported no agent signed in';
-  return { tone: ready ? 'ok' : 'bad', line: `${polling} · last checked in ${sinceWords(worker.lastSeenAt, now)}` };
-}
-
 export const LEGACY_WORKER_LABEL = 'Legacy worker — uses member credential';
-
-/** The credential class the executor reports. */
-export function workerKindWords(worker: Pick<WorkerRow, 'runner'>): string {
-  return worker.runner ? 'Registered runner' : LEGACY_WORKER_LABEL;
-}
 
 /** Why the last claim took nothing, when it took nothing: that poll's answer, never the queue's. */
 export function lastClaimWords(worker: WorkerRow): string | null {
