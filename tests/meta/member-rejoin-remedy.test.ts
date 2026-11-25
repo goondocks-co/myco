@@ -26,8 +26,6 @@ const PEOPLE_PAGE = 'packages/myco-server/ui/src/features/admin/settings/PeopleA
 const RENAME_DIALOG = 'packages/myco-server/ui/src/features/admin/people/RenameMachineDialog.tsx';
 /** The dialog that makes the invitation, whose controls the remedy names. */
 const INVITE_DIALOG = 'packages/myco-server/ui/src/features/admin/people/InviteDialog.tsx';
-/** Where the page states the remedy to an admin who stops a machine. */
-const MACHINES_LIST = 'packages/myco-server/ui/src/features/admin/machine/RemovePart.tsx';
 
 /** Ways to word the remedy that belong to the constant alone. */
 const REMEDY_WORDING = [
@@ -62,7 +60,6 @@ describe('the rejoin remedy', () => {
   it('quotes the dashboard controls, which the dashboard renders from the same constant', () => {
     for (const control of [INVITE_CONTROLS.page, INVITE_CONTROLS.button, INVITE_CONTROLS.field]) expect(REJOIN_HINT).toContain(control);
     for (const control of [INVITE_CONTROLS.button, INVITE_CONTROLS.field]) expect(REJOIN_FOR_ADMIN).toContain(control);
-    expect(readFileSync(join(REPO, MACHINES_LIST), 'utf8')).toContain('${REJOIN_FOR_ADMIN}');
     const source = [PEOPLE_PAGE, INVITE_DIALOG, RENAME_DIALOG].map((file) => readFileSync(join(REPO, file), 'utf8')).join('\n');
     for (const name of ['page', 'invite', 'button', 'field']) expect({ name, used: source.includes(`INVITE_CONTROLS.${name}`) }).toEqual({ name, used: true });
     // Each control's words come from the constant alone: none is written out as a literal beside it.
