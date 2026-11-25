@@ -53,7 +53,8 @@ export const ADVANCED_FOLDS = [
   { id: 'sessions-given', label: 'What sessions are given', summary: 'The instructions each session starts with, and how much memory is attached to each prompt.' },
   { id: 'new-and-past', label: 'New repositories and past sessions', summary: 'Whether a new repository gets a project by itself, how much history a new machine brings, and whether that history gets titles.' },
   { id: 'kept', label: 'How long things are kept', summary: 'How long raw transcripts and the record of each task stay before they move or go.' },
-  { id: 'backups', label: 'Backups', summary: 'How often this server backs itself up, what it keeps, and the checks it runs on its database.' },
+  { id: 'backups', label: 'Backups', summary: 'Make, download and restore backups, how often this server backs itself up, and what it keeps.' },
+  { id: 'upkeep', label: 'Upkeep', summary: 'How search is keeping up, housekeeping and the routine checks on the database; housekeeping and each check can be run now.' },
   { id: 'owner-actions', label: 'Owner actions', summary: 'Transfer ownership of this server. Claim raw data that has no recorded uploader.' },
 ] as const;
 export type AdvancedFoldId = (typeof ADVANCED_FOLDS)[number]['id'];
@@ -271,9 +272,9 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
   {
     id: 'maintenance',
     section: 'advanced',
-    fold: 'backups',
-    label: 'Store checks',
-    note: 'Routine checks on the database. Nothing runs until a check is turned on with an interval; one turned on runs at the next wake and then on its interval. What each check last found is on Health.',
+    fold: 'upkeep',
+    label: 'Store check schedule',
+    note: 'Routine checks on the database. Nothing runs until a check is turned on with an interval; one turned on runs at the next wake and then on its interval. What each check last found is above; Health lists a check that found a problem.',
     leaves: [
       { leaf: 'maintenance.auto_optimize', label: 'Optimize automatically', kind: 'toggle' },
       { leaf: 'maintenance.auto_optimize_interval_hours', label: 'Optimize every', kind: 'number', min: 1, max: 720, unit: 'hours' },

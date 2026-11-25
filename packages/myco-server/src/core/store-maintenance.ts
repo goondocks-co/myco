@@ -150,6 +150,8 @@ export interface MaintenanceOutcome {
   measurements: StoreMeasurement[];
   /** The power state the wake resolved, for a scheduled run. */
   powerState: PowerState | null;
+  /** On a running record: the last finished outcome of this check, which this run has not yet replaced. */
+  previous?: MaintenanceOutcome | null;
 }
 
 /** Why a run did not start. */

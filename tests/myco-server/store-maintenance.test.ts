@@ -27,6 +27,7 @@ import { createBunHandler } from '@myco-server-worker/entry/bun.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
 import { d1StoreMaintenance } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import { QUICK_CHECK_BATCH } from '@myco-server-worker/db/maintenance/store-checks.js';
+import { claimMaintenanceOutcome, completeMaintenanceOutcome, maintenanceOutcomeText, recordMaintenanceProgress } from '@myco-server-worker/db/maintenance/outcomes.js';
 import { boundFindings, MAX_FINDINGS } from '@myco-server-worker/db/maintenance/findings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -577,6 +578,26 @@ it('a walk holds no more findings than an outcome keeps at any checkpoint, and c
   expect(result).toMatchObject({ findingsOmitted: 10 });
   expect(result.findings).toHaveLength(MAX_FINDINGS);
   fixture.sqlite.close();
+});
+
+it('a finding stays readable beside the run that checks it again, through its checkpoints, and goes when the run finishes', async () => {
+  const { db } = sqliteEnv().serverEnv;
+  const outcome = (runId: string, state: 'running' | 'findings' | 'healthy', startedAt: number) => ({ runId, check: 'integrity' as const, trigger: 'owner' as const, state, startedAt,
+    claimExpiresAt: null, holder: null, finishedAt: state === 'running' ? null : startedAt + 1, errorClass: null, findings: state === 'findings' ? ['A stored record is missing.'] : [],
+    findingsOmitted: 0, measurements: [], powerState: null });
+  const stored = async () => JSON.parse((await maintenanceOutcomeText(db, 'integrity'))!) as { runId: string; state: string; previous?: { runId: string; state: string } | null };
+  const gate = { bounded: false, claimedAt: 10, notBefore: null };
+  expect(await claimMaintenanceOutcome(db, outcome('first', 'running', 1), gate)).toBe(true);
+  expect(await completeMaintenanceOutcome(db, outcome('first', 'findings', 1))).toBe(true);
+  expect(await claimMaintenanceOutcome(db, outcome('second', 'running', 20), gate)).toBe(true);
+  expect(await stored()).toMatchObject({ runId: 'second', state: 'running', previous: { runId: 'first', state: 'findings' } });
+  await recordMaintenanceProgress(db, { ...outcome('second', 'running', 20), progress: { completedTables: 1, totalTables: 3, completedStatements: 1, totalStatements: 3, remainingBatches: 2 } }, 21);
+  expect(await stored()).toMatchObject({ runId: 'second', previous: { runId: 'first', state: 'findings' } });
+  // A run that replaces one left running hands on the finding that run had not settled.
+  expect(await claimMaintenanceOutcome(db, outcome('third', 'running', 30), gate)).toBe(true);
+  expect(await stored()).toMatchObject({ runId: 'third', previous: { runId: 'first', state: 'findings' } });
+  expect(await completeMaintenanceOutcome(db, outcome('third', 'healthy', 30))).toBe(true);
+  expect((await stored()).previous).toBeUndefined();
 });
 
 it('a claim lands once inside its bound and again once the bound has passed', async () => {

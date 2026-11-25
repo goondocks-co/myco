@@ -1,13 +1,12 @@
 import { type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Card, ErrorState, LoadingState, Select, Stat } from '../../../design';
-import { DEFAULT_MEASURE_WINDOW, isMeasureWindow, MEASURE_WINDOWS, useKpis, type MeasureWindow } from '../../../hooks/use-kpis';
-import { formatDateTime, formatElapsed } from '../../../lib/format';
-import { harnessLabel } from '../../../lib/harness';
-import { HEALTH_ANCHORS } from '../../../routes/nav';
-import { AdminSection } from '../AdminFrame';
-import type { KpiAnswer, KpiReport, Measure, PromptIdentityCounts } from './wire';
-import { countOf, percent, perUnit, sampleWords } from './words';
+import { Card, ErrorState, LoadingState, Select, Stat } from '../../design';
+import { DEFAULT_MEASURE_WINDOW, isMeasureWindow, MEASURE_WINDOWS, useKpis, type MeasureWindow } from '../../hooks/use-kpis';
+import { formatDateTime, formatElapsed } from '../../lib/format';
+import { harnessLabel } from '../../lib/harness';
+import { AdminPage } from '../admin/AdminFrame';
+import type { KpiAnswer, KpiReport, Measure, PromptIdentityCounts } from '../admin/health/wire';
+import { countOf, percent, perUnit, sampleWords } from '../admin/health/words';
 
 interface MeasureProps {
   label: string;
@@ -51,10 +50,10 @@ function MeasureStat({ label, note, measure, format, unit, noSample }: MeasurePr
 }
 
 /**
- * Measures: whether Myco is reaching the work, counted by the server from what
- * it holds. The window sits in the URL, so a link carries what it was read over.
+ * `/measures`, "Is Myco helping?": whether Myco is reaching the work, counted by the server from what it holds. The
+ * window sits in the URL, so a link carries what it was read over.
  */
-export function MeasuresSection() {
+export function MeasuresPage() {
   const [params, setParams] = useSearchParams();
   const requested = params.get('window');
   const chosen: MeasureWindow = isMeasureWindow(requested) ? requested : DEFAULT_MEASURE_WINDOW;
@@ -66,10 +65,11 @@ export function MeasuresSection() {
   }, { replace: true, preventScrollReset: true });
 
   return (
-    <AdminSection
-      id={HEALTH_ANCHORS.measures}
-      title="Measures"
-      description="Whether Myco is reaching the work, counted from what this server holds. Every figure names the sample behind it; nothing here is estimated."
+    <AdminPage
+      name="measures"
+      scope="server"
+      title="Is Myco helping?"
+      lede="Whether Myco is reaching the work, counted from what this server holds. Every figure names the sample behind it; nothing here is estimated."
       actions={(
         <Select
           label="Window"
@@ -83,7 +83,7 @@ export function MeasuresSection() {
       {kpis.isPending ? <LoadingState shape="cards" count={3} label="Reading the measures" />
         : kpis.data === undefined ? <ErrorState error={kpis.error} onRetry={() => void kpis.refetch()} />
         : <Measures report={kpis.data} />}
-    </AdminSection>
+    </AdminPage>
   );
 }
 

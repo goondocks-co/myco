@@ -46,7 +46,7 @@ records on queue heads (`readBudgetHolds`), and a failed run's refusal is one se
 
 A page may add at most one `whileMoving` read, and only for a single record in motion. Follower reads run only when
 their mark moves, never every tick. A heavy read never runs on a tick. A page must not fire several heavy reads in
-parallel on any trigger. On the owner's Deployment, Health's measures alone read about 4M rows beside eight other
+parallel on any trigger. On the owner's Deployment, the measures on Is Myco helping? alone read about 4M rows beside eight other
 reads, exceeded D1's per-database time budget, and made the other panels fail.
 
 **Fetch traffic is not a person.** Every read `fetchJson` makes carries `x-myco-automatic: 1`, and the server leaves
@@ -66,12 +66,12 @@ reads fewer than it covers, `projects` says so and the panel offers each project
   `@goondocks/myco-shared/step-words`, the same function the run panel uses.
 - **Waiting:** queued and due work, each with the server's own reason. Reasons come from a queued run's stored holder
   (`holdSentence`), the fleet's current wait (`fleetWaits`, the rule the queue and claim decide by), learning's status
-  line (`learningStatusLine`, also shown on Health), the curation daily limit, the code map's schedule, the rolling
+  line (`learningStatusLine`, also shown on Health's “Learning from them” line), the curation daily limit, the code map's schedule, the rolling
   budget, and a backup holding the database.
 - **Needs you:** failures with the failing run's own refusal text, a failing curation group with when Myco tries
   again, and a runner that cannot sign in. An item clears when a later run of the same task succeeds, the group is
   decided, or the runner's readiness changes.
 
 The dashboard renders it with one component, `features/now/WorkNow.tsx`. It appears at the top of Myco's work for a
-project or every project, and on Health for the whole Deployment. The UI never decides why something waits. It prints
+project or every project. The UI never decides why something waits. It prints
 `why`. A new reason is added in `read/work-now.ts`, next to the fact that decides it.

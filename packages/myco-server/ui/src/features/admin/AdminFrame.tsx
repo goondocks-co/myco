@@ -4,6 +4,7 @@ import { Card } from '../../design';
 import { useIsAdmin } from '../../hooks/use-me';
 import { cn } from '../../lib/cn';
 import { PageScope, ServerScope } from '../../routes/scope';
+import { anchorOf } from '../../routes/nav';
 
 export interface AdminPageProps {
   title: ReactNode;
@@ -167,7 +168,7 @@ export function useAnchorScroll(ready: boolean): void {
   const { hash } = useLocation();
   useEffect(() => {
     if (!ready || hash.length < 2) return;
-    const target = document.getElementById(decodeURIComponent(hash.slice(1)));
+    const target = document.getElementById(anchorOf(hash));
     target?.scrollIntoView?.({ block: 'start' });
   }, [ready, hash]);
 }

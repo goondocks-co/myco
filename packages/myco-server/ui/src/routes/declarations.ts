@@ -14,6 +14,8 @@ export const RUNS_PATH = '/work/history';
 export const SETTINGS_PATH = '/settings';
 export const HEALTH_PATH = '/status/health';
 export const MY_MACHINES_PATH = '/me/machines';
+/** "Is Myco helping?": the measures of what Myco serves and how it is used, across the server. */
+export const MEASURES_PATH = '/measures';
 export const SETTINGS_SECTIONS = [
   { id: 'work', label: 'Myco’s work', to: SETTINGS_PATH },
   { id: 'people', label: 'People and machines', to: `${SETTINGS_PATH}/people` },
@@ -69,6 +71,7 @@ export const ROUTESPaths = {
   join: '/join',
   today: '/',
   projects: '/projects',
+  measures: MEASURES_PATH,
   project: '/p/:projectId',
   missing: '*',
 } as const;
@@ -84,7 +87,6 @@ export const movedPaths = {
   access: '/access',
   projectAccess: '/p/:projectId/access',
   status: '/status',
-  measures: '/measures',
   operations: '/operations',
   serverRuns: '/runs',
   serverRunners: '/runners',

@@ -77,7 +77,7 @@ An administrator sets what Myco does in each project under **Project settings**:
 
 ### Machine names
 
-A machine is named for its host name when it signs in. You see your own work as **on** the machine's name, or **on your machine**. Other members see it as **from** you, never your machine. Administrators can inspect other members' machine names on **People & machines** and **Health**. On Today, Sessions and Myco's work, even an administrator sees another member's work as **from** that member.
+A machine is named for its host name when it signs in. You see your own work as **on** the machine's name, or **on your machine**. Other members see it as **from** you, never your machine. Administrators can inspect other members' machine names on **People & machines**. On Today, Sessions and Myco's work, even an administrator sees another member's work as **from** that member.
 
 ## For administrators
 
@@ -85,7 +85,7 @@ The server pages sit at the foot of the menu. **People & machines** is readable 
 
 ### Projects
 
-**Projects** lists the projects, their session counts and archive state. Open a project to see its work, or use its project settings to change what Myco does there.
+**Projects** lists every project with its session count, when it last sent a session, and its archive state. Open a project to see its work, or use its project settings to change what Myco does there.
 
 ### People & machines
 
@@ -117,14 +117,13 @@ The server pages sit at the foot of the menu. **People & machines** is readable 
 
 ### Health
 
-**Health** is one page about the server itself:
+**Health** answers two questions about the server itself:
 
-- **Now:** what Myco is doing across every project: running, waiting and why, and what needs you.
-- **Needs you:** what is waiting for an administrator.
-- **Status:** whether the server is set up to hold your team's knowledge, and what each project last sent.
-- **Workers:** the execution status machines last reported. Use **Runners** to manage runner registrations.
-- **Backups:** the backups it holds, and how its automatic backups are doing. Each hosted backup pauses database requests during its database export; the dashboard and tools cannot read or save data, and member capture waits for later delivery. Larger databases take longer.
-- **Upkeep:** the housekeeping, search upkeep and store checks it does on its own, with a way to run each now.
-- **Measures:** figures such as how often agents call Myco per prompt, each with the sample behind it.
+- **Is the server well?** One answer, **Yes**, **Needs attention** or **No**, with a sentence saying why, over five lines: **Sessions arriving** (when capture was last received, from whom and for which project; quiet after a day without any), **Learning from them** (when learning last completed, what waits, and whether it is moving, held or failing), **Somewhere to run** (runners that can do Myco's work now, of how many, and runs held for a reason you can change), **Within budget** (what counts against the daily budget now, or Not applied) and **Database and storage** (answering, at the expected version, with its storage set up; it also reflects a store check that found a problem and a failed or overdue automatic backup). Each line takes the worst of its facts, including failures Myco is still retrying. The answer is **No** when any line is No, **Needs attention** when any line needs attention, is unknown or could not be read, and **Yes** only when every line is Yes.
+- **What needs you:** each thing waiting for an administrator, with a way to finish it and, where Myco has one, a way to decline it: dismiss it, never ask again, or turn the capability off for that project. A store check that found a problem, a stored key that was rejected and a failed automatic backup appear here too.
+
+**Download diagnostics** at the foot of Health writes one file describing the server, with no keys and no captured content, to attach to an issue.
+
+Backups (make, download, pin and restore them, and automatic backups) are in **Settings › Advanced › Backups**. Each hosted backup pauses database requests during its database export; the dashboard and tools cannot read or save data, and member capture waits for later delivery. Larger databases take longer. Housekeeping, search upkeep and the store checks, each with a way to run it now, are in **Settings › Advanced › Upkeep**. Figures such as how often agents call Myco per prompt, each with the sample behind it, are on **Is Myco helping?**, linked from Knowledge.
 
 On a hosted Deployment, deleting a session removes it from Myco now, while its stored data is kept for at least 30 days before removal. The confirmation says so before deletion. Native session deletion keeps its existing storage lifetime.
