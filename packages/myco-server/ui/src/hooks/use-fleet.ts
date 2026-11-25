@@ -54,8 +54,8 @@ export function useRunnerPages(options: { all?: boolean } = {}) {
 /** `GET /api/runners/removed`: one page of removed runners, newest removal first. */
 interface RemovedRunnersAnswer { runners: RunnerRow[]; cursor: string | null }
 
-/** Every removed runner, page after page, read only while `enabled`. */
-export function useRemovedRunnerPages(enabled: boolean) {
+/** The removed runners, read only while `enabled`: each further page on request, or every page in turn with `all`. */
+export function useRemovedRunnerPages(enabled: boolean, options: { all?: boolean } = {}) {
   const query = useInfiniteQuery({
     queryKey: [...RUNNERS_KEY, 'removed', 'pages'],
     enabled,
@@ -64,7 +64,7 @@ export function useRemovedRunnerPages(enabled: boolean) {
     getNextPageParam: (last) => last.cursor ?? undefined,
     ...live({ follows: ['fleet'] }),
   });
-  useFollowEveryPage(enabled, query);
+  useFollowEveryPage(enabled && options.all === true, query);
   const runners = useMemo(() => query.data?.pages.flatMap((page) => page.runners) ?? [], [query.data]);
   return { query, runners };
 }

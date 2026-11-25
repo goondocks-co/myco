@@ -56,23 +56,26 @@ describe('the verdict a machine page leads with', () => {
     lastCompleted: { runId: 'r1', projectId: 'p', projectName: 'Myco', task: 'extract-curate', at: NOW - 2 * 3_600_000, status: 'completed' }, lastFailed: null, lastAttempted: null,
     readiness: { state: 'ready' as const, reason: '', observedAt: NOW }, offers: [], awaitingReplacement: false, ...over });
 
-  it('says Working while its runner is online, ahead of capture, with what it is doing', () => {
-    expect(machineVerdict(claim(), runner(), NOW)).toEqual({ label: 'Working', tone: 'ok', line: 'Last ran learning 2 h ago.' });
+  it('says Working only while a runner holds a run, Online while one waits for work, and never Working for an idle one', () => {
+    const busy = { runId: 'r2', projectId: 'p', projectName: 'Myco', task: 'title-summary', at: NOW - 60_000, status: 'running', leaseExpiresAt: NOW + 60_000 };
+    expect(machineVerdict(claim(), [runner({ display: 'Busy', busy })], NOW)).toEqual({ label: 'Working', tone: 'ok', line: 'Writing a title for Myco, started 1 min ago.' });
+    expect(machineVerdict(null, [runner()], NOW)).toEqual({ label: 'Online', tone: 'ok', line: 'Waiting for work. Last ran learning 2 h ago.' });
+    expect(machineVerdict(claim(), [runner()], NOW).label).toBe('Capturing');
   });
 
   it('says Capturing for a machine that captured in the last day, and Quiet since its last capture after that', () => {
-    expect(machineVerdict(claim(), null, NOW).label).toBe('Capturing');
-    expect(machineVerdict(claim({ lastCaptureAt: NOW - 3 * DAY }), null, NOW).label).toMatch(/^Quiet since /);
+    expect(machineVerdict(claim(), [], NOW).label).toBe('Capturing');
+    expect(machineVerdict(claim({ lastCaptureAt: NOW - 3 * DAY }), [], NOW).label).toMatch(/^Quiet since /);
   });
 
   it('says Offline for a runner not seen lately, from when it was last seen, never that it stopped', () => {
-    const verdict = machineVerdict(claim({ lastCaptureAt: null }), runner({ display: 'Offline', lastSeenAt: NOW - 14 * 60_000 }), NOW);
+    const verdict = machineVerdict(null, [runner({ display: 'Offline', lastSeenAt: NOW - 14 * 60_000 })], NOW);
     expect(verdict).toEqual({ label: 'Offline', tone: 'faint', line: 'Not seen lately; last seen 14 min ago.' });
   });
 
   it('says Removed only when nothing on it may send or take work, and who stopped it when the server says', () => {
-    expect(machineVerdict(claim({ standing: 'stopped', stoppedBy: 'mem_1' }), null, NOW, () => 'Ada').line).toBe('Stopped by Ada; it can’t send anything now.');
-    expect(machineVerdict(null, runner({ state: 'removed', display: 'Removed', removedAt: NOW - 2 * DAY }), NOW).label).toBe('Removed');
-    expect(machineVerdict(claim({ standing: 'expired' }), null, NOW).label).toBe('Offline');
+    expect(machineVerdict(claim({ standing: 'stopped', stoppedBy: 'mem_1' }), [], NOW, () => 'Ada').line).toBe('Stopped by Ada; it can’t send anything now.');
+    expect(machineVerdict(null, [runner({ state: 'removed', display: 'Removed', removedAt: NOW - 2 * DAY })], NOW).label).toBe('Removed');
+    expect(machineVerdict(claim({ standing: 'expired' }), [], NOW).label).toBe('Offline');
   });
 });

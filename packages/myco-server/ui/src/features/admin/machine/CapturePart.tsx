@@ -30,7 +30,7 @@ function useWaitingOn(machineId: string) {
   const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = query;
   useEffect(() => { if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage(); }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
   const items = useMemo(() => (query.data?.pages.flatMap((page) => page.items) ?? []).filter((item) => item.machineId === machineId), [query.data, machineId]);
-  return { query, items };
+  return { query, items, complete: query.isSuccess && !hasNextPage };
 }
 
 /**
@@ -72,7 +72,9 @@ function Captures({ claim, viewerId }: { claim: Machine; viewerId: string | null
       <SettingRow
         setting="machine-last-capture"
         label="Last captured"
-        note={claim.lastCaptureAt === null ? 'Nothing from it lately.' : `${agoWords(claim.lastCaptureAt, now)}${forProjects.length === 0 ? '' : `, for ${forProjects.join(', ')}`}.`}
+        note={claim.lastCaptureAt === null
+          ? (claim.facts === 'building' ? 'Not known yet: the server is still gathering when each machine last captured.' : 'Nothing from it lately.')
+          : `${agoWords(claim.lastCaptureAt, now)}.${forProjects.length === 0 ? '' : ` Recently it captured for ${forProjects.join(', ')}.`}`}
         control={claim.machineId === null ? <span /> : <Button size="sm" onClick={() => setActivity(true)}>What it sent</Button>}
       />
       <ActivityDialog target={activity && claim.machineId !== null ? { name: claim.name, machineId: claim.machineId, bytesWritten: claim.bytesWritten } : null} onClose={() => setActivity(false)} />
@@ -88,14 +90,14 @@ function Agents({ claim }: { claim: Machine }) {
   const needing = facts.filter((fact) => fact.state !== 'ready' && fact.state !== 'trust_required' && fact.state !== 'held_elsewhere');
   const sending = claim.capturedAgents.map(harnessLabel);
   const label = status.isPending ? 'Reading its agents…'
-    : failed ? 'Its agents couldn’t be read'
-    : facts.length === 0 ? (sending.length === 0 ? 'No agents set up' : `${sending.length === 1 ? 'One agent' : `${sending.length} agents`} sending`)
-    : `${facts.length === 1 ? 'One agent' : `${facts.length} agents`} set up`;
+    : failed ? 'Which agents are set up on it couldn’t be read'
+    : facts.length === 0 ? (sending.length === 0 ? 'No agent setup reported' : `${sending.length === 1 ? 'One agent' : `${sending.length} agents`} sending, no setup reported`)
+    : `${facts.length === 1 ? 'One agent' : `${facts.length} agents`} set up, as it reported`;
   return (
     <SettingRow
       setting="machine-agents"
       label={label}
-      note={sending.length === 0 ? (facts.length === 0 && !failed && !status.isPending ? 'No coding agent on it has sent anything lately.' : 'None has sent anything lately.') : `Sending lately: ${sending.join(', ')}.`}
+      note={sending.length === 0 ? 'No coding agent on it has sent anything lately.' : `Sending lately: ${sending.join(', ')}.`}
       details={facts.length === 0 ? (failed ? <ErrorState error={status.error ?? new Error('installed agents unavailable')} onRetry={() => void status.refetch()} /> : undefined) : (
         <ul className="flex flex-col gap-s1 t-meta text-faint" aria-label="Agents set up on it" data-machine-agents="">
           {facts.map((fact) => <li key={fact.id}>{harnessHealthWords({ ...fact, machineName: 'this machine' })}</li>)}
@@ -122,19 +124,23 @@ function Folders({ claim, viewerId }: { claim: Machine; viewerId: string | null 
   });
   const waiting = useWaitingOn(claim.machineId ?? '');
   const folders = settings.data?.leaves.find((row) => row.leaf === AUTO_JOIN_ROOTS_LEAF)?.effective;
-  const listed = Array.isArray(folders) ? folders.filter((folder): folder is string => typeof folder === 'string') : [];
+  const listed = Array.isArray(folders) ? folders.filter((folder): folder is string => typeof folder === 'string') : null;
   const label = !own ? 'Its folders' : settings.isPending ? 'Reading its folders…' : settings.isError ? 'Its folders couldn’t be read'
-    : listed.length === 0 ? 'No folder captured by itself' : `Repositories under ${listed.join(', ')}`;
+    : listed === null ? 'Its folders aren’t reported' : listed.length === 0 ? 'No folder captured by itself' : `Repositories under ${listed.join(', ')}`;
   const note = !own ? 'The folders it captures are for its member to see and change.'
+    : listed === null ? 'Which folders it captures by itself is unknown until the server answers.'
     : listed.length === 0 ? 'Every repository on it waits here until it’s connected.'
     : `A repository in ${listed.length === 1 ? 'that folder' : 'those folders'} gets a project by itself.`;
+  const waitingWords = waiting.query.isError ? ' What waits on it couldn’t all be read.'
+    : !waiting.complete ? (waiting.items.length === 0 ? ' Reading what waits on it…' : ` ${waiting.items.length} waiting so far; reading the rest…`)
+    : waiting.items.length === 0 ? '' : ` ${waiting.items.length === 1 ? 'One repository is waiting.' : `${waiting.items.length} repositories are waiting.`}`;
   const targets = (projects.data?.projects ?? []).filter((project) => project.archivedAt == null).map((project) => ({ projectId: project.projectId, name: project.name }));
   return (
     <>
       <SettingRow
         setting="machine-folders"
         label={label}
-        note={`${note}${waiting.items.length === 0 ? '' : ` ${waiting.items.length === 1 ? 'One repository is waiting.' : `${waiting.items.length} repositories are waiting.`}`}`}
+        note={`${note}${waitingWords}`}
         status={connected ?? undefined}
         details={<>
           {settings.isError && <ErrorState error={settings.error} onRetry={() => void settings.refetch()} />}

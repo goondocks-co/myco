@@ -37,6 +37,8 @@ export interface Machine {
   lastCaptureAt: number | null;
   /** The projects it captured for lately, newest first. */
   capturedProjects: string[];
+  /** `building` while the server is still gathering machines' latest contact and capture, so an empty one means not yet known. */
+  facts?: 'ready' | 'building';
 }
 
 /** A machine summary as the pages read it, named `standIn` when it reported no name of its own. */

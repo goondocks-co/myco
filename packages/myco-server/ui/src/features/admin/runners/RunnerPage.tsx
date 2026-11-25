@@ -2,9 +2,9 @@ import { useAgentPayers } from '../../../hooks/use-fleet';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { paidByWords, runnerFallbackSince, runnerFallbackWords, storedKeyFailureWords, type RunPayer } from '@goondocks/myco-shared/runner-fleet';
 import { useParams } from 'react-router-dom';
-import { Breadcrumbs, Card, ErrorState, HealthDot, ListRow, ShowMore, StatusChip, type HealthTone } from '../../../design';
+import { ActionLink, Breadcrumbs, Card, ErrorState, HealthDot, ListRow, ShowMore, StatusChip, type HealthTone } from '../../../design';
 import { usePaged, type Page } from '../../../hooks/use-paged';
-import { RUNNERS_PATH, runPath, WORK_SUFFIX } from '../../../routes/nav';
+import { runnerMachinePath, RUNNERS_PATH, runPath, WORK_SUFFIX } from '../../../routes/nav';
 import { atWords } from '../../work/words';
 import { SourceMark } from '../../work/RunStory';
 import { AdminPage, AdminSection } from '../AdminFrame';
@@ -52,7 +52,8 @@ export function RunnerPage() {
   const worked = workedWords(runs.rows);
   return (
     <AdminPage name="runner" scope="server" title={runner?.name ?? 'Runner'} lede="What this runner ran, newest first, across every project.">
-      <Breadcrumbs items={[{ label: 'Myco’s work', to: WORK_SUFFIX }, { label: 'Runners', to: `${RUNNERS_PATH}#runner-${encodeURIComponent(runnerId)}` }]} />
+      <Breadcrumbs items={[{ label: 'Myco’s work', to: WORK_SUFFIX }, { label: 'Runners', to: RUNNERS_PATH }]} />
+      <p className="t-small"><ActionLink to={runnerMachinePath({ id: runnerId, machineId: null })}>{`${runner?.name ?? 'This runner'}’s machine and its controls`}</ActionLink></p>
       {runs.error !== null && <ErrorState error={runs.error} onRetry={runs.retry}><p>This runner’s runs are unavailable.</p></ErrorState>}
       {runs.isPending && runs.error === null && <p className="t-body text-muted">Loading this runner’s runs…</p>}
       {runner !== undefined && (

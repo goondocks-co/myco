@@ -7,8 +7,8 @@
  * page and its Rename and folder dialogs. Other admin pages say they are for an admin.
  *
  * On the fixture the owner has two machines (one named, one whose runtime gave
- * no name), the member one, which is also a runner; two more runners are
- * machines of their own (one online, one quiet for hours) and one is removed;
+ * no name), the member one, which is also a runner; one machine runs Myco's
+ * work as two runners, another as one quiet for hours, and one runner is removed;
  * two invitations are open; one project has an access key about to expire; and
  * imported sessions are titled. Each check asserts that content, that the
  * page's key parts start on screen, that nothing scrolls sideways, that no raw
@@ -59,6 +59,14 @@ async function expectMemberPeople(page: Page): Promise<void> {
     await expect(page.getByRole('group', { name: 'Machines' }).getByText('Lin’s build box', { exact: true })).toBeVisible();
     await expect(page.getByText('Ada’s studio Mac', { exact: true })).toHaveCount(0);
   }
+}
+
+/** A machine with two runner registrations: one card for each, each with its own controls, and the verdict from the online one. */
+async function expectTwoRunners(page: Page): Promise<void> {
+  await expectMachine(page, 'homelab-mini and homelab-mini-2', 'Online', [WORK, CAPTURE, CURRENT]);
+  for (const id of ['rn_homelab', 'rn_homelab2']) await expect(page.locator(`[data-runner-card="${id}"]`)).toBeVisible();
+  await expect(page.locator('[data-runner-card="rn_homelab2"]').getByRole('button', { name: 'Remove homelab-mini-2…' })).toBeVisible();
+  await expect(page.locator('[data-runner-card="rn_homelab2"]').getByRole('link', { name: 'homelab-mini-2’s check-ins' })).toHaveAttribute('href', '/work/runners/rn_homelab2');
 }
 
 /** A machine's page leads with its verdict and its name, and answers each question in order. */
@@ -138,8 +146,8 @@ async function expectPeopleSection(page: Page): Promise<void> {
   await expect(page.getByRole('link', { name: 'Advanced › Owner actions' })).toBeVisible();
   if (!onFixture()) return;
   const machines = page.getByRole('group', { name: 'Machines' });
-  for (const name of ['Ada’s studio Mac', 'Lin’s build box', 'A machine', 'homelab-mini', 'closet-pc']) await expect(machines.getByText(name, { exact: true })).toBeVisible();
-  await expect(machines.locator(`#machine-${MACHINE_IDS.buildbox}`)).toContainText('also a runner');
+  for (const name of ['Ada’s studio Mac', 'Lin’s build box', 'A machine', 'homelab-mini and homelab-mini-2', 'closet-pc']) await expect(machines.getByText(name, { exact: true })).toBeVisible();
+  await expect(machines.locator(`#machine-${MACHINE_IDS.buildbox}`)).toContainText('runs Myco’s work as lin-buildbox');
   await expect(machines.locator(`#machine-${MACHINE_IDS.buildbox} a`)).toHaveAttribute('href', machinePage(MACHINE_IDS.buildbox));
   await expect(page.locator('section#invitations li')).toHaveCount(2);
   await page.locator('section#sign-in li', { hasText: 'Lin' }).getByRole('button', { name: 'Manage' }).click();
@@ -243,13 +251,13 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: () => string; rendered: (
 const WORK = 'Does it do Myco’s work?';
 const CAPTURE = 'What does it capture?';
 const CURRENT = 'How does it stay current?';
-const REMOVE = 'Remove this machine';
+const STOP = 'Stop it capturing';
 /** A machine's page for each kind of machine the fixture holds, opened by the owner. */
 const MACHINE_PAGES: typeof ADMIN_PAGES = onFixture() ? [
-  { name: 'machine-runner', path: () => machinePage(MACHINE_IDS.homelab), rendered: (page) => expectMachine(page, 'homelab-mini', 'Working', [WORK, CAPTURE, CURRENT, REMOVE]) },
-  { name: 'machine-capturing', path: () => machinePage(MACHINE_IDS.studio), rendered: (page) => expectMachine(page, 'Ada’s studio Mac', 'Capturing', [CAPTURE, WORK, CURRENT, REMOVE]) },
-  { name: 'machine-both', path: () => machinePage(MACHINE_IDS.buildbox), rendered: (page) => expectMachine(page, 'Lin’s build box', 'Working', [WORK, CAPTURE, CURRENT, REMOVE]) },
-  { name: 'machine-offline', path: () => machinePage(MACHINE_IDS.closet), rendered: (page) => expectMachine(page, 'closet-pc', 'Offline', [WORK, CAPTURE, CURRENT, REMOVE]) },
+  { name: 'machine-two-runners', path: () => machinePage(MACHINE_IDS.homelab), rendered: (page) => expectTwoRunners(page) },
+  { name: 'machine-capturing', path: () => machinePage(MACHINE_IDS.studio), rendered: (page) => expectMachine(page, 'Ada’s studio Mac', 'Capturing', [WORK, CAPTURE, CURRENT, STOP]) },
+  { name: 'machine-both', path: () => machinePage(MACHINE_IDS.buildbox), rendered: (page) => expectMachine(page, 'Lin’s build box', 'Capturing', [WORK, CAPTURE, CURRENT, STOP]) },
+  { name: 'machine-offline', path: () => machinePage(MACHINE_IDS.closet), rendered: (page) => expectMachine(page, 'closet-pc', 'Offline', [WORK, CAPTURE, CURRENT]) },
   { name: 'machine-removed', path: () => machinePage(MACHINE_IDS.retired), rendered: (page) => expectMachine(page, 'old-laptop', 'Removed', [CAPTURE, WORK]) },
 ] : [];
 const OWNER_PAGES = [...ADMIN_PAGES, ...MACHINE_PAGES] as const;
@@ -303,8 +311,8 @@ test.describe('People and machines and the admin pages, as a member', () => {
       const { context, page, watch } = await openPage(browser, { path: machinePage(MACHINE_IDS.buildbox), viewport, mode, cookie: screensEnv('memberCookie') });
       try {
         await expect(page.locator('main')).toHaveCount(1);
-        await expectMachine(page, 'Lin’s build box', 'Working', [WORK, CAPTURE, CURRENT, REMOVE]);
-        await expect(page.getByRole('switch', { name: 'Runs Myco’s work' })).toBeDisabled();
+        await expectMachine(page, 'Lin’s build box', 'Capturing', [WORK, CAPTURE, CURRENT, STOP]);
+        await expect(page.getByRole('switch', { name: 'lin-buildbox runs Myco’s work' })).toBeDisabled();
         await expect(page.getByRole('button', { name: 'Change folders' })).toBeVisible();
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);

@@ -255,7 +255,7 @@ describe('your machines', () => {
     expect(await screen.findByText('Automatic updates: Off · last reported by this machine')).toBeTruthy();
     expect(screen.getByText(/Waiting for this machine: automatic updates → On/).textContent).toContain('An idle or offline machine waits until activity resumes.');
     expect(screen.getByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Remove…' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop capturing…' })).toBeTruthy();
     expect(screen.getByText('No', { selector: 'span' })).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(adminRequests(asked)).toEqual([]);

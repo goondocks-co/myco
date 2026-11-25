@@ -16,7 +16,7 @@ export function useMachineClaim(machineId: string | null) {
     enabled: machineId !== null,
     queryFn: async ({ signal }): Promise<Machine | null> => {
       const answer = await fetchJson<MachineAnswer>(`/api/machines/${encodeURIComponent(machineId!)}`, signal);
-      return answer.machine === null ? null : toMachine(answer.machine, 'A machine');
+      return answer.machine === null ? null : { ...toMachine(answer.machine, 'A machine'), facts: answer.contactFacts };
     },
     ...live({ follows: ['fleet', 'sessions'] }),
   });
@@ -29,22 +29,21 @@ const matches = (match: RunnerMatch) => (runner: RunnerRow): boolean =>
   'machineId' in match ? runner.machineId === match.machineId : runner.id === match.runnerId;
 
 /**
- * The runner registration on a machine: among the active runners, every page of them, the one most recently seen
- * that matches; else, once the active runners are all read, the most recently removed one. `settled` once the answer
- * is final; `others` counts further active registrations that name the same machine.
+ * Every runner registration on a machine, or the one a runner id names: the active ones from every page of the runner
+ * list, in its order, then the removed ones from every page of theirs, with the legacy workers on the same machine.
+ * Nothing is picked for the reader: each registration is listed with its own id. `settled` once every page is read.
  */
-export function useRunnerOn(match: RunnerMatch) {
+export function useRunnersOn(match: RunnerMatch) {
   const active = useRunnerPages({ all: true });
-  const found = active.runners.filter(matches(match)).sort((a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0));
   const activeRead = active.query.isSuccess && !active.query.hasNextPage;
-  const removed = useRemovedRunnerPages(activeRead && found.length === 0);
-  const removedFound = removed.runners.find(matches(match));
+  const removed = useRemovedRunnerPages(activeRead, { all: true });
   const removedRead = removed.query.isSuccess && !removed.query.hasNextPage;
-  const runner = found[0] ?? removedFound ?? null;
+  const test = matches(match);
+  const legacy = 'machineId' in match ? (active.query.data?.pages[0]?.legacyWorkers ?? []).filter((worker) => worker.machineId === match.machineId) : [];
   return {
-    runner,
-    others: Math.max(0, found.length - 1),
-    settled: activeRead && (found.length > 0 || removedRead || removedFound !== undefined),
+    runners: [...active.runners.filter(test), ...removed.runners.filter(test)],
+    legacy,
+    settled: activeRead && removedRead,
     error: active.query.error ?? removed.query.error,
     storedUsable: active.storedUsable,
     retry: () => {

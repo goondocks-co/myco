@@ -69,12 +69,12 @@ An administrator sets what Myco does in each project under **Project settings**:
 
 ## Your machines
 
-**Settings › People and machines** lists your machines, for every member, and an administrator sees every machine there, including runners nobody signed in on. **Manage** opens a machine's own page. It leads with what the machine is doing (Working, Capturing, Quiet since a day, Offline or Removed), whose it is and since when, then answers:
+**Settings › People and machines** lists your machines, for every member, and an administrator sees every machine there, including runners nobody signed in on. **Manage** opens a machine's own page. It leads with what the machine is doing (Working while a runner on it holds a run, Capturing, Online while a runner waits for work, Quiet since a day, Offline or Removed), whose it is and since when, then answers:
 
-- **Does it do Myco's work?** For a runner: turn it on or off, which agent it uses and who pays, whether that is the same as every runner or set apart for this machine, its other signed-in agents, and its runs in the last 24 hours. Otherwise, the one command that makes it a runner.
+- **Does it do Myco's work?** One card for each runner registered on the machine, each with its own controls: turn it on or off, the agent the server would use for learning from sessions and who pays, whether other runners with that agent pay the same way, setting this runner apart, its other signed-in agents as it last reported them, its recent runs, and removing it as a runner. A machine runs as a runner when its registration was approved for it, whatever its later check-ins report. A legacy worker on the machine is shown with the way to move it to a runner. Otherwise, the one command that makes it a runner.
 - **What does it capture?** The agents set up on it, the folders whose repositories it captures by themselves (**Change folders** holds **Folders it captures**, **Extra plan folders** and the rest of its folder settings), repositories waiting outside them with **Connect**, when it last captured, and **What it sent**.
 - **How does it stay current?** Its update preferences, and for a runner the release it reported with **Update now**.
-- **Remove this machine** signs it out and, for a runner, stops it taking work. What it sent is kept. The ⋯ menu beside its name renames it.
+- **Stop it capturing** ends its sign-ins, so it sends nothing more; a runner on it keeps taking work until it is removed in its own card. What it sent is kept. The ⋯ menu beside its name renames it.
 
 A machine is described only by what the server recorded. A runner reports its operating system, CPU type and version; a machine that only captures reports none of these, so its page leaves them out.
 

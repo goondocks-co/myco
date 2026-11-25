@@ -36,7 +36,7 @@ The service starts at login and uses this account's agent sign-ins. Status shows
 
 Open **Myco's work › Runners** in the dashboard. Each runner is one row with what it is doing or last did; **Its machine** opens the machine's page, which shows whether it is working, which agent it uses and who pays, its runs in the last 24 hours, the version and release channel it reported and update results. Open **Details** there for agent sign-in reports and model information. If it is not ready, check its reported reason and run doctor on that machine.
 
-An owner or administrator turns **Runs Myco’s work** off to let its current task finish while it takes no new work, and on again to resume. **Remove this machine** revokes its authority immediately; it does not terminate the remote process. Unfinished work can retry on another runner after its assignment expires. To stop the local service while retaining registration, run `myco runner uninstall --server <address>` on that machine.
+Each runner has its own card on its machine page. An owner or administrator turns its **runs Myco’s work** switch off to let its current task finish while it takes no new work, and on again to resume. **Remove … as a runner** revokes that runner’s authority immediately, leaving capture and any other runner on the machine as they are; it does not terminate the remote process. Unfinished work can retry on another runner after its assignment expires. To stop the local service while retaining registration, run `myco runner uninstall --server <address>` on that machine.
 
 ## Use a stored API key
 

@@ -6,6 +6,7 @@
 import type { FleetRun, RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import { agoWords, dayWords, isInstant } from '@goondocks/myco-shared/time-words';
 import type { HealthTone } from '../../../design';
+import type { WorkerRow } from '../../../lib/api';
 import type { Machine } from '../machines';
 import { taskWords } from '../workers';
 
@@ -76,33 +77,51 @@ export function runnerDoing(runner: RunnerFacts & Pick<RunnerFleetRecord, 'state
 }
 
 /** When something last happened on the machine: its latest capture or run, else when it first signed in or was registered. */
-function quietSince(claim: ClaimFacts | null, runner: RunnerFacts | null): number {
-  const latest = runner === null ? null : latestRun(runner);
-  const times = [claim?.lastCaptureAt ?? null, latest?.run.at ?? null].filter((at): at is number => at !== null);
+function quietSince(claim: ClaimFacts | null, runners: readonly RunnerFacts[]): number {
+  const times = [claim?.lastCaptureAt ?? null, ...runners.map((runner) => latestRun(runner)?.run.at ?? null)].filter((at): at is number => at !== null);
   if (times.length > 0) return Math.max(...times);
-  return claim?.firstSeenAt ?? runner?.createdAt ?? 0;
+  return claim?.firstSeenAt ?? (runners.length === 0 ? 0 : Math.min(...runners.map((runner) => runner.createdAt)));
 }
 
-const live = (runner: RunnerFacts | null): runner is RunnerFacts & { state: 'enabled' | 'paused' } => runner !== null && runner.state !== 'removed';
+/** A legacy worker's facts a verdict reads: its lease, whether it was heard from lately, and whether it may take work. */
+export type LegacyFacts = Pick<WorkerRow, 'busy' | 'recent' | 'eligible' | 'lastSeenAt'>;
+
+const isLive = (runner: RunnerFacts): boolean => runner.state !== 'removed';
+
+/** A runner's phrase, named when the machine has more than one registration. */
+const named = (runner: RunnerFacts & { name?: string }, several: boolean, now: number): string =>
+  `${several && runner.name !== undefined ? `${runner.name}: ` : ''}${runnerDoing(runner, now)}`;
 
 /**
- * The verdict a machine's page leads with, from its sign-ins (`claim`) and the runner registered on it: Working while
- * its runner is online, Capturing while its agents sent something in the last day, Quiet since its last activity,
- * Offline when its runner has not been seen or its sign-in lapsed, and Removed when nothing on it may send or take work.
+ * The verdict a machine's page leads with, from its sign-ins (`claim`), every runner registration bound to it and any
+ * legacy worker on it: Working while one of them holds a run, Capturing while its agents sent something in the last day,
+ * Online while one waits for work, Quiet since its last activity when paused or not ready or only signed in, Offline
+ * when none was seen lately or its sign-in lapsed, and Removed when nothing on it may send or take work.
  */
-export function machineVerdict(claim: ClaimFacts | null, runner: RunnerFacts | null, now: number = Date.now(), nameOf: (id: string | null) => string | null = () => null): Verdict {
+export function machineVerdict(claim: ClaimFacts | null, runners: readonly (RunnerFacts & { name?: string })[], now: number = Date.now(),
+  nameOf: (id: string | null) => string | null = () => null, legacy: readonly LegacyFacts[] = []): Verdict {
+  const live = runners.filter(isLive);
+  const several = live.length > 1;
   const signedIn = claim !== null && claim.standing === 'allowed';
   const capturing = signedIn && claim.lastCaptureAt !== null && now - claim.lastCaptureAt < CAPTURING_MS;
-  if (live(runner) && (runner.display === 'Busy' || runner.display === 'Online')) {
-    return { label: 'Working', tone: 'ok', line: `${runnerDoing(runner, now)}.` };
-  }
+  const busy = live.filter((runner) => runner.busy !== null);
+  if (busy.length > 0) return { label: 'Working', tone: 'ok', line: `${busy.map((runner) => named(runner, several, now)).join('. ')}.` };
+  const legacyBusy = legacy.find((worker) => worker.busy !== null);
+  if (legacyBusy !== undefined) return { label: 'Working', tone: 'ok', line: `Running ${taskWords(legacyBusy.busy!.task)} as a legacy worker.` };
   if (capturing) return { label: 'Capturing', tone: 'ok', line: `Last captured ${agoWords(claim.lastCaptureAt, now)}.` };
-  const quietAt = quietSince(claim, runner);
+  const online = live.filter((runner) => runner.display === 'Online');
+  if (online.length > 0) return { label: 'Online', tone: 'ok', line: `Waiting for work. ${online.map((runner) => named(runner, several, now)).join('. ')}.` };
+  if (legacy.some((worker) => worker.recent && worker.eligible)) return { label: 'Online', tone: 'ok', line: 'Waiting for work as a legacy worker.' };
+  const quietAt = quietSince(claim, live);
   const since = isInstant(quietAt) ? `Quiet since ${dayWords(quietAt, now)}` : 'Quiet';
-  if (live(runner) && (runner.display === 'Paused' || runner.display === 'Not ready')) {
-    return { label: since, tone: runner.display === 'Not ready' ? 'warn' : 'faint', line: `${runnerDoing(runner, now)}.` };
+  const held = live.filter((runner) => runner.display === 'Paused' || runner.display === 'Not ready');
+  if (held.length > 0) {
+    return { label: since, tone: held.some((runner) => runner.display === 'Not ready') ? 'warn' : 'faint', line: `${held.map((runner) => named(runner, several, now)).join('. ')}.` };
   }
-  if (live(runner)) return { label: 'Offline', tone: 'faint', line: `${runnerDoing(runner, now)}.` };
+  if (live.length > 0) {
+    const capture = !signedIn ? '' : claim.lastCaptureAt === null ? ' Nothing captured from it lately.' : ` Last captured ${agoWords(claim.lastCaptureAt, now)}.`;
+    return { label: 'Offline', tone: 'faint', line: `${live.map((runner) => named(runner, several, now)).join('. ')}.${capture}` };
+  }
   if (signedIn) {
     return { label: since, tone: 'faint', line: claim.lastCaptureAt === null ? 'Nothing captured from it lately.' : `Last captured ${agoWords(claim.lastCaptureAt, now)}.` };
   }
@@ -112,7 +131,8 @@ export function machineVerdict(claim: ClaimFacts | null, runner: RunnerFacts | n
     const by = nameOf(claim.stoppedBy);
     return { label: 'Removed', tone: 'faint', line: `Stopped${by === null ? '' : ` by ${by}`}; it can’t send anything now.` };
   }
-  return { label: 'Removed', tone: 'faint', line: `Removed ${runner?.removedAt == null ? '' : `${agoWords(runner.removedAt, now)} `}as a runner; it can no longer take work.` };
+  const removedAt = Math.max(0, ...runners.map((runner) => runner.removedAt ?? 0));
+  return { label: 'Removed', tone: 'faint', line: `Removed ${removedAt === 0 ? '' : `${agoWords(removedAt, now)} `}as a runner; it can no longer take work.` };
 }
 
 /** Whose a machine is and since when: its sign-ins' member and first sign-in, else who registered its runner and when. */

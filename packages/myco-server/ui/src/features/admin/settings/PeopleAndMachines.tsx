@@ -78,13 +78,14 @@ function WhoCanSignIn({ onInvite, onAddMachine }: { onInvite: () => void; onAddM
 }
 
 /** One machine: what it captures, whether it also runs Myco's work, its verdict, and Manage, which opens its page. */
-function MachineRow({ machine, runner, runnersKnown, owner }: { machine: Machine; runner: RunnerRow | null; runnersKnown: boolean; owner: string | null }) {
+function MachineRow({ machine, runners, runnersKnown, owner }: { machine: Machine; runners: readonly RunnerRow[]; runnersKnown: boolean; owner: string | null }) {
   const nameOf = useMemberNames();
-  const verdict = machineVerdict(machine, runner, Date.now(), nameOf);
+  const verdict = machineVerdict(machine, runners, Date.now(), nameOf);
+  const live = runners.filter((runner) => runner.state !== 'removed');
   const line = [
     owner,
-    machine.capturedAgents.length === 0 ? 'has not captured an agent lately' : `captures ${machine.capturedAgents.map(harnessLabel).join(', ')}`,
-    !runnersKnown ? 'whether it runs Myco’s work is unknown' : runner !== null && runner.state !== 'removed' ? 'also a runner' : null,
+    machine.standing !== 'allowed' ? 'stopped capturing' : machine.capturedAgents.length === 0 ? 'has not captured an agent lately' : `captures ${machine.capturedAgents.map(harnessLabel).join(', ')}`,
+    !runnersKnown ? 'whether it runs Myco’s work is unknown' : live.length > 0 ? `runs Myco’s work as ${live.map((runner) => runner.name).join(' and ')}` : null,
   ].filter(Boolean).join(' · ');
   return (
     <ListRow id={machine.machineId === null ? undefined : `machine-${machine.machineId}`} data="machine" name={machine.name} line={line.charAt(0).toUpperCase() + line.slice(1)}>
@@ -106,15 +107,18 @@ function Machines({ onAdd }: { onAdd: () => void }) {
   const machines = useMachines();
   const runners = useRunnerPages({ all: true });
   const runnersKnown = runners.query.isSuccess && !runners.query.hasNextPage;
-  const runnerOf = (machine: Machine) => runners.runners.find((runner) => machine.machineId !== null && runner.machineId === machine.machineId) ?? null;
+  const runnersOf = (machine: Machine) => runners.runners.filter((runner) => machine.machineId !== null && runner.machineId === machine.machineId);
   const owner = (machine: Machine) => (machine.memberId === viewerId ? null : `${nameOf(machine.memberId) ?? 'a teammate'}’s`);
-  const live = machines.machines.filter((machine) => machine.standing === 'allowed');
-  const former = machines.machines.filter((machine) => machine.standing !== 'allowed');
+  // A machine whose sign-ins stopped stays among the live ones while a runner on it still takes work.
+  const live = machines.machines.filter((machine) => machine.standing === 'allowed' || runnersOf(machine).length > 0);
+  const former = machines.machines.filter((machine) => !live.includes(machine));
   const claimed = new Set(machines.machines.map((machine) => machine.machineId));
   const read = !machines.isPending && machines.error == null;
   const allRead = read && !machines.hasMore;
-  const ownOnly = isAdmin && allRead && runnersKnown ? runners.runners.filter((runner) => runner.machineId === null || !claimed.has(runner.machineId)) : [];
-  const row = (machine: Machine) => <MachineRow key={machine.key} machine={machine} runner={runnerOf(machine)} runnersKnown={runnersKnown} owner={owner(machine)} />;
+  // Runners on machines nobody signed in on: one row per bound machine, and one per registration with none bound.
+  const unclaimed = isAdmin && allRead && runnersKnown ? runners.runners.filter((runner) => runner.machineId === null || !claimed.has(runner.machineId)) : [];
+  const ownOnly = [...new Map(unclaimed.map((runner) => [runner.machineId ?? `runner:${runner.id}`, unclaimed.filter((other) => runner.machineId !== null && other.machineId === runner.machineId).concat(runner.machineId === null ? [runner] : [])])).entries()];
+  const row = (machine: Machine) => <MachineRow key={machine.key} machine={machine} runners={runnersOf(machine)} runnersKnown={runnersKnown} owner={owner(machine)} />;
   return (
     <AdminSection id={PEOPLE_ANCHORS.machines} title={isAdmin ? 'Machines' : 'Your machines'} description={isAdmin ? 'Each machine that signed in or runs Myco’s work, whose it is, and what it is doing.' : 'The machines you signed in from, and what each is doing.'}>
       {machines.error != null && <ErrorState error={machines.error} onRetry={machines.retry} />}
@@ -122,12 +126,17 @@ function Machines({ onAdd }: { onAdd: () => void }) {
       <RowCard label="Machines">
         {machines.isPending && <LoadingState label="Reading the machines" count={2} />}
         {live.map(row)}
-        {ownOnly.map((runner) => (
-          <ListRow key={runner.id} id={`runner-${runner.id}`} data="runner-machine" name={runner.name} line="Runs Myco’s work; nobody signed in on it to capture">
-            <StatusChip tone={VERDICT_TONE[machineVerdict(null, runner).tone] ?? 'neutral'}>{machineVerdict(null, runner).label}</StatusChip>
-            <ActionLink to={runnerMachinePath(runner)}>Manage</ActionLink>
-          </ListRow>
-        ))}
+        {ownOnly.map(([key, group]) => {
+          const verdict = machineVerdict(null, group);
+          const first = group[0]!;
+          return (
+            <ListRow key={key} id={first.machineId === null ? `runner-${first.id}` : `machine-${first.machineId}`} data="runner-machine" name={group.map((runner) => runner.name).join(' and ')}
+              line={`Runs Myco’s work${group.length > 1 ? ` as ${group.length} runners` : ''}; nobody signed in on it to capture`}>
+              <StatusChip tone={VERDICT_TONE[verdict.tone] ?? 'neutral'}>{verdict.label}</StatusChip>
+              <ActionLink to={first.machineId === null ? runnerMachinePath(first) : machinePath(first.machineId)}>Manage</ActionLink>
+            </ListRow>
+          );
+        })}
         {(machines.hasMore || machines.isFetchingMore) && (
           <div className="flex flex-col gap-s2 px-s4 py-s3">
             {isAdmin && <p className="t-small text-muted">Runners that are machines of their own are listed once every machine is read.</p>}

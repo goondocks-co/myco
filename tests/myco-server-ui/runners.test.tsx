@@ -32,7 +32,8 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
     if (path === '/api/projects') return Response.json({ projects: [] });
     if (path === '/api/status') return Response.json({ schema: { expected: 80, found: 80, matches: true }, capabilities: [], projects: [], workers: { available: true, fleet: legacy, runsQueued: 0, workersBusy: 0 } });
     if (path === '/api/runners/agents') return Response.json({ agents: [{ agent: 'claude-code', storedUsable: false, runners: [{ id: 'rn_mini', name: 'homelab-mini', choice: runner.credentialChoices?.['claude-code'] ?? 'own' }] }], today: [{ id: 'rn_mini', name: 'homelab-mini', agent: 'claude-code' }] });
-    if (path === '/api/runs/hours') return Response.json({ counted: true, lanes: [{ runnerId: 'rn_mini', name: 'homelab-mini', hours: [{ hour: NOW, worked: 3, unchanged: 2, failed: 1 }], checkins: [] }] });
+    if (path.startsWith('/api/machines/')) return Response.json({ machine: null, contactFacts: 'ready' });
+    if (path === '/api/runs/hours') return Response.json({ counted: true, window: { name: 'day', since: NOW - 23 * 3_600_000, until: NOW, sliceMs: 3_600_000 }, lanes: [{ runnerId: 'rn_mini', name: 'homelab-mini', hours: [{ hour: NOW, worked: 3, unchanged: 2, failed: 1 }], checkins: [] }] });
     if (path === '/api/runners/removed') return Response.json({ runners: [], cursor: null });
     if (path === '/api/runners') return options.fail ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ observedAt: NOW, storedCredentials: options.storedCredentials ?? {}, runners: options.rows ?? [runner], legacyWorkers: legacy, queue: options.queue ?? { observedAt: NOW, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false } });
     if (path === '/api/device/preview') return Response.json({ subject: 'runner', runnerName: options.previewName ?? 'homelab-mini', replacingRunnerId: options.previewRunnerId ?? 'rn_mini', machineName: 'Mini in the office', os: 'macOS', ip: '192.0.2.1', approverIp: '192.0.2.2', ageSeconds: 12, scope: 'runner', expiresAt: NOW + 60000 });
@@ -47,7 +48,7 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
       runner = { ...runner, credentialChoices: { ...runner.credentialChoices, [body.agent]: body.choice } };
       return Response.json({ credentialChoices: runner.credentialChoices });
     }
-    if (path.startsWith('/api/runners/rn_mini/')) { writes.push(`${init?.method} ${path}`); return Response.json({ changed: true }); }
+    if (init?.method === 'POST' && /^\/api\/runners\/rn_[^/]+\/[a-z-]+$/.test(path)) { writes.push(`${init.method} ${path}`); return Response.json({ changed: true }); }
     return new Response(null, { status: 404 });
   }) as typeof fetch;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -58,6 +59,8 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
 
 const MACHINE = '/settings/people/runners/rn_mini';
 const card = (name: string) => screen.getByText(name).closest('li')!;
+/** The verdict a machine page leads with, once drawn. */
+const verdictOf = (label: string) => waitFor(() => { const element = document.querySelector<HTMLElement>(`[data-machine-verdict="${label}"]`); expect(element).not.toBeNull(); return element!; });
 
 describe('Runners page', () => {
   it('lists one row per runner with how it stands, what it is doing or last did, and its machine page, and no controls', async () => {
@@ -76,54 +79,71 @@ describe('Runners page', () => {
     expect(card('Paused machine').textContent).toContain('Paused; it takes no new work');
     expect(card('Stale machine').textContent).toContain('last seen 30 min ago');
     expect(within(card('Busy machine')).getByRole('link', { name: 'Its machine' }).getAttribute('href')).toBe('/settings/people/runners/busy');
-    expect(within(card('Joined machine')).getByRole('link', { name: 'Its machine' }).getAttribute('href')).toBe('/settings/people/machines/mac_1');
+    expect(within(card('Joined machine')).getByRole('link', { name: 'Its machine' }).getAttribute('href')).toBe('/settings/people/machines/mac_1#runner-on_mac');
     for (const name of ['Update now', 'Use this machine’s sign-in', 'More actions for Busy machine']) expect(screen.queryByRole('button', { name })).toBeNull();
     expect(writes).toEqual([]);
   });
 });
 
 describe('a runner’s machine page', () => {
-  it('leads with Working and its run, then its agent, who pays, its last day and the release it reported, and updates it between runs', async () => {
+  it('leads with Working only while it holds a run, then its learning agent and payer, its recent runs and the release it reported, and updates it between runs', async () => {
     const writes = mount('admin', { ...RUNNER, busy: { projectId: 'proj_1', projectName: 'Myco', task: 'title-summary', at: NOW, status: 'running', runId: 'run_1', leaseExpiresAt: NOW + 60000 } }, { route: MACHINE });
-    const verdict = await screen.findByText('Working');
-    expect(verdict.closest('[data-machine-verdict]')?.textContent).toContain('Writing a title for Myco');
+    expect((await verdictOf('Working')).textContent).toContain('Writing a title for Myco');
     expect(screen.getByText(/It reported macOS, arm64, version 2.0.0-alpha.2/)).toBeTruthy();
-    expect(await screen.findByText('With Claude Code, paid by its own sign-in')).toBeTruthy();
-    expect(screen.getByText(/It is the only runner with Claude Code/)).toBeTruthy();
-    expect((await screen.findByText(/6 runs: 3 worked, 2 changed nothing, 1 failed/))).toBeTruthy();
+    expect(await screen.findByText('For learning from sessions: Claude Code, paid by its own sign-in')).toBeTruthy();
+    expect(screen.getByText(/other work may use another agent\. It is the only runner with Claude Code\./)).toBeTruthy();
+    expect(await screen.findByText(/^Since .+: 6 runs, 3 worked, 2 changed nothing, 1 failed\./)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'See its runs' }).getAttribute('href')).toBe('/work/history?runner=rn_mini');
-    expect(screen.getByText('A newer release, 2.0.0-alpha.3, is out.', { exact: false })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Update now' }));
+    expect(screen.getByText(/A newer release, 2.0.0-alpha.3, is out\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Update homelab-mini now' }));
     await waitFor(() => expect(writes).toEqual(['POST /api/runners/rn_mini/update']));
+  });
+
+  it('says Online for a runner waiting for work, never Working', async () => {
+    mount('admin', RUNNER, { route: MACHINE });
+    expect((await verdictOf('Online')).textContent).toContain('Waiting for work.');
+    expect(document.querySelector('[data-machine-verdict="Working"]')).toBeNull();
   });
 
   it('shows a member the runner without any control', async () => {
     const writes = mount('member', RUNNER, { route: MACHINE });
-    await screen.findByText('Working');
-    expect((screen.getByRole('switch', { name: 'Runs Myco’s work' }) as HTMLButtonElement).disabled).toBe(true);
-    for (const name of ['Update now', 'Set this machine apart', 'Remove…']) expect(screen.queryByRole('button', { name })).toBeNull();
-    expect(screen.getByText('Which agent it uses and who pays are shown to an admin.')).toBeTruthy();
+    await verdictOf('Online');
+    expect((screen.getByRole('switch', { name: 'homelab-mini runs Myco’s work' }) as HTMLButtonElement).disabled).toBe(true);
+    for (const name of ['Update homelab-mini now', 'Set homelab-mini apart', 'Remove homelab-mini…', 'More for homelab-mini']) expect(screen.queryByRole('button', { name })).toBeNull();
+    expect(screen.getByText('Which agent it would use and who pays are shown to an admin.')).toBeTruthy();
     expect(writes).toEqual([]);
   });
 
-  it('says an offline runner could use its agent when last seen, never that it can now, and holds the update', async () => {
-    mount('admin', { ...RUNNER, connected: false, display: 'Offline', lastSeenAt: NOW - 3 * 3_600_000 }, { route: MACHINE });
-    expect((await screen.findByText('Offline')).closest('[data-machine-verdict]')?.textContent).toContain('last seen 3 h ago');
-    expect(await screen.findByText(/It could use it when last seen\./)).toBeTruthy();
+  it('says an offline runner could use its agent by the sign-ins it last reported, and holds the update', async () => {
+    mount('admin', { ...RUNNER, connected: false, display: 'Offline', lastSeenAt: NOW - 3 * 3_600_000, offersObservedAt: NOW - 3 * 3_600_000 }, { route: MACHINE });
+    expect((await verdictOf('Offline')).textContent).toContain('last seen 3 h ago');
+    expect(await screen.findByText(/It could use it, by the sign-ins it reported 3 h ago\./)).toBeTruthy();
     expect(screen.queryByText(/can use it now/)).toBeNull();
-    expect((screen.getByRole('button', { name: 'Update now' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Update homelab-mini now' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('turns the runner off, removes it behind one confirmation, and replaces its registration through the device flow', async () => {
+  it('shows a held release with its end, its update phase since when, and a missing channel', async () => {
+    mount('admin', { ...RUNNER, channel: null, lastCheckAt: NOW - 3_600_000, blockedVersion: { version: '2.0.0-alpha.3', until: NOW - 60_000, reason: 'Launch failed' }, updateState: { phase: 'cleanup_pending', since: NOW - 120_000, reason: 'Guardian cleanup failed' } }, { route: MACHINE });
+    const release = await screen.findByText('homelab-mini is on 2.0.0-alpha.2');
+    const row = release.closest('[data-setting]')!;
+    expect(row.textContent).toContain('It reported no release channel, so it can’t be updated from here.');
+    expect(row.textContent).toContain('It last checked for an update 1 h ago.');
+    expect(row.textContent).toMatch(/Finishing update cleanup since .+: Guardian cleanup failed\./);
+    expect(row.textContent).toMatch(/Release 2.0.0-alpha.3 was held back until .+; that hold has ended: Launch failed\./);
+  });
+
+  it('turns the runner off, removes it on its own, and replaces its registration through the device flow', async () => {
     const writes = mount('admin', RUNNER, { route: MACHINE });
-    fireEvent.click(await screen.findByRole('switch', { name: 'Runs Myco’s work' }));
+    fireEvent.click(await screen.findByRole('switch', { name: 'homelab-mini runs Myco’s work' }));
     await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/pause'));
-    fireEvent.click(screen.getByRole('button', { name: 'Remove…' }));
-    expect((await screen.findByRole('dialog')).textContent).toContain('the process on the machine isn’t ended');
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove homelab-mini…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove homelab-mini as a runner?' });
+    expect(dialog.textContent).toContain('the process on the machine isn’t ended');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove homelab-mini' }));
     await waitFor(() => expect(writes).toContain('POST /api/runners/rn_mini/remove'));
+    expect(writes.filter((write) => write.includes('/api/machines/'))).toEqual([]);
     fireEvent.keyDown(screen.getByRole('button', { name: 'More for homelab-mini' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace its runner registration' }));
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace its registration' }));
     fireEvent.change(screen.getByLabelText('Device code'), { target: { value: 'BCDF-GHJK' } });
     expect((screen.getByRole('button', { name: 'Approve replacement' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Check machine' }));
@@ -135,12 +155,43 @@ describe('a runner’s machine page', () => {
   it('refuses a replacement preview for a different runner', async () => {
     const writes = mount('admin', RUNNER, { route: MACHINE, previewRunnerId: 'rn_other' });
     fireEvent.keyDown(await screen.findByRole('button', { name: 'More for homelab-mini' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace its runner registration' }));
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Replace its registration' }));
     fireEvent.change(screen.getByLabelText('Device code'), { target: { value: 'BCDF-GHJK' } });
     fireEvent.click(screen.getByRole('button', { name: 'Check machine' }));
     await screen.findByText(/This request does not match homelab-mini/);
     expect((screen.getByRole('button', { name: 'Approve replacement' }) as HTMLButtonElement).disabled).toBe(true);
     expect(writes).toEqual([]);
+  });
+
+  it('lists each runner registration on one machine with its own controls and links, whichever checked in last', async () => {
+    const older = { ...RUNNER, machineId: 'mac_1', lastSeenAt: NOW - 60_000 };
+    const newer = { ...RUNNER, id: 'rn_mini2', name: 'mini-two', machineId: 'mac_1', lastSeenAt: NOW };
+    const writes = mount('admin', RUNNER, { route: '/settings/people/machines/mac_1', rows: [older, newer] });
+    const first = await waitFor(() => { const card = document.querySelector<HTMLElement>('[data-runner-card="rn_mini"]'); expect(card).not.toBeNull(); return card!; });
+    const second = document.querySelector<HTMLElement>('[data-runner-card="rn_mini2"]')!;
+    expect(first.id).toBe('runner-rn_mini');
+    expect(within(first).getByRole('link', { name: 'homelab-mini’s check-ins' }).getAttribute('href')).toBe('/work/runners/rn_mini');
+    expect(within(second).getByRole('link', { name: 'mini-two’s check-ins' }).getAttribute('href')).toBe('/work/runners/rn_mini2');
+    fireEvent.click(within(first).getByRole('button', { name: 'Remove homelab-mini…' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Remove homelab-mini as a runner?' })).getByRole('button', { name: 'Remove homelab-mini' }));
+    await waitFor(() => expect(writes).toEqual(['POST /api/runners/rn_mini/remove']));
+  });
+
+  it('leads an old runner anchor to that runner’s card on its machine', async () => {
+    mount('admin', RUNNER, { route: '/runners#runner-rn_mini2', rows: [RUNNER, { ...RUNNER, id: 'rn_mini2', name: 'mini-two', machineId: 'mac_1' }] });
+    await waitFor(() => expect(document.querySelector('[data-runner-card="rn_mini2"]')).not.toBeNull());
+    expect(screen.getByRole('heading', { level: 1, name: 'mini-two' })).toBeTruthy();
+  });
+
+  it('shows the legacy worker on a machine with no registered runner, its work, and the way to a runner', async () => {
+    const legacy: WorkerRow = { credentialId: 'mt_legacy', machineId: 'mac_legacy', offers: [{ id: 'codex', authenticated: true }], capabilities: [], lastReason: null, lastSeenAt: NOW, eligible: true, recent: true,
+      busy: { runId: 'run_9', projectId: 'proj_1', task: 'title-summary', leaseExpiresAt: NOW + 60_000 } };
+    mount('admin', RUNNER, { route: '/settings/people/machines/mac_legacy', rows: [], legacy: [legacy] });
+    expect((await verdictOf('Working')).textContent).toContain('as a legacy worker');
+    const card = document.querySelector('[data-legacy-on-machine]')!;
+    expect(card.textContent).toContain('It runs Myco’s work as a legacy worker, with no registered runner');
+    expect(card.textContent).toContain(`myco runner register ${window.location.origin}`);
+    expect(screen.queryByText('No')).toBeNull();
   });
 
   it('shows a failed read as unavailable without inventing an empty fleet or queue', async () => {
@@ -180,7 +231,7 @@ describe('a runner’s machine page', () => {
 });
 
 describe('setting one machine apart', () => {
-  const apart = async () => { fireEvent.click(await screen.findByRole('button', { name: 'Set this machine apart' })); return screen.findByRole('dialog'); };
+  const apart = async () => { fireEvent.click(await screen.findByRole('button', { name: 'Set homelab-mini apart' })); return screen.findByRole('dialog'); };
 
   it('saves who pays for one agent on this runner alone, with the stored key offered only when one is usable', async () => {
     const writes = mount('admin', RUNNER, { route: MACHINE, storedCredentials: { 'claude-code': true } });
@@ -200,15 +251,16 @@ describe('setting one machine apart', () => {
   });
 });
 
-it('shows a failed agent sign-in on the machine page while another agent keeps the runner working', async () => {
-  mount('admin', { ...RUNNER, offers: [
+it('shows a failed agent sign-in and a stored-key failure for another agent on the machine page while the runner stays online', async () => {
+  mount('admin', { ...RUNNER, storedKeyFailures: [{ agent: 'cursor', slot: 'cursor', failure: 'invalid_key' }], offers: [
     { id: 'claude-code', authenticated: false, unavailableReason: 'login_missing',
       signInFailure: { name: 'Claude Code', source: 'own', hint: 'Open a GUI Terminal on this Mac, run claude, then /login.' } },
     { id: 'codex', authenticated: true },
   ] }, { route: MACHINE });
   const failure = await screen.findByText('Claude Code could not sign in at launch. Open a GUI Terminal on this Mac, run claude, then /login.');
+  expect(await screen.findByText(/^Cursor · The Cursor key was rejected\./)).toBeTruthy();
   expect(failure.closest('details')).toBeNull();
-  expect(screen.getByText('Working')).toBeTruthy();
+  await verdictOf('Online');
 });
 
 describe('Runner page', () => {
@@ -220,7 +272,7 @@ describe('Runner page', () => {
     mount('member', RUNNER, { route: MACHINE, runs: (cursor) => cursor === null
       ? { runner: facts, rows: [ran('run_new', 'running', 1), ran('run_ok', 'worked', 20), ran('run_bad', 'failed', 40)], cursor: 'next' }
       : { runner: facts, rows: [ran('run_old', 'changed_nothing', 90)], cursor: null } });
-    fireEvent.click(await screen.findByRole('link', { name: 'Its check-ins' }));
+    fireEvent.click(await screen.findByRole('link', { name: 'homelab-mini’s check-ins' }));
     expect(await screen.findByRole('heading', { level: 1, name: 'homelab-mini' })).toBeTruthy();
     expect(screen.getByText(/Last checked in just now/)).toBeTruthy();
     expect(screen.getByText(/1 of the last 2 finished runs worked/)).toBeTruthy();

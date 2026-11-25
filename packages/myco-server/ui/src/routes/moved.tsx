@@ -52,11 +52,13 @@ export const MOVED: readonly MovedAddress[] = [
   { from: movedPaths.serverRunner, to: ({ params, search }) => `${runnerPath(params.runnerId ?? '')}${search}` },
 ];
 
+/** Leads an old address to its new one, keeping the old address's fragment where the new one names none. */
 function Moved({ address }: { address: MovedAddress }) {
   const params = useParams();
-  const { search } = useLocation();
+  const { search, hash } = useLocation();
   const admin = useIsAdmin();
-  return <Navigate to={address.to({ params, search, admin })} replace />;
+  const to = address.to({ params, search, admin });
+  return <Navigate to={to.includes('#') ? to : `${to}${hash}`} replace />;
 }
 
 /** One route per old address, each leading to where its page is now. */

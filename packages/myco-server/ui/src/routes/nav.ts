@@ -198,9 +198,12 @@ export function machinePath(machineId: string): string {
   return `${MACHINES_PATH}/${encodeURIComponent(machineId)}`;
 }
 
-/** A runner's machine page: its machine's, or the runner's own where it reported no machine id. */
+/**
+ * A runner registration's place on a machine page: its card on the page of the machine its registration is bound to, or
+ * the runner's own page where none is bound.
+ */
 export function runnerMachinePath(runner: { id: string; machineId: string | null }): string {
-  return runner.machineId == null ? `${RUNNER_MACHINES_PATH}/${encodeURIComponent(runner.id)}` : machinePath(runner.machineId);
+  return runner.machineId == null ? `${RUNNER_MACHINES_PATH}/${encodeURIComponent(runner.id)}` : `${machinePath(runner.machineId)}#runner-${encodeURIComponent(runner.id)}`;
 }
 
 /** Where one run of Myco's work opens: its panel over the project's work. */

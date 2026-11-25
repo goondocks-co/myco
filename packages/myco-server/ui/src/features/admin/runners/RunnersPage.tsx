@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { ActionLink, Button, Card, ErrorState, StatusChip, type Tone } from '../../../design';
+import { Navigate, useLocation } from 'react-router-dom';
+import { ActionLink, Button, Card, ErrorState, ShowMore, StatusChip, type Tone } from '../../../design';
 import { permissionOf, useMe } from '../../../hooks/use-me';
-import { fetchJson, type RunnerRow } from '../../../lib/api';
-import { useFleet } from '../../../hooks/use-fleet';
+import type { RunnerRow } from '../../../lib/api';
+import { useFleet, useRemovedRunnerPages, useRunnerPages } from '../../../hooks/use-fleet';
 import { runnerMachinePath } from '../../../routes/nav';
 import { WorkTabs } from '../../work/WorkTabs';
 import { AdminPage, AdminSection } from '../AdminFrame';
@@ -12,13 +12,22 @@ import { machineOfWorker, useMachines } from '../machines';
 import { LEGACY_WORKER_LABEL } from '../workers';
 import { LegacyWorker } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
-import { live } from '../../../lib/live';
 import { agoWords } from '@goondocks/myco-shared/time-words';
+
+/** A runner's anchor on an older Runners address, which now leads to that runner's own place. */
+const RUNNER_ANCHOR = /^#runner-(.+)$/;
 
 
 /** Every machine entrusted with Myco's work, one row each leading to its machine's page; removed runners and legacy workers below. */
 export function RunnersPage() {
+  const anchored = RUNNER_ANCHOR.exec(useLocation().hash);
+  if (anchored !== null) return <Navigate to={runnerMachinePath({ id: decodeURIComponent(anchored[1]!), machineId: null })} replace />;
+  return <RunnersList />;
+}
+
+function RunnersList() {
   const runners = useFleet();
+  const pages = useRunnerPages();
   const permission = permissionOf(useMe().data, 'runners');
   const machines = useMachines();
   const [setup, setSetup] = useState(false);
@@ -31,11 +40,12 @@ export function RunnersPage() {
       <AdminSection id="runners" title="Registered runners" description="A runner is a machine you’ve chosen to run Myco’s work. Each opens its machine’s page, where it is turned on or off, who pays is set apart, and it is updated or removed.">
         {permission.allowed && <Button size="sm" onClick={() => setSetup(!setup)}>Add runner</Button>}
         {setup && <div className="rounded-card border border-line p-s4 t-small text-ink-2"><p>On the machine you want to use, run <code>myco runner register {window.location.origin}</code>. Open its device approval link, review the machine and approve it. If this machine has a legacy worker, let its assigned work finish and run <code>myco worker uninstall --server {window.location.origin}</code> on that machine. Then run <code>myco runner install</code> on that machine to start at login.</p><p className="mt-s2">Install a supported coding agent on that machine. Sign in there, or choose a stored key on its machine’s page after registration. Myco reports its sign-in; a model listing does not prove provider access.</p></div>}
-        {runners.data?.runners.length === 0 && !runners.isError && <p className="t-body text-muted">No runners are registered. Add a machine to run Myco’s work.</p>}
-        {(runners.data?.runners.length ?? 0) > 0 && (
-          <Card padding="flush"><ul aria-label="Registered runners" className="flex flex-col divide-y divide-line">{runners.data?.runners.map((runner) => <RunnerItem key={runner.id} runner={runner} />)}</ul></Card>
+        {pages.query.isError && <ErrorState error={pages.query.error} onRetry={() => void (pages.query.isFetchNextPageError ? pages.query.fetchNextPage() : pages.query.refetch())} />}
+        {pages.query.isSuccess && !pages.query.hasNextPage && pages.runners.length === 0 && <p className="t-body text-muted">No runners are registered. Add a machine to run Myco’s work.</p>}
+        {pages.runners.length > 0 && (
+          <Card padding="flush"><ul aria-label="Registered runners" className="flex flex-col divide-y divide-line">{pages.runners.map((runner) => <RunnerItem key={runner.id} runner={runner} />)}</ul></Card>
         )}
-        {runners.data?.cursor != null && runners.data.totals !== undefined && <p className="t-small text-muted">Showing the first {runners.data.runners.length} of {runners.data.totals.active} runners.</p>}
+        {(pages.query.hasNextPage || pages.query.isFetchingNextPage) && <ShowMore shown={pages.runners.length} total={pages.total} noun="runners" hasMore={pages.query.hasNextPage} pending={pages.query.isFetchingNextPage} onMore={() => void pages.query.fetchNextPage()} />}
       </AdminSection>
       <RemovedRunners />
       <AdminSection id="legacy-workers" title={LEGACY_WORKER_LABEL} description="These machines can also run Myco’s work. Register each machine, let its work finish, then uninstall its legacy worker before installing the runner service.">
@@ -47,20 +57,20 @@ export function RunnersPage() {
   );
 }
 
-const REMOVED_KEY = ['runners', 'removed'] as const;
-interface RemovedAnswer { runners: RunnerRow[]; cursor: string | null }
-
-/** Removed runners load on request: the active list and its totals never carry them. */
+/** Removed runners load on request, page by page: the active list and its totals never carry them. Each leads to its place. */
 function RemovedRunners() {
   const [open, setOpen] = useState(false);
-  const removed = useQuery({ queryKey: REMOVED_KEY, queryFn: ({ signal }) => fetchJson<RemovedAnswer>('/api/runners/removed', signal), enabled: open, ...live<RemovedAnswer>({ follows: ['fleet'] }) });
+  const removed = useRemovedRunnerPages(open);
   return (
     <AdminSection id="removed-runners" title="Removed runners" description="Runners that can no longer run work.">
       <details onToggle={event => setOpen(event.currentTarget.open)} className="t-small text-ink-2">
         <summary className="min-h-tap content-center cursor-pointer">Show removed runners</summary>
-        {removed.isError && <ErrorState error={removed.error} onRetry={() => void removed.refetch()} />}
-        {removed.data?.runners.length === 0 && <p className="text-muted">No runners have been removed.</p>}
-        <ul className="mt-s2 flex flex-col gap-s1">{removed.data?.runners.map(runner => <li key={runner.id}>{runner.name}{runner.removedAt === null ? '' : ` — removed ${agoWords(runner.removedAt)}`}</li>)}</ul>
+        {removed.query.isError && <ErrorState error={removed.query.error} onRetry={() => void (removed.query.isFetchNextPageError ? removed.query.fetchNextPage() : removed.query.refetch())} />}
+        {removed.query.isSuccess && removed.runners.length === 0 && <p className="text-muted">No runners have been removed.</p>}
+        <ul className="mt-s2 flex flex-col gap-s1">{removed.runners.map(runner => (
+          <li key={runner.id} className="flex flex-wrap items-center gap-x-s3">{runner.name}{runner.removedAt === null ? '' : ` — removed ${agoWords(runner.removedAt)}`}<ActionLink to={runnerMachinePath(runner)}>Its machine</ActionLink></li>
+        ))}</ul>
+        {(removed.query.hasNextPage || removed.query.isFetchingNextPage) && <ShowMore shown={removed.runners.length} noun="removed runners" hasMore={removed.query.hasNextPage} pending={removed.query.isFetchingNextPage} onMore={() => void removed.query.fetchNextPage()} />}
       </details>
     </AdminSection>
   );

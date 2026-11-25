@@ -86,7 +86,7 @@ describe('What happened', () => {
     const panel = await open('run_embed1914', searchRunCutOff());
     const text = story(panel).textContent!;
     expect(text).toContain('Queued, on its schedule');
-    expect(within(line(panel, 'claim-att_5e13c0b7')).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/work/runners/rn_7f3a91c2');
+    expect(within(line(panel, 'claim-att_5e13c0b7')).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/settings/people/runners/rn_7f3a91c2');
     const grouped = story(panel).querySelectorAll('[data-story-row^="calls-"]');
     expect(grouped).toHaveLength(1);
     expect(grouped[0]!.textContent).toContain('Advanced the search index 8 times');

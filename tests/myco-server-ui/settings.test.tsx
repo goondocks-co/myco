@@ -1571,7 +1571,7 @@ describe('People and machines', () => {
     expect(machines.textContent).toContain('Runners that are machines of their own are listed once every machine is read.');
     fireEvent.click(within(machines).getByRole('button', { name: /^Show more/ }));
     const row = await waitFor(() => found('#machine-m_ada'));
-    expect(row.textContent).toContain('Captures Claude Code, Codex · also a runner');
+    expect(row.textContent).toContain('Captures Claude Code, Codex · runs Myco’s work as ada-mbp');
     expect(row.textContent).toContain('Capturing');
     expect(within(row).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe('/settings/people/machines/m_ada');
     const mini = await waitFor(() => found('#runner-rn_mini'));
@@ -1664,7 +1664,7 @@ describe('choosing a tier\'s model from the models the machines listed', () => {
     mount('/settings/advanced#model-sizes');
     await group('Codex model sizes');
     expect(document.querySelector('[data-model-listing="codex"]')?.textContent)
-      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.');
+      .toBe('Models listed by your machines 1 h ago, each with its own sign-in to Codex. Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices, set on Models or on each runner’s machine page.');
   });
 
   it('keeps a stored model no machine listed, and says so in plain words', async () => {

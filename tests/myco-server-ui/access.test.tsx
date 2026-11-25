@@ -111,10 +111,10 @@ async function personMenu(name: string): Promise<HTMLElement> {
   return screen.findByRole('menu');
 }
 
-/** Opens the machine page's Remove confirmation. */
+/** Opens the machine page's confirmation to stop it capturing. */
 async function openRemove(): Promise<HTMLElement> {
-  fireEvent.click(await screen.findByRole('button', { name: 'Remove…' }));
-  return screen.findByRole('dialog', { name: 'Remove Ada’s MacBook?' });
+  fireEvent.click(await screen.findByRole('button', { name: 'Stop capturing…' }));
+  return screen.findByRole('dialog', { name: 'Stop Ada’s MacBook capturing?' });
 }
 
 /** Opens a ⋯ menu by its name and answers the menu. */
@@ -446,7 +446,7 @@ describe('machines', () => {
     cleanup();
     mount(ADA_MACHINE);
     expect((await screen.findByText('Offline')).closest('[data-machine-verdict]')?.textContent).toContain('Its sign-in expired');
-    expect(screen.queryByRole('button', { name: 'Remove…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop capturing…' })).toBeNull();
   });
 
   it('says, before a machine is stopped, how it writes again, and stops every live runtime on it', async () => {
@@ -458,7 +458,7 @@ describe('machines', () => {
     mount(ADA_MACHINE);
     const dialog = await openRemove();
     expect(dialog.textContent).toContain(REJOIN_FOR_ADMIN);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     await waitFor(() => expect(posts.map((p) => p.path)).toEqual(['/api/machines/ada_5a2d54af/stop']));
   });
 
@@ -466,7 +466,7 @@ describe('machines', () => {
     accessServer({ member: [credential()] }, { '/api/machines/ada_5a2d54af/stop': () => new Response(null, { status: 503 }) });
     mount(ADA_MACHINE);
     const dialog = await openRemove();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
   });
 
@@ -477,7 +477,7 @@ describe('machines', () => {
     });
     mount(ADA_MACHINE);
     expect(await screen.findByText(/Only the owner can stop the owner's machines/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Remove…' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Stop capturing…' })).toBeNull();
     expect(posts).toEqual([]);
   });
 
@@ -485,9 +485,9 @@ describe('machines', () => {
     accessServer({ member: [credential()] }, { '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 0, revokedBy: ADA }) });
     mount(ADA_MACHINE);
     const dialog = await openRemove();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('No sign-in was stopped');
-    expect(screen.getByRole('dialog', { name: 'Remove Ada’s MacBook?' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Stop Ada’s MacBook capturing?' })).toBeTruthy();
   });
 
   it('retries one machine-scoped stop after a refusal', async () => {
@@ -504,12 +504,12 @@ describe('machines', () => {
     );
     mount(ADA_MACHINE);
     const dialog = await openRemove();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (503).');
     expect(asked).toEqual(['machine']);
     fails = false;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Remove Ada’s MacBook?' })).toBeNull());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stop capturing' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Stop Ada’s MacBook capturing?' })).toBeNull());
     expect(asked).toEqual(['machine', 'machine']);
   });
 
@@ -532,7 +532,7 @@ describe('machines', () => {
       },
     });
     mount(ADA_MACHINE);
-    expect(await screen.findByRole('button', { name: 'Remove…' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Stop capturing…' })).toBeTruthy();
     expect(asked).toEqual([]);
   });
 
@@ -552,6 +552,29 @@ describe('machines', () => {
     expect(rows[0]).toContain('Session started');
     expect(rows[1]).toContain('Prompt');
     expect(rawIdsIn(dialog)).toEqual([]);
+  });
+});
+
+describe('a machine that captures and runs Myco’s work', () => {
+  it('lets a non-owner admin stop its capture and remove its runner as two actions, each saying what carries on', async () => {
+    const runner = { id: 'rn_mini', name: 'mini', machineId: 'ada_5a2d54af', state: 'enabled', display: 'Online', connected: true, busy: null, revision: 1, createdAt: NOW_MS, createdBy: ADA, removedAt: null,
+      lastSeenAt: NOW_MS, offersObservedAt: NOW_MS, offers: [], os: null, arch: null, version: null, channel: null, latestVersion: null, lastCheckAt: null, lastResult: null, blockedVersion: null, updateState: null, updateRequest: null,
+      readiness: { state: 'ready', reason: '', observedAt: NOW_MS }, capabilities: [], labels: [], preference: null, models: [], lastReason: null, lastAttempted: null, lastCompleted: null, lastFailed: null };
+    const { posts } = accessServer({ member: [credential()] }, {
+      '/api/runners': () => Response.json({ observedAt: NOW_MS, runners: [runner], legacyWorkers: [], queue: { observedAt: NOW_MS, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false }, cursor: null }),
+      '/api/machines/ada_5a2d54af/stop': () => Response.json({ revoked: 1, revokedBy: ADA }),
+      '/api/runners/rn_mini/remove': () => Response.json({ changed: true }),
+    });
+    mount(ADA_MACHINE);
+    const stop = await openRemove();
+    expect(stop.textContent).toContain('mini keeps taking Myco’s work; remove it as a runner on its own.');
+    fireEvent.click(within(stop).getByRole('button', { name: 'Stop capturing' }));
+    await waitFor(() => expect(posts.map((post) => post.path)).toEqual(['/api/machines/ada_5a2d54af/stop']));
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove mini…' }));
+    const remove = await screen.findByRole('dialog', { name: 'Remove mini as a runner?' });
+    expect(remove.textContent).toContain('Capture on this machine continues');
+    fireEvent.click(within(remove).getByRole('button', { name: 'Remove mini' }));
+    await waitFor(() => expect(posts.map((post) => post.path)).toEqual(['/api/machines/ada_5a2d54af/stop', '/api/runners/rn_mini/remove']));
   });
 });
 
