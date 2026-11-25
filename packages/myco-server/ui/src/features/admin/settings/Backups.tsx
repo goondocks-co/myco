@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useStatus } from '../../../hooks/use-status';
+import { live } from '../../../lib/live';
 import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
@@ -26,7 +27,7 @@ const FOLLOWED_RESTORE = ['restore-followed'] as const;
 /** The restore started, continued or stopped here, held for the dashboard's session so closing Backups never loses it. */
 function useFollowedRestore(): [string | null, (id: string | null) => void] {
   const client = useQueryClient();
-  const query = useQuery({ queryKey: FOLLOWED_RESTORE, queryFn: () => client.getQueryData<string | null>(FOLLOWED_RESTORE) ?? null, staleTime: Infinity, gcTime: Infinity });
+  const query = useQuery({ queryKey: FOLLOWED_RESTORE, queryFn: () => client.getQueryData<string | null>(FOLLOWED_RESTORE) ?? null, gcTime: Infinity, ...live('still') });
   return [query.data ?? null, (id) => client.setQueryData(FOLLOWED_RESTORE, id)];
 }
 
