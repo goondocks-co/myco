@@ -19,10 +19,11 @@ const replacementRegistration = assertion<[request: string, now: number, approve
     WHERE r.id = ?4 AND r.revision = ?5 AND r.state <> 'removed' AND d.replacing_runner_id = r.id)` });
 
 const insertRunner = write<[runner: string, now: number, approver: string, request: string]>({ name: 'runners.insert', sql:
-  `INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id)
-    SELECT ?1, d.runner_name, 'enabled', 1, 1, '[]', ?2, ?3, d.id FROM device_requests d WHERE d.id = ?4 AND d.subject = 'runner'` });
+  `INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id, machine_id)
+    SELECT ?1, d.runner_name, 'enabled', 1, 1, '[]', ?2, ?3, d.id, d.machine_id FROM device_requests d WHERE d.id = ?4 AND d.subject = 'runner'` });
 const recredentialRunner = write<[epoch: number, request: string, runner: string]>({ name: 'runners.recredential', sql:
-  `UPDATE runners SET credential_epoch = ?1, revision = revision + 1, registration_id = ?2, credential_choices = '{}', credential_choice_times = '{}' WHERE id = ?3` });
+  `UPDATE runners SET credential_epoch = ?1, revision = revision + 1, registration_id = ?2, credential_choices = '{}', credential_choice_times = '{}',
+    machine_id = (SELECT d.machine_id FROM device_requests d WHERE d.id = ?2) WHERE id = ?3` });
 const revokeOldCredentials = write<[now: number, runner: string]>({ name: 'runners.recredentialRevoke', sql:
   `UPDATE runner_credentials SET revoked_at = ?1, revoked_by = 'runner-recredentialed' WHERE runner_id = ?2 AND revoked_at IS NULL` });
 const insertFirstCredential = write<[credential: string, runner: string, epoch: number, now: number, expiresAt: number, request: string]>({ name: 'runners.insertFirstCredential', sql:

@@ -101,7 +101,10 @@ export interface FleetRun {
 }
 export interface RunnerFleetRecord {
   id: string; name: string; state: 'enabled' | 'paused' | 'removed'; revision: number;
-  /** The machine id the runner last reported, the one a member sign-in on the same machine claims; null when it reported none. */
+  /**
+   * The machine id bound to the runner's approved registration, the one a member sign-in on the same machine claims; null
+   * for a registration approved without one. Readable by every member, as the runner list is.
+   */
   machineId: string | null;
   createdAt: number; createdBy: string | null; removedAt: number | null;
   lastSeenAt: number | null; updateAvailable?: boolean; awaitingReplacement?: boolean; updateMetadataUnavailable?: boolean; connected: boolean; display: RunnerDisplay;

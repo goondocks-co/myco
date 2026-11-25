@@ -69,7 +69,7 @@ export async function observeRuns(target: RouteTarget, seed: RunsSeed): Promise<
     queued: await run(seed.queued),
     claimed: await run(seed.claimed),
     runner: [runners.status, (runners.body.runners ?? []).filter((row: { id: string }) => row.id === seed.runner.id).map((row: { models?: unknown[] }) => ({
-      ...pick(row, ['id', 'name', 'state', 'offers', 'credentialChoices']),
+      ...pick(row, ['id', 'name', 'machineId', 'state', 'offers', 'credentialChoices']),
       // The model catalog the runner reported.
       models: (row.models ?? []).map((catalog) => pick(catalog, ['harness', 'source', 'available', 'fetchedAt'])),
     }))],
