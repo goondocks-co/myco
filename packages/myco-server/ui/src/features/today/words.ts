@@ -236,7 +236,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         title: `Repository preparation keeps failing in ${projectName(item.projectId) ?? 'a project'}`,
         detail: `${runErrorWords('repository_unprepared', null, item.failure)}${item.backoff ? ' Scheduled retries are slowed down.' : ''}${item.retryAt > now ? ` Next retry in ${retryIn(item.retryAt, now)}.` : ' Another retry is due.'}`,
         action: { label: 'See the last attempt', to: runPath(item.projectId, item.runId) },
-        decline: { label: 'Turn off what needs the repository', to: capabilitiesOf(item.projectId) },
+        decline: { label: 'Open this project’s switches', to: capabilitiesOf(item.projectId) },
       };
     case 'repository_missing':
       return repositoryNeededWords(item.projectId, projectName(item.projectId), item.codeMap);

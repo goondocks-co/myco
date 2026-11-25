@@ -3,10 +3,12 @@
  * it, from the status read, from what needs you (including failures Myco keeps retrying) and from what Myco is doing
  * now, and takes the worst of them, so a line's answer, its words and the verdict always agree.
  *
- * A fact is one of: Yes; a known impairment (needs attention); a known outage (No); or not known (unread, still
- * counting, or nothing recent to go on). The verdict is No when any line is No; Needs attention when no line is No and
- * any line needs attention or is not known; Yes only when every line is Yes. Optional adoption, an access key nearing
- * expiry, a member's name that failed to save and one offline runner while another can work stay in "What needs you".
+ * A fact is one of: Yes; a known impairment (needs attention); a known outage (No); not known (unread, still
+ * counting, nothing recent to go on, or read before a refresh that failed); or still being read. The verdict is No
+ * when any line is No; Needs attention when no line is No and any line needs attention or is not known; Checking when
+ * nothing is wrong so far and a read a line rests on has not answered yet; Yes only when every line is Yes. Optional
+ * adoption, an access key nearing expiry, a member's name that failed to save and one offline runner while another can
+ * work stay in "What needs you".
  */
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
 import { isStoredKeyFailure } from '@goondocks/myco-shared/run-diagnostic';
@@ -24,7 +26,7 @@ import { taskWords } from '../workers';
 import { backlogWords, capabilityWords, lastLearningWords } from './words';
 
 /** How one line stands: Yes, a known impairment, a known outage, or not known (unread, counting, or no recent evidence). */
-export type LineState = 'yes' | 'attention' | 'no' | 'unknown' | 'failed';
+export type LineState = 'yes' | 'attention' | 'no' | 'unknown' | 'failed' | 'pending';
 
 export type LineKey = 'sessions' | 'learning' | 'runners' | 'budget' | 'database';
 
@@ -42,7 +44,7 @@ export interface WellLine {
   runners?: { working: number; total: number };
 }
 
-export type Verdict = 'Yes' | 'Needs attention' | 'No';
+export type Verdict = 'Yes' | 'Needs attention' | 'No' | 'Checking';
 
 const LABELS: Readonly<Record<LineKey, string>> = {
   sessions: 'Sessions arriving',
@@ -61,7 +63,7 @@ const NEEDS_A_LOOK = 'Needs a look';
 /** One fact on a line: how it stands, its short answer, and its words. */
 interface Fact { state: LineState; answer: string; words: string }
 
-const RANK: Readonly<Record<LineState, number>> = { yes: 0, unknown: 1, failed: 1, attention: 2, no: 3 };
+const RANK: Readonly<Record<LineState, number>> = { yes: 0, pending: 1, unknown: 2, failed: 2, attention: 3, no: 4 };
 const fact = (state: LineState, answer: string, words: string): Fact => ({ state, answer, words });
 
 /** A line from its facts: the worst of them gives its state and answer, and every fact's words are said. */
@@ -70,8 +72,16 @@ function lineOf(key: LineKey, facts: readonly Fact[], extra: Partial<WellLine> =
   return { key, label: LABELS[key], state: worst.state, answer: worst.answer, detail: facts.map((f) => f.words).filter(Boolean).join(' '), ...extra };
 }
 
-/** A read as the lines weigh it: its answer, or undefined while it has none, and whether its last read failed. */
-export interface Read<T> { data: T | undefined; failed: boolean }
+/** A read as the lines weigh it: its answer, or undefined while it has none; whether its last read failed; whether it has yet to answer at all. */
+export interface Read<T> { data: T | undefined; failed: boolean; pending: boolean }
+
+/** What a read adds to a line besides its answer: still being read, unreadable, or an earlier answer its last refresh could not replace. */
+function readFacts(read: Read<unknown>, what: string): Fact[] {
+  if (read.data === undefined) {
+    return [read.failed ? fact('unknown', 'Couldn’t check', `Couldn’t check ${what} just now.`) : fact('pending', 'Checking', `Still checking ${what}.`)];
+  }
+  return read.failed ? [fact('unknown', 'Couldn’t refresh', `Couldn’t refresh ${what} just now; this rests on what was read before.`)] : [];
+}
 
 /** The facts the lines read. */
 export interface HealthFacts {
@@ -83,6 +93,8 @@ export interface HealthFacts {
   server: readonly ServerItem[];
   /** The reads of those items that failed; an item read before them stays in `server`. */
   unchecked: readonly ServerReadName[];
+  /** The reads of those items that have not answered yet. */
+  checking: readonly ServerReadName[];
   work: Read<WorkNowAnswer>;
   payers: Read<AgentPayersAnswer>;
 }
@@ -97,7 +109,7 @@ const KIND_LINE: Readonly<Partial<Record<AttentionKind, LineKey>>> = {
 
 /** What the attention read says about one line: each item on it, retrying or not, and its checks that could not be read. */
 function attentionFacts(key: LineKey, { attention, server, now, projectName }: HealthFacts): Fact[] {
-  if (attention.data === undefined) return attention.failed ? [fact('unknown', 'Couldn’t check', 'Couldn’t check what needs you just now.')] : [];
+  if (attention.data === undefined) return readFacts(attention, 'what needs you');
   const backupFailed = server.some((item) => item.kind === 'backup_failed');
   const items = attention.data.items.filter((item) => KIND_LINE[item.kind] === key && !(backupFailed && item.kind === 'backup_overdue'));
   const unread = attention.data.unavailable.filter((kind) => KIND_LINE[kind] === key);
@@ -107,6 +119,7 @@ function attentionFacts(key: LineKey, { attention, server, now, projectName }: H
       return item.kind === 'no_worker' ? fact('no', 'Nothing running work', `${words.title}.`) : fact('attention', NEEDS_A_LOOK, `${words.title}.`);
     }),
     ...(unread.length === 0 ? [] : [fact('unknown', 'Couldn’t check', 'Not every check on it could be read.')]),
+    ...readFacts(attention, 'what needs you'),
   ];
 }
 
@@ -117,14 +130,19 @@ const UNCHECKED_ON_DATABASE: readonly ServerReadName[] = [SERVER_READS.storeChec
  * What the store checks, stored keys and automatic backups say about one line, and which of their reads failed. A key
  * runners work around stays in What needs you.
  */
-function serverFacts(key: LineKey, { server, unchecked }: HealthFacts): Fact[] {
+function serverFacts(key: LineKey, { server, unchecked, checking }: HealthFacts): Fact[] {
   const found = server.flatMap((item) => {
     const on: LineKey | null = item.kind === 'stored_key' ? (item.waits ? 'runners' : null) : 'database';
     if (on !== key) return [];
     return [fact('attention', NEEDS_A_LOOK, `${serverItemWords(item).title}.`)];
   });
   const unread = key === 'database' ? unchecked.filter((name) => UNCHECKED_ON_DATABASE.includes(name)) : [];
-  return unread.length === 0 ? found : [...found, fact('unknown', 'Couldn’t check', `Couldn’t check ${unread.join(' or ')} just now.`)];
+  const reading = key === 'database' ? checking.filter((name) => UNCHECKED_ON_DATABASE.includes(name) && !unread.includes(name)) : [];
+  return [
+    ...found,
+    ...(unread.length === 0 ? [] : [fact('unknown', 'Couldn’t check', `Couldn’t check ${unread.join(' or ')} just now.`)]),
+    ...(reading.length === 0 ? [] : [fact('pending', 'Checking', `Still checking ${reading.join(' and ')}.`)]),
+  ];
 }
 
 /** A failed refresh keeps what was read, and says so. */
@@ -145,6 +163,9 @@ function sessionsFact(status: StatusResponse, { now, projectName }: HealthFacts)
   return now - newest.lastEventAt <= CAPTURE_RECENT_MS ? fact('yes', 'Yes', receipt) : fact('unknown', 'Quiet', `Quiet since then. ${receipt}`);
 }
 
+/** The key Myco's work gives due work no machine has taken: `unclaimed:<project>:<task>`. */
+const UNCLAIMED_KEY = 'unclaimed:';
+
 /** Whether a run now is processing sessions: learning, turn summaries or titles. */
 const processesSessions = (task: string): boolean => {
   const kind = kindOf(task);
@@ -153,7 +174,8 @@ const processesSessions = (task: string): boolean => {
 
 /**
  * When learning last completed and what waits for it, in the server's words, and whether a backlog is moving: work
- * running now, or held for a reason Myco names. Nothing waiting is Yes; counts still being built are not known.
+ * running now, or due work no machine has taken. Waiting for its schedule is ordinary. Nothing waiting is Yes; counts
+ * still being built, and work that could not all be read, are not known.
  */
 function learningFact(status: StatusResponse, { now, work }: HealthFacts): Fact {
   const learning = status.learning;
@@ -163,11 +185,15 @@ function learningFact(status: StatusResponse, { now, work }: HealthFacts): Fact 
   if (learning.state !== 'ready' || learning.dueSessions === undefined) return fact('unknown', 'Still counting', said);
   const backlog = learning.dueSessions > 0 || (learning.turnsAwaitingCards ?? 0) > 0;
   if (!backlog) return fact('yes', 'Yes', said);
-  if (work.data === undefined) return fact('unknown', 'Unknown', `${said} Whether learning is moving ${work.failed ? 'couldn’t be read' : 'is still being read'}.`);
+  if (work.data === undefined) return work.failed
+    ? fact('unknown', 'Unknown', `${said} Whether learning is moving couldn’t be read.`)
+    : fact('pending', 'Checking', `${said} Still checking whether learning is moving.`);
+  if (work.data.unavailable.length > 0) return fact('unknown', 'Unknown', `${said} Not all of what Myco is doing could be read, so whether learning is moving is not known.`);
+  const stuck = work.data.needsYou.filter((need) => need.key.startsWith(UNCLAIMED_KEY) && processesSessions(need.key.slice(need.key.lastIndexOf(':') + 1)));
+  if (stuck.length > 0) return fact('attention', 'Stuck', `${said} ${stuck.map((need) => `${need.what}.`).join(' ')}`);
   const running = work.data.running.filter((run) => processesSessions(run.task));
   if (running.length > 0) return fact('yes', 'Catching up', `${said} Running now: ${[...new Set(running.map((run) => taskWords(run.task)))].join(', ')}.`);
-  if (work.data.waiting.length > 0) return fact('attention', 'Waiting', `${said} ${work.data.waiting.map((wait) => `${wait.what}: ${wait.why}`).join(' ')}`);
-  return fact('yes', 'Catching up', `${said} Nothing holds it; it runs on its schedule.`);
+  return fact('yes', 'Catching up', `${said} It starts on its schedule.`);
 }
 
 const ONLINE: ReadonlySet<string> = new Set(['Online', 'Busy']);
@@ -176,16 +202,16 @@ const ONLINE: ReadonlySet<string> = new Set(['Online', 'Busy']);
 function runnersFacts(status: StatusResponse, { now, payers }: HealthFacts): { facts: Fact[]; counts?: WellLine['runners'] } {
   if (missing(status, 'workers') || status.workers?.available !== true || status.workers.fleet == null) return { facts: [fact('failed', 'Couldn’t read', 'Couldn’t read the runners just now.')] };
   const runners = status.workers.fleet.flatMap((row) => (row.runnerDetails === undefined || row.runnerDetails.state === 'removed' ? [] : [row.runnerDetails]));
-  if (runners.length === 0) return { facts: [fact('no', 'No runner', 'No machine runs Myco’s work yet, so nothing can learn from sessions. Add a runner under Settings › Myco’s work.')] };
+  if (runners.length === 0) return { facts: [fact('yes', 'None set up', 'No machine is set to run Myco’s work. Add a runner under Settings › Myco’s work to have Myco learn from sessions.')] };
   const agentOf = new Map((payers.data?.today ?? []).map((entry) => [entry.id, entry.agent]));
   const canWork = (runner: (typeof runners)[number]) => ONLINE.has(runner.display) && (payers.data === undefined || agentOf.get(runner.id) != null);
   const working = runners.filter(canWork);
   const each = runners.map((runner) => (canWork(runner) ? `${runner.name} can work${runner.display === 'Busy' ? ' and is working' : ''}`
-    : ONLINE.has(runner.display) ? `${runner.name} is online but has no agent it can use for this work`
+    : ONLINE.has(runner.display) ? `${runner.name} is online but has no agent it can use for learning`
       : `${runner.name} is ${runner.display.toLowerCase()}${runner.lastSeenAt === null ? '' : `, last seen ${agoWords(runner.lastSeenAt, now)}`}`)).join('. ');
   const answer = `${working.length} of ${runners.length} can work`;
   const facts: Fact[] = [working.length === 0 ? fact('no', answer, `${each}. Nothing can run Myco’s work until one can.`) : fact('yes', answer, `${each}.`)];
-  if (payers.data === undefined && payers.failed) facts.push(fact('unknown', 'Couldn’t check', 'Which agent each runner can use couldn’t be read.'));
+  facts.push(...readFacts(payers, 'which agent each runner can use for learning'));
   const queue = status.workers.queue;
   if (queue === undefined || queue.state === 'building' || queue.count === null) facts.push(fact('unknown', 'Unknown', 'Whether runs are waiting couldn’t be read.'));
   else {
@@ -246,7 +272,7 @@ export function wellLines(facts: HealthFacts): WellLine[] {
   const database = databaseFacts(status);
   return [
     lineOf('sessions', [sessionsFact(status, facts), ...attentionFacts('sessions', facts), ...stale]),
-    lineOf('learning', [learningFact(status, facts), ...attentionFacts('learning', facts), ...stale]),
+    lineOf('learning', [learningFact(status, facts), ...(facts.work.data !== undefined && facts.work.failed ? readFacts(facts.work, 'what Myco is doing') : []), ...attentionFacts('learning', facts), ...stale]),
     lineOf('runners', [...runners.facts, ...attentionFacts('runners', facts), ...serverFacts('runners', facts), ...stale], runners.counts === undefined ? {} : { runners: runners.counts }),
     lineOf('budget', [...budgetFacts(status), ...stale]),
     lineOf('database', [...database.facts, ...attentionFacts('database', facts), ...serverFacts('database', facts), ...stale], database.rows === undefined ? {} : { rows: database.rows }),
@@ -261,10 +287,14 @@ export function unreadLines(): WellLine[] {
 /** The verdict the lines give, by the rule this module states, with one sentence saying why. */
 export function verdictOf(lines: readonly WellLine[]): { verdict: Verdict; sentence: string } {
   const no = lines.filter((entry) => entry.state === 'no');
-  const unsure = lines.filter((entry) => entry.state !== 'yes' && entry.state !== 'no');
+  const pending = lines.filter((entry) => entry.state === 'pending');
+  const unsure = lines.filter((entry) => entry.state !== 'yes' && entry.state !== 'no' && entry.state !== 'pending');
+  if (no.length === 0 && unsure.length === 0 && pending.length > 0) {
+    return { verdict: 'Checking', sentence: `Nothing wrong so far. Still checking: ${pending.map((entry) => entry.label.toLowerCase()).join(', ')}.` };
+  }
   if (no.length === 0 && unsure.length === 0) {
     const runners = lines.find((entry) => entry.key === 'runners')?.runners;
-    const working = runners === undefined ? 'its runners can work' : `${runners.working} of ${runners.total} ${runners.total === 1 ? 'runner' : 'runners'} can work`;
+    const working = runners === undefined ? 'no machine is set to run Myco’s work' : `${runners.working} of ${runners.total} ${runners.total === 1 ? 'runner' : 'runners'} can work`;
     return { verdict: 'Yes', sentence: `Sessions are arriving, Myco is learning from them, and ${working}.` };
   }
   const named = (entries: readonly WellLine[]) => entries.map((entry) => (entry.answer === NEEDS_A_LOOK ? entry.label.toLowerCase() : `${entry.label.toLowerCase()} (${entry.answer.toLowerCase()})`)).join(', ');

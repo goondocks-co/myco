@@ -122,9 +122,15 @@ export const needsPerson = (answer: AttentionAnswer | undefined): AttentionItem[
 
 function rowsOf({ admin, answer, repositories, server, now, projectName, viewerId }: NeedsYouProps): Row[] {
   const items = needsItems(needsPerson(answer), server.items);
-  const attention = items.attention.map((item, index): Row => {
+  const seen = new Map<string, number>();
+  const attention = items.attention.map((item): Row => {
     const words = attentionWords(item, now, projectName);
-    return { key: `${item.kind}:${index}`, tone: item.tone, title: words.title, render: () => <NeedsYouItem key={`${item.kind}:${index}`} tone={item.tone} words={words} /> };
+    // An item keeps its row, and what was done on it, when another leaves the list: its kind, project and task name it.
+    const named = `${item.kind}:${'projectId' in item ? item.projectId : ''}:${'task' in item ? item.task : ''}`;
+    const nth = seen.get(named) ?? 0;
+    seen.set(named, nth + 1);
+    const key = `${named}:${nth}`;
+    return { key, tone: item.tone, title: words.title, render: () => <NeedsYouItem key={key} tone={item.tone} words={words} /> };
   });
   const read = items.server.map((item): Row => {
     const words = serverItemWords(item);

@@ -34,10 +34,10 @@ export function HealthPage() {
   const attention = useHeldRead(attentionQuery);
   const work = useHeldRead(workQuery);
   const payers = useHeldRead(payersQuery);
-  const read = <T,>(held: HeldRead<T>) => ({ data: held.data, failed: held.error !== null });
+  const read = <T,>(held: HeldRead<T>) => ({ data: held.data, failed: held.error !== null, pending: held.pending });
   const facts: HealthFacts = {
     now, projectName, status: read(status), attention: read(attention), work: read(work), payers: read(payers),
-    server: needsItems((attention.data?.items ?? []), needsYou.server.items).server, unchecked: needsYou.server.unchecked,
+    server: needsItems((attention.data?.items ?? []), needsYou.server.items).server, unchecked: needsYou.server.unchecked, checking: needsYou.server.checking,
   };
   useAnchorScroll(!status.pending && !needsYou.pending);
   const retry = () => { void statusQuery.refetch(); void attentionQuery.refetch(); void workQuery.refetch(); void payersQuery.refetch(); needsYou.onRetry(); };

@@ -3,8 +3,8 @@ import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
 import { unreadLines, verdictOf, wellLines, type HealthFacts, type LineState, type Verdict, type WellLine } from './verdict';
 
-const CHIP_TONE: Readonly<Record<LineState, Tone>> = { yes: 'ok', attention: 'warn', no: 'bad', unknown: 'neutral', failed: 'warn' };
-const VERDICT_TONE: Readonly<Record<Verdict, HealthTone>> = { Yes: 'ok', 'Needs attention': 'warn', No: 'bad' };
+const CHIP_TONE: Readonly<Record<LineState, Tone>> = { yes: 'ok', attention: 'warn', no: 'bad', unknown: 'neutral', failed: 'warn', pending: 'neutral' };
+const VERDICT_TONE: Readonly<Record<Verdict, HealthTone>> = { Yes: 'ok', 'Needs attention': 'warn', No: 'bad', Checking: 'faint' };
 
 /** One line: what it asks, what its answer rests on, and its answer. */
 function Line({ line }: { line: WellLine }) {
@@ -36,7 +36,7 @@ function Line({ line }: { line: WellLine }) {
 export function ServerWell({ facts, reading, onRetry }: { facts: HealthFacts; reading: boolean; onRetry: () => void }) {
   const lines = facts.status.data !== undefined ? wellLines(facts) : reading ? null : unreadLines();
   const verdict = lines === null ? null : verdictOf(lines);
-  const unread = lines?.some((line) => line.state === 'failed') === true || facts.status.failed;
+  const unread = lines?.some((line) => line.state === 'failed' || line.state === 'unknown') === true || facts.status.failed;
   return (
     <AdminSection id={HEALTH_ANCHORS.status} title="Is the server well?"
       actions={unread ? <Button size="sm" variant="ghost" onClick={onRetry}>Retry</Button> : undefined}>

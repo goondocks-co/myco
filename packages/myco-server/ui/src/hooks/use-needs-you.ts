@@ -26,7 +26,11 @@ export function useServerItems({ enabled }: { enabled: boolean }): ServerItemsRe
   const recovery = useHeldRead(recoveryQuery);
   const findings = useRef(new Map<string, MaintenanceOutcome>());
   for (const check of maintenance.data?.checks ?? []) {
-    if (check.running) continue;
+    if (check.running) {
+      const earlier = check.latest?.previous;
+      if (!findings.current.has(check.check) && (earlier?.state === 'findings' || earlier?.state === 'failed')) findings.current.set(check.check, earlier);
+      continue;
+    }
     if (check.latest?.state === 'findings' || check.latest?.state === 'failed') findings.current.set(check.check, check.latest);
     else findings.current.delete(check.check);
   }

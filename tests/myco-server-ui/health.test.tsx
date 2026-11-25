@@ -129,15 +129,17 @@ async function openMenu(name: string | RegExp, scope: HTMLElement = document.bod
 const BACKUPS = '/settings/advanced#backups';
 const UPKEEP = '/settings/advanced#upkeep';
 
-const WORK = { running: [{ runId: 'r', projectId: MYCO, task: 'extract-curate' }], waiting: [] } as unknown as NonNullable<HealthFacts['work']['data']>;
+const WORK = { running: [{ runId: 'r', projectId: MYCO, task: 'extract-curate' }], waiting: [], needsYou: [], unavailable: [] } as unknown as NonNullable<HealthFacts['work']['data']>;
 const PAYERS = { agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: 'claude-code' }, { id: 'studio', name: 'studio', agent: 'claude-code' }] };
+/** A read that answered and has not failed since. */
+const READ = { failed: false, pending: false };
 const QUIET = { '/api/attention': () => Response.json({ items: [], unavailable: [] }) };
 /** The lines Health reads from `STATUS` changed by `over`, with every other fact well unless `facts` says otherwise. */
 const linesOf = (over: Partial<StatusResponse> = {}, facts: Partial<HealthFacts> = {}): WellLine[] => wellLines({
-  now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null), server: [], unchecked: [],
-  status: { data: { ...STATUS, ...over } as unknown as StatusResponse, failed: false },
-  attention: { data: { items: [], unavailable: [] }, failed: false },
-  work: { data: WORK, failed: false }, payers: { data: PAYERS, failed: false }, ...facts,
+  now: NOW, projectName: (id) => (id === MYCO ? 'Myco' : null), server: [], unchecked: [], checking: [],
+  status: { data: { ...STATUS, ...over } as unknown as StatusResponse, ...READ },
+  attention: { data: { items: [], unavailable: [] }, ...READ },
+  work: { data: WORK, ...READ }, payers: { data: PAYERS, ...READ }, ...facts,
 });
 const stateOf = (lines: readonly WellLine[]): Record<string, LineState> => Object.fromEntries(lines.map((line) => [line.key, line.state]));
 const verdictFor = async (): Promise<HTMLElement> => {
@@ -181,18 +183,26 @@ describe('Health', () => {
 
   it('reads each line to the worst of its facts, failures Myco retries and items that need you included', () => {
     expect(stateOf(linesOf())).toEqual({ sessions: 'yes', learning: 'yes', runners: 'yes', budget: 'yes', database: 'yes' });
-    const attention = (...items: unknown[]): Partial<HealthFacts> => ({ attention: { data: { items, unavailable: [] } as never, failed: false } });
+    const attention = (...items: unknown[]): Partial<HealthFacts> => ({ attention: { data: { items, unavailable: [] } as never, ...READ } });
     const finding = { runId: 'c', trigger: 'schedule', state: 'findings', startedAt: NOW, finishedAt: NOW, errorClass: null, findings: ['x'], findingsOmitted: 0, measurements: [] } as const;
-    const work = (data: unknown): Partial<HealthFacts> => ({ work: { data: data as never, failed: false } });
+    const work = (data: unknown): Partial<HealthFacts> => ({ work: { data: { waiting: [], needsYou: [], unavailable: [], ...(data as object) } as never, ...READ } });
     const cases: Array<[string, Partial<StatusResponse>, Partial<HealthFacts>, Record<string, LineState>]> = [
       ['nothing from a person lately', { capture: [STATUS.capture[1]!] } as Partial<StatusResponse>, {}, { sessions: 'unknown' }],
       ['the last receipt two days old', { capture: [{ ...STATUS.capture[0]!, lastEventAt: NOW - 2 * 86_400_000 }] } as Partial<StatusResponse>, {}, { sessions: 'unknown' }],
       ['a transcript that stopped being read', {}, attention({ kind: 'transcripts_stopped', tone: 'warn', projectId: MYCO, transcripts: 1, latestAt: NOW, reasons: {} }), { sessions: 'attention' }],
       ['learning counts still building', { learning: { ...STATUS.learning, state: 'building' } } as Partial<StatusResponse>, {}, { learning: 'unknown' }],
-      ['a backlog held, nothing running', {}, work({ running: [], waiting: [{ key: 'b', what: 'Automatic work', why: 'Paused for the budget.' }] }), { learning: 'attention' }],
+      ['a backlog waiting for its schedule, nothing running', {}, work({ running: [], waiting: [{ key: 'b', what: 'Learning', why: 'It starts when the server next checks.' }] }), {}],
+      ['due learning no machine has taken', {}, work({ running: [], needsYou: [{ key: `unclaimed:${MYCO}:extract-curate`, what: 'Learning has waited 3 h with no machine taking it', why: 'x' }] }), { learning: 'attention' }],
+      ['what Myco is doing only partly read', {}, work({ running: [], unavailable: ['waiting'] }), { learning: 'unknown' }],
+      ['what Myco is doing not answered yet', {}, { work: { data: undefined, failed: false, pending: true } }, { learning: 'pending' }],
+      ['what needs you not answered yet', {}, { attention: { data: undefined, failed: false, pending: true } }, { sessions: 'pending', learning: 'pending', runners: 'pending', database: 'pending' }],
+      ['what needs you read before a refresh that failed', {}, { attention: { data: { items: [], unavailable: [] }, failed: true, pending: false } }, { sessions: 'unknown', learning: 'unknown', runners: 'unknown', database: 'unknown' }],
+      ['the store checks not answered yet', {}, { checking: ['store checks'] }, { database: 'pending' }],
+      ['no runner set up, and nothing said to wait for one', { workers: { ...STATUS.workers, fleet: [] } } as unknown as Partial<StatusResponse>, {}, {}],
+      ['which agent runners can use read before a refresh that failed', {}, { payers: { data: PAYERS, failed: true, pending: false } }, { runners: 'unknown' }],
       ['a learning failure Myco is retrying', {}, attention({ kind: 'outcome_failed', tone: 'bad', projectId: MYCO, outcome: 'learn', task: 'extract-curate', failures: 3, since: NOW, latestAt: NOW, runId: 'r', retrying: true }), { learning: 'attention' }],
       ['no runner online', { workers: { ...STATUS.workers, fleet: [runner('studio', 'Offline')] } } as unknown as Partial<StatusResponse>, {}, { runners: 'no' }],
-      ['an online runner with no agent it can use', {}, { payers: { data: { agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: null }] }, failed: false } }, { runners: 'no' }],
+      ['an online runner with no agent it can use', {}, { payers: { data: { agents: [], today: [{ id: 'homelab-mini', name: 'homelab-mini', agent: null }] }, ...READ } }, { runners: 'no' }],
       ['work waiting on a rejected key', {}, { server: storedKeyItems({ ...STATUS, workers: { ...STATUS.workers, fleet: [runner('homelab-mini', 'Busy', { storedKeyFailures: [{ agent: 'claude-code', slot: 'anthropic', failure: 'invalid_key' }] })] } } as unknown as StatusResponse) }, { runners: 'attention' }],
       ['runners on their own sign-in after a rejected key', {}, { server: storedKeyItems({ ...STATUS, workers: { ...STATUS.workers, fleet: [runner('homelab-mini', 'Busy', { fallbackNotices: [{ agent: 'claude-code', slot: 'anthropic', reason: 'invalid_key', since: NOW }] })] } } as unknown as StatusResponse) }, {}],
       ['no queue fact', { workers: { ...STATUS.workers, queue: undefined } } as unknown as Partial<StatusResponse>, {}, { runners: 'unknown' }],
@@ -242,12 +252,12 @@ describe('Health', () => {
     expect(within(screen.getByRole('region', { name: 'What needs you' })).queryByText('3 learning attempts failed')).toBeNull();
   });
 
-  it('gives No when any line is No, Needs attention when any is unsure, and Yes only when all are Yes', () => {
+  it('gives No when any line is No, Needs attention when any is unsure, Checking while a read has yet to answer, and Yes only when all are Yes', () => {
     const lines = linesOf();
     const withStates = (...states: LineState[]) => lines.map((line, index) => ({ ...line, state: states[index] ?? 'yes' }));
     for (const [states, verdict] of [
       [[], 'Yes'], [['attention'], 'Needs attention'], [['unknown'], 'Needs attention'], [['failed'], 'Needs attention'],
-      [['yes', 'no'], 'No'], [['attention', 'no', 'failed'], 'No'],
+      [['yes', 'no'], 'No'], [['attention', 'no', 'failed'], 'No'], [['pending'], 'Checking'], [['pending', 'attention'], 'Needs attention'], [['pending', 'no'], 'No'],
     ] as const) expect({ states, verdict: verdictOf(withStates(...states)).verdict }).toEqual({ states, verdict });
     expect(verdictOf(withStates('yes', 'yes', 'no', 'attention')).sentence).toBe('Not working: somewhere to run (1 of 2 can work). Needs a look: within budget (yes).');
   });

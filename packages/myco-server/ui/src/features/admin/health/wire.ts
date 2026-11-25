@@ -202,6 +202,8 @@ export interface MaintenanceOutcome {
   findings: string[];
   findingsOmitted: number;
   measurements: StoreMeasurement[];
+  /** On a running record: the last finished outcome of this check, which this run has not yet replaced. */
+  previous?: MaintenanceOutcome | null;
 }
 
 /** One check as an owner is told of it. */
