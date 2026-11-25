@@ -28,7 +28,7 @@ Windows x64 has an installer, but the 2.0 Windows path is not yet verified:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-New to the team? Ask your administrator for the one-time login command from **People & machines › Invite a teammate**, and run it. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
+New to the team? Ask your administrator for the one-time login command from **Settings › People and machines › Invite a teammate**, and run it. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
 
 If you already sign in to the dashboard, you can use your Myco's address instead:
 

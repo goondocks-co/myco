@@ -20,7 +20,7 @@ irm https://myco.sh/install.ps1 | iex
 
 No Node runtime is needed. The installers download an available 2.x GitHub release. Existing 1.4 installations use explicit replacement and cutover; see [Moving from Myco 1.4](../../docs/upgrade.md#upgrading-from-myco-14).
 
-New to the team? Run the one-time login command your administrator sends from **People & machines › Invite a teammate**. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
+New to the team? Run the one-time login command your administrator sends from **Settings › People and machines › Invite a teammate**. After you join, ask them to use **Connect GitHub** and send you the link to connect your account for dashboard access.
 
 If you already sign in to the dashboard, you can use the Myco's address instead:
 

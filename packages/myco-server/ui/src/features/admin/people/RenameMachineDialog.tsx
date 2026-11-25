@@ -14,7 +14,7 @@ export interface RenameTarget {
 /**
  * Rename a machine: its name prefilled, checked as it is typed against the rule
  * the server holds it to, and the server's refusal said in words. Its member
- * sees the name beside their own work; admins see it on People & machines and
+ * sees the name beside their own work; admins see it on Settings › People and machines and
  * Health; everyone else sees the work as from its member.
  */
 export function RenameMachineDialog({ machine, onClose }: { machine: RenameTarget | null; onClose: () => void }) {
