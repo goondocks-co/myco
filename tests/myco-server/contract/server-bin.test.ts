@@ -60,7 +60,7 @@ describe('migrateOnly', () => {
 
   it('explicit bootstrap brings a fresh volume to a servable schema', () => {
     const path = join(scratch(), 'myco.sqlite');
-    bootstrapDatabase(path);
+    expect(bootstrapDatabase(path)).toBeGreaterThan(0);
 
     const sqlite = new Database(path);
     const tables = sqlite.query(
@@ -74,8 +74,7 @@ describe('migrateOnly', () => {
 
   it('is idempotent — the entrypoint runs it on every container start', () => {
     const path = join(scratch(), 'myco.sqlite');
-    const first = bootstrapDatabase(path);
-    expect(first).toBeGreaterThan(0);
+    copyBootstrappedDatabase(path);
 
     // A second pass applies nothing, leaving the CREATE TABLE statements alone.
     expect(migrateOnly(path)).toBe(0);

@@ -15,6 +15,7 @@ import { sqliteD1 } from './helpers/d1.js';
 import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { markPromptProcessed } from './helpers/extraction.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const MIGRATIONS = fileURLToPath(new URL('../../packages/myco-server/migrations/', import.meta.url));
 
@@ -38,9 +39,8 @@ interface Standing {
   triggers: Map<string, string>;
 }
 
-/** What stands after each of `steps`, applied in order to a fresh store. */
-function standingAfterEach(steps: readonly SchemaStep[]): Standing[] {
-  const sqlite = fresh();
+/** What stands after each of `steps` in order. This helper closes the supplied database. */
+function standingAfterEach(steps: readonly SchemaStep[], sqlite = fresh()): Standing[] {
   try {
     return steps.map((step) => {
       sqlite.exec(renderMigrationFile(step));
@@ -364,9 +364,8 @@ describe('versioned schema steps', () => {
   });
 
   it('invalidates only the matching project, namespace and record on release-state mutations', () => {
-    const sqlite = fresh();
+    const sqlite = schemaSqlite();
     try {
-      for (const migration of SCHEMA_STEPS) step(sqlite, migration);
       const types = { sessions: 'session', spores: 'spore', plans: 'plan' };
       for (const project of ['one', 'two']) {
         sqlite.query('INSERT INTO projects(project_id,name,created_at) VALUES (?, ?, 1)').run(project, project);
@@ -411,9 +410,8 @@ describe('versioned schema steps', () => {
   });
 
   it('converges from a populated v1 database and leaves an already-current database unchanged', async () => {
-    const current = fresh(), fromV1 = fresh();
+    const current = schemaSqlite(), fromV1 = fresh();
     try {
-      await applySchemaSteps(sqliteD1(current));
       expect(await applySchemaSteps(sqliteD1(current))).toEqual([]);
       fromV1.exec(renderMigrationFile(SCHEMA_STEPS[0]!));
       fromV1.query("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','one',0)").run();
@@ -511,7 +509,8 @@ describe('versioned schema steps', () => {
     const rebuild: SchemaStep = { version, statements: ['ALTER TABLE backup_publications RENAME TO _scratch_copy',
       `CREATE TABLE backup_publications (${columns})`, 'DROP TABLE _scratch_copy'] };
     const steps = [...SCHEMA_STEPS, rebuild];
-    expect(contractionProblems(steps, standingAfterEach(steps)).filter((problem) => problem.startsWith(`step ${version} `))).toEqual([
+    const standing = [...SCHEMA_STEPS.map(step => standingAt(step.version)), ...standingAfterEach([rebuild], schemaSqlite())];
+    expect(contractionProblems(steps, standing).filter((problem) => problem.startsWith(`step ${version} `))).toEqual([
       `step ${version} renames table backup_publications to _scratch_copy without declaring it: add { kind: 'table', name: '_scratch_copy', reason } to the step's \`retires\`, or put it back in the same step`,
     ]);
   });
@@ -775,9 +774,8 @@ it('schema 107 installs the source-range path on empty and populated prompt stor
 });
 
 it('retires content storage only after documents are live, preserving the catalog and capture', () => {
-  const sqlite = fresh();
+  const sqlite = schemaSqlite({ through: 116 });
   try {
-    for (const prior of SCHEMA_STEPS.filter(step => step.version < 117)) step(sqlite, prior);
     sqlite.run(`INSERT INTO projects(project_id,name,created_at) VALUES('retirement','Retirement',0)`);
     sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES('retirement','session','machine','token',0,0)`);
@@ -829,7 +827,7 @@ describe('content storage removal, steps 265 to 464', () => {
   const through = DROP_CONTENT_SCHEMA_STEPS.at(-1)!.version;
   const keptRows = (sqlite: Database) => new Map(dataTables(sqlite).filter(name => !DROPPED_CONTENT.has(name) && name !== DROP_RANGES_TABLE)
     .map(name => [name, JSON.stringify(sqlite.query(`SELECT * FROM ${name}`).all())]));
-  const at264 = () => { const sqlite = fresh(); for (const prior of SCHEMA_STEPS.filter(s => s.version < 265)) step(sqlite, prior); seed(sqlite); return sqlite; };
+  const at264 = () => { const sqlite = schemaSqlite({ through: 264 }); seed(sqlite); return sqlite; };
 
   it('drops every trigger and index of the retired tables first, deletes their rows in ranges, and leaves every kept row and a fresh store\'s schema', () => {
     const sqlite = at264();
@@ -879,10 +877,9 @@ describe('content storage removal, steps 265 to 464', () => {
 });
 
 it('adds card fields without rewriting legacy cards or rebuilding their search index', async () => {
-  const sqlite = fresh();
+  const fieldStep = SCHEMA_STEPS.find(step => step.version === 465)!;
+  const sqlite = schemaSqlite({ through: fieldStep.version - 1 });
   try {
-    const fieldStep = SCHEMA_STEPS.find(step => step.version === 465)!;
-    for (const stepBefore of SCHEMA_STEPS.filter(step => step.version < fieldStep.version)) step(sqlite, stepBefore);
     for (let row = 0; row < 100; row++) sqlite.run("INSERT INTO turn_cards(project_id,session_id,turn_key,state,card,created_at) VALUES('project','session',?,'carded','Done: legacyneedle',1)", [String(row)]);
     const changes = () => (sqlite.query('SELECT total_changes() n').get() as { n: number }).n;
     const before = changes();
@@ -896,9 +893,8 @@ it('adds card fields without rewriting legacy cards or rebuilding their search i
 
 
 it('retains each cluster first attempt from canonical run subjects across the daily-allowance upgrade', async () => {
-  const sqlite = fresh();
+  const sqlite = schemaSqlite({ through: 699 });
   try {
-    await applySchemaSteps(sqliteD1(sqlite),SCHEMA_STEPS.filter(step=>step.version<700));
     sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1),('proj_2','q',1);
       INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1);
       INSERT INTO spore_curation_work(project_id,cluster_key,members,failures) VALUES('proj_1','cluster','[]',2),('proj_2','cluster','[]',1),('proj_1','unclaimed','[]',0);
@@ -917,9 +913,8 @@ it('retains each cluster first attempt from canonical run subjects across the da
 });
 
 it('removes inventory facts while preserving spore history and curation lifecycle state in schema 709', async () => {
-  const sqlite = fresh();
+  const sqlite = schemaSqlite({ through: 708 });
   try {
-    await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS.filter(step => step.version < 709));
     sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1);
       INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1);
       INSERT INTO agent_runs(project_id,id,agent_id,task,status,repository_files) VALUES('proj_1','run','agent','curate-spores','running','["src/gone.ts"]');

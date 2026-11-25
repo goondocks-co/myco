@@ -144,6 +144,13 @@ New files and scenarios enter the shards automatically. Refresh slow-file and
 scenario weights from CI logs when jobs become unbalanced. Test jobs publish
 phase durations in their summaries and upload JUnit reports and logs.
 
+`npm run refresh:node-durations` uses three green main runs by default and
+prints the planned pull request Node charge. With three or more distinct runs,
+it caps the old weight at 1.5 times the slowest measurement for files measured
+in every run. Every recorded measurement remains a floor. With fewer than
+three runs, or when a file is missing from any run, the refresh keeps the
+greater of the existing weight and the recorded floor.
+
 Aim for PR feedback within five minutes. Compare completed workflow elapsed time,
 including runner queues and the aggregate gate, rather than summing parallel job
 durations. Splitting jobs adds setup work and may increase billed runner minutes.

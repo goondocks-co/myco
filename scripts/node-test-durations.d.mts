@@ -24,4 +24,5 @@ export function assertNodeShardHeadroom(plans: NodeGroup[][], timeoutMs: number,
 export function assertTestCaseHeadroom(samples: TestDurationRun[], timeoutFor: (test: TestDurationSample) => number): void;
 export function declaredTestTimeout(root: string, test: TestDurationSample): number;
 export function testDurationSamples(xml: string): TestDurationSample[];
+export function canRebaselineNodeDurations(workload: NodeWorkload): boolean;
 export function mergeNodeDurationWeights(weights: Record<string, number>, workload: NodeWorkload): Record<string, number>;

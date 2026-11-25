@@ -101,7 +101,7 @@ it('GATE: fresh empty provisioning needs no bookmark', async () => {
 });
 
 it('GATE: interrupted recovery imports and migration resumes record a bookmark before ledger or migration work', async () => {
-  await fixture({}, async ({ root, home, state, calls }) => {
+  await fixture({}, async ({ root, home, runner, state, calls }) => {
     const databasePath = path.join(root, 'source.sqlite');
     // The source predates the session-view tables (step 105), so the resumed migration applies every later step.
     const sourceVersion = 104;
@@ -115,7 +115,7 @@ it('GATE: interrupted recovery imports and migration resumes record a bookmark b
     const saveState = (extra: Record<string, unknown>) => fs.writeFileSync(state, JSON.stringify({ ...initial, destination, schema: String(sourceVersion), ...extra }));
     const restore = (failPersistence = false) => restoreCloudflareDatabase({
       accountId: ACCOUNT, mycoHome: home, configDir: path.join(home, 'server/cloudflare/deploy'), configFile: 'wrangler.deploy.toml',
-      databaseName: record.databaseName, databasePath, sourceFingerprint: 'a'.repeat(64),
+      databaseName: record.databaseName, databasePath, sourceFingerprint: 'a'.repeat(64), runner,
       record: fs.existsSync(journal) ? JSON.parse(fs.readFileSync(journal, 'utf8')) : record,
       persist: (next) => {
         if (failPersistence) throw new Error('fixture durable write refused');
@@ -184,8 +184,8 @@ it('GATE: a fresh provisioning receipt cannot exempt a populated database', asyn
 });
 
 it('GATE: asynchronous durable-write failures refuse migrations', async () => {
-  await fixture({}, async ({ root, home, calls }) => {
-    await expect(applyCloudflareSchema({ accountId: ACCOUNT, mycoHome: home, configDir: root,
+  await fixture({}, async ({ root, home, runner, calls }) => {
+    await expect(applyCloudflareSchema({ accountId: ACCOUNT, mycoHome: home, configDir: root, runner,
       record: readDeploymentRecord(home)!, persist: async () => {
         await Promise.resolve();
         throw new Error('fixture asynchronous durable write failed');
@@ -225,11 +225,11 @@ for(const fault of ['stamps','catalogue'])it(`publishes the Worker without disab
 });
 
 it('refuses hosted 94 before a concurrent old-Worker dispatch can prepare', async () => {
-  await fixture({ schema: '94' }, async ({ root, home, reports }) => {
+  await fixture({ schema: '94' }, async ({ root, home, runner, reports }) => {
     let prepared = false;
     const live = path.join(root, 'schema.sqlite');
     await expect(applyCloudflareSchema({
-      accountId: ACCOUNT, mycoHome: home, configDir: root, record: readDeploymentRecord(home)!,
+      accountId: ACCOUNT, mycoHome: home, configDir: root, runner, record: readDeploymentRecord(home)!,
       persist: (record) => writeDeploymentRecord(record, home), report: (line) => reports.push(line),
       prepare: async (record) => {
         prepared = true;

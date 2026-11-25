@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkTestBudget } from './check-test-budget.mjs';
+import { canRebaselineNodeDurations } from './node-test-durations.mjs';
 import { testsMatrixInclude, workloadRun } from './node-report-workload.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -46,10 +48,14 @@ try {
   const provenancePath = path.join(repo, 'scripts/test-duration-sources.json');
   const sources = JSON.parse(fs.readFileSync(provenancePath, 'utf8'));
   const ids = chosen.map(run => run.databaseId).join(', ');
-  const sentence = `ci: node duration refresh from test-reports-node-* artifacts of green main runs ${ids} (${nodeSlots} node shards each). A file's recorded time is its JUnit file-suite time scaled to the phase FINISHED wall time; node-test-durations.mjs keeps the max of that time and the previous weight.`;
+  const policy = canRebaselineNodeDurations(fixture)
+    ? 'Caps old weights at 1.5x the slowest recorded time for files measured in every run.'
+    : 'Keeps the max of the recorded time and the previous weight.';
+  const sentence = `ci: node duration refresh from test-reports-node-* artifacts of green main runs ${ids} (${nodeSlots} node shards each). A file's recorded time is its JUnit file-suite time scaled to the phase FINISHED wall time. ${policy}`;
   if (!sources.includes(sentence)) sources.push(sentence);
   fs.writeFileSync(provenancePath, `${JSON.stringify(sources, null, 2)}\n`);
   console.log(sentence);
+  for (const refusal of checkTestBudget({ repo, skipRatio: true })) console.log(refusal);
 } finally {
   fs.rmSync(downloadRoot, { recursive: true, force: true });
 }

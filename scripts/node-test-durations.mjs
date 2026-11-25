@@ -10,6 +10,8 @@ import { DEFAULT_TEST_TIMEOUT_MS } from './test-shards.mjs';
 
 const MAX_GROUP_JOB_SHARE = 1 / 4;
 const MAX_NODE_MEASURED_MS = 11 * 60_000;
+const REBASELINE_RUNS = 3;
+const REBASELINE_HEADROOM = 1.5;
 
 export function nodeGroupBudget(timeoutMs) {
   return timeoutMs * MAX_GROUP_JOB_SHARE;
@@ -47,6 +49,10 @@ export function recordedNodeDurations(workload) {
   return weights;
 }
 
+export function canRebaselineNodeDurations(workload) {
+  return new Set(workload.runs.map(run => run.source)).size >= REBASELINE_RUNS;
+}
+
 export function mergeNodeDurationWeights(weights, workload) {
   const recorded = recordedNodeDurations(workload);
   const merged = { ...weights };
@@ -63,6 +69,14 @@ export function mergeNodeDurationWeights(weights, workload) {
   for (const [source, targets] of introduced) {
     const carried = [...targets].reduce((sum, file) => sum + merged[file], 0);
     merged[source] = Math.max(recorded[source] ?? 0, merged[source] - carried);
+  }
+  if (canRebaselineNodeDurations(workload)) {
+    const samples = nodeDurationSamples(workload);
+    for (const [file, milliseconds] of Object.entries(recorded)) {
+      if (samples.every(sample => sample.files[file] > 0)) {
+        merged[file] = Math.min(merged[file], Math.ceil(milliseconds * REBASELINE_HEADROOM));
+      }
+    }
   }
   return merged;
 }
