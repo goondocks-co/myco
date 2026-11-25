@@ -52,7 +52,7 @@ export const MOVED: readonly MovedAddress[] = [
   { from: movedPaths.serverRunner, to: ({ params, search }) => `${runnerPath(params.runnerId ?? '')}${search}` },
 ];
 
-/** Leads an old address to its new one, keeping the old address's fragment where the new one names none. */
+/** Leads a moved address to where its page is now, keeping its fragment unless the destination names one. */
 function Moved({ address }: { address: MovedAddress }) {
   const params = useParams();
   const { search, hash } = useLocation();

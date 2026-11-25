@@ -14,7 +14,7 @@ import { LegacyWorker } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
-/** A runner's anchor on an older Runners address, which now leads to that runner's own place. */
+/** A runner's anchor on a Runners address leads to that runner's own place. */
 const RUNNER_ANCHOR = /^#runner-(.+)$/;
 
 
