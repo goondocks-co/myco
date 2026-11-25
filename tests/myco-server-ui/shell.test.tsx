@@ -10,7 +10,6 @@ import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-mem
 import { rememberNavCollapsed } from '../../packages/myco-server/ui/src/lib/nav-collapse';
 import { recencyOf } from '../../packages/myco-server/ui/src/design';
 import { scopeAll } from '../../packages/myco-server/ui/src/routes/scope';
-import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
   clearProjectHref, keptFilters, pageSuffix, projectOf, switchProjectHref, titleOf,
 } from '../../packages/myco-server/ui/src/routes/nav';
@@ -127,7 +126,7 @@ describe('the dashboard shell', () => {
     server({ '/auth/me': me({ ...ME, member: null }), '/api/projects': () => new Response(null, { status: 401 }) });
     mount('/projects');
     expect(await screen.findByText(/isn.t connected to a member yet/)).toBeTruthy();
-    expect(document.body.textContent).toContain('Ask an owner or admin to connect it from People & machines');
+    expect(document.body.textContent).toContain('Ask an owner or admin to connect it from Settings › People and machines');
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
     expect(screen.queryByRole('navigation')).toBeNull();
   });
@@ -183,7 +182,7 @@ describe('the nav', () => {
     expect(nav.textContent).not.toContain('All projects');
     const admin = screen.getByRole('navigation', { name: 'Admin' });
     expect(within(admin).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      ['Projects', '/projects'], [INVITE_CONTROLS.page, '/people'], ['Settings', '/settings'], ['Health', '/status/health'],
+      ['Projects', '/projects'], ['Settings', '/settings'], ['Health', '/status/health'],
     ]);
     expect(screen.getByRole('button', { name: /Search/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Account and appearance for machine_1 @octocat' })).toBeTruthy();
@@ -244,7 +243,8 @@ describe('the nav', () => {
   it('leads the old addresses to the pages that hold them now, keeping a measures window', async () => {
     for (const [from, to] of [
       ['/status', '/status/health'], ['/measures?window=7', '/status/health?window=7'], ['/operations', '/status/health'],
-      ['/access', '/people'], ['/p/alpha/access', '/p/alpha/settings'],
+      ['/access', '/settings/people'], ['/p/alpha/access', '/p/alpha/settings'], ['/me/machines', '/settings/people'],
+      ['/people#machine-ada_1', '/settings/people/machines/ada_1'],
     ] as const) {
       server(signedIn());
       mount(from);
@@ -253,28 +253,28 @@ describe('the nav', () => {
     }
     server(signedIn(MEMBER));
     mount('/access');
-    await waitFor(() => expect(location()).toBe('/me/machines'));
+    await waitFor(() => expect(location()).toBe('/settings/people'));
   });
 
-  it('titles My machines in a member\'s compact header', async () => {
+  it('titles a machine page Settings in a member\'s compact header', async () => {
     screenWidth(390);
     server({ ...signedIn(MEMBER), '/api/members': () => Response.json({ members: [] }), '/api/credentials': () => Response.json({ rows: [], cursor: null }), '/api/machines': () => Response.json({ machines: [], cursor: null }) });
-    mount('/me/machines');
+    mount('/settings/people/machines/laptop');
     // The shell's own header: the page's header renders beside it at once, and jsdom reads that as a banner too.
-    await waitFor(() => expect(document.querySelector('header[data-shell]')?.textContent).toContain('My machines'));
+    await waitFor(() => expect(document.querySelector('header[data-shell]')?.textContent).toContain('Settings'));
   });
 
-  it('links a member to the read-only People page without admin settings or health', async () => {
+  it('links a member to People and machines without the admin pages', async () => {
     server(signedIn(MEMBER));
     mount('/p/alpha');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
     expect(within(pages).getAllByRole('link').map((a) => a.textContent)).toEqual(['Today', 'Sessions', 'Knowledge', 'Myco’s work']);
     await findScope();
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
-    const people = await screen.findByRole('navigation', { name: 'People' });
-    expect(within(people).getByRole('link', { name: INVITE_CONTROLS.page }).getAttribute('href')).toBe('/people');
+    const foot = await screen.findByRole('navigation', { name: 'Server' });
+    expect(within(foot).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['Settings', '/settings/people']]);
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    for (const name of ['Projects', 'Project settings', 'Settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    for (const name of ['Projects', 'Project settings', 'Health']) expect(within(nav).queryByRole('link', { name })).toBeNull();
   });
 
   it('keeps the last project in the page links on a page that spans the server', async () => {
@@ -468,7 +468,7 @@ describe('the page titles', () => {
     ]).toEqual([
       'Today', 'Today', 'Sessions', 'Sessions', 'Knowledge',
       'Knowledge', 'Knowledge', 'Myco’s work', 'Project settings', 'Not found',
-      'Today', 'Projects', 'Health', INVITE_CONTROLS.page, 'My machines', 'Settings', 'Settings', 'Not found',
+      'Today', 'Projects', 'Health', 'Settings', 'Settings', 'Settings', 'Settings', 'Not found',
       'Knowledge', 'Knowledge', 'Myco’s work', 'Myco’s work', 'Myco’s work', 'Myco’s work',
     ]);
     // A page whose suffix runs over two segments is found whole, and a project switch keeps it.
@@ -548,7 +548,7 @@ describe('on a phone', () => {
 });
 
 describe('the account menu', () => {
-  it('holds the appearance, the member\'s machines and sign out; the font choice is the code font', async () => {
+  it('holds the appearance and sign out; the font choice is the code font', async () => {
     server(signedIn());
     mount('/p/alpha');
     const trigger = await screen.findByRole('button', { name: 'Account and appearance for machine_1 @octocat' });
@@ -557,7 +557,7 @@ describe('the account menu', () => {
     expect(within(menu).getByText('@octocat · Admin')).toBeTruthy();
     for (const name of ['Light', 'Dark', 'System', 'Sage', 'Terracotta', 'Compact', 'Normal', 'Comfy']) expect(within(menu).getByRole('menuitemradio', { name })).toBeTruthy();
     expect(within(menu).getByRole('menuitem', { name: /Code font/ }).textContent).toContain('JetBrains Mono');
-    expect(within(menu).getByRole('menuitem', { name: 'My machines' })).toBeTruthy();
+    expect(within(menu).queryByRole('menuitem', { name: 'My machines' })).toBeNull();
     expect(within(menu).getByRole('menuitem', { name: 'Sign out' })).toBeTruthy();
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Light' }));
     await waitFor(() => expect(document.documentElement.classList.contains('light')).toBe(true));

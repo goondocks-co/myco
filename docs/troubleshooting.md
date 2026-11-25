@@ -42,7 +42,7 @@ The Windows x64 installer selects 2.x releases too, but the 2.0 Windows path rem
 
 An invitation works once. `enrollment_used`, `enrollment_expired` and `enrollment_revoked` mean you need a fresh one; `enrollment_unknown` can also mean an incomplete link. For an unreachable server, restore connectivity or correct its address first.
 
-Ask an administrator to use **People & machines › Add a machine**, with **For** set to your existing member, then run the login command it shows. If you already sign in to the dashboard, you can instead run `myco login <address>` and approve the machine in your browser.
+Ask an administrator to use **Settings › People and machines › Add a machine**, with **For** set to your existing member, then run the login command it shows. If you already sign in to the dashboard, you can instead run `myco login <address>` and approve the machine in your browser.
 
 If you see `identity_claimed`, this machine already belongs to a member of that server. Ask for a link for that existing member. Removing a member does not transfer their machines to someone else.
 
@@ -64,7 +64,7 @@ On a machine joined to two servers, an agent's Myco tools may reach only one of 
 
 ### A repository is not captured
 
-Only Git repositories capture. Repositories under **My machines › Its settings › Folders it captures** join the default Myco when an agent works in them. The default parent folder is `~/Repos`.
+Only Git repositories capture. Repositories under **Folders it captures** (the machine's page, **Change folders**) join the default Myco when an agent works in them. The default parent folder is `~/Repos`.
 
 For a repository elsewhere, run `myco member join` inside it. If no project holds its remote and **Create a project for it** is off, an administrator must connect it. Doctor and member status show repositories still joining or left unconnected.
 

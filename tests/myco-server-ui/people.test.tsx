@@ -1,9 +1,8 @@
 import { MACHINE_SETTINGS_CONTROLS } from '@goondocks/myco-shared/setup-guidance';
 /**
- * People & machines and My machines: machines built from credentials and
- * named without ids, Myco's own account kept out of the people and named
- * "Myco", and each member's own machines on My machines, with no admin route
- * asked for a member.
+ * Settings › People and machines and each machine's page: machines named
+ * without ids, Myco's own account kept out of the people and named "Myco", and
+ * a member's own machines with no admin route asked for a member.
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
@@ -15,8 +14,6 @@ import { matchRoute } from '@myco-server-worker/routes.js';
 
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
-import type { Machine } from '../../packages/myco-server/ui/src/features/admin/machines';
-import { MachineList } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import { canRename, MACHINE_NAME_MAX, machineNameProblem } from '../../packages/myco-server/ui/src/features/admin/people/rename';
 import { machineName, MACHINE_NAME_MAX as SERVER_NAME_MAX } from '@myco-server-worker/api/machines.js';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
@@ -71,8 +68,15 @@ function mount(path: string) {
 const me = (id: string, label: string, role: 'admin' | 'member') => ({ sub: '1', login: 'someone', member: { id, label, role } });
 
 function deployment(viewer: ReturnType<typeof me>, credentials: CredentialRow[], extra: Record<string, (init?: RequestInit, url?: URL) => Response> = {}) {
-  const machineAnswer = (rows: CredentialRow[]) => ({ machines: machineRows(rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id)), cursor: null });
+  const visible = (rows: CredentialRow[]) => machineRows(rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id));
+  const machineAnswer = (rows: CredentialRow[]) => ({ machines: visible(rows), cursor: null });
+  const shown = new Set(visible(credentials).map((row) => row.machineId));
+  const one = Object.fromEntries(machineRows(credentials).map((row) => [`/api/machines/${row.machineId}`, () => Response.json({ machine: shown.has(row.machineId) ? row : null, contactFacts: 'ready' })]));
   return server({
+    '/api/runners': () => Response.json({ observedAt: NOW_MS, runners: [], legacyWorkers: [], queue: { observedAt: NOW_MS, count: 0, oldestAt: null, reasons: [], nativeNeedsRunner: false }, cursor: null }),
+    '/api/runners/removed': () => Response.json({ runners: [], cursor: null }),
+    '/api/uncaptured': () => Response.json({ items: [], cursor: null }),
+    ...one,
     '/auth/me': () => Response.json(dashboardMe(viewer)),
     '/api/projects': () => Response.json({ projects: [{ projectId: PROJECT, name: 'Myco', createdAt: 0, sessionCount: 1, lastActivityAt: NOW_MS, archivedAt: null, archivedBy: null }] }),
     '/api/members': () => Response.json(MEMBERS),
@@ -91,13 +95,17 @@ const adminRequests = (asked: readonly string[]): string[] => asked.filter((line
   return matched !== null && matched.route.auth === 'session' && matched.route.authority === 'admin';
 });
 
-describe('People & machines', () => {
+const PEOPLE = '/settings/people';
+const machinePage = (machineId: string) => `/settings/people/machines/${machineId}`;
+const machinesGroup = () => screen.findByRole('group', { name: 'Machines' });
+
+describe('People and machines', () => {
   it('shows the server-recorded Owner to administrators and members', async () => {
     for (const viewer of [me(ADA, 'Ada', 'admin'), me(LIN, 'Lin', 'member')]) {
       deployment(viewer, [], {
         '/api/members': () => Response.json({ members: MEMBERS.members.map((row) => ({ ...row, effectiveRole: row.id === ADA ? 'owner' : row.role })) }),
       });
-      mount('/people');
+      mount(PEOPLE);
       const people = await screen.findByRole('list', { name: 'Members' });
       const ada = within(people).getAllByRole('listitem').find((item) => item.textContent?.includes('Ada'));
       expect(ada?.textContent).toContain('Owner');
@@ -110,25 +118,26 @@ describe('People & machines', () => {
       credential(),
       credential({ id: 'mt_Lq2wE4rT6yU8iO0p', lineageRoot: 'mt_Lq2wE4rT6yU8iO0p', memberId: LIN, machineId: 'lin_77aa00bb', runtimeLabel: null }),
     ]);
-    mount('/people');
+    mount(PEOPLE);
     const people = await screen.findByRole('list', { name: 'Members' });
-    expect(within(people).getAllByRole('listitem').map((li) => li.querySelector('.font-medium')?.textContent)).toEqual(['Ada', 'A teammate']);
+    expect(within(people).getAllByRole('listitem').map((li) => li.querySelector('.font-medium')?.firstChild?.textContent)).toEqual(['Ada', 'A teammate']);
     expect(people.textContent).not.toMatch(/harness|Myco/);
     // Myco's account appears only by its name: who made an invitation, and who removed a member.
     expect(await screen.findByText(/^by Myco · expires in (59|60)m$/)).toBeTruthy();
     expect(screen.getByText('A machine for a teammate')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Removed (1)' }));
     expect((await screen.findByRole('list', { name: 'Removed members' })).textContent).toMatch(/Roe.*Removed 2 days ago by Myco/);
-    const machines = await screen.findByRole('list', { name: 'Machines' });
+    const machines = await machinesGroup();
     await waitFor(() => expect(machines.textContent).toContain('A machine'));
-    expect(machines.textContent).toContain('A teammate · allowed to write');
+    expect(machines.textContent).toContain('A teammate’s');
     expect(rawIdsIn(document.body)).toEqual([]);
   });
 
   it('adds a machine for a member from their menu, with that member picked', async () => {
     deployment(me(ADA, 'Ada', 'admin'), [credential()]);
-    mount('/people');
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for A teammate' }), { key: 'Enter' });
+    mount(PEOPLE);
+    const teammate = (await screen.findByText('A teammate', { selector: '.font-medium' })).closest('li')!;
+    fireEvent.keyDown(within(teammate).getByRole('button', { name: 'Manage' }), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: `${INVITE_CONTROLS.button} for them` }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
     expect(within(dialog).getByRole('combobox', { name: new RegExp(`^${INVITE_CONTROLS.field}(?::|$)`) }).textContent).toContain('A teammate');
@@ -141,9 +150,8 @@ describe('People & machines', () => {
         { eventId: 'ev_2', projectId: 'proj_ffffffffffffffffffffffffffffffff', sessionId: SESSION, kind: 'mystery', createdAt: NOW_MS - 2 * 3_600_000, receivedAt: NOW_MS },
       ], cursor: null }),
     });
-    mount('/people');
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada’s MacBook' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'What it wrote' }));
+    mount(machinePage('ada_5a2d54af'));
+    fireEvent.click(await screen.findByRole('button', { name: 'What it sent' }));
     const dialog = await screen.findByRole('dialog', { name: 'What Ada’s MacBook wrote' });
     const rows = await within(dialog).findByRole('list', { name: 'What it wrote' });
     expect(within(rows).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
@@ -171,11 +179,10 @@ describe('People & machines', () => {
         return Response.json({ rows: events.slice(start, start + 50), cursor: start + 50 < events.length ? String(start + 50) : null });
       },
     });
-    mount('/people');
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada’s MacBook' }), { key: 'Enter' });
-    expect(asked.filter((line) => line === 'GET /api/machines')).toHaveLength(1);
+    mount(machinePage('ada_5a2d54af'));
+    fireEvent.click(await screen.findByRole('button', { name: 'What it sent' }));
+    expect(asked.filter((line) => line === 'GET /api/machines/ada_5a2d54af')).toHaveLength(1);
     expect(credentialPurposes).not.toContain('member');
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'What it wrote' }));
     const dialog = await screen.findByRole('dialog', { name: 'What Ada’s MacBook wrote' });
     await waitFor(() => expect(within(dialog).getAllByRole('listitem')).toHaveLength(50));
     expect(asked.filter((line) => line === 'GET /api/machines/ada_5a2d54af/activity')).toHaveLength(1);
@@ -193,9 +200,8 @@ describe('People & machines', () => {
         ], cursor: null })
         : Response.json({ rows: [{ eventId: 'ev_1', projectId: PROJECT, sessionId: SESSION, kind: 'prompt', createdAt: NOW_MS - 1, receivedAt: NOW_MS - 1 }], cursor: '2:next' }),
     });
-    mount('/people');
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada’s MacBook' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'What it wrote' }));
+    mount(machinePage('ada_5a2d54af'));
+    fireEvent.click(await screen.findByRole('button', { name: 'What it sent' }));
     const dialog = await screen.findByRole('dialog', { name: 'What Ada’s MacBook wrote' });
     await within(dialog).findByText('Prompt');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show more' }));
@@ -215,11 +221,11 @@ describe('People & machines', () => {
         ? failNext ? Response.json({ error: 'unavailable' }, { status: 503 }) : Response.json({ machines: machineRows([lin]), cursor: null })
         : Response.json({ machines: machineRows([ada]), cursor: '1:ada_5a2d54af' }),
     });
-    mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
+    mount(PEOPLE);
+    const machines = await machinesGroup();
     await within(machines).findByText('Ada’s MacBook');
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Showing the last successful machines read. Couldn’t refresh it.');
+    expect((await screen.findByRole('alert')).textContent).toContain('The server had a problem');
     expect(within(machines).getByText('Ada’s MacBook')).toBeTruthy();
     failNext = false;
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
@@ -227,49 +233,56 @@ describe('People & machines', () => {
   });
 });
 
-describe('My machines', () => {
+describe('your machines', () => {
   const MINE = [
     credential({ id: 'mt_Lq2wE4rT6yU8iO0p', lineageRoot: 'mt_Lq2wE4rT6yU8iO0p', memberId: LIN, machineId: 'lin_77aa00bb', runtimeLabel: 'Lin’s build box' }),
     credential(),
   ];
 
-  it('lists a member only their own machines, with their settings and Stop, and asks no admin route', async () => {
+  it('lists a member only their own machines, each opening its page with its settings and removal, and asks no admin route', async () => {
     const update = { leaf: 'update.automatic', effective: false, nextEffective: true, application: 'pending' };
     const asked = deployment(me(LIN, LIN, 'member'), MINE, { '/api/machines/lin_77aa00bb/settings': () => Response.json({ leaves: [update] }) });
-    mount('/me/machines');
-    expect(await screen.findByRole('heading', { level: 1, name: 'My machines' })).toBeTruthy();
-    const machines = await screen.findByRole('list', { name: 'Machines' });
-    await waitFor(() => expect(within(machines).getAllByRole('listitem')).toHaveLength(1));
-    expect(machines.textContent).toContain('Lin’s build box');
-    expect(machines.textContent).toMatch(/^Lin’s build boxallowed to write · first signed in/);
+    mount(PEOPLE);
+    const machines = await machinesGroup();
+    await waitFor(() => expect(machines.textContent).toContain('Lin’s build box'));
+    expect(machines.textContent).not.toContain('Ada’s MacBook');
+    expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
+    expect(screen.getByText(/an admin creates a one-time link here/)).toBeTruthy();
+    expect(within(machines).getByRole('link', { name: 'Manage' }).getAttribute('href')).toBe(machinePage('lin_77aa00bb'));
+    cleanup();
+    mount(machinePage('lin_77aa00bb'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Lin’s build box' })).toBeTruthy();
     expect(await screen.findByText('Automatic updates: Off · last reported by this machine')).toBeTruthy();
     expect(screen.getByText(/Waiting for this machine: automatic updates → On/).textContent).toContain('An idle or offline machine waits until activity resumes.');
-    expect(screen.queryByText('Automatic updates: On · last reported by this machine')).toBeNull();
-    fireEvent.keyDown(within(machines).getByRole('button', { name: 'More for Lin’s build box' }), { key: 'Enter' });
-    expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Rename', MACHINE_SETTINGS_CONTROLS.action, 'What it wrote', 'Stop']);
-    expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
-    expect(screen.getByText(/an admin creates a one-time link on/).textContent).toContain(INVITE_CONTROLS.page);
+    expect(screen.getByRole('button', { name: MACHINE_SETTINGS_CONTROLS.action })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove…' })).toBeTruthy();
+    expect(screen.getByText('No', { selector: 'span' })).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(adminRequests(asked)).toEqual([]);
     expect(rawIdsIn(document.body)).toEqual([]);
   });
 
-  it('lists an admin only their own machines, and adds another for themselves', async () => {
+  it('lists every machine to an admin with whose it is, and adds another for themselves, picked first', async () => {
     deployment(me(ADA, 'Ada', 'admin'), MINE);
-    mount('/me/machines');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
+    mount(PEOPLE);
+    const machines = await machinesGroup();
     await waitFor(() => expect(machines.textContent).toContain('Ada’s MacBook'));
-    expect(machines.textContent).not.toContain('Lin’s build box');
-    expect(screen.queryByText(/an admin creates a one-time link/)).toBeNull();
+    expect(machines.textContent).toContain('Lin’s build box');
     fireEvent.click(screen.getByRole('button', { name: INVITE_CONTROLS.button }));
     const dialog = await screen.findByRole('dialog', { name: INVITE_CONTROLS.button });
-    expect(within(dialog).getByRole('combobox', { name: new RegExp(`^${INVITE_CONTROLS.field}(?::|$)`) }).textContent).toContain('You');
+    expect(within(dialog).getByRole('combobox', { name: new RegExp(`^${INVITE_CONTROLS.field}(?::|$)`) }).textContent).toContain('Ada');
   });
 
-  it('says so when none of the member\'s machines has signed in', async () => {
+  it('says so when none of the member\'s machines can write', async () => {
     deployment(me(LIN, LIN, 'member'), []);
-    mount('/me/machines');
-    expect(await screen.findByText('None of your machines has signed in yet.')).toBeTruthy();
+    mount(PEOPLE);
+    expect(await screen.findByText('None of your machines can write here now.')).toBeTruthy();
+  });
+
+  it('answers a machine the viewer may not see as no machine here', async () => {
+    deployment(me(LIN, LIN, 'member'), MINE);
+    mount(machinePage('ada_5a2d54af'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'No machine here' })).toBeTruthy();
   });
 });
 
@@ -283,6 +296,7 @@ describe('Renaming a machine', () => {
     const asked = deployment(viewer, [], {
       '/api/machines': () => Response.json({ machines: machineRows(rows.filter((c) => viewer.member.role === 'admin' || c.memberId === viewer.member.id)), cursor: null }),
       '/api/machines/lin_77aa00bb': (init) => {
+        if (init?.method !== 'PATCH') return Response.json({ machine: machineRows(rows).find((row) => row.machineId === 'lin_77aa00bb'), contactFacts: 'ready' });
         const body = JSON.parse(String(init?.body));
         sent.push({ method: init?.method, body });
         const response = answer(body);
@@ -294,6 +308,7 @@ describe('Renaming a machine', () => {
   }
 
   async function openRename(owner: string) {
+    mount(machinePage('lin_77aa00bb'));
     fireEvent.keyDown(await screen.findByRole('button', { name: `More for ${owner}` }), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Rename' }));
     return screen.findByRole('dialog', { name: `Rename ${owner}` });
@@ -301,7 +316,6 @@ describe('Renaming a machine', () => {
 
   it('renames another member\'s machine for an admin, then reads the machines and their capture again', async () => {
     const { asked, sent } = renaming(me(ADA, 'Ada', 'admin'), (body) => Response.json({ machineId: 'lin_77aa00bb', name: (body as { label: string }).label }));
-    mount('/people');
     const dialog = await openRename('Lin’s build box');
     const field = within(dialog).getByRole('textbox', { name: 'Machine name' }) as HTMLInputElement;
     expect(field.value).toBe('Lin’s build box');
@@ -311,15 +325,12 @@ describe('Renaming a machine', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(sent).toEqual([{ method: 'PATCH', body: { label: 'build-02' } }]);
-    const machines = await screen.findByRole('list', { name: 'Machines' });
-    await waitFor(() => expect(machines.textContent).toContain('build-02'));
-    expect(machines.textContent).not.toContain('Lin’s build box');
-    expect(asked.slice(before)).toEqual(expect.arrayContaining(['GET /api/machines', 'GET /api/status']));
+    expect(await screen.findByRole('heading', { level: 1, name: 'build-02' })).toBeTruthy();
+    expect(asked.slice(before)).toEqual(expect.arrayContaining(['GET /api/machines/lin_77aa00bb', 'GET /api/status']));
   });
 
   it('says what is wrong with a name before sending it, and sends nothing', async () => {
     const { sent } = renaming(me(ADA, 'Ada', 'admin'), () => Response.json({}));
-    mount('/people');
     const dialog = await openRename('Lin’s build box');
     const field = within(dialog).getByRole('textbox', { name: 'Machine name' });
     const save = within(dialog).getByRole('button', { name: 'Rename' }) as HTMLButtonElement;
@@ -349,7 +360,6 @@ describe('Renaming a machine', () => {
       [Response.json({ error: 'internal' }, { status: 503 }), 'The server refused (503).'],
     ] as const) {
       renaming(me(ADA, 'Ada', 'admin'), () => answer.clone());
-      mount('/people');
       const dialog = await openRename('Lin’s build box');
       fireEvent.change(within(dialog).getByRole('textbox', { name: 'Machine name' }), { target: { value: 'build-02' } });
       fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
@@ -359,33 +369,11 @@ describe('Renaming a machine', () => {
     }
   });
 
-  it('offers a member Rename on their own machines only, and names an unnamed one from empty', async () => {
-    deployment(me(LIN, LIN, 'member'), [LINS]);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const paging = { isPending: false, error: null, hasMore: false, isFetchingMore: false, more: () => undefined, retry: () => undefined };
-    const rows = machineRows([LINS, credential(), credential({ id: 'mt_Uu7yT6rE5wQ4aS3d', lineageRoot: 'mt_Uu7yT6rE5wQ4aS3d', memberId: LIN, machineId: 'lin_99cc11dd', runtimeLabel: null, lineageStartedAt: NOW_MS - 2 * DAY })]);
-    const unnamed = rows.filter((row) => row.name === null);
-    const listed: Machine[] = rows.map((row) => ({
-      key: row.machineId, machineId: row.machineId,
-      name: row.name ?? (unnamed.length === 1 ? 'A machine' : `Machine ${unnamed.findIndex((item) => item.machineId === row.machineId) + 1}`),
-      named: row.name !== null, memberId: row.member.id, standing: row.standing, stoppedBy: row.stoppedBy,
-      canStop: row.canStop === true, stopReason: row.stopReason ?? null,
-      firstSeenAt: row.firstSeenAt, liveCredentialCount: row.liveCredentialCount,
-      credentialCount: row.credentialCount, bytesWritten: row.bytesWritten,
-    }));
-    render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><MachineList machines={listed} viewerId={LIN} nameOf={() => null} showOwner paging={paging} empty="none" /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
-    // useMe answers before the menu is read, so the viewer's role is known.
-    await waitFor(() => expect(client.getQueryData(['me'])).toBeDefined());
-    const menuOf = async (name: string) => {
-      fireEvent.keyDown(screen.getByRole('button', { name: `More for ${name}` }), { key: 'Enter' });
-      const items = within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent);
-      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
-      await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-      return items;
-    };
-    expect(await menuOf('Lin’s build box')).toContain('Rename');
-    expect(await menuOf('Ada’s MacBook')).not.toContain('Rename');
-    fireEvent.keyDown(screen.getByRole('button', { name: 'More for A machine' }), { key: 'Enter' });
+  it('names an unnamed machine from empty', async () => {
+    const unnamed = credential({ id: 'mt_Uu7yT6rE5wQ4aS3d', lineageRoot: 'mt_Uu7yT6rE5wQ4aS3d', memberId: LIN, machineId: 'lin_99cc11dd', runtimeLabel: null });
+    deployment(me(LIN, LIN, 'member'), [LINS, unnamed]);
+    mount(machinePage('lin_99cc11dd'));
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for A machine' }), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Rename' }));
     const dialog = await screen.findByRole('dialog', { name: 'Name this machine' });
     expect((within(dialog).getByRole('textbox', { name: 'Machine name' }) as HTMLInputElement).value).toBe('');

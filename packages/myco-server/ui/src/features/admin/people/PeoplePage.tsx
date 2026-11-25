@@ -1,28 +1,22 @@
-import { useState } from 'react';
+/**
+ * The people on Settings › People and machines: each person with their role and how they sign in, managed from their
+ * row through the dialogs here; the invitations still open; and the sign-ins Myco's own runs used.
+ */
+import { useState, type ReactNode } from 'react';
 import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES } from '@goondocks/myco-shared/member-protocol';
 import {
-  Avatar, Button, Card, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, EmptyState, ErrorState, Input, Link, LoadingState, MoreMenu,
-  ShowMore, StatusChip, type MoreMenuItem,
+  ActionMenu, Avatar, Button, Card, CommandBlock, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, EmptyState, ErrorState, Input, LoadingState, MoreMenu,
+  ShowMore, type ActionMenuItem,
 } from '../../../design';
-import { refusalText, useAccessActions, useInvitations, useMembers } from '../../../hooks/use-access';
-import { permissionOf, useMe } from '../../../hooks/use-me';
+import { refusalText, useAccessActions, type useInvitations } from '../../../hooks/use-access';
+import { useMe } from '../../../hooks/use-me';
 import { usePaged } from '../../../hooks/use-paged';
 import { ApiError } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
-import { SETTINGS_SECTIONS } from '../../../routes/nav';
-import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
-import { useMachines } from '../machines';
-import { memberName, peopleOf, useMemberNames } from '../members';
+import { memberName } from '../members';
 import type { CredentialRow, InvitationRow, MemberRow } from '../wire';
-import { InviteDialog, type InviteTarget } from './InviteDialog';
-import { MachineList } from './MachineList';
 import { invitationExpiry, machinesCount } from './words';
-import { agoWords, dayWords, isInstant } from '@goondocks/myco-shared/time-words';
-
-const OWNER_ACTIONS = `${SETTINGS_SECTIONS.find((section) => section.id === 'advanced')!.to}#owner-actions`;
-
-/** Where each part of People & machines sits on its page. */
-export const PEOPLE_ANCHORS = { people: 'people', invitations: 'invitations', machines: 'machines', runs: 'runs' } as const;
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /**
  * A person's name on this page: the name the server gives them (a label, else
@@ -39,97 +33,15 @@ export function usePersonName(): (member: Pick<MemberRow, 'id' | 'label' | 'syst
   return (member) => personName(member, viewerId);
 }
 
-/**
- * `/people`: every member reads the directory and roles. Admins also see open
- * invitations, machines and Myco's run credentials, with actions to administer
- * them. Only the owner changes roles or ownership.
- */
-export function PeoplePage() {
-  const me = useMe();
-  const viewerId = me.data?.member?.id ?? null;
-  const peoplePermission = permissionOf(me.data, 'people');
-  const isAdmin = peoplePermission.allowed;
-  const isOwner = permissionOf(me.data, 'roles').allowed;
-  const members = useMembers();
-  const invitations = useInvitations({ enabled: isAdmin });
-  const machines = useMachines({ enabled: isAdmin });
-  const nameOf = useMemberNames();
-  const nameOfPerson = usePersonName();
-  const [invite, setInvite] = useState<InviteTarget | null>(null);
-  useAnchorScroll(members.isSuccess && (!isAdmin || !machines.isPending));
+const ROLE_WORDS = { owner: 'Owner', admin: 'Admin', member: 'Member' } as const;
 
-  const all = members.data?.members ?? [];
-  const people = peopleOf(all);
-  const live = people.filter((m) => m.revokedAt === null);
-  const held = people.filter((m) => m.revokedAt !== null && m.awaitingAdmission === true);
-  const removed = people.filter((m) => m.revokedAt !== null && m.awaitingAdmission !== true);
-  const choices = live.map((m) => ({ id: m.id, name: nameOfPerson(m) }));
-  // The viewer first, so adding a machine starts on their own.
-  choices.sort((a, b) => Number(b.id === viewerId) - Number(a.id === viewerId));
-
-  return (
-    <AdminPage
-      name="people"
-      scope="server"
-      title={INVITE_CONTROLS.page}
-      lede={isAdmin ? 'Who is a member of this server, and the machines that write to it. Every change names who made it.' : 'Who is a member of this server and what role they hold.'}
-      actions={isAdmin && (
-        <>
-          <Button variant="primary" onClick={() => setInvite({ kind: 'invite' })}>{INVITE_CONTROLS.invite}</Button>
-          <Button onClick={() => setInvite({ kind: 'machine', memberId: viewerId ?? undefined })}>{INVITE_CONTROLS.button}</Button>
-        </>
-      )}
-    >
-      {!isAdmin && <p className="t-small text-muted">{peoplePermission.reason ?? 'An admin can manage people and invitations.'}</p>}
-      <AdminSection id={PEOPLE_ANCHORS.people} title="People" description="Everyone who can sign in here. Myco’s own work signs in as Myco, which is not listed.">
-        {members.isPending ? <LoadingState label="Reading the members" count={3} />
-          : members.isError ? <ErrorState error={members.error} onRetry={() => void members.refetch()} />
-          : (
-            <PeopleList
-              live={live}
-              held={held}
-              removed={removed}
-              viewerId={viewerId}
-              isAdmin={isAdmin}
-              isOwner={isOwner}
-              ownerMemberId={people.find((member) => member.effectiveRole === 'owner')?.id ?? null}
-              nameOf={nameOf}
-              onAddMachine={(memberId) => setInvite({ kind: 'machine', memberId })}
-            />
-          )}
-      </AdminSection>
-
-      {isAdmin && <><AdminSection id={PEOPLE_ANCHORS.invitations} title="Open invitations" description="Links made here that nobody has used yet. Each works once.">
-        <Invitations invitations={invitations} viewerId={viewerId} nameOf={nameOf} people={people} />
-      </AdminSection>
-
-      <AdminSection id={PEOPLE_ANCHORS.machines} title="Machines" description="Each machine that signed in, whose it is, and whether it may write now.">
-        <MachineList
-          machines={machines.machines}
-          viewerId={viewerId}
-          nameOf={nameOf}
-          showOwner
-          paging={machines}
-          empty="No machine has signed in yet."
-        />
-      </AdminSection>
-
-      <AdminSection id={PEOPLE_ANCHORS.runs} title="Myco’s runs" description="Each task Myco runs signs in on its own, and the sign-in stops when its run ends. These belong to runs, not to machines.">
-        <RunCredentials />
-      </AdminSection>
-
-      <InviteDialog target={invite} onClose={() => setInvite(null)} people={choices} />
-      </>}
-      {isAdmin && (
-        <p className="t-small text-muted" data-owner-actions="">
-          Transferring ownership and claiming raw data with no recorded uploader are under <Link to={OWNER_ACTIONS}>Settings › Advanced › Owner actions</Link>.
-        </p>
-      )}
-    </AdminPage>
-  );
+/** A person's line: how they sign in, and, to an admin, how many machines write for them. */
+function personLine(member: MemberRow, showMachineCount: boolean): string {
+  const signIn = member.linked ? 'Signs in with GitHub' : 'No GitHub account connected yet, so they can’t sign in here';
+  return showMachineCount && typeof member.liveMachines === 'number' ? `${signIn} · ${machinesCount(member.liveMachines)}` : signIn;
 }
 
-interface PeopleListProps {
+export interface PeopleListProps {
   live: MemberRow[];
   /** People a restore from another server listed without access, until the owner re-admits them. */
   held: MemberRow[];
@@ -140,9 +52,15 @@ interface PeopleListProps {
   ownerMemberId: string | null;
   nameOf: (id: string | null | undefined) => string | null;
   onAddMachine: (memberId: string) => void;
+  /** The list's closing row: how another person joins. */
+  footer?: ReactNode;
 }
 
-function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemberId, nameOf, onAddMachine }: PeopleListProps) {
+/**
+ * Each person who can sign in, with their role and how they sign in, and Manage holding what an admin may do to them,
+ * each behind its own dialog; the people a restore is holding, and those removed, below.
+ */
+export function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemberId, nameOf, onAddMachine, footer }: PeopleListProps) {
   const nameOfPerson = usePersonName();
   const actions = useAccessActions();
   const [removing, setRemoving] = useState<MemberRow | null>(null);
@@ -158,8 +76,8 @@ function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemb
 
   return (
     <div className="flex flex-col gap-s3">
-      {live.length === 0 ? <EmptyState title="Nobody has joined yet." /> : (
-        <Card padding="flush">
+      <Card padding="flush" className="flex flex-col divide-y divide-line" role="group" aria-label="Who can sign in?">
+        {live.length === 0 ? <EmptyState title="Nobody has joined yet." /> : (
           <ul aria-label="Members" className="flex flex-col divide-y divide-line">
             {live.map((member) => (
               <PersonItem
@@ -171,13 +89,14 @@ function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemb
                   ...(isAdmin && !member.linked ? [{ label: 'Connect GitHub', onSelect: () => setLinking(member) }] : []),
                   ...(isAdmin ? [{ label: `${INVITE_CONTROLS.button} for them`, onSelect: () => onAddMachine(member.id) }] : []),
                   ...(isOwner && member.id !== viewerId ? [{ label: member.role === 'admin' ? 'Make member' : 'Make admin', onSelect: () => { setRoleError(null); setRoleConfirmed(false); actions.changeRole.reset(); setRoleReview(member); } }] : []),
-                  ...(isAdmin && member.id !== ownerMemberId && !(isOwner && member.id === viewerId) && (member.role === 'member' || isOwner) ? [{ label: 'Remove', tone: 'danger' as const, onSelect: () => { setRemoveError(null); actions.revokeMember.reset(); setRemoving(member); } }] : []),
+                  ...(isAdmin && member.id !== ownerMemberId && !(isOwner && member.id === viewerId) && (member.role === 'member' || isOwner) ? [{ label: 'Remove', onSelect: () => { setRemoveError(null); actions.revokeMember.reset(); setRemoving(member); } }] : []),
                 ]}
               />
             ))}
           </ul>
-        </Card>
-      )}
+        )}
+        {footer}
+      </Card>
       {held.length > 0 && (
         <Card padding="flush">
           <ul aria-label="Waiting to be re-admitted" className="flex flex-col divide-y divide-line">
@@ -279,24 +198,23 @@ function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemb
   );
 }
 
-function PersonItem({ member, viewerId, showMachineCount, actions }: { member: MemberRow; viewerId: string | null; showMachineCount: boolean; actions: MoreMenuItem[] }) {
+function PersonItem({ member, viewerId, showMachineCount, actions }: { member: MemberRow; viewerId: string | null; showMachineCount: boolean; actions: ActionMenuItem[] }) {
   const nameOfPerson = usePersonName();
   const name = nameOfPerson(member);
+  const role = ROLE_WORDS[member.effectiveRole ?? member.role];
   return (
-    <li className="flex items-center gap-s3 px-s4 py-s3" data-person="">
-      <Avatar name={name} />
-      <div className="flex min-w-0 flex-1 flex-col gap-s1">
-        <span className="flex flex-wrap items-center gap-s2">
-          <span className="t-body font-medium text-ink">{name}</span>
-          {member.effectiveRole === 'owner' ? <StatusChip>Owner</StatusChip>
-            : member.role === 'admin' ? <StatusChip>Admin</StatusChip> : <StatusChip>Member</StatusChip>}
-          {member.id === viewerId && name !== 'You' && <StatusChip>You</StatusChip>}
-        </span>
-        <span className="t-small text-muted">
-          {member.linked ? 'GitHub connected' : 'No GitHub account yet'}{showMachineCount && typeof member.liveMachines === 'number' && ` · ${machinesCount(member.liveMachines)}`}{isInstant(member.createdAt) && ` · joined ${dayWords(member.createdAt)}`}
-        </span>
+    <li className="flex flex-col gap-s3 px-s4 py-s4 sm:flex-row sm:items-start sm:justify-between sm:gap-s6" data-person="" data-list-row="person">
+      <div className="flex min-w-0 items-start gap-s3">
+        <Avatar name={name} />
+        <div className="flex min-w-0 flex-col gap-s1">
+          <span className="t-body font-medium text-ink break-words">
+            {name}
+            <span className="t-small font-normal text-muted">{` · ${role}${member.id === viewerId && name !== 'You' ? ' · you' : ''}`}</span>
+          </span>
+          <span className="t-small text-muted">{personLine(member, showMachineCount)}</span>
+        </div>
       </div>
-      {actions.length > 0 && <MoreMenu label={`More for ${name}`} items={actions} />}
+      {actions.length > 0 && <div className="shrink-0"><ActionMenu label="Manage" items={actions} /></div>}
     </li>
   );
 }
@@ -356,7 +274,8 @@ interface InvitationsProps {
   people: MemberRow[];
 }
 
-function Invitations({ invitations, viewerId, nameOf, people }: InvitationsProps) {
+/** The invitations made here that nobody has used yet, each withdrawn from its menu behind a confirm. */
+export function Invitations({ invitations, viewerId, nameOf, people }: InvitationsProps) {
   const nameOfPerson = usePersonName();
   const withdraw = useAccessActions().revokeInvitation;
   const [withdrawing, setWithdrawing] = useState<InvitationRow | null>(null);
@@ -409,7 +328,7 @@ function Invitations({ invitations, viewerId, nameOf, people }: InvitationsProps
 }
 
 /** The credentials Myco's runs signed in with, newest first; a live one can be stopped. */
-function RunCredentials() {
+export function RunCredentials() {
   const runs = usePaged<CredentialRow>(['credentials', 'run'], '/api/credentials?purpose=run&limit=50', { freshness: 'still' });
   const stop = useAccessActions().revokeCredentials;
   const [stopping, setStopping] = useState<CredentialRow | null>(null);

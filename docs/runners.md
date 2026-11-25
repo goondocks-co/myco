@@ -32,15 +32,15 @@ myco runner doctor --server <address>
 
 The service starts at login and uses this account's agent sign-ins. Status shows registration, service, contact and offered agents; doctor diagnoses what prevents it from running. To run in a terminal instead, use `myco runner run --server <address>` and stop it with Ctrl-C. One runner serves a given Deployment per machine; a second executor waits for the first to stop.
 
-## 3. Check the Runners page
+## 3. Check its machine page
 
-Open **Runners** in the dashboard. It shows contact, readiness, current work, offered agents, version, release channel and update results. Open **Details** for agent sign-in reports and model information. If it is not ready, check its reported reason and run doctor on that machine.
+Open **Myco's work › Runners** in the dashboard. Each runner is one row with what it is doing or last did; **Its machine** opens the machine's page, which shows whether it is working, which agent it uses and who pays, its runs in the last 24 hours, the version and release channel it reported and update results. Open **Details** there for agent sign-in reports and model information. If it is not ready, check its reported reason and run doctor on that machine.
 
-An owner or administrator can **Pause** a runner to let its current task finish while taking no new work, then **Resume** it. **Remove** revokes its authority immediately; it does not terminate the remote process. Unfinished work can retry on another runner after its assignment expires. To stop the local service while retaining registration, run `myco runner uninstall --server <address>` on that machine.
+An owner or administrator turns **Runs Myco’s work** off to let its current task finish while it takes no new work, and on again to resume. **Remove this machine** revokes its authority immediately; it does not terminate the remote process. Unfinished work can retry on another runner after its assignment expires. To stop the local service while retaining registration, run `myco runner uninstall --server <address>` on that machine.
 
 ## Use a stored API key
 
-For a machine without a subscription, install the agent and register the runner. In **Settings** → **Connections**, add the provider key, then in **Settings** → **Models** set **Paid by** to **A stored key** (or choose **Use the server’s stored key** for one runner on **Runners**). Claude Code and OpenCode use the Anthropic slot; Codex uses its own Codex (OpenAI) slot. Cursor uses the Cursor slot with a Cursor API key, as [Cursor’s CLI authentication documentation](https://cursor.com/docs/cli/reference/authentication) specifies. An Anthropic key cannot sign the Cursor CLI in.
+For a machine without a subscription, install the agent and register the runner. In **Settings** → **Connections**, add the provider key, then in **Settings** → **Models** set **Paid by** to **A stored key** (or, on one runner's machine page, choose **Set this machine apart** and **Use the server’s stored key**). Claude Code and OpenCode use the Anthropic slot; Codex uses its own Codex (OpenAI) slot. Cursor uses the Cursor slot with a Cursor API key, as [Cursor’s CLI authentication documentation](https://cursor.com/docs/cli/reference/authentication) specifies. An Anthropic key cannot sign the Cursor CLI in.
 
 You can also request choices during registration:
 
@@ -54,7 +54,7 @@ Each agent defaults to **this machine’s sign-in**, including on existing runne
 
 The stored choice is unavailable when there is no usable key. If a chosen key is later removed, unreadable or of a kind that the agent cannot use, work waits for that credential; it never falls back to the machine’s sign-in. Claude Code accepts an Anthropic API key or subscription token; OpenCode and Cursor accept API keys only. Choose **Use this machine’s sign-in** to return deliberately to the machine’s account. Sign-in status still reports the machine’s own login, even when work uses a stored key.
 
-Choose **A stored key first, then the runner’s own sign-in** on Models or Runners, or request `--sign-in <agent>=stored-first` at registration. With this choice the runner uses its own sign-in while the key is missing, out of credit or rejected. A failed key attempt queues the work again for a runner’s own sign-in. At most one ordinary run rechecks a held key each hour, when work and budget are available. Work returns to that key after a successful recheck. Models, Connections, Runners and Health show the key’s state, and each run records the sign-in it used.
+Choose **A stored key first, then the runner’s own sign-in** on Models or a runner's machine page, or request `--sign-in <agent>=stored-first` at registration. With this choice the runner uses its own sign-in while the key is missing, out of credit or rejected. A failed key attempt queues the work again for a runner’s own sign-in. At most one ordinary run rechecks a held key each hour, when work and budget are available. Work returns to that key after a successful recheck. Models, Connections, the runner's machine page and Health show the key’s state, and each run records the sign-in it used.
 
 Legacy workers default to their machine’s sign-in. An explicitly saved **Legacy workers sign in with** choice can retain their supported server-key flow; it never changes a registered runner.
 

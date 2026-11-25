@@ -232,9 +232,16 @@ describe('explicit initial ownership', () => {
     ]));
   });
 
+  /** A person's Manage menu trigger on Settings › People and machines. */
+  const manage = async (name: string) => {
+    const list = await screen.findByRole('list', { name: 'Members' });
+    const row = within(list).getAllByRole('listitem').find((li) => li.querySelector('.font-medium')?.firstChild?.textContent === name)!;
+    return within(row).getByRole('button', { name: 'Manage' });
+  };
+
   it('owner confirms role promotion using the reviewed member revision', async () => {
     const { requests } = deployment({ path: '/people' });
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
+    fireEvent.keyDown(await manage('Lin'), { key: 'Enter' });
     fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Make admin' }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByRole('button', { name: 'Make admin' }).hasAttribute('disabled')).toBe(true);
@@ -269,15 +276,15 @@ describe('explicit initial ownership', () => {
   it('shows roles read-only to an ordinary member through the People route', async () => {
     const { requests } = deployment({ owner: false, role: 'member', path: '/people' });
     const people = await screen.findByRole('list', { name: 'Members' });
-    expect(within(people).getByText('Member')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'People & machines' })).toBeTruthy();
-    expect(within(people).queryByRole('button', { name: /More for/ })).toBeNull();
+    expect(people.textContent).toContain(' · Member');
+    expect(screen.getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings/people');
+    expect(within(people).queryByRole('button', { name: 'Manage' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Transfer server ownership' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Invite a teammate' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add a machine' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Open invitations' })).toBeNull();
-    expect(screen.queryByRole('heading', { name: 'Myco’s runs' })).toBeNull();
-    expect(requests.some((request) => ['/api/enrollment', '/api/machines', '/api/credentials', '/api/ownership'].includes(request.path))).toBe(false);
+    expect(screen.queryByRole('heading', { name: 'Myco’s run sign-ins' })).toBeNull();
+    expect(requests.some((request) => ['/api/enrollment', '/api/credentials', '/api/ownership'].includes(request.path))).toBe(false);
     expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
   });
 
@@ -285,28 +292,28 @@ describe('explicit initial ownership', () => {
     const { requests } = deployment({ owner: false, path: '/people' });
     expect(await screen.findByRole('button', { name: 'Invite a teammate' })).toBeTruthy();
     // A menu open on top hides the page from the accessibility tree, so the way to owner actions is read first.
-    expect(screen.getByRole('link', { name: 'Settings › Advanced › Owner actions' }).getAttribute('href')).toBe(OWNER_ACTIONS);
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Lin' }), { key: 'Enter' });
+    expect(screen.getByRole('link', { name: 'Advanced › Owner actions' }).getAttribute('href')).toBe(OWNER_ACTIONS);
+    expect((await screen.findByRole('list', { name: 'Members' })).textContent).toContain(' · Member');
+    fireEvent.keyDown(await manage('Lin'), { key: 'Enter' });
     const menu = await screen.findByRole('menu');
     expect(within(menu).queryByRole('menuitem', { name: 'Make admin' })).toBeNull();
     expect(within(menu).getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
     expect(within(menu).getByRole('menuitem', { name: 'Add a machine for them' })).toBeTruthy();
     fireEvent.keyDown(menu, { key: 'Escape' });
-    fireEvent.keyDown(screen.getByRole('button', { name: 'More for Unlinked' }), { key: 'Enter' });
+    fireEvent.keyDown(await manage('Unlinked'), { key: 'Enter' });
     expect(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Connect GitHub' })).toBeTruthy();
-    expect(screen.getByText('Member')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Transfer server ownership' })).toBeNull();
     expect(requests.filter((request) => request.method === 'POST')).toHaveLength(0);
   });
 
   it('owner can review an admin demotion but cannot demote or remove themselves', async () => {
     const { requests } = deployment({ path: '/people' });
-    fireEvent.keyDown(await screen.findByRole('button', { name: 'More for Ada' }), { key: 'Enter' });
+    fireEvent.keyDown(await manage('Ada'), { key: 'Enter' });
     let menu = await screen.findByRole('menu');
     expect(within(menu).queryByRole('menuitem', { name: 'Make member' })).toBeNull();
     expect(within(menu).queryByRole('menuitem', { name: 'Remove' })).toBeNull();
     fireEvent.keyDown(menu, { key: 'Escape' });
-    fireEvent.keyDown(screen.getByRole('button', { name: 'More for Unlinked' }), { key: 'Enter' });
+    fireEvent.keyDown(await manage('Unlinked'), { key: 'Enter' });
     menu = await screen.findByRole('menu');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Make member' }));
     const dialog = screen.getByRole('dialog');

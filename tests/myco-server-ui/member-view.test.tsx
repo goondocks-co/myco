@@ -83,7 +83,7 @@ describe('the dashboard for a member who is not an admin', () => {
     });
   }
 
-  it('keeps admin pages protected and offers People read-only', async () => {
+  it('keeps admin pages protected and offers People and machines read-only', async () => {
     server(ROUTES_ANSWERED);
     mount('/p/live/settings');
     const pages = await screen.findByRole('navigation', { name: 'Pages' });
@@ -91,8 +91,8 @@ describe('the dashboard for a member who is not an admin', () => {
     // The nav foot of admin pages is absent, not greyed out.
     expect(screen.queryByRole('navigation', { name: 'Admin' })).toBeNull();
     const nav = screen.getByRole('complementary', { name: 'Navigation' });
-    expect(within(nav).getByRole('link', { name: INVITE_CONTROLS.page }).getAttribute('href')).toBe('/people');
-    for (const name of ['Settings', 'Health', 'Project settings']) expect(within(nav).queryByRole('link', { name })).toBeNull();
+    expect(within(nav).getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe('/settings/people');
+    for (const name of ['Health', 'Project settings']) expect(within(nav).queryByRole('link', { name })).toBeNull();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     for (const path of ['/settings', '/settings/models', '/status/health']) {
       cleanup();
@@ -104,17 +104,19 @@ describe('the dashboard for a member who is not an admin', () => {
     cleanup();
     const asked = server(ROUTES_ANSWERED);
     mount('/people');
-    expect(await screen.findByRole('heading', { level: 1, name: INVITE_CONTROLS.page })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Who can sign in?' })).toBeTruthy();
+    expect(screen.getAllByRole('link', { name: 'People and machines' })).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: 'Models' })).toBeNull();
     expect(screen.queryByTestId('admin-only')).toBeNull();
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
     expect(screen.queryAllByRole('switch')).toEqual([]);
     expect(adminRequests(asked)).toEqual([]);
   });
 
-  it('lists the member\'s own machines on My machines, with no invitation or removal, and the member\'s own Stop', async () => {
+  it('lists the member\'s own machines, with no invitation', async () => {
     server(ROUTES_ANSWERED);
     mount(MACHINE_SETTINGS_CONTROLS.path);
-    expect(await screen.findByRole('heading', { level: 1, name: MACHINE_SETTINGS_CONTROLS.page })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 2, name: 'Your machines' })).toBeTruthy();
     expect((await screen.findAllByText('A machine')).length).toBeGreaterThan(0);
     expect(screen.queryByText('Invitations')).toBeNull();
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();

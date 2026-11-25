@@ -4,7 +4,7 @@ import { parseOffers, type ReportedHarness } from '../core/worker-contacts.js';
 import { captureRecencyWindow } from './capture.js';
 import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
-import { claimedMachineIds, claimPage, machineClaimed, machineCredentialFacts, machineEvents } from '../db/runners/machines.js';
+import { claimedMachineIds, claimOf, claimPage, machineClaimed, machineCredentialFacts, machineEvents, type ClaimRow } from '../db/runners/machines.js';
 import { machineHeadPage } from '../db/runners/heads.js';
 
 interface MachineCapture {
@@ -49,6 +49,21 @@ export async function listMachines(
   const claims = await claimPage(db, scope, limit + 1, after);
   const visible = claims.slice(0, limit);
   if (visible.length === 0) return { machines: [], cursor: null, contactFacts: 'ready' };
+  const { machines, building } = await summarize(db, nowMs, visible);
+  const last = visible[visible.length - 1]!;
+  return { machines, cursor: claims.length > limit ? encodeCursor(last.claimed_at, last.machine_id) : null, contactFacts: building ? 'building' : 'ready' };
+}
+
+/** One machine's summary when the scope may see its claim, else null: the same facts a page of them carries. */
+export async function machineSummary(db: RelationalStore, nowMs: number, scope: MachineScope, machineId: string): Promise<{ machine: MachineRow; contactFacts: MachineFacts } | null> {
+  const claim = await claimOf(db, scope, machineId);
+  if (claim === null) return null;
+  const { machines, building } = await summarize(db, nowMs, [claim]);
+  return { machine: machines[0]!, contactFacts: building ? 'building' : 'ready' };
+}
+
+/** Each claim with its credentials' standing, its head's contact and run facts, and what it captured lately. */
+async function summarize(db: RelationalStore, nowMs: number, visible: readonly ClaimRow[]): Promise<{ machines: MachineRow[]; building: boolean }> {
   const ids = visible.map((row) => row.machine_id);
   const [{ heads, building }, credentials, recent] = await Promise.all([
     machineHeadPage(db, ids),
@@ -85,8 +100,7 @@ export async function listMachines(
       lastRunAt: head?.latest_run_at ?? null, capture: captured, lastCaptureAt: captured[0]?.lastEventAt ?? head?.latest_capture_at ?? null,
     };
   });
-  const last = visible[visible.length - 1]!;
-  return { machines, cursor: claims.length > limit ? encodeCursor(last.claimed_at, last.machine_id) : null, contactFacts: building ? 'building' : 'ready' };
+  return { machines, building };
 }
 
 /** Machine history merges indexed credential pages behind one statement. */

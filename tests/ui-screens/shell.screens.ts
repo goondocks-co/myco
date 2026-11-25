@@ -13,7 +13,6 @@
  *
  * The Projects page is still shot inside the shell; the admin pages have their own checks.
  */
-import { INVITE_CONTROLS } from '../../packages/myco-shared/src/member-protocol.ts';
 import { expect, test, type Page } from '@playwright/test';
 import {
   expectAxeClean, expectFits, expectNoRawIds, expectQuiet, expectUniformSearch, filterBarMetrics, openPage, shoot, SHOT_MATRIX,
@@ -73,13 +72,12 @@ async function expectNavInView(scope: ReturnType<Page['locator']>, role: 'admin'
   await expect(pages.getByRole('link', { name: 'Project settings' })).toHaveCount(0);
   const admin = scope.getByRole('navigation', { name: 'Admin' });
   if (role === 'admin') {
-    await expect(admin.getByRole('link', { name: INVITE_CONTROLS.page })).toBeInViewport();
     for (const label of ADMIN_PAGES) await expect(admin.getByRole('link', { name: label })).toBeInViewport();
-    await expect(scope.getByRole('navigation', { name: 'People' })).toHaveCount(0);
+    await expect(scope.getByRole('navigation', { name: 'Server' })).toHaveCount(0);
   } else {
     await expect(admin).toHaveCount(0);
     await expect(scope.getByRole('link', { name: 'Projects', exact: true })).toHaveCount(0);
-    await expect(scope.getByRole('navigation', { name: 'People' }).getByRole('link', { name: INVITE_CONTROLS.page })).toBeInViewport();
+    await expect(scope.getByRole('navigation', { name: 'Server' }).getByRole('link', { name: 'Settings' })).toBeInViewport();
   }
   await expect(scope.getByRole('button', { name: /^Account and appearance for / })).toBeInViewport();
 }
@@ -132,8 +130,8 @@ test.describe('dashboard shell', () => {
           const drawer = page.getByRole('dialog', { name: 'Navigation' });
           await expect(drawer).toBeVisible();
           await expect(drawer.getByRole('link', { name: 'Myco’s work' })).toBeVisible();
-          await expect(drawer.getByRole('link', { name: INVITE_CONTROLS.page, exact: true })).toHaveCount(1);
-          for (const label of ADMIN_PAGES) await expect(drawer.getByRole('link', { name: label, exact: typeof label === 'string' })).toHaveCount(role === 'admin' ? 1 : 0);
+          await expect(drawer.getByRole('link', { name: 'Settings', exact: true })).toHaveCount(1);
+          for (const label of ADMIN_PAGES.filter((page) => page !== 'Settings')) await expect(drawer.getByRole('link', { name: label, exact: typeof label === 'string' })).toHaveCount(role === 'admin' ? 1 : 0);
           await expectNavInView(drawer, role);
           await expectNoProjectList(drawer);
           await expectFits(page, viewport);
@@ -310,7 +308,7 @@ test.describe('dashboard shell', () => {
       const { context, page, watch } = await openPage(browser, { path: '/', viewport, mode, cookie: screensEnv('strangerCookie') });
       try {
         await expect(page.getByRole('heading', { level: 1 })).toBeInViewport();
-        await expect(page.getByText('Ask an owner or admin to connect it from People & machines, then open the link they send while signed in to this account.', { exact: false })).toBeVisible();
+        await expect(page.getByText('Ask an owner or admin to connect it from Settings › People and machines, then open the link they send while signed in to this account.', { exact: false })).toBeVisible();
         await expect(page.getByRole('navigation', { name: 'Pages' })).toHaveCount(0);
         await expectFits(page, viewport);
         await expectNoRawIds(page);

@@ -491,6 +491,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   settleReceiptTimes(ctx.databasePath, liveSessionId, now);
   settleWaitingRepositories(ctx.databasePath, now);
   seedWorkerContact(ctx.databasePath, now);
+  seedRunners(ctx.databasePath, now);
   seedTitles(ctx.databasePath, sessionIds, now);
   seedTurnCards(ctx.databasePath, turns);
   settleSporeTimes(ctx.databasePath, sporeIds, now);
@@ -844,6 +845,42 @@ function seedWorkerContact(databasePath: string, now: number): void {
     const seenAt = now - 3 * MINUTE;
     sqlite.query(`INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, ?, ?, '[]', 'no_work', ?, ?)`)
       .run(credential.id, studio, JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }]), seenAt, seenAt);
+  } finally {
+    sqlite.close();
+  }
+}
+
+/**
+ * Registered runners, each with the machine id its contact reports: one on Lin's build box, which also captures, so its
+ * page is both; one machine that only runs Myco's work and is online; one that went quiet hours ago; and one removed.
+ * The online two report a contact an hour ahead, as a machine whose clock runs fast does, so they stay online for the
+ * whole run without a runner checking in.
+ */
+export const RUNNERS = [
+  { id: 'rn_buildbox', name: 'lin-buildbox', machineId: MACHINE_IDS.buildbox, seenAgo: -HOUR, os: 'linux', arch: 'x64', removed: false },
+  { id: 'rn_homelab', name: 'homelab-mini', machineId: MACHINE_IDS.homelab, seenAgo: -HOUR, os: 'darwin', arch: 'arm64', removed: false },
+  { id: 'rn_closet', name: 'closet-pc', machineId: MACHINE_IDS.closet, seenAgo: 5 * HOUR, os: 'win32', arch: 'x64', removed: false },
+  { id: 'rn_retired', name: 'old-laptop', machineId: MACHINE_IDS.retired, seenAgo: 12 * DAY, os: 'darwin', arch: 'x64', removed: true },
+] as const;
+
+function seedRunners(databasePath: string, now: number): void {
+  const sqlite = new Database(databasePath);
+  sqlite.exec('PRAGMA busy_timeout = 5000');
+  // Whether a runner is online is judged against the server's own clock, which runs ahead of the fixture's.
+  const realNow = Date.now();
+  try {
+    const offers = JSON.stringify([{ id: 'claude-code', authenticated: true }, { id: 'codex', authenticated: true }, { id: 'cursor', authenticated: false }]);
+    for (const runner of RUNNERS) {
+      const seenAt = realNow - runner.seenAgo;
+      sqlite.query(`INSERT INTO runners (id, name, state, created_at, created_by_member, removed_at, last_contact_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(runner.id, runner.name, runner.removed ? 'removed' : 'enabled', now - 30 * DAY, OWNER.id, runner.removed ? now - 10 * DAY : null, seenAt);
+      sqlite.query(`INSERT INTO runner_credentials (id, runner_id, token_hash, epoch, issued_at, expires_at, lineage_root) VALUES (?, ?, ?, 1, ?, ?, ?)`)
+        .run(`rc_${runner.id}`, runner.id, `fixture-${runner.id}`, now - DAY, now + 30 * DAY, `rc_${runner.id}`);
+      sqlite.query(`INSERT INTO runner_contacts (runner_id, machine_id, os, version, offers, capabilities, last_reason, last_seen_at, updated_at) VALUES (?, ?, ?, '2.0.0-alpha.29', ?, '[]', 'no_work', ?, ?)`)
+        .run(runner.id, runner.machineId, runner.os, offers, seenAt, seenAt);
+      sqlite.query(`INSERT INTO runner_observations (runner_id, arch, availability, reason, observed_at) VALUES (?, ?, 'ready', 'Reports a signed-in agent.', ?)`)
+        .run(runner.id, runner.arch, seenAt);
+    }
   } finally {
     sqlite.close();
   }

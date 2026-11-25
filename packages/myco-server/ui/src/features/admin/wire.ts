@@ -121,6 +121,13 @@ export interface MachinesAnswer {
   cursor: string | null;
 }
 
+/** `GET /api/machines/{machineId}`: one machine the viewer may see, or null when the viewer may see no sign-in on it. */
+export interface MachineAnswer {
+  machine: MachineRow | null;
+  /** `building` while the server is still gathering each machine's latest contact: an empty contact then means not yet known. */
+  contactFacts: 'ready' | 'building';
+}
+
 /** `GET /api/credentials/{id}/activity`: one event a credential wrote. */
 export interface ActivityRow {
   eventId: string;

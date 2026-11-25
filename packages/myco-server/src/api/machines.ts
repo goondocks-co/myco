@@ -1,6 +1,6 @@
 /**
- * The machines on the People & machines page: every machine to an admin, and a member's own to a member. A machine is
- * renamed here by an admin, or by the member it belongs to.
+ * The machines on Settings › People and machines and each machine's page: every machine to an admin, and a member's
+ * own to a member. A machine is renamed here by an admin, or by the member it belongs to.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
@@ -8,7 +8,7 @@ import { authorize, machineResourcesOf, memberSubjectOf } from '../auth/authoriz
 import { readAuthorization } from '../db/auth/authorization.js';
 import { isAdmin } from '../auth/roles.js';
 import { renameMachine } from '../auth/enrollment.js';
-import { listMachines, machineActivity, machineInScope, type MachineRow, type MachineScope } from '../read/machines.js';
+import { listMachines, machineActivity, machineInScope, machineSummary, type MachineFacts, type MachineRow, type MachineScope } from '../read/machines.js';
 import { revokeMachineCredentialsAsMember } from '../auth/tokens.js';
 import { paging } from './sessions.js';
 import { emit } from '../telemetry.js';
@@ -35,19 +35,37 @@ export function machineName(value: unknown): string | null {
   return name;
 }
 
+/** `GET /api/machines/{machineId}`: one machine in the caller's scope with its Stop decision, or null when it has none there. */
+export interface DashboardMachineAnswer { machine: DashboardMachineRow | null; contactFacts: MachineFacts }
+
+/** Each machine with whether this caller may stop its credentials, and why not when they may not. */
+async function withStopDecisions(env: ServerEnv, ctx: OwnerContext, rows: readonly MachineRow[]): Promise<DashboardMachineRow[]> {
+  const machineIds = rows.map((machine) => machine.machineId);
+  const snapshot = await readAuthorization(env.db, { subjectMember: ctx.member.id, machines: machineIds });
+  const subject = memberSubjectOf(snapshot, ctx.member.id, 'http');
+  const resources = machineResourcesOf(snapshot, 'credential', machineIds);
+  return rows.map((machine, index) => {
+    const canStop = authorize(subject, 'edit', resources[index]!);
+    return { ...machine, canStop, stopReason: canStop ? null : "Only the owner can stop the owner's machines. You can stop your own." };
+  });
+}
+
 export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   const result = await listMachines(env.db, ctx.now, machineScope(ctx), page);
-  const machineIds = result.machines.map((machine) => machine.machineId);
-  const snapshot = await readAuthorization(env.db, { subjectMember: ctx.member.id, machines: machineIds });
-  const subject = memberSubjectOf(snapshot, ctx.member.id, 'http');
-  const resources = machineResourcesOf(snapshot, 'credential', machineIds);
-  const machines: DashboardMachineRow[] = result.machines.map((machine, index) => {
-    const canStop = authorize(subject, 'edit', resources[index]!);
-    return { ...machine, canStop, stopReason: canStop ? null : "Only the owner can stop the owner's machines. You can stop your own." };
-  });
-  return ok({ ...result, machines } satisfies DashboardMachinesAnswer);
+  return ok({ ...result, machines: await withStopDecisions(env, ctx, result.machines) } satisfies DashboardMachinesAnswer);
+}
+
+/**
+ * One machine, as a page of them carries it, or null: a machine id with no sign-in the caller may see is an ordinary
+ * answer (a runner nobody signed in on has none), and another member's machine answers as an unknown one does.
+ */
+export async function handleMachine(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const found = await machineSummary(env.db, ctx.now, machineScope(ctx), ctx.params.machineId!);
+  if (found === null) return ok({ machine: null, contactFacts: 'ready' } satisfies DashboardMachineAnswer);
+  const [machine] = await withStopDecisions(env, ctx, [found.machine]);
+  return ok({ machine: machine!, contactFacts: found.contactFacts } satisfies DashboardMachineAnswer);
 }
 
 export function machineScope(ctx: OwnerContext): MachineScope {

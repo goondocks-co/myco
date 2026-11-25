@@ -175,7 +175,7 @@ Receipts in `~/.myco/member/cutover.json` record destinations, verified copies, 
 
 Setup and status can check an earlier move with its destination. Missing evidence, a timeout or an expired sign-in leaves the move unconfirmed; follow the reported next step and keep the 1.4 files. A completed history import does not claim that earlier agent transcripts were imported. They remain available as an optional, explicit import with `myco cutover --import-transcripts`. If its destination was archived or deleted after history finished moving, Myco reports that state and stops trying to import transcripts there.
 
-Old extra plan folders are reported, not silently copied into machine settings. Add the ones you still want under **My machines** → **Extra plan folders**. Configure the Deployment's models and schedule in **Settings** and register a [runner](runners.md); moving history does not enroll a runner.
+Old extra plan folders are reported, not silently copied into machine settings. Add the ones you still want on the machine's page under **Settings › People and machines** → **Change folders** → **Extra plan folders**. Configure the Deployment's models and schedule in **Settings** and register a [runner](runners.md); moving history does not enroll a runner.
 
 Run `myco doctor` and `myco member status`. In the dashboard, check each destination's projects, sessions, spores and plans, then start a new coding session and confirm it appears on **Today**. Keep 1.4 data and the cutover copies until you have verified both history and new capture.
 

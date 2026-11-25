@@ -89,10 +89,15 @@ describe('the machines a member reads', () => {
     expect(gone).toMatchObject({ name: null, live: false, capture: [], lastCaptureAt: null });
   });
 
-  it('answers a member their own machines alone', async () => {
+  it('answers a member their own machines alone, one by one as in the list, and another member\'s as one with no sign-in', async () => {
     const { env } = await seeded();
-    expect((await machines(env, MEMBER_SUB)).map((m) => m.machineId)).toEqual(['m_gone', 'm_member']);
+    const listed = await machines(env, MEMBER_SUB);
+    expect(listed.map((m) => m.machineId)).toEqual(['m_gone', 'm_member']);
     expect((await request(env, null, 'GET', '/api/machines')).status).toBe(401);
+    const one = await request(env, MEMBER_SUB, 'GET', '/api/machines/m_member');
+    expect(one.status).toBe(200);
+    expect(((await one.json()) as { machine: Machine }).machine).toEqual(listed.find((m) => m.machineId === 'm_member')!);
+    for (const other of ['m_admin', 'm_unknown']) expect(await (await request(env, MEMBER_SUB, 'GET', `/api/machines/${other}`)).json()).toEqual({ machine: null, contactFacts: 'ready' });
   });
 
   it('pages claims without walking 5,000 credential rows and totals their standing on the server', async () => {

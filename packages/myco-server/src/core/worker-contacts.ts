@@ -333,7 +333,7 @@ function runnerFleetRow(row: RunnerFleetRow, now: number, includeSignIn: boolean
   const connected = state !== 'removed' && lastSeenAt > 0 && now - lastSeenAt <= CONTACT_RECENT_MS;
   const models = JSON.parse(row.models) as Array<{ harness: string; source: string | null; available: number; fetchedAt: number; receivedAt: number }>;
   const details: RunnerFleetRecord = {
-    id: row.id, name: row.name, state, revision: row.revision, createdAt: row.created_at, createdBy: row.created_by_member, removedAt: row.removed_at,
+    id: row.id, name: row.name, machineId: row.machine_id, state, revision: row.revision, createdAt: row.created_at, createdBy: row.created_by_member, removedAt: row.removed_at,
     lastSeenAt: displaySeenAt || null, connected, busy, display: 'Never contacted',
     awaitingReplacement: row.replacement_pending === 1, updateMetadataUnavailable,
     lastAttempted, lastCompleted: fleetRun(row.last_completed), lastFailed: fleetRun(row.last_failed),

@@ -14,9 +14,10 @@ export type { RepositoryRow } from '../features/admin/project/wire';
 export const settingsMoving = (answer: SettingsAnswer | undefined): boolean =>
   answer?.embedding?.switch != null || answer?.leaves.some(row => row.learningDeadlines?.rebuilding === true) === true;
 
-export function useSettings() {
+export function useSettings(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['settings'],
+    enabled: options.enabled,
     queryFn: ({ signal }) => fetchJson<SettingsAnswer>('/api/settings', signal),
     ...live<SettingsAnswer>({ whileMoving: settingsMoving }),
   });

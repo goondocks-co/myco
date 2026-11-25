@@ -27,6 +27,15 @@ const memberClaimsAfter = read<[member: string, limit: number, at: number, id: s
 
 export type ClaimScope = { all: true } | { all: false; memberId: string };
 
+const oneClaim = read<[machine: string], ClaimRow>({ name: 'runners.claimOne', sql:
+  `SELECT ${CLAIM_COLUMNS} FROM machine_claims mc CROSS JOIN members m ON m.id = mc.member_id WHERE mc.machine_id = ?1` });
+const oneOwnClaim = read<[machine: string, member: string], ClaimRow>({ name: 'runners.claimOneOfMember', sql:
+  `SELECT ${CLAIM_COLUMNS} FROM machine_claims mc CROSS JOIN members m ON m.id = mc.member_id WHERE mc.machine_id = ?1 AND mc.member_id = ?2` });
+
+/** One machine's claim when the scope may see it, else null. */
+export const claimOf = (db: RelationalStore, scope: ClaimScope, machineId: string): Promise<ClaimRow | null> =>
+  first(db, scope.all ? oneClaim.bind(machineId) : oneOwnClaim.bind(machineId, scope.memberId));
+
 /** One page of claims in immutable claim order; credential history never drives it. */
 export async function claimPage(db: RelationalStore, scope: ClaimScope, limit: number, after: { createdAt: number; id: string } | null): Promise<ClaimRow[]> {
   const bound = scope.all

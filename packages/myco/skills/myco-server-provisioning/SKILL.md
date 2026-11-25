@@ -53,7 +53,7 @@ myco server destroy --target cloudflare --yes
 
 Use the printed workers.dev address or a custom domain in the same Cloudflare account. Complete GitHub app registration, then open the private, expiring owner link from `setup-owner`, sign in and choose **Connect this account**. Repeating owner setup replaces a pending link; an already connected account is preserved and setup refuses. Hosted owner setup uses the operator's Cloudflare login while the Deployment keeps serving.
 
-Sign this machine in with `myco setup --join <address>`, then follow the dashboard checklist. Invite teammates through **People & machines** → **Invite a teammate**; **Connect GitHub** gives them dashboard sign-in.
+Sign this machine in with `myco setup --join <address>`, then follow the dashboard checklist. Invite teammates through **Settings › People and machines** → **Invite a teammate**; **Connect GitHub** gives them dashboard sign-in.
 
 `create` is idempotent: every resource is ensured, an existing record keeps its ids, and a re-run converges. That also makes it the adopt path for resources created by hand. `destroy` removes the Worker only — the database, bucket, store and record all stand, because the Worker is re-creatable from the binary and the data is not.
 

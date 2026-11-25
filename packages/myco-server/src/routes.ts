@@ -25,7 +25,7 @@ import { handleApproveGitHubAccount, handleGitHubApp, handleGitHubAppInstallatio
 import { handleProjectRepositories, handleRepository, handleSaveRepository, handleRemoveRepository } from './api/repositories.js';
 import { handleProjectMap } from './api/canopy.js';
 import { handleMachineSettings, handleSetMachineSetting } from './api/machine-settings.js';
-import { handleMachineActivity, handleMachines, handleRenameMachine, handleStopMachine } from './api/machines.js';
+import { handleMachine, handleMachineActivity, handleMachines, handleRenameMachine, handleStopMachine } from './api/machines.js';
 import { handleConnectUncaptured, handleDismissUncaptured, handleListUncaptured, handleRestoreUncaptured } from './api/uncaptured.js';
 import type { ServerEnv } from './core/adapters.js';
 import type { CredentialContext, RunnerContext, UnboundMemberContext } from './context.js';
@@ -392,6 +392,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'PUT', path: '/api/projects/{projectId}/capabilities/{capability}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/capabilities\/(?<capability>[a-z_]{1,32})$/, auth: 'session', authority: 'admin', handler: handleSetProjectCapability },
   // A machine's own settings (#1393): any member may ask, and the handlers answer only the member who claims the machine.
   { authorization: httpPolicy('machine', 'read', 'deployment', ['member']), method: 'GET', path: '/api/machines', auth: 'session', authority: 'member', handler: handleMachines },
+  { authorization: httpPolicy('machine', 'read', 'deployment', ['member']), method: 'GET', path: '/api/machines/{machineId}', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'member', handler: handleMachine },
   { authorization: httpPolicy('machine', 'read', 'machine', ['member']), method: 'GET', path: '/api/machines/{machineId}/activity', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/activity$/, auth: 'session', authority: 'member', handler: handleMachineActivity },
   { authorization: httpPolicy('credential', 'edit', 'machine', ['member']), method: 'POST', path: '/api/machines/{machineId}/stop', pattern: /^\/api\/machines\/(?<machineId>[A-Za-z0-9._-]{1,64})\/stop$/, auth: 'session', authority: 'member', handler: handleStopMachine },
   { authorization: httpPolicy('machine', 'read', 'deployment', ['member']), method: 'GET', path: '/api/uncaptured', auth: 'session', authority: 'member', handler: handleListUncaptured },

@@ -14,7 +14,7 @@ An administrator changes server settings in the dashboard. Each member sets thei
 
 ### People and machines
 
-**Who can sign in?** lists each person with their role, how they sign in and how many machines write for them, with **Manage** leading to **People & machines** and **Invite a teammate**. **Your machines** lists your own machines: the agents each captures, how it updates, whether it is also a runner and whether it has captured lately, with **Manage** leading to **My machines** and **Add a machine**. Transferring ownership and claiming raw data with no recorded uploader are under **Advanced › Owner actions**.
+**Who can sign in?** lists each person with their role, how they sign in and how many machines write for them; **Manage** holds connecting their GitHub account, adding a machine for them, changing their role and removing them, and **Invite a teammate** adds someone. **Open invitations** lists links nobody has used yet. **Machines** lists every machine (a member sees their own): what each captures, whether it is also a runner, and what it is doing, with **Manage** opening the machine's page and former machines folded below; **Add a machine** makes a sign-in link. **Myco’s run sign-ins** lists the sign-ins Myco's runs used. Transferring ownership and claiming raw data with no recorded uploader are under **Advanced › Owner actions**.
 
 ### Repositories
 
@@ -80,7 +80,7 @@ This gives each member ten manual learning starts a day. It is separate from the
 
 ## What you set per machine
 
-Open **My machines** from the account menu and choose **Its settings**:
+Open **Settings › People and machines**, choose **Manage** on the machine, and choose **Change folders**:
 
 - **Folders it captures** names parent folders whose Git repositories join automatically; the default is `~/Repos`.
 - **Extra plan folders** adds plan locations beside each agent's own plan folder. Entries may be relative to a project, start with `~/`, or be absolute.

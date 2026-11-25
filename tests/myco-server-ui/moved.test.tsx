@@ -31,7 +31,7 @@ const EXAMPLES: Readonly<Record<string, { from: string; admin: string; member?: 
   '/p/:projectId/plans': { from: `/p/${PROJECT}/plans?q=board`, admin: `/p/${PROJECT}/knowledge/plans?q=board` },
   '/p/:projectId/runs': { from: `/p/${PROJECT}/runs?window=today`, admin: `/p/${PROJECT}/work?window=today` },
   '/p/:projectId/runs/:runId': { from: `/p/${PROJECT}/runs/run_d4e5f6a7b8?window=week`, admin: `/p/${PROJECT}/work/runs/run_d4e5f6a7b8?window=week` },
-  '/access': { from: '/access', admin: '/people', member: '/me/machines' },
+  '/access': { from: '/access', admin: '/settings/people', member: '/settings/people' },
   '/p/:projectId/access': { from: `/p/${PROJECT}/access`, admin: `/p/${PROJECT}/settings#access-keys` },
   '/status': { from: '/status', admin: '/status/health#status' },
   '/measures': { from: '/measures?window=7', admin: '/status/health?window=7#measures' },

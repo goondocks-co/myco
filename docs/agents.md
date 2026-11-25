@@ -88,7 +88,7 @@ This removes that agent's Myco hooks, tools and skill links from every settings 
 
 Myco records your prompts, the agent's replies, its tool activity and plans as you work. Joining can also import earlier sessions, within the server's capture and retention settings.
 
-Repositories under your capture folders (`~/Repos` by default) join automatically when an agent works in them. Elsewhere, use `myco member join` inside the Git repository. Change **Folders it captures** and **Extra plan folders** under **My machines**.
+Repositories under your capture folders (`~/Repos` by default) join automatically when an agent works in them. Elsewhere, use `myco member join` inside the Git repository. Change **Folders it captures** and **Extra plan folders** on your machine's page under **Settings › People and machines**.
 
 When the server cannot be reached, capture waits on the machine. `myco member status` shows queued delivery and refusals; `myco member drain` delivers queued capture now.
 
@@ -178,6 +178,6 @@ For connected projects on a machine with two Deployments, Claude Code uses priva
 
 ## Who sees what
 
-Processed project knowledge is available to members across the Deployment. Raw capture is private to its uploader. Your machine's name appears beside your own work; other members see the member's name. Administrators can see machine names on **People & machines** and **Health**.
+Processed project knowledge is available to members across the Deployment. Raw capture is private to its uploader. Your machine's name appears beside your own work; other members see the member's name. Administrators can see machine names on **Settings › People and machines** and **Health**.
 
 Myco's own work requires a separately registered runner with a signed-in coding agent. Joining or provisioning a capture agent does not start a runner. See [Run your own Myco](self-hosting.md).

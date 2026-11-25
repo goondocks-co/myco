@@ -22,9 +22,9 @@ The 2.0 Windows path is not yet verified. On Windows ARM64, Myco joins a Myco an
 
 ### If you are new to the team
 
-Ask an administrator to open **People & machines**, choose **Invite a teammate**, and send you the one-time login command it shows. Run that command on this machine. An invitation expires and works once; ask for a fresh one if it is refused.
+Ask an administrator to open **Settings › People and machines**, choose **Invite a teammate**, and send you the one-time login command it shows. Run that command on this machine. An invitation expires and works once; ask for a fresh one if it is refused.
 
-After you join, ask an administrator to choose **Connect GitHub** for your entry on **People & machines** and send you the connection link. Open it in a browser and connect your GitHub account for dashboard access. Then open the dashboard at your Myco's address.
+After you join, ask an administrator to choose **Connect GitHub** for your entry on **Settings › People and machines** and send you the connection link. Open it in a browser and connect your GitHub account for dashboard access. Then open the dashboard at your Myco's address.
 
 ### If you already sign in to the dashboard
 
@@ -50,7 +50,7 @@ The terminal prints a URL and a code. Open that URL in a browser already signed 
 
 Myco sets up the installed capture agents in their **global** configuration: Claude Code, Codex, Cursor, OpenCode, Pi and Cline. Start a new agent session after setup. See [Agents](agents.md) for locations and controls.
 
-Git repositories under `~/Repos` join the default Myco the first time an agent works in them. A repository joins the project that already holds its Git remote, or creates a project when none does. Change **Folders it captures** under **My machines** to use other parent folders.
+Git repositories under `~/Repos` join the default Myco the first time an agent works in them. A repository joins the project that already holds its Git remote, or creates a project when none does. Change **Folders it captures** on your machine's page (**Settings › People and machines**, **Manage**, **Change folders**) to use other parent folders.
 
 For a repository elsewhere, run this inside it:
 
