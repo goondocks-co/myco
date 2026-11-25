@@ -55,6 +55,9 @@ const LABELS: Readonly<Record<LineKey, string>> = {
 /** Capture is recent while its newest receipt is this young; older, the line says it has been quiet. */
 export const CAPTURE_RECENT_MS = 24 * 3_600_000;
 
+/** The answer a line gives for an item that needs you; the verdict's sentence names the line alone for it. */
+const NEEDS_A_LOOK = 'Needs a look';
+
 /** One fact on a line: how it stands, its short answer, and its words. */
 interface Fact { state: LineState; answer: string; words: string }
 
@@ -99,7 +102,7 @@ function attentionFacts(key: LineKey, { attention, server, now, projectName }: H
   return [
     ...items.map((item: AttentionItem) => {
       const words = attentionWords(item, now, projectName);
-      return item.kind === 'no_worker' ? fact('no', 'Nothing running work', `${words.title}.`) : fact('attention', 'Needs a look', `${words.title}.`);
+      return item.kind === 'no_worker' ? fact('no', 'Nothing running work', `${words.title}.`) : fact('attention', NEEDS_A_LOOK, `${words.title}.`);
     }),
     ...(unread.length === 0 ? [] : [fact('unknown', 'Couldn’t check', 'Not every check on it could be read.')]),
   ];
@@ -110,7 +113,7 @@ function serverFacts(key: LineKey, { server }: HealthFacts): Fact[] {
   return server.flatMap((item) => {
     const on: LineKey | null = item.kind === 'stored_key' ? (item.waits ? 'runners' : null) : 'database';
     if (on !== key) return [];
-    return [fact('attention', 'Needs a look', `${serverItemWords(item).title}.`)];
+    return [fact('attention', NEEDS_A_LOOK, `${serverItemWords(item).title}.`)];
   });
 }
 
@@ -254,7 +257,7 @@ export function verdictOf(lines: readonly WellLine[]): { verdict: Verdict; sente
     const working = runners === undefined ? 'its runners can work' : `${runners.working} of ${runners.total} ${runners.total === 1 ? 'runner' : 'runners'} can work`;
     return { verdict: 'Yes', sentence: `Sessions are arriving, Myco is learning from them, and ${working}.` };
   }
-  const named = (entries: readonly WellLine[]) => entries.map((entry) => `${entry.label.toLowerCase()} (${entry.answer.toLowerCase()})`).join(', ');
+  const named = (entries: readonly WellLine[]) => entries.map((entry) => (entry.answer === NEEDS_A_LOOK ? entry.label.toLowerCase() : `${entry.label.toLowerCase()} (${entry.answer.toLowerCase()})`)).join(', ');
   const sentence = [no.length > 0 ? `Not working: ${named(no)}.` : null, unsure.length > 0 ? `Needs a look: ${named(unsure)}.` : null].filter(Boolean).join(' ');
   return { verdict: no.length > 0 ? 'No' : 'Needs attention', sentence };
 }

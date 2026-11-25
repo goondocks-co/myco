@@ -226,7 +226,7 @@ async function expectHealth(page: Page): Promise<void> {
   for (const id of ['backups', 'upkeep', 'measures', 'workers']) await expect(page.locator(`section#${id}`)).toHaveCount(0);
   if (!onFixture()) return;
   await expect(page.locator('section#needs-you')).toContainText('CI deploys');
-  await expect(page.locator('[data-well-line="sessions"]')).toContainText('Last one');
+  await expect(page.locator('[data-well-line="sessions"]')).toContainText('Last capture received');
 }
 
 async function expectBackups(page: Page): Promise<void> {
