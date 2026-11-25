@@ -93,7 +93,7 @@ export function RemoveRunnerRow({ runner, captureContinues }: { runner: RunnerRo
         open={open}
         onOpenChange={(next) => { if (!next) setOpen(false); }}
         title={`Remove ${runner.name} as a runner?`}
-        description={`${runner.name} stops taking work at once. A run it holds can retry on another runner after its assignment expires; the process on the machine isn’t ended.${captureContinues ? ' Capture on this machine continues; stop it separately below.' : ''} What it already did is kept.`}
+        description={`${runner.name} stops taking work at once. A run it holds can retry on another runner after its assignment expires; the process on the machine isn’t ended.${captureContinues ? ' Capture on this machine continues; stopping it is a separate action.' : ''} What it already did is kept.`}
         confirmLabel={`Remove ${runner.name}`}
         pending={remove.isPending}
         error={remove.error?.message}

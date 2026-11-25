@@ -257,6 +257,12 @@ describe('runner registration through the device flow', () => {
       const replacing = await r.json(r.post('/auth/runner/start', { name: 'mini', machineId: 'mini_b2', machineName: 'Mac mini', os: 'darwin', candidate: bearer(), replace: true }));
       expect((await r.asSession(`/api/runners/${String(runnerId)}/recredential`, { user_code: replacing.user_code })).status).toBe(200);
       expect(await machineOf('/api/runners')).toBe('mini_b2');
+      // A server from before the registration carried the id approves the same way and leaves it unset or as it was:
+      // the approval record still names the machine.
+      r.e.sqlite.run('UPDATE runners SET machine_id = NULL WHERE id = ?', [String(runnerId)]);
+      expect(await machineOf('/api/runners')).toBe('mini_b2');
+      r.e.sqlite.run(`UPDATE runners SET machine_id = 'mini_a1' WHERE id = ?`, [String(runnerId)]);
+      expect(await machineOf('/api/runners')).toBe('mini_b2');
       expect((await r.asSession(`/api/runners/${String(runnerId)}/remove`, {})).status).toBe(200);
       expect(await machineOf('/api/runners/removed')).toBe('mini_b2');
     } finally { r.e.sqlite.close(); }

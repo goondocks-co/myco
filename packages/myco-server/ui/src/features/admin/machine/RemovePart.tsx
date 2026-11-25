@@ -34,7 +34,7 @@ export function StopCapturePart({ claim, runnersContinue }: { claim: Machine | n
   if (claim === null || claim.liveCredentialCount === 0 || claim.machineId === null) return null;
   const several = runnersContinue.length > 1;
   const continues = runnersContinue.length === 0 ? ''
-    : ` ${runnersContinue.join(' and ')} ${several ? 'keep' : 'keeps'} taking Myco’s work; remove ${several ? 'them' : 'it'} as a runner on ${several ? 'their' : 'its'} own.`;
+    : ` ${runnersContinue.join(' and ')} ${several ? 'stay' : 'stays'} registered as ${several ? 'runners' : 'a runner'}; removing ${several ? 'them' : 'it'} is a separate action.`;
   const confirm = () => {
     setError(null);
     stop.mutate(claim.machineId!, {

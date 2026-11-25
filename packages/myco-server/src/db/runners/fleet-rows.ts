@@ -57,6 +57,10 @@ export interface RunnerFleetRow {
   credential_choices: string;
   credential_choice_times: string;
   /** The machine id bound to the approved registration; null for one approved without it. */
+  /**
+   * The machine this registration was approved for: the one its approval record names, which every version of the
+   * server writes, and the id bound to the registration where no such record is held.
+   */
   registered_machine_id: string | null;
   machine_id: string | null;
   os: string | null;
@@ -95,7 +99,8 @@ const headValue = (column: string, history: string): string => `CASE WHEN h.seed
     ELSE json_set(${history}, '$.projectName', (SELECT name FROM projects WHERE project_id = json_extract(${history}, '$.projectId'))) END AS ${column}`;
 
 const runnerColumns = `r.id, r.name, r.state, r.revision, r.created_at, r.created_by_member, r.removed_at, r.labels,
-    r.last_contact_at, r.replacement_pending, r.credential_choices, r.credential_choice_times, r.machine_id AS registered_machine_id,
+    r.last_contact_at, r.replacement_pending, r.credential_choices, r.credential_choice_times, COALESCE((SELECT d.machine_id FROM device_decision_audit d
+      WHERE d.request_id = r.registration_id AND d.subject = 'runner' AND d.decision = 'approved'), r.machine_id) AS registered_machine_id,
     w.machine_id, w.os, COALESCE(u.current_version, w.version) AS version,
     w.offers, w.capabilities, w.last_reason, w.last_seen_at, w.updated_at,
     o.arch, o.availability, o.reason AS readiness_reason, o.observed_at,

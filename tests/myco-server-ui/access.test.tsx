@@ -567,7 +567,7 @@ describe('a machine that captures and runs Myco’s work', () => {
     });
     mount(ADA_MACHINE);
     const stop = await openRemove();
-    expect(stop.textContent).toContain('mini keeps taking Myco’s work; remove it as a runner on its own.');
+    expect(stop.textContent).toContain('mini stays registered as a runner; removing it is a separate action.');
     fireEvent.click(within(stop).getByRole('button', { name: 'Stop capturing' }));
     await waitFor(() => expect(posts.map((post) => post.path)).toEqual(['/api/machines/ada_5a2d54af/stop']));
     fireEvent.click(await screen.findByRole('button', { name: 'Remove mini…' }));
