@@ -190,6 +190,12 @@ export function hookCwd(input: NormalizedHookInput): string {
   }
 }
 
+/** An explicit hook directory is the only place its Git observation can come from, even if it has disappeared. */
+export function gitObservationCwd({ cwd, input }: HookRun): string {
+  const named = input.raw.cwd;
+  return typeof named === 'string' && named.length > 0 ? named : cwd;
+}
+
 export async function runMemberHook(
   hookName: string,
   opts: HookMainOptions,

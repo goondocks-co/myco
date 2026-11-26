@@ -1,3 +1,4 @@
+import { RELEASE_UNKNOWN_REASONS, type ReleaseUnknownReason } from '@goondocks/myco-shared/release-check';
 import { useState, type ReactNode } from 'react';
 import { ActionLink, Button, Card, Dialog, DialogContent, DialogFooter, Disclosure, ErrorState, FactRow, Input, LoadingState, Switch, Textarea } from '../../../design';
 import { ApiError } from '../../../lib/api';
@@ -18,6 +19,18 @@ const MAPPING_SEPARATOR = ' = ';
 
 const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+const UNKNOWN_REASON_WORDS: Record<ReleaseUnknownReason, string> = {
+  startOnly: 'had only a starting commit captured',
+  dirty: 'had uncommitted changes to tracked files when last captured',
+  statusUnreadable: 'had no readable record of whether tracked files had changed',
+  commitMissing: 'had a captured commit GitHub couldn’t find',
+  pathsUnreadable: 'had changed paths Myco couldn’t read to identify a package',
+  tooManyPaths: 'touched too many paths for Myco to identify a package',
+  commitUnreadable: 'had no readable captured commit',
+  pullUnplaced: 'had an associated pull request that didn’t establish a release',
+  refsIncomplete: 'had release refs or pull requests Myco couldn’t fully check',
+};
+
 /**
  * The latest check in words: when, how many sessions it checked and what changed, and, for the sessions it did not
  * finish, why. Unfinished sessions keep their earlier state and stay pending; lookups running out is told apart from
@@ -33,6 +46,11 @@ export function checkSummary(check: ReleaseCheck | null): string {
     const changed = c.changed === 0 ? 'no release state changed' : `${plural(c.changed, 'release state', 'release states')} changed`;
     const unknown = c.unknown === 0 ? '' : `, and Myco couldn’t tell for ${c.unknown.toLocaleString()}`;
     parts.push(`Checked ${plural(c.checked, 'session', 'sessions')}; ${changed}${unknown}.`);
+    const reasons = RELEASE_UNKNOWN_REASONS.flatMap((reason) => {
+      const count = c.unknownReasons?.[reason] ?? 0;
+      return count === 0 ? [] : [`${count.toLocaleString()} ${UNKNOWN_REASON_WORDS[reason]}`];
+    });
+    if (reasons.length > 0) parts.push(`Of those, ${new Intl.ListFormat('en').format(reasons)}.`);
   }
   const missed = c === null ? 0 : c.unavailable + c.deferred;
   const unfinished = `At least ${plural(missed, 'session', 'sessions')} ${missed === 1 ? 'wasn’t' : 'weren’t'} finished`;
@@ -191,7 +209,7 @@ function ReleaseTrackingForm({ projectId, row, onClose }: { projectId: string; r
       <SwitchField
         id="release-unknown"
         label="Say when Myco can’t tell"
-        hint="Myco can’t place a session that ended with uncommitted changes to tracked files, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one whose changed files it couldn’t read or that changed too many to check. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
+        hint="Myco can’t place a session whose last captured Git state had uncommitted changes to tracked files, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one whose changed files it couldn’t read or that changed too many to check. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
         checked={includeUnknown}
         onCheckedChange={setIncludeUnknown}
       />

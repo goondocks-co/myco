@@ -1,3 +1,4 @@
+import type { ReleaseUnknownCounts } from '@goondocks/myco-shared/release-check';
 /**
  * The shapes a project's settings read, as the server sends them: what Myco
  * does in the project, its repository and its release tracking. Access keys
@@ -69,7 +70,7 @@ export interface ReleaseCheck {
   finishedAt: number | null;
   status: 'complete' | 'partial' | 'unavailable' | null;
   failure: string | null;
-  counts: { checked: number; changed: number; unchanged: number; unknown: number; unavailable: number; deferred: number } | null;
+  counts: { checked: number; changed: number; unchanged: number; unknown: number; unknownReasons?: ReleaseUnknownCounts; unavailable: number; deferred: number } | null;
   lookups: number | null;
   lastCompleteAt: number | null;
 }

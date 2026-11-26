@@ -1,7 +1,7 @@
 /**
  * What git a hook starts (#1561): a repository's identity (its root, branch and commit) is read from git's own files,
- * so a hook's own work starts no git process but at a session's end, which asks git the two questions of whether
- * tracked files changed, at once. Each git process costs 5 to 20 ms on a hook someone is waiting for.
+ * so the legacy hook path starts no git process until session end. An end snapshot asks git both tracked-file
+ * questions concurrently. A turn end asks them only when the Deployment advertises support.
  *
  * A hook that delivers in itself (a sandbox's turn and session ends, `--credential env`) also runs the helper's pass,
  * which asks git for the repository remote the start's context ask carries: that is the only other git it starts.
@@ -70,7 +70,7 @@ function expectConcurrentDirtyQuestions(log: string): void {
 }
 
 describe.skipIf(process.platform === 'win32' || realGit === '')('the git a hook starts', () => {
-  it('is none for a session\'s start, prompt and turn end, and only the two dirty questions for its end', () => {
+  it('leaves legacy turn ends free of Git queries and checks tracked changes at session end', () => {
     const dir = removeWhenTestsEnd(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hook-git-'))));
     const repo = path.join(dir, 'repo');
     fs.mkdirSync(repo);

@@ -1,3 +1,4 @@
+import type { ReleaseUnknownReason } from '@goondocks/myco-shared/release-check';
 /**
  * Release classification of one captured commit against a Project's refs.
  *
@@ -59,7 +60,7 @@ export interface Classification {
 }
 
 type ClassifyOutcome =
-  | { kind: 'classified'; classification: Classification; ownTagsChecked: boolean; /** GitHub does not hold the captured commit. */ commitMissing?: true }
+  | { kind: 'classified'; classification: Classification; ownTagsChecked: boolean; unknownReason?: ReleaseUnknownReason }
   | { kind: 'unavailable'; failure: GithubFailure; reason: string };
 
 // --- Ref patterns ---
@@ -219,7 +220,18 @@ const classified = (
   state: ReleaseStateValue, confidence: ReleaseConfidence, basisKind: ReleaseBasisKind,
   basisRef: string | null, basisSha: string | null, reason: string,
   evidence: Record<string, unknown>, releasePrNumber: number | null = null, ownTagsChecked = false,
-): ClassifyOutcome => ({ kind: 'classified', ownTagsChecked, classification: { state, confidence, basisKind, basisRef, basisSha, releasePrNumber, reason, evidence } });
+): Extract<ClassifyOutcome, { kind: 'classified' }> => ({ kind: 'classified', ownTagsChecked, classification: { state, confidence, basisKind, basisRef, basisSha, releasePrNumber, reason, evidence } });
+
+const unknownCommit = (
+  unknownReason: ReleaseUnknownReason, sha: string | null, reason: string,
+  evidence: Record<string, unknown>, ownTagsChecked = false,
+): ClassifyOutcome => {
+  const basis = unknownReason === 'commitMissing' || unknownReason === 'commitUnreadable' ? 'missing_git_evidence' : 'ref_check_failed';
+  return { ...classified('unknown', 'low', basis, null, sha, reason, evidence, null, ownTagsChecked), unknownReason };
+};
+
+const missingCommit = (sha: string, evidence: Record<string, unknown>): ClassifyOutcome =>
+  unknownCommit('commitMissing', sha, 'GitHub could not find the captured commit or establish its release through a pull request', evidence);
 
 const UNAVAILABLE_REASON: Record<GithubFailure, string> = {
   budget_exhausted: 'The run reached its GitHub lookup limit before this commit was checked',
@@ -256,7 +268,7 @@ export async function classifyCommit(
   input: ClassifyInput,
 ): Promise<ClassifyOutcome> {
   const sha = input.headSha;
-  if (!isCommitSha(sha)) return classified('unknown', 'low', 'missing_git_evidence', null, null, 'No captured commit', {});
+  if (!isCommitSha(sha)) return unknownCommit('commitUnreadable', null, 'No captured commit', {});
   if (!run.ok) return unavailable(run.failure);
   const { config, production, integration } = run.refs;
   if (config.productionRefs.length === 0 && config.integrationRefs.length === 0) {
@@ -293,9 +305,7 @@ export async function classifyCommit(
     const exists = await reads.commit(sha);
     if (!exists.ok && exists.failure !== 'not_found') return unavailable(exists.failure);
     if (!exists.ok) {
-      const missing = classified('unknown', 'low', 'missing_git_evidence', null, sha,
-        'GitHub could not find the captured commit or establish its release through a pull request', evidence);
-      return missing.kind === 'classified' ? { ...missing, commitMissing: true } : missing;
+      return missingCommit(sha, evidence);
     }
   }
   complete &&= associated.ok && associated.value.complete;
@@ -341,17 +351,16 @@ export async function classifyCommit(
   if (!ancestryComplete || !associated.ok) {
     const exists = await reads.commit(sha);
     if (!exists.ok && exists.failure !== 'not_found') return unavailable(exists.failure);
-    if (!exists.ok) return classified('unknown', 'low', 'missing_git_evidence', null, sha,
-      'GitHub could not find the captured commit or establish its release through a pull request', evidence);
+    if (!exists.ok) return missingCommit(sha, evidence);
   }
   if (unplacedPull) {
-    return classified('unknown', 'low', 'ref_check_failed', null, sha,
+    return unknownCommit('pullUnplaced', sha,
       'GitHub associated a merged pull request, but its commit list or destination does not place the captured commit on a configured release line',
-      evidence, null, ownTagsChecked);
+      evidence, ownTagsChecked);
   }
   if (!complete || !ancestryComplete) {
-    return classified('unknown', 'low', 'ref_check_failed', null, sha,
-      'Not every release ref or pull request could be checked, so absence from a release is not established', evidence, null, ownTagsChecked);
+    return unknownCommit('refsIncomplete', sha,
+      'Not every release ref or pull request could be checked, so absence from a release is not established', evidence, ownTagsChecked);
   }
   return classified('not_on_release_line', 'medium', 'git_ancestry', null, sha,
     'Commit is not contained in any configured release ref', evidence, null, ownTagsChecked);

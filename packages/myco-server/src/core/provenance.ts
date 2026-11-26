@@ -46,7 +46,7 @@ export const isReleaseNamespace = (value: unknown): value is ReleaseNamespace =>
 export type Cleanliness = '0' | '1' | 'unknown';
 
 /** Where in a session its member observes a commit. */
-export type CapturePoint = 'session_start' | 'session_end';
+export type CapturePoint = 'session_start' | 'turn_end' | 'session_end';
 
 /** A session's observed commit, as the release check classifies it. */
 interface ReleaseSource { point: CapturePoint; headSha: string; cleanliness: Cleanliness }
@@ -57,7 +57,7 @@ export const sourceOf = (c: ReleaseSource) => `${c.point}:${c.headSha}:${c.clean
 /** The capture point a recorded source names, or null when it names none. */
 export const sourcePoint = (source: string): CapturePoint | null => {
   const point = source.slice(0, source.indexOf(':'));
-  return point === 'session_start' || point === 'session_end' ? point : null;
+  return point === 'session_start' || point === 'turn_end' || point === 'session_end' ? point : null;
 };
 
 interface ReleaseStateRow {

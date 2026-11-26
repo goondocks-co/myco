@@ -2,6 +2,7 @@ import { contextAdmission, type ContextAdmission } from '../db/context-records.j
 import { DOCUMENT_ID_FIELDS } from '../db/document-tables.js';
 import { first, type Bound } from '../db/index.js';
 import { kindIdentityCount, sessionChecks, type CaptureCheck, type SegmentAdmission } from '../db/capture/admission.js';
+import type { CommitPoint } from '../db/capture/sessions.js';
 import { attachmentProjection } from '../db/capture/attachments.js';
 import { planPrior, planProjections } from '../db/capture/plans.js';
 import { importedTitle as importedTitleStatement, nameProjectFromStart, sessionCommit as sessionCommitStatement, sessionStartFacts, type Stored } from '../db/capture/sessions.js';
@@ -189,11 +190,11 @@ export const GIT_STATUS_UNREADABLE = 'status_unreadable';
  * end win, whole, so the rows converge in any delivery order; a value that is
  * not a full commit SHA writes nothing.
  */
-const sessionCommit = (ctx: WriteContext, e: CaptureEnvelope, p: Payload, point: 'session_start' | 'session_end', at: number): Bound[] => {
+const sessionCommit = (ctx: WriteContext, e: CaptureEnvelope, p: Payload, point: CommitPoint['point'], at: number): Bound[] => {
   const headSha = typeof p.headSha === 'string' && COMMIT_SHA.test(p.headSha) ? p.headSha : null;
   if (headSha === null) return [];
   return [sessionCommitStatement(stored(ctx, e), {
-    point, at, headSha, dirty: p.dirty === true, error: typeof p.dirty !== 'boolean' ? GIT_STATUS_UNREADABLE : null, now: ctx.now,
+    point, at, headSha, branch: typeof p.branch === 'string' ? p.branch : null, dirty: p.dirty === true, error: typeof p.dirty !== 'boolean' ? GIT_STATUS_UNREADABLE : null, now: ctx.now,
   })];
 };
 
@@ -374,6 +375,12 @@ const documentOnly = ({ ctx, e, p }: Inputs): KindPlan => ({
 
 const PLANNERS: Record<KindSpec['projection'], (input: Inputs) => KindPlan> = {
   raw: rawOnly,
+  turn: ({ ctx, e, p }) => ({
+    ...rawOnly(),
+    projections: e.channel !== 'import' && p.phase === 'end' && typeof p.dirty === 'boolean'
+      ? sessionCommit(ctx, e, p, 'turn_end', e.createdAt)
+      : [],
+  }),
   sessions: (input) => (input.e.kind === 'session.start' ? sessionStart(input) : sessionEnd(input)),
   prompt_batches: documentOnly,
   tool_calls: documentOnly,

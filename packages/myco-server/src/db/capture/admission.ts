@@ -26,7 +26,7 @@ const SESSION_PROMPT: OwnerShape = { name: 'sessionPrompt', table: 'session_prom
 
 /** The continued rows each projection names beyond its session, in the order they are admitted, read and refused. */
 const KIND_IDENTITIES: Readonly<Record<KindSpec['projection'], readonly OwnerShape[]>> = {
-  raw: [], sessions: [], plans: [],
+  raw: [], sessions: [], turn: [], plans: [],
   attachments: [ATTACHMENT],
   transcript_segments: [TRANSCRIPT],
   prompt_batches: [DOCUMENT_RECORD], tool_calls: [DOCUMENT_RECORD], responses: [DOCUMENT_RECORD],

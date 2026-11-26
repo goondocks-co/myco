@@ -13,6 +13,11 @@ import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
  * cannot carry. No retired daemon route is ever dialled.
  */
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
+import { releaseProvenance, reconcileReleaseProvenance } from '@myco-server-worker/core/release-provenance.js';
+import { asOwner, OWNER_ENV } from '../myco-server/helpers/owner.js';
+import { connectRepository, githubFixture, withReads } from '../myco-server/helpers/github-app.js';
+import { REPO, fakeGithub } from '../myco-server/helpers/github-fake.js';
+import worker from '@myco-server-worker/index.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -95,6 +100,43 @@ const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE p
 /** Captured rows the Deployment holds: every member event but a turn's start or end, which each hook adds. */
 const captured = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
 const texts = async (kind:'prompt'|'reply') => (await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(row=>row.k===kind).map(row=>String(row.text)).sort();
+
+it('places a worker by its last observed turn after Git fails and its worktree is removed', async () => {
+  const repo = process.cwd();
+  const worktree = path.join(mycoHome, 'worker');
+  const git = (...args: string[]) => execFileSync('git', ['-C', worktree, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  execFileSync('git', ['-C', repo, 'worktree', 'add', '-qb', 'worker', worktree], { stdio: 'ignore' });
+  const raw = { cwd: worktree, transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'make a change' } }]) };
+  await run('session-start', { ...raw, hook_event_name: 'SessionStart' });
+  fs.writeFileSync(path.join(worktree, 'work.txt'), 'tracked work');
+  git('add', 'work.txt');
+  await run('stop', { ...raw, hook_event_name: 'Stop' });
+  git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'worker change');
+  const head = git('rev-parse', 'HEAD');
+  await run('stop', { ...raw, hook_event_name: 'Stop' });
+  fs.writeFileSync(git('rev-parse', '--path-format=absolute', '--git-path', 'index'), 'invalid index');
+  const beforeFailure = fetchSpy.requests.length;
+  await run('stop', { ...raw, hook_event_name: 'Stop' });
+  expect(fetchSpy.requests.slice(beforeFailure).some((request) => request.path === '/events' && JSON.parse(request.body ?? '{}').kind === 'turn')).toBe(true);
+  execFileSync('git', ['-C', repo, 'worktree', 'remove', '--force', worktree], { stdio: 'ignore' });
+  await run('stop', { ...raw, hook_event_name: 'Stop' });
+
+  const project = 'proj_1';
+  const tag = 'refs/tags/a/v1.2.0';
+  const github = githubFixture();
+  const env = withReads(rig.env.serverEnv, github, fakeGithub({ ...REPO, commits: [head], contains: { ...REPO.contains, [tag]: [head] } }));
+  await connectRepository(env, project);
+  await releaseProvenance(rig.env.db).save(project, {
+    revision: null, enabled: true, productionRefs: [tag], integrationRefs: ['main'], packageMap: [], includeUnknown: true, maxLookups: 50,
+  }, 'mem_1', 1);
+  await reconcileReleaseProvenance(env, Date.now());
+  const response = await worker.fetch(await asOwner(rig.env.db, `/api/projects/${project}/sessions/${session}/commits`), { ...rig.env.env, ...OWNER_ENV });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    observations: [{ point: 'session_start' }, { point: 'turn_end', headSha: head, branch: 'worker', changes: 'none' }],
+    release: { state: 'released', basisRef: tag, covers: { point: 'turn_end', current: true } },
+  });
+});
 
 describe('member hooks through the worker: claude-code, transcript-first', () => {
   it('registers, injects, ships the delta and ends the session; the parse writes the turns; no retired route is dialled', async () => {
@@ -680,7 +722,7 @@ describe('member hooks through the worker: cursor', () => {
     fs.mkdirSync(path.dirname(tx), { recursive: true });
     fs.copyFileSync(path.join(FIXTURES, 'cursor-agent-2026.09-redacted.jsonl'), tx);
     const cursor = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
-      runHook(name, { conversation_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'cursor' });
+      runHook(name, { conversation_id: session, transcript_path: tx, cwd: process.cwd(), ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'cursor' });
     await cursor('session-start', { hook_event_name: 'sessionStart' });
     await cursor('post-tool-use', { hook_event_name: 'postToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_output: 'contents' });
     await cursor('post-tool-use-failure', { hook_event_name: 'postToolUseFailure', tool_name: 'Shell', tool_input: { command: 'false' }, error: 'exit 1' });

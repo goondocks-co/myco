@@ -1,14 +1,16 @@
 import { captureTranscriptPrompts, transcriptPromptBackfill } from '../member/transcript-prompts.js';
 import fs from 'node:fs';
 import { getMachineId } from '../machine-id.js';
-import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
+import { GIT_AT_TURN_END_FEATURE } from '@goondocks/myco-shared/member-protocol';
+import { sessionEndGitFacts } from '../member/git-facts.js';
+import { gitObservationCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { responseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planBackstop, planFilesWritten, planRootFor, planWritesInLines } from '../member/plan-files.js';
 import { readSessionState, type SessionState, type TranscriptPointer } from '../member/session-state.js';
 import {
   deriveTranscriptCapture, pointerReplaced, siblingTranscripts, transcriptPointerFor, unreadTranscriptLines, type DerivedCapture,
 } from '../member/transcript.js';
-import { featureAdvertised } from '../member/context-cache.js';
+import { readDeploymentFeatures } from '../member/context-cache.js';
 import { turnEvent } from '../member/envelope.js';
 import type { TurnEndMark } from '../member/spool.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
@@ -152,10 +154,20 @@ function transcriptSize(file: string): number {
  * now; any other is told by the transcript segment that reaches the transcript's size now, which the helper ships
  * stamped with the mark's time.
  */
-export function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined): { events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] } {
-  if (featureAdvertised(run.credential, run.mycoHome, 'turn')) {
+async function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined, captureGit: boolean): Promise<{ events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] }> {
+  const features = readDeploymentFeatures(run.credential, run.mycoHome);
+  if (features.includes('turn')) {
     const promptId = readSessionState(run.spool.dir, run.sessionId).promptId;
-    return { events: [turnEvent(run.ctx, { phase: 'end', promptId })] };
+    const at = run.now();
+    let git;
+    if (captureGit && features.includes(GIT_AT_TURN_END_FEATURE)) {
+      try {
+        git = await sessionEndGitFacts(gitObservationCwd(run), run.budget, at, 'turn');
+      } catch (error) {
+        process.stderr.write(`[myco] stop Git observation skipped: ${(error as Error).message}\n`);
+      }
+    }
+    return { events: [turnEvent({ ...run.ctx, now: () => at }, { phase: 'end', promptId, ...git })] };
   }
   return { events: [], turnEnd: transcript?.stoodAt };
 }
@@ -180,7 +192,7 @@ export async function main(opts: HookMainOptions = {}) {
       events,
       record: transcript?.record,
       turnEnd: transcript?.stoodAt,
-      optional: () => turnEnded(run, transcript),
+      optional: () => turnEnded(run, transcript, phases.has('response')),
       transcriptAt: transcript?.stoodAt,
       ends: 'turn-end',
     };

@@ -603,7 +603,7 @@ export function useSessionChildren<T>(projectId: string, sessionId: string, chil
 }
 
 /** Where in a session its member observed a commit. */
-export type CapturePoint = 'session_start' | 'session_end';
+export type CapturePoint = 'session_start' | 'turn_end' | 'session_end';
 
 /** Whether tracked files differed from an observed commit: `unreadable` when the member could not tell. */
 export type CommitChanges = 'none' | 'uncommitted' | 'unreadable';

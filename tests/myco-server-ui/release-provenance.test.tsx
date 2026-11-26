@@ -16,7 +16,7 @@ const row = (over: Partial<ReleaseProvenanceRow> = {}): ReleaseProvenanceRow => 
   revision: 'rev_1', updatedAt: NOW, updatedBy: 'mem_1', repository: { url: 'https://github.com/goondocks-co/myco', branch: 'main' },
   problem: null, building: false, unresolvedStates: 0,
   check: { requestedAt: null, startedAt: NOW - 60_000, finishedAt: NOW - 60_000, status: 'complete', failure: null,
-    counts: { checked: 48, changed: 3, unchanged: 43, unknown: 2, unavailable: 0, deferred: 0 }, lookups: 20, lastCompleteAt: NOW - 60_000 },
+    counts: { checked: 48, changed: 3, unchanged: 43, unknown: 2, unavailable: 0, deferred: 0, unknownReasons: { startOnly: 1, dirty: 1 } }, lookups: 20, lastCompleteAt: NOW - 60_000 },
   ...over,
 });
 
@@ -37,7 +37,7 @@ describe('release tracking in project settings', () => {
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
     expect(screen.getByTestId('release-repository').textContent).toBe('https://github.com/goondocks-co/myco');
     expect(container.textContent).toContain('packages/myco/ → myco/v*');
-    expect(screen.getByTestId('release-check').textContent).toContain('Checked 48 sessions; 3 release states changed, and Myco couldn’t tell for 2.');
+    expect(screen.getByTestId('release-check').textContent).toContain('Checked 48 sessions; 3 release states changed, and Myco couldn’t tell for 2. Of those, 1 had only a starting commit captured and 1 had uncommitted changes to tracked files when last captured.');
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/projects/x/release-provenance/check' }]));
   });

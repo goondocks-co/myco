@@ -1,3 +1,4 @@
+import { RELEASE_UNKNOWN_REASONS, type ReleaseUnknownCounts, type ReleaseUnknownReason } from '@goondocks/myco-shared/release-check';
 import { saveReleaseSettings, type ReleaseSettingsValues } from '../db/settings/release-connection.js';
 import { commitClassification, settleUnrecorded, type ClassificationOutcome, type ReleaseSettlement } from '../db/release/classification.js';
 import { readReleaseConfig, requestReleaseCheck, unresolvedReleaseStates, type ReleaseConfigRow } from '../db/release/config.js';
@@ -103,6 +104,7 @@ interface ReleaseCheckCounts {
   changed: number;
   unchanged: number;
   unknown: number;
+  unknownReasons?: ReleaseUnknownCounts;
   unavailable: number;
   deferred: number;
 }
@@ -151,8 +153,13 @@ function parseStored<T>(json: string | null, field: string, admits: (value: unkn
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
 const isMappingList = (v: unknown): v is PackageTagMapping[] => Array.isArray(v)
   && v.every((m) => typeof m === 'object' && m !== null && typeof (m as PackageTagMapping).pathGlob === 'string' && typeof (m as PackageTagMapping).tagPattern === 'string');
+const isUnknownCounts = (v: unknown): v is ReleaseUnknownCounts => typeof v === 'object' && v !== null && !Array.isArray(v)
+  && Object.entries(v).every(([key, count]) =>
+    RELEASE_UNKNOWN_REASONS.some((reason) => reason === key) && Number.isSafeInteger(count) && count > 0);
+
 const isCounts = (v: unknown): v is ReleaseCheckCounts => typeof v === 'object' && v !== null
-  && ['checked', 'changed', 'unchanged', 'unknown', 'unavailable', 'deferred'].every((k) => typeof (v as Record<string, unknown>)[k] === 'number');
+  && ['checked', 'changed', 'unchanged', 'unknown', 'unavailable', 'deferred'].every((k) => typeof (v as Record<string, unknown>)[k] === 'number')
+  && (!('unknownReasons' in v) || isUnknownCounts(v.unknownReasons));
 
 const DEFAULTS: ReleaseProvenanceSettings = {
   enabled: false, productionRefs: [], integrationRefs: [], packageMap: [], includeUnknown: true, maxLookups: DEFAULT_MAX_LOOKUPS,
@@ -403,6 +410,8 @@ async function classifyProject(
     const work = batch[i]!;
     const source = sourceOf(work);
     let classification: Classification;
+    let unknownReason: ReleaseUnknownReason = 'refsIncomplete';
+    const boundary = work.point === 'turn_end' ? 'last captured turn' : 'session';
     let recheck: ReleaseSettlement['recheck'] = 'capture';
     let ownTagsGeneration = work.ownTagsChecked === 1 ? generation.production : 0;
     let oversized = false;
@@ -410,16 +419,21 @@ async function classifyProject(
     let keepState = false;
     let pathsMark: number | null = null;
     if (work.point === 'session_start') {
+      unknownReason = 'startOnly';
       classification = uncaptured(work, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
     } else if (work.cleanliness === '1') {
-      classification = uncaptured(work, 'dirty_worktree', 'The session ended with uncommitted changes to tracked files');
+      unknownReason = 'dirty';
+      classification = uncaptured(work, 'dirty_worktree', `The ${boundary} ended with uncommitted changes to tracked files`);
     } else if (work.cleanliness === 'unknown') {
-      classification = uncaptured(work, 'missing_git_evidence', 'Whether the session ended with uncommitted changes could not be read');
+      unknownReason = 'statusUnreadable';
+      classification = uncaptured(work, 'missing_git_evidence', `Whether the ${boundary} ended with uncommitted changes could not be read`);
     } else {
       const changed = settings.packageMap.length === 0 ? { paths: [], mark: null } : await changedPaths(db, projectId, work.sessionId);
       if (changed === 'unreadable') {
+        unknownReason = 'pathsUnreadable';
         classification = uncaptured(work, 'missing_git_evidence', 'The paths the session changed could not be read, so its package is not established');
       } else if (changed === 'too_many') {
+        unknownReason = 'tooManyPaths';
         classification = uncaptured(work, 'missing_git_evidence', `The session touched at least ${SESSION_PATHS_LIMIT} paths, so its package is not established`);
       } else {
         pathsMark = changed.mark;
@@ -447,7 +461,8 @@ async function classifyProject(
           recheck = oversized ? 'production' : 'integration';
         } else {
           classification = outcome.classification;
-          recheck = classification.state === 'merged_unreleased' || outcome.commitMissing === true ? 'production' : 'integration';
+          unknownReason = outcome.unknownReason ?? unknownReason;
+          recheck = classification.state === 'merged_unreleased' || unknownReason === 'commitMissing' ? 'production' : 'integration';
           if (outcome.ownTagsChecked) ownTagsGeneration = generation.production;
         }
       }
@@ -463,6 +478,8 @@ async function classifyProject(
     counts.checked += 1;
     if (classification.state === 'unknown') {
       counts.unknown += 1;
+      const reasons = counts.unknownReasons ??= {};
+      reasons[unknownReason] = (reasons[unknownReason] ?? 0) + 1;
       if (!settings.includeUnknown) {
         const settled = await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, ...settlement, source });
         if (settled === 'claim_lost') return null;

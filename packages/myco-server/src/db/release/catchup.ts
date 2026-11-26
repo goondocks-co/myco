@@ -1,7 +1,7 @@
 import { jsonKeys } from '../ddl.js';
 import { assertion, refusalCode, write, type Bound } from '../index.js';
 import type { CatchupFamily } from '../projections/family.js';
-import { CLEANLINESS_SQL, latestSourceOf, RELEASE_CHECK_PHASE, RELEASE_PROJECTION, RELEASE_STATE_PHASE, RELEASE_WORK_PHASE } from './schema.js';
+import { SESSION_CAPTURE_POINTS, CLEANLINESS_SQL, latestSourceOf, RELEASE_CHECK_PHASE, RELEASE_PROJECTION, RELEASE_STATE_PHASE, RELEASE_WORK_PHASE } from './schema.js';
 
 /** A stored namespace's canonical form, the table name every writer, join and trigger uses; NULL for one no record carries. */
 const canon = (namespace: string) => `CASE ${namespace} WHEN 'session' THEN 'sessions' WHEN 'sessions' THEN 'sessions' WHEN 'spore' THEN 'spores' WHEN 'spores' THEN 'spores' WHEN 'plan' THEN 'plans' WHEN 'plans' THEN 'plans' END`;
@@ -119,7 +119,7 @@ export const RELEASE_PROVENANCE_CATCHUP = {
       reconcile: [bindKeysAt(reportDuplicates), bindKeys(removeLosers), bindKeys(rewriteSingular), bindKeysAt(reportUnresolved), bindKeys(markCurrent), bindKeysAt(queuePropagation)],
     },
     [RELEASE_WORK_PHASE]: {
-      source: { table: 'knowledge_git_provenance', columns: ['project_id', 'session_id'], where: "session_id IS NOT NULL AND head_sha IS NOT NULL AND capture_point IN ('session_start','session_end')" },
+      source: { table: 'knowledge_git_provenance', columns: ['project_id', 'session_id'], where: `session_id IS NOT NULL AND head_sha IS NOT NULL AND capture_point IN ${SESSION_CAPTURE_POINTS}` },
       reconcile: [bindKeys(seedWork)],
       frontier: () => [statesCanonical.bind()],
     },

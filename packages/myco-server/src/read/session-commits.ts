@@ -1,10 +1,6 @@
 /**
  * The commits a session stood on, as its member observed them at the session's
- * start and end, and the release check that classified one of them.
- *
- * **Only the two endpoints are stored.** `sessionCommit` keeps at most one
- * `session_start` and one `session_end` row per session, so this read never
- * answers whether HEAD moved between them or what came in between.
+ * start, latest turn end and latest session end, and the release check that classified one of them.
  *
  * **A release state belongs to the observation it is classified from.** The
  * check records its source as `sourceOf` formats it; an observation carries the
@@ -48,16 +44,16 @@ interface CommitReleaseCheck {
 
 interface SessionCommits {
   range: { visibility: 'not_visible'; reason: 'member_report_required' };
-  /** Start first, then end. */
+  /** Capture time order, with the session end after a turn end at the same instant. */
   observations: CommitObservation[];
   release: CommitReleaseCheck | null;
 }
 
-const POINT_ORDER: Record<CapturePoint, number> = { session_start: 0, session_end: 1 };
+const POINT_ORDER: Record<CapturePoint, number> = { session_start: 0, turn_end: 1, session_end: 2 };
 
 /** The session's commit observations and its release state. `idx_fk_knowledge_git_provenance_project_id_session_id` serves the read. */
 export async function sessionCommits(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionCommits> {
-  const rows = (await readSessionObservations(db, scope.projectId, sessionId)).sort((a, b) => POINT_ORDER[a.point] - POINT_ORDER[b.point]);
+  const rows = (await readSessionObservations(db, scope.projectId, sessionId)).sort((a, b) => a.capturedAt - b.capturedAt || POINT_ORDER[a.point] - POINT_ORDER[b.point]);
   const state = await getReleaseState(db, scope, 'session', sessionId);
   let release: CommitReleaseCheck | null = null;
   if (state !== null) {

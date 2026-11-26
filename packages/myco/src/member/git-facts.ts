@@ -68,16 +68,17 @@ export async function trackedChanges(cwd: string, budget: GitQueryBudget = {}): 
     gitExitStatusAsync(['diff', '--cached', '--quiet', '--'], cwd, budget),
     gitExitStatusAsync(['diff', '--quiet', '--'], cwd, budget),
   ]);
-  if (staged === 1 || unstaged === 1) return true;
-  return staged === 0 && unstaged === 0 ? false : undefined;
+  if ((staged !== 0 && staged !== 1) || (unstaged !== 0 && unstaged !== 1)) return undefined;
+  return staged === 1 || unstaged === 1;
 }
 
 /** Optional provenance receives at most this much hook time. */
 export const GIT_ENRICHMENT_CAP_MS = 500;
+const TURN_GIT_ENRICHMENT_CAP_MS = 75;
 
-function enrichmentBudget(budget: HookBudget, now: number): GitQueryBudget & { deadline: number } {
+function enrichmentBudget(budget: HookBudget, now: number, cap = GIT_ENRICHMENT_CAP_MS): GitQueryBudget & { deadline: number } {
   const deliveryReserve = Math.max(budget.connectTimeoutMs, budget.requestTimeoutMs);
-  return { deadline: Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs) };
+  return { deadline: Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, cap, now).requestTimeoutMs) };
 }
 
 const askWithin = (budget: GitQueryBudget) => (args: string[], cwd: string): string =>
@@ -95,14 +96,16 @@ export function sessionRepositoryName(cwd: string, budget: HookBudget, now: numb
 }
 
 /** Discovery fallback and dirty queries share a deadline that reserves a full request's headroom for delivery. */
-export async function sessionEndGitFacts(cwd: string, budget: HookBudget, now: number = Date.now()): Promise<Pick<GitFacts, 'headSha' | 'dirty'>> {
-  const { deadline } = enrichmentBudget(budget, now);
-  if (deadline <= now) return { headSha: undefined, dirty: undefined };
-  const queryBudget = { deadline };
+export async function sessionEndGitFacts(cwd: string, budget: HookBudget, now: number = Date.now(), point: 'turn' | 'session' = 'session'): Promise<GitFacts> {
+  const queryBudget = enrichmentBudget(budget, now, point === 'turn' ? TURN_GIT_ENRICHMENT_CAP_MS : GIT_ENRICHMENT_CAP_MS);
+  if (queryBudget.deadline <= now) return {};
   const askGit = askWithin(queryBudget);
   const head = gitHead(cwd, { askGit });
-  const dirty = head.headSha === undefined ? undefined : await trackedChanges(cwd, queryBudget);
-  return { headSha: head.headSha, dirty };
+  if (head.headSha === undefined) return {};
+  const dirty = await trackedChanges(cwd, queryBudget);
+  if (dirty === undefined) return {};
+  const after = gitHead(cwd, { askGit });
+  return head.headSha === after.headSha && head.branch === after.branch ? { ...head, dirty } : {};
 }
 
 /** Every fact at once. */
