@@ -17,7 +17,8 @@ export interface Repo {
   /** ref -> commits it contains */
   contains: Record<string, string[]>;
   commits: string[];
-  pulls: Record<string, Array<{ number: number; merged_at: string | null; merge_commit_sha: string; base: { ref: string } }>>;
+  pulls: Record<string, Array<{ number: number; merged_at: string | null; merge_commit_sha: string | null; base: { ref: string } }>>;
+  pullCommits?: Record<number, string[]>;
   link?: string;
   mainHead?: string;
 }
@@ -31,6 +32,7 @@ export const REPO: Repo = {
     main: [A, B, M],
   },
   commits: [A, B, C, M, D, X],
+  pullCommits: { 7: [C] },
   pulls: { [C]: [{ number: 7, merged_at: '2026-09-01T00:00:00Z', merge_commit_sha: M, base: { ref: 'main' } }] },
 };
 
@@ -57,6 +59,8 @@ export function fakeGithub(repo: Repo, calls: string[] = []): typeof fetch {
     }
     const pulls = /^\/commits\/([0-9a-f]{40})\/pulls$/.exec(path);
     if (pulls) return json(repo.pulls[pulls[1]] ?? []);
+    const members = /^\/pulls\/(\d+)\/commits$/.exec(path);
+    if (members) return json((repo.pullCommits?.[Number(members[1])] ?? []).map(sha => ({ sha })));
     const commit = /^\/commits\/([0-9a-f]{40})$/.exec(path);
     if (commit) return repo.commits.includes(commit[1]) ? json({ sha: commit[1] }) : new Response('{}', { status: 404 });
     return new Response('{}', { status: 500 });

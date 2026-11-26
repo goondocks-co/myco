@@ -92,6 +92,12 @@ describe('release provenance settings', () => {
   });
 });
 
+function ownerReleaseRepo(): Repo {
+  const tags = ['refs/tags/myco/v2.0.0', 'refs/tags/myco/v1.4.0',
+    ...Array.from({ length: 13 }, (_, line) => `refs/tags/myco/v0.${19 + line}.0`)];
+  return { tags, contains: { ...Object.fromEntries(tags.map(tag => [tag, []])), main: [] }, commits: [], pulls: {} };
+}
+
 describe('the scheduled release check', () => {
   const env = (r: Rig, repo: Repo = REPO, seen: string[] = [], auth: Array<string | null> = []) => {
     const fetcher = fakeGithub(repo, seen);
@@ -205,41 +211,92 @@ describe('the scheduled release check', () => {
     expect(merged.created_at).toBe(100 * MIN);
   });
 
-  it('drains 200 sessions from 40 deleted branches within the lookup limit', async () => {
+  it('places a session after its open PR merges and a later tag ships it', async () => {
     const r = await rig();
-    const tag = 'refs/tags/myco/v2.0.0';
-    const repo: Repo = { tags: [tag], contains: { [tag]: [], main: [] }, commits: [], pulls: {} };
+    const repo = ownerReleaseRepo();
+    await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [] }), 'mem_1', 1);
+    const pull = { number: 7, merge_commit_sha: M, merged_at: null as string | null, base: { ref: 'main' } };
+    repo.commits.push(C, M);
+    repo.pulls[C] = [pull];
+    repo.pullCommits = { 7: [C] };
+    seedSession(r, 's_open', C);
+    await reconcileReleaseProvenance(env(r, repo), 100 * MIN);
+    expect(byRecord(r).s_open).toBe('unknown');
+
+    repo.mainHead = A;
+    const moved: string[] = [];
+    await reconcileReleaseProvenance(env(r, repo, moved), 115 * MIN);
+    expect(moved.filter(path => path.startsWith('/compare/'))).toEqual([`/compare/${C}...main`]);
+
+    pull.merged_at = '2026-09-01';
+    repo.mainHead = M;
+    repo.contains.main.push(M);
+    const seen: string[] = [];
+    await reconcileReleaseProvenance(env(r, repo, seen), 130 * MIN);
+    expect(byRecord(r).s_open).toBe('merged_unreleased');
+    expect(seen.some(path => path.startsWith(`/compare/${C}...`))).toBe(false);
+
+    const release = 'refs/tags/myco/v2.0.1';
+    repo.tags.push(release);
+    repo.contains[release] = [M];
+    await reconcileReleaseProvenance(env(r, repo), 145 * MIN);
+    expect(byRecord(r).s_open).toBe('released');
+  });
+
+  it('drains 200 sessions on 40 squash-merged branches as main advances', async () => {
+    const r = await rig();
+    const repo = ownerReleaseRepo();
+    const pullCommits = repo.pullCommits = {} as Record<number, string[]>;
     await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [] }), 'mem_1', 1);
     for (let i = 0; i < 200; i += 1) {
       const branch = Math.floor(i / 5);
+      const number = branch + 1;
       const head = (2 * branch + (i % 5 < 3 ? 0 : 1)).toString(16).padStart(40, '0');
       const merge = (1000 + branch).toString(16).padStart(40, '0');
-      if (i < 195) {
-        repo.pulls[head] = [{ number: branch + 1, merge_commit_sha: merge, merged_at: '2026-09-01', base: { ref: 'main' } }];
-        if (!repo.commits.includes(merge)) {
-          repo.commits.push(merge);
-          repo.contains[tag].push(merge);
-        }
+      repo.pulls[head] = [{ number, merge_commit_sha: merge, merged_at: '2026-09-01', base: { ref: 'main' } }];
+      (pullCommits[number] ??= []).push(head);
+      if (!repo.commits.includes(merge)) {
+        repo.commits.push(merge);
+        if (branch < 20) repo.contains[repo.tags[0]].push(merge);
       }
-      seedSession(r, `s${String(i).padStart(3, '0')}`, head, [], 10 + i);
+      seedSession(r, `s${i}`, head, [], 10 + i);
     }
-    for (let pass = 0; pass < 5; pass += 1) {
+    let lookups = 0;
+    let passes = 0;
+    for (; passes < 10; passes += 1) {
       const seen: string[] = [];
-      repo.mainHead = (2000 + pass).toString(16).padStart(40, '0');
-      await reconcileReleaseProvenance(env(r, repo, seen), (100 + 15 * pass) * MIN);
+      repo.mainHead = (2000 + passes).toString(16).padStart(40, '0');
+      await reconcileReleaseProvenance(env(r, repo, seen), (100 + 15 * passes) * MIN);
+      lookups += seen.length;
       expect(seen.length).toBeLessThanOrEqual(50);
-      expect((await r.store.describe(P)).check!.counts!.checked).toBeGreaterThan(0);
+      if ((await r.store.describe(P)).check!.status === 'complete') break;
     }
-    expect(Object.values(byRecord(r)).filter(state => state === 'released')).toHaveLength(195);
-    expect(Object.values(byRecord(r)).filter(state => state === 'unknown')).toHaveLength(5);
+    expect(Object.values(byRecord(r)).filter(state => state === 'released')).toHaveLength(100);
+    expect(Object.values(byRecord(r)).filter(state => state === 'merged_unreleased')).toHaveLength(100);
 
     repo.mainHead = B;
-    await reconcileReleaseProvenance(env(r, repo), 175 * MIN);
-    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 0 } });
-    repo.tags.push('refs/tags/myco/v2.0.1');
-    repo.contains['refs/tags/myco/v2.0.1'] = [...repo.contains[tag]];
-    await reconcileReleaseProvenance(env(r, repo), 190 * MIN);
-    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 5, unknown: 5 } });
+    await reconcileReleaseProvenance(env(r, repo), (115 + 15 * passes) * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 0 }, lookups: 3 });
+    expect(lookups).toBeLessThanOrEqual(400);
+  });
+
+  it('moves past a session that needs more than a full budget and a commit whose lookup fails', async () => {
+    const r = await rig();
+    const repo = ownerReleaseRepo();
+    repo.commits.push(A, M);
+    repo.contains[repo.tags[0]] = [A];
+    repo.pulls[C] = REPO.pulls[C];
+    repo.pullCommits = REPO.pullCommits;
+    await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [], maxLookups: 6 }), 'mem_1', 1);
+    seedSession(r, 's_expensive', C, [], 1);
+    seedSession(r, 's_failing', D, [], 2);
+    seedSession(r, 's_good', A, [], 3);
+    await reconcileReleaseProvenance(env(r, repo), 100 * MIN);
+    expect(await getReleaseState(r.db, SCOPE, 'session', 's_expensive')).toMatchObject({ state: 'unknown', reason: expect.stringContaining('full check') });
+    const github = fakeGithub(repo);
+    await reconcileReleaseProvenance(r.app((input, init) => String(input).includes(D)
+      ? Promise.resolve(new Response('{}', { status: 502 })) : github(input, init)), 115 * MIN);
+    expect(byRecord(r)).toEqual({ s_expensive: 'unknown', s_failing: 'unknown', s_good: 'released' });
   });
 
   it('keeps every state and records why when GitHub refuses the App token', async () => {
@@ -562,5 +619,13 @@ describe('stored data that cannot be read', () => {
     await reconcileReleaseProvenance(r.app(fakeGithub(REPO)), 100 * MIN);
     expect(byRecord(r).s_paths).toBe('unknown');
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 1, unknown: 1 } });
+
+    const tag = 'refs/tags/b/v2.0.1';
+    const tagged = { ...REPO, tags: [...REPO.tags, tag], contains: { ...REPO.contains, [tag]: [X] } };
+    await reconcileReleaseProvenance(r.app(fakeGithub(tagged)), 115 * MIN);
+    expect((await r.store.describe(P)).check?.counts?.checked).toBe(0);
+    r.sqlite.query("UPDATE session_documents SET state = 'live', generation = 1 WHERE session_id = 's_paths'").run();
+    await reconcileReleaseProvenance(r.app(fakeGithub(tagged)), 130 * MIN);
+    expect(byRecord(r).s_paths).toBe('released');
   });
 });

@@ -32,9 +32,24 @@ const sessionState = write<StateParams, { state: string }>({ name: 'releaseClass
   `INSERT INTO knowledge_release_state ${RELEASE_WRITE_COLUMNS}
    SELECT ?1,?4,?5,'sessions',?2,?2,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15,?16,?17,?18,1 WHERE ${SOURCE_STILL} ${RELEASE_UPSERT} RETURNING state` });
 
-const settle = write<[project: string, session: string, sourceRevision: number, generation: number, identity: string, source: string, productionOnly: number], { settled: number }>({ name: 'releaseClassification.settle', sql:
-  `UPDATE release_work_due SET settled_generation=?4,production_only=?7,final=COALESCE((SELECT k.state='released' AND (k.source_key IS NULL OR k.source_key=?6) FROM knowledge_release_state k WHERE k.project_id=?1 AND k.identity_key=?5),0)
+export interface ReleaseSettlement {
+  generation: number;
+  ownTagsGeneration: number;
+  recheck: 'capture' | 'production' | 'integration';
+}
+
+interface SettledWork extends ReleaseSettlement { sessionId: string; sourceRevision: number; source: string }
+
+const settle = write<[project: string, session: string, sourceRevision: number, generation: number, identity: string, source: string,
+  productionOnly: number, captureOnly: number, ownTagsGeneration: number], { settled: number }>({ name: 'releaseClassification.settle', sql:
+  `UPDATE release_work_due SET settled_generation=?4,production_only=?7,capture_only=?8,own_tags_generation=?9,
+    final=COALESCE((SELECT k.state='released' AND (k.source_key IS NULL OR k.source_key=?6) FROM knowledge_release_state k WHERE k.project_id=?1 AND k.identity_key=?5),0)
    WHERE project_id=?1 AND session_id=?2 AND source_revision=?3 RETURNING 1 AS settled` });
+
+const settleWork = (projectId: string, work: SettledWork) => settle.bind(
+  projectId, work.sessionId, work.sourceRevision, work.generation, identityOf(projectId, work.sessionId), work.source,
+  Number(work.recheck === 'production'), Number(work.recheck === 'capture'), work.ownTagsGeneration,
+);
 
 /**
  * Queues the session's records when this commit changes the session's answer. It runs before the write: a stored row
@@ -50,10 +65,7 @@ const queue = write<[project: string, session: string, sourceRevision: number, n
    ON CONFLICT(project_id,session_id) DO UPDATE SET generation=generation+1,after_namespace='',after_record='',queued_at=excluded.queued_at` });
 
 /** What one session's classification writes. */
-interface ClassificationWrite {
-  sessionId: string;
-  sourceRevision: number;
-  generation: number;
+interface ClassificationWrite extends SettledWork {
   state: string;
   confidence: string;
   basisKind: string;
@@ -62,7 +74,6 @@ interface ClassificationWrite {
   releasePrNumber: number | null;
   reason: string;
   evidence: string;
-  source: string;
   configRevision: string;
   fingerprint: string | null;
   pathsMark: number | null;
@@ -74,11 +85,11 @@ export type ClassificationOutcome = 'claim_lost' | 'source_moved' | 'changed' | 
 const identityOf = (projectId: string, sessionId: string) => `${projectId}:sessions:${sessionId}`;
 
 /** Settles a session whose classification writes no state (an `unknown` the Project does not record), inside the claim. */
-export async function settleUnrecorded(db: RelationalStore, claim: ReleaseClaim, write: { sessionId: string; sourceRevision: number; generation: number; source: string }): Promise<'settled' | 'source_moved' | 'claim_lost'> {
+export async function settleUnrecorded(db: RelationalStore, claim: ReleaseClaim, write: SettledWork): Promise<'settled' | 'source_moved' | 'claim_lost'> {
   try {
     const { settled } = await commitNamed(db, {
       held: claimHeld.bind(claim.projectId, claim.leaseId, claim.revision),
-      settled: settle.bind(claim.projectId, write.sessionId, write.sourceRevision, write.generation, identityOf(claim.projectId, write.sessionId), write.source, 1),
+      settled: settleWork(claim.projectId, write),
     });
     return settled.results.length === 0 ? 'source_moved' : 'settled';
   } catch (error) {
@@ -100,7 +111,7 @@ export async function commitClassification(db: RelationalStore, claim: ReleaseCl
     before: prior.bind(projectId, identity),
     queued: queue.bind(projectId, row.sessionId, row.sourceRevision, row.now, identity, row.state, row.confidence, row.basisKind, row.basisRef, row.basisSha, row.releasePrNumber, row.source),
     written: sessionState.bind(projectId, row.sessionId, row.sourceRevision, id, identity, row.state, row.confidence, row.basisKind, row.basisRef, row.basisSha, row.releasePrNumber, row.reason, row.evidence, row.now, row.source, row.configRevision, row.fingerprint, row.pathsMark),
-    settled: settle.bind(projectId, row.sessionId, row.sourceRevision, row.generation, identity, row.source, Number(row.state === 'unknown')),
+    settled: settleWork(projectId, row),
   };
   let outcome: Awaited<ReturnType<typeof commitNamed<typeof statements>>>;
   try { outcome = await commitNamed(db, statements); } catch (error) {

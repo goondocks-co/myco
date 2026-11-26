@@ -28,7 +28,8 @@ export function checkSummary(check: ReleaseCheck | null): string {
   if (check.finishedAt === null || check.finishedAt < check.startedAt) return `Checking ${sinceWords(check.startedAt, Date.now())}`;
   const c = check.counts;
   const parts: string[] = [];
-  if (c !== null) {
+  const noSessionFinished = check.failure === 'budget_exhausted' && c?.checked === 0;
+  if (c !== null && !noSessionFinished) {
     const changed = c.changed === 0 ? 'no release state changed' : `${plural(c.changed, 'release state', 'release states')} changed`;
     const unknown = c.unknown === 0 ? '' : `, and Myco couldn’t tell for ${c.unknown.toLocaleString()}`;
     parts.push(`Checked ${plural(c.checked, 'session', 'sessions')}; ${changed}${unknown}.`);
@@ -37,7 +38,11 @@ export function checkSummary(check: ReleaseCheck | null): string {
   const unfinished = `At least ${plural(missed, 'session', 'sessions')} ${missed === 1 ? 'wasn’t' : 'weren’t'} finished`;
   if (check.failure === 'budget_exhausted') {
     const used = check.lookups === null ? 'all its GitHub lookups' : `all ${check.lookups.toLocaleString()} of its GitHub lookups`;
-    parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending for later checks.`);
+    if (noSessionFinished) {
+      parts.push(`This check used ${used} before it could finish a single session. See “GitHub lookups per check” under More.`);
+    } else {
+      parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending for later checks.`);
+    }
   } else if (check.failure !== null) {
     parts.push(`${missed > 0 ? unfinished : 'It stopped'} because of this: ${checkFailureLabel(check.failure)}. Unfinished sessions stay pending and keep their earlier state.`);
   } else if (missed > 0) {

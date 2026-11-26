@@ -1,5 +1,5 @@
 import { saveReleaseSettings, type ReleaseSettingsValues } from '../db/settings/release-connection.js';
-import { commitClassification, settleUnrecorded, type ClassificationOutcome } from '../db/release/classification.js';
+import { commitClassification, settleUnrecorded, type ClassificationOutcome, type ReleaseSettlement } from '../db/release/classification.js';
 import { readReleaseConfig, requestReleaseCheck, unresolvedReleaseStates, type ReleaseConfigRow } from '../db/release/config.js';
 import { claimReleaseCheck, dueReleaseChecks, openReleaseGeneration, releaseDueAfterSave, settleReleaseCheck, type ReleaseClaim } from '../db/release/due.js';
 import { openReleaseWork, sessionPaths, type ReleaseWork } from '../db/release/work.js';
@@ -68,6 +68,7 @@ const DEFAULT_RECONCILE_INTERVAL_MINUTES = 15;
 const DEFAULT_MAX_LOOKUPS = 50;
 const MAX_LOOKUPS_CEILING = 1_000;
 const SESSIONS_PER_CHECK = 200;
+const RELEASE_EVIDENCE_VERSION = 2;
 /** How many Projects one pass checks; the rest are due on the next tick. */
 export const PROJECTS_PER_PASS = 3;
 const MAX_REFS = 20;
@@ -312,11 +313,11 @@ const uncaptured = (w: ReleaseWork, basisKind: Classification['basisKind'], reas
  * Write one session's classification inside the claim, only for the capture read.
  */
 function writeClassification(db: RelationalStore, claim: ReleaseClaim, work: ReleaseWork, classification: Classification,
-  run: { fingerprint: string | null; generation: number; pathsMark: number | null; now: number }): Promise<ClassificationOutcome> {
+  run: ReleaseSettlement & { fingerprint: string; pathsMark: number | null; now: number }): Promise<ClassificationOutcome> {
   const k = classification;
   const source = sourceOf(work);
   return commitClassification(db, claim, {
-    sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation: run.generation,
+    sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation: run.generation, ownTagsGeneration: run.ownTagsGeneration, recheck: run.recheck,
     state: k.state, confidence: k.confidence, basisKind: k.basisKind, basisRef: k.basisRef, basisSha: k.basisSha, releasePrNumber: k.releasePrNumber, reason: k.reason,
     evidence: JSON.stringify({ ...k.evidence, source, refs_fingerprint: run.fingerprint, paths_mark: run.pathsMark }),
     source, configRevision: claim.revision, fingerprint: run.fingerprint, pathsMark: run.pathsMark, now: run.now,
@@ -389,7 +390,7 @@ async function classifyProject(
   if (!repository.ok) return { failure: repository.failure === 'not_found' ? 'repository_not_found' : repository.failure };
   const run = await resolveRunRefs(reads, settings);
   if (!run.ok) return { failure: run.failure };
-  const production = JSON.stringify([repositoryId, run.fingerprint.production]);
+  const production = JSON.stringify([repositoryId, run.fingerprint.production, RELEASE_EVIDENCE_VERSION]);
   const fingerprint = JSON.stringify([production, run.fingerprint.integration]);
   const generation = await openReleaseGeneration(db, claim, { full: fingerprint, production });
   if (generation === null) return null;
@@ -397,10 +398,14 @@ async function classifyProject(
   if (candidates.length > SESSIONS_PER_CHECK) counts.deferred += candidates.length - SESSIONS_PER_CHECK;
   const batch = candidates.slice(0, SESSIONS_PER_CHECK);
   let failure: string | null = null;
+  const setupLookups = reads.lookupsUsed();
   for (let i = 0; i < batch.length; i += 1) {
     const work = batch[i]!;
     const source = sourceOf(work);
     let classification: Classification;
+    let recheck: ReleaseSettlement['recheck'] = 'capture';
+    let ownTagsGeneration = work.ownTagsChecked === 1 ? generation.production : 0;
+    let oversized = false;
     let pathsMark: number | null = null;
     if (work.point === 'session_start') {
       classification = uncaptured(work, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
@@ -416,31 +421,49 @@ async function classifyProject(
         classification = uncaptured(work, 'missing_git_evidence', `The session touched at least ${SESSION_PATHS_LIMIT} paths, so its package is not established`);
       } else {
         pathsMark = changed.mark;
-        const outcome = await classifyCommit(reads, run, { headSha: work.headSha, changedPaths: changed.paths });
+        const before = reads.lookupsUsed();
+        const outcome = await classifyCommit(reads, run, {
+          headSha: work.headSha, changedPaths: changed.paths, ownTagsChecked: work.ownTagsChecked === 1,
+        });
         if (outcome.kind === 'unavailable') {
-          counts.unavailable += 1;
-          failure = outcome.failure;
-          counts.deferred += batch.length - i - 1;
-          break;
+          const exhausted = outcome.failure === 'budget_exhausted';
+          oversized = exhausted && before === setupLookups && before < reads.lookupsUsed();
+          const sessionFailure = outcome.failure === 'timeout' || outcome.failure === 'unexpected_response';
+          if (exhausted || !sessionFailure) {
+            counts.unavailable += 1;
+            failure = outcome.failure;
+            counts.deferred += batch.length - i - 1;
+            if (!oversized) break;
+          }
+          classification = uncaptured(work, 'ref_check_failed', oversized
+            ? 'This session could not be checked with a full check’s available GitHub lookups'
+            : outcome.reason);
+          recheck = oversized ? 'production' : 'integration';
+        } else {
+          classification = outcome.classification;
+          recheck = classification.state === 'merged_unreleased' ? 'production' : 'integration';
+          if (outcome.ownTagsChecked) ownTagsGeneration = generation.production;
         }
-        classification = outcome.classification;
       }
     }
-    counts.checked += 1;
+    if (!oversized) counts.checked += 1;
+    const settlement = { generation: generation.current, recheck, ownTagsGeneration };
     if (classification.state === 'unknown') {
-      counts.unknown += 1;
+      if (!oversized) counts.unknown += 1;
       if (!settings.includeUnknown) {
-        const settled = await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation: generation.current, source });
+        const settled = await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, ...settlement, source });
         if (settled === 'claim_lost') return null;
         if (settled === 'source_moved') counts.deferred += 1;
+        if (oversized) break;
         continue;
       }
     }
-    const written = await writeClassification(db, claim, work, classification, { fingerprint, generation: generation.current, pathsMark, now });
+    const written = await writeClassification(db, claim, work, classification, { ...settlement, fingerprint, pathsMark, now });
     if (written === 'claim_lost') return null;
     if (written === 'source_moved') counts.deferred += 1;
     else if (written === 'changed') counts.changed += 1;
-    else counts.unchanged += 1;
+    else if (!oversized) counts.unchanged += 1;
+    if (oversized) break;
   }
   return { failure };
 }

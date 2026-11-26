@@ -59,7 +59,7 @@ export interface Classification {
 }
 
 type ClassifyOutcome =
-  | { kind: 'classified'; classification: Classification }
+  | { kind: 'classified'; classification: Classification; ownTagsChecked: boolean }
   | { kind: 'unavailable'; failure: GithubFailure; reason: string };
 
 // --- Ref patterns ---
@@ -212,13 +212,14 @@ export async function resolveRunRefs(reads: GithubReads, config: ReleaseRefConfi
 interface ClassifyInput {
   headSha: string | null;
   changedPaths: readonly string[];
+  ownTagsChecked?: boolean;
 }
 
 const classified = (
   state: ReleaseStateValue, confidence: ReleaseConfidence, basisKind: ReleaseBasisKind,
   basisRef: string | null, basisSha: string | null, reason: string,
-  evidence: Record<string, unknown>, releasePrNumber: number | null = null,
-): ClassifyOutcome => ({ kind: 'classified', classification: { state, confidence, basisKind, basisRef, basisSha, releasePrNumber, reason, evidence } });
+  evidence: Record<string, unknown>, releasePrNumber: number | null = null, ownTagsChecked = false,
+): ClassifyOutcome => ({ kind: 'classified', ownTagsChecked, classification: { state, confidence, basisKind, basisRef, basisSha, releasePrNumber, reason, evidence } });
 
 const UNAVAILABLE_REASON: Record<GithubFailure, string> = {
   budget_exhausted: 'The run reached its GitHub lookup limit before this commit was checked',
@@ -235,13 +236,20 @@ const unavailable = (failure: GithubFailure): ClassifyOutcome => ({ kind: 'unava
 
 const contains = (status: CompareStatus) => status === 'ahead' || status === 'identical';
 
-/**
- * Classify one captured commit.
- *
- * Production refs first, by direct ancestry and then by a merged pull
- * request's squash commit; then integration branches; then the negative
- * answer, and only when nothing is left unchecked.
- */
+// GitHub's pull-request commits endpoint serves at most 250 commits, 100 per page.
+const MAX_PULL_COMMIT_PAGES = 3;
+
+async function commitInPull(reads: GithubReads, number: number, sha: string): Promise<boolean | GithubFailure> {
+  for (let page = 1; page <= MAX_PULL_COMMIT_PAGES; page += 1) {
+    const commits = await reads.pullCommits(number, page);
+    if (!commits.ok) return commits.failure === 'not_found' ? false : commits.failure;
+    if (commits.value.shas.includes(sha)) return true;
+    if (!commits.value.more) break;
+  }
+  return false;
+}
+
+/** Classify a commit by verified pull request membership or by direct ancestry. */
 export async function classifyCommit(
   reads: GithubReads,
   run: RunRefOutcome,
@@ -260,67 +268,81 @@ export async function classifyCommit(
   const candidates = [...new Set(resolved.flatMap(pattern => pattern.refs))];
   const evidence = { package_patterns: patterns, checked_refs: candidates };
   let complete = resolved.every(pattern => pattern.complete);
-  let compareMissing = false;
 
   async function firstContaining(commit: string, refs: readonly string[]): Promise<
-    { hit: string } | { failed: GithubFailure } | { none: true }
+    { hit: string } | { failed: GithubFailure } | { complete: boolean }
   > {
+    let complete = true;
     for (const ref of refs) {
       const result = await reads.compare(commit, ref);
       if (result.ok) {
         if (contains(result.value)) return { hit: ref };
       } else if (result.failure === 'not_found') {
-        compareMissing = true;
+        complete = false;
       } else {
         return { failed: result.failure };
       }
     }
-    return { none: true };
+    return { complete };
   }
 
-  const direct = await firstContaining(sha, candidates);
-  if ('failed' in direct) return unavailable(direct.failed);
-  if ('hit' in direct) return classified('released', 'high', 'git_ancestry', direct.hit, sha, `Commit is contained in production ref ${direct.hit}`, evidence);
-
-  // A failed ancestry lookup does not rule out GitHub retaining the PR association.
   const associated = await reads.mergedPullsForCommit(sha);
   if (!associated.ok && associated.failure !== 'not_found') return unavailable(associated.failure);
-  const pulls = associated.ok ? associated.value.pulls : [];
-  for (const pull of pulls) {
-    if (pull.mergeCommitSha === sha) continue;
+  complete &&= associated.ok && associated.value.complete;
+  let merged: { branch: string; number: number; sha: string } | null = null;
+  let unplacedPull = false;
+  for (const pull of associated.ok ? associated.value.pulls : []) {
+    const member = await commitInPull(reads, pull.number, sha);
+    if (typeof member === 'string') return unavailable(member);
+    if (!member) { unplacedPull = true; continue; }
     const viaPull = await firstContaining(pull.mergeCommitSha, candidates);
     if ('failed' in viaPull) return unavailable(viaPull.failed);
     if ('hit' in viaPull) {
       return classified('released', 'high', 'github_pr_squash', viaPull.hit, pull.mergeCommitSha,
         `PR #${pull.number} merge commit is contained in production ref ${viaPull.hit}`, { ...evidence, pull: pull.number }, pull.number);
     }
+    if (integration.has(pull.baseRef)) merged ??= { branch: pull.baseRef, number: pull.number, sha: pull.mergeCommitSha };
+    else unplacedPull = true;
+  }
+  if (merged !== null) {
+    const { branch, number, sha: mergeSha } = merged;
+    return classified('merged_unreleased', 'medium', 'github_pr_squash', branch, mergeSha,
+      `PR #${number} was merged into ${branch}; no checked production ref was found to contain its merge commit`,
+      { ...evidence, pull: number }, number);
   }
 
+  const direct = input.ownTagsChecked ? { complete: true } : await firstContaining(sha, candidates);
+  if ('failed' in direct) return unavailable(direct.failed);
+  if ('hit' in direct) return classified('released', 'high', 'git_ancestry', direct.hit, sha, `Commit is contained in production ref ${direct.hit}`, evidence);
+  const ownTagsChecked = direct.complete;
+
+  let ancestryComplete = ownTagsChecked;
   for (const [branch, head] of integration) {
-    const pull = pulls.find(p => p.baseRef === branch);
-    if (pull !== undefined) {
-      return classified('merged_unreleased', 'medium', 'github_pr_squash', branch, pull.mergeCommitSha,
-        `PR #${pull.number} was merged into ${branch}; no checked production ref was found to contain its merge commit`,
-        { ...evidence, pull: pull.number }, pull.number);
-    }
     if (head === null) { complete = false; continue; }
-    const merged = await firstContaining(sha, [branch]);
-    if ('failed' in merged) return unavailable(merged.failed);
-    if ('hit' in merged) {
+    const comparison = await firstContaining(sha, [branch]);
+    if ('failed' in comparison) return unavailable(comparison.failed);
+    if ('hit' in comparison) {
       return classified('merged_unreleased', 'medium', 'git_ancestry', branch, sha,
         `Commit is contained in integration branch ${branch}; no checked production ref was found to contain it`, evidence);
     }
+    ancestryComplete &&= comparison.complete;
   }
 
-  if (compareMissing || !associated.ok) {
+  if (!ancestryComplete || !associated.ok) {
     const exists = await reads.commit(sha);
     if (!exists.ok && exists.failure !== 'not_found') return unavailable(exists.failure);
     if (!exists.ok) return classified('unknown', 'low', 'missing_git_evidence', null, sha,
       'GitHub could not find the captured commit or establish its release through a pull request', evidence);
   }
-  if (!complete || compareMissing || !associated.ok || !associated.value.complete) {
+  if (unplacedPull) {
     return classified('unknown', 'low', 'ref_check_failed', null, sha,
-      'Not every release ref or pull request could be checked, so absence from a release is not established', evidence);
+      'GitHub associated a merged pull request, but its commit list or destination does not place the captured commit on a configured release line',
+      evidence, null, ownTagsChecked);
   }
-  return classified('not_on_release_line', 'medium', 'git_ancestry', null, sha, 'Commit is not contained in any configured release ref', evidence);
+  if (!complete || !ancestryComplete) {
+    return classified('unknown', 'low', 'ref_check_failed', null, sha,
+      'Not every release ref or pull request could be checked, so absence from a release is not established', evidence, null, ownTagsChecked);
+  }
+  return classified('not_on_release_line', 'medium', 'git_ancestry', null, sha,
+    'Commit is not contained in any configured release ref', evidence, null, ownTagsChecked);
 }

@@ -76,6 +76,8 @@ export interface GithubReads {
   commit(sha: string): Promise<GithubRead<true>>;
   /** The merged pull requests GitHub associates with the commit. */
   mergedPullsForCommit(sha: string): Promise<GithubRead<{ pulls: MergedPull[]; complete: boolean }>>;
+  /** The commits on a merged pull request, one page at a time. */
+  pullCommits(number: number, page: number): Promise<GithubRead<{ shas: string[]; more: boolean }>>;
   lookupsUsed(): number;
 }
 
@@ -176,14 +178,23 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     mergedPullsForCommit: (sha) => read(`commits/${sha}/pulls?per_page=100`, (body, response) => {
       if (!Array.isArray(body)) return bad;
       const pulls: MergedPull[] = [];
+      let complete = !hasNextPage(response);
       for (const entry of body as Array<{ number?: unknown; merged_at?: unknown; merge_commit_sha?: unknown; base?: { ref?: unknown } } | null>) {
         if (entry?.merged_at === null) continue;
         if (typeof entry?.merged_at !== 'string' || !entry.merged_at
           || typeof entry.number !== 'number' || !Number.isSafeInteger(entry.number) || entry.number < 1
-          || !isCommitSha(entry.merge_commit_sha) || typeof entry.base?.ref !== 'string') return bad;
+          || !isCommitSha(entry.merge_commit_sha) || typeof entry.base?.ref !== 'string') {
+          complete = false;
+          continue;
+        }
         pulls.push({ number: entry.number, mergeCommitSha: entry.merge_commit_sha, baseRef: entry.base.ref });
       }
-      return { ok: true, value: { pulls, complete: !hasNextPage(response) } };
+      return { ok: true, value: { pulls, complete } };
+    }),
+    pullCommits: (number, page) => read(`pulls/${number}/commits?per_page=100&page=${page}`, (body, response) => {
+      if (!Array.isArray(body)) return bad;
+      const shas = (body as Array<{ sha?: unknown } | null>).map(entry => entry?.sha).filter(isCommitSha);
+      return { ok: true, value: { shas, more: hasNextPage(response) } };
     }),
     lookupsUsed: () => used,
   };

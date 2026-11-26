@@ -47,6 +47,17 @@ describe('release classification', () => {
     expect(pending.outcome).toMatchObject({ kind: 'classified', classification: { state: 'merged_unreleased', basisRef: 'main', basisSha: M, releasePrNumber: 7 } });
   });
 
+  it('requires PR membership and a release destination', async () => {
+    const pull = REPO.pulls[C][0];
+    const cases: Repo[] = [
+      { ...REPO, pullCommits: { 7: [D] } },
+      { ...REPO, pulls: { [C]: [{ ...pull, merge_commit_sha: null }] } },
+      { ...REPO, pulls: { [C]: [{ ...pull, base: { ref: 'feature/base' } }] },
+        contains: { ...REPO.contains, 'refs/tags/a/v1.2.0': [A] } },
+    ];
+    for (const repo of cases) expect(state((await classify(C, [], { repo })).outcome)).toBe('unknown');
+  });
+
   it('checks a monorepo package only against its own tag family', async () => {
     const onlyB = await classify(X, ['packages/b/y.ts']);
     expect(state(onlyB.outcome)).toBe('released');
