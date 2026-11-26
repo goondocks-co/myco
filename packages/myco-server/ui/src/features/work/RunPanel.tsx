@@ -44,7 +44,7 @@ export function RunPanel({ projectId, runId, projectName, now, onClose }: RunPan
   const title = `${kind === null ? 'Run' : capitalize(runNoun(kind))} · ${projectName}`;
   return (
     <SlideOver open onOpenChange={(open) => { if (!open) onClose(); }} title={title} data-testid="run-panel">
-      {detail.data !== undefined ? <RunBody key={`${projectId}/${runId}`} answer={detail.data} projectId={projectId} now={now} />
+      {detail.data !== undefined ? <RunBody key={`${projectId}/${runId}`} answer={detail.data} projectId={projectId} now={now} runRead={{ fetching: detail.isFetching, failed: detail.isError, at: detail.dataUpdatedAt }} />
         : detail.isPending ? <LoadingState shape="reading" label="Loading the run" />
         : detail.error instanceof ApiError && detail.error.status === 404
           ? <p role="status" className="t-body text-muted">This run isn’t in {projectName}. It may have been cleared out with older runs.</p>
@@ -76,12 +76,18 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectId: string; now: number }) {
+/** How the run's own read stands: reading again, failed, and when it last answered. */
+interface RunRead { fetching: boolean; failed: boolean; at: number }
+
+function RunBody({ answer, projectId, now, runRead }: { answer: RunDetailAnswer; projectId: string; now: number; runRead: RunRead }) {
   const { run, read, produced } = answer;
   const cancel = useCancelRun(projectId, run.id);
   const client = useQueryClient();
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // After a cancel Myco could not confirm, another waits for a read of the run newer than that attempt.
+  const [unconfirmedAt, setUnconfirmedAt] = useState<number | null>(null);
+  const fresh = unconfirmedAt === null || (!runRead.fetching && !runRead.failed && runRead.at >= unconfirmedAt);
   const canCancel = run.canCancel === true;
   const kind = kindOf(run.task);
   const name = useStarterNames();
@@ -133,9 +139,12 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           ? 'The code map was already current. Nothing ran, and nothing was spent.'
           : <>Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</>}</p>}
         {live && (canCancel
-          ? <Button size="sm" onClick={() => { setCancelError(null); cancel.reset(); setConfirmCancel(true); }}>Cancel run</Button>
+          ? <Button size="sm" disabled={!fresh} onClick={() => { setCancelError(null); cancel.reset(); setConfirmCancel(true); }}>Cancel run</Button>
           : <p className="t-small text-muted">{run.cancelReason ?? 'Run cancellation permission is unavailable. Refresh this run.'}</p>)}
         {cancelError !== null && <p role="alert" className="t-small text-bad">{cancelError}</p>}
+        {!fresh && <p role="status" className="t-small text-muted" data-cancel-unconfirmed="">{runRead.fetching
+          ? 'Myco couldn’t confirm whether this run was cancelled. Reading the run again…'
+          : 'Myco couldn’t confirm whether this run was cancelled, and couldn’t read the run again. Reload this page to see where it stands.'}</p>}
       </header>
       <ConfirmDialog
         open={confirmCancel}
@@ -144,14 +153,15 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         description="From now on Myco saves nothing more from this run, and it doesn’t finish its work. The runner may take a moment to stop the agent. What the run already saved stays."
         confirmLabel="Cancel run"
         cancelLabel="Keep it running"
-        confirmDisabled={!canCancel || (cancel.error !== null && !(cancel.error instanceof ApiError && cancel.error.status === 404))}
+        confirmDisabled={!canCancel || !fresh}
         pending={cancel.isPending}
         error={cancel.error === null ? null
           : cancel.error instanceof ApiError && cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.'
-          : 'Myco couldn’t confirm whether the run was cancelled. It is reading the run again: close this, and see where the run stands on this page before trying again.'}
+          : 'Myco couldn’t confirm whether the run was cancelled. Close this: the page says where the run stands once Myco has read it again.'}
         onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, {
           onSuccess: () => setConfirmCancel(false),
           onError: (error) => {
+            if (!(error instanceof ApiError && error.status === 404)) setUnconfirmedAt(Date.now());
             void client.invalidateQueries({ queryKey: ['run', projectId, run.id] });
             if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
           },

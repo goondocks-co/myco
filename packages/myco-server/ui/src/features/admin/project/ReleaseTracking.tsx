@@ -186,13 +186,13 @@ function ReleaseTrackingForm({ projectId, row, onClose }: { projectId: string; r
       <SwitchField
         id="release-unknown"
         label="Say when Myco can’t tell"
-        hint="Myco can’t place a session that ended with uncommitted changes, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one where Myco can’t tell which package was changed. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
+        hint="Myco can’t place a session that ended with uncommitted changes to tracked files, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one whose changed files it couldn’t read or that changed too many to check. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
         checked={includeUnknown}
         onCheckedChange={setIncludeUnknown}
       />
       <Disclosure summary="More" defaultOpen={row.packageMap.length > 0}>
         <div className="flex flex-col gap-s4 pt-s1">
-          <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then the tags of the package in it. For a session that changed files in listed folders, Myco checks only the release tags above that match those packages’ tags, any of which can show it as released; when none match, or no folder is listed, it checks all of them. Where it finds no release, it looks for a merge into the branch above. For example, with myco/v* above: packages/myco/ = myco/v*">
+          <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then the tags of the package in it. For a session that changed files in listed folders, Myco checks only the lines above that those packages’ patterns match, comparing against each line as written, any of which can show it as released; when none match, or no folder is listed, it checks all of them. Where it finds no release, it looks for a merge into the branch above. For example, with myco/v* above: packages/myco/ = myco/v*">
             <Textarea id="release-packages" aria-describedby="release-packages-hint" className="t-mono" value={mapping} onChange={(e) => setMapping(e.target.value)} placeholder="packages/myco/ = myco/v*" />
           </FormField>
           <FormField id="release-lookups" label="GitHub lookups per check" hint="Each check reads tags and compares commits on GitHub, at most this many times. More checks more sessions at once and uses more of GitHub’s hourly allowance.">

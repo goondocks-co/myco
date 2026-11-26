@@ -10,7 +10,9 @@ import { useCallback, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'r
  *
  * Radix's own Escape handling is turned off for these layers: each claims the key it is offered (`claimEscape`) so the
  * listener knows the key reached a layer of ours. A key some other control already used, such as an open menu or a
- * list inside the dialog, arrives here prevented and unclaimed, and is left alone.
+ * list inside the dialog, arrives here prevented and unclaimed, and is left alone. So is a key pressed while text is
+ * being composed, and one pressed in a control that marks itself with `data-owns-escape` because it closes something
+ * of its own first.
  */
 const layers = new Map<HTMLElement, () => void>();
 const claimed = new WeakSet<Event>();
@@ -27,6 +29,8 @@ function topmost(): HTMLElement | undefined {
 function onKeyDown(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return;
   if (event.defaultPrevented && !claimed.has(event)) return;
+  if (event.isComposing) return;
+  if (event.target instanceof Element && event.target.closest('[data-owns-escape]') !== null) return;
   const top = topmost();
   if (top === undefined) return;
   event.preventDefault();

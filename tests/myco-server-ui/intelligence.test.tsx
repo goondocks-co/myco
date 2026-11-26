@@ -1041,11 +1041,12 @@ it('says a cancel it could not confirm, reads the run again, and opens clean the
   let dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
   const before = reads;
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel run' }));
-  expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t confirm whether the run was cancelled. It is reading the run again: close this, and see where the run stands on this page before trying again.');
-  expect((within(dialog).getByRole('button', { name: 'Cancel run' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t confirm whether the run was cancelled. Close this: the page says where the run stands once Myco has read it again.');
   await waitFor(() => expect(reads).toBeGreaterThan(before));
   fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it running' }));
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
+  // Once the run has been read again and is still running, cancelling is offered afresh.
+  await waitFor(() => expect((within(open).getByRole('button', { name: 'Cancel run' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(within(await panel()).getByRole('button', { name: 'Cancel run' }));
   dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
   expect(within(dialog).queryByRole('alert')).toBeNull();

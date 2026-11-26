@@ -170,6 +170,7 @@ export function SearchableSelect({
               value={query}
               placeholder={searchPlaceholder}
               onChange={(event) => setQuery(event.target.value)}
+              data-owns-escape=""
               onKeyDown={onSearchKeyDown}
               className={cn(fieldFrame, focusRing, 'h-control-sm pl-s8')}
             />

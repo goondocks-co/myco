@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
+import { useLayer } from '../lib/layers';
 
 export interface LightboxProps {
   /** Every image in the gallery. */
@@ -22,7 +23,8 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
   const current = images[index];
   const hasPrev = index > 0;
   const hasNext = index < images.length - 1;
-  const dialog = useRef<HTMLDivElement>(null);
+  const dialog = useRef<HTMLDivElement | null>(null);
+  const layer = useLayer<HTMLDivElement>(onClose);
   const closeButton = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -38,7 +40,6 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
       if (e.key === 'ArrowLeft' && hasPrev) onNavigate(index - 1);
       if (e.key === 'ArrowRight' && hasNext) onNavigate(index + 1);
       if (e.key === 'Tab' && dialog.current) {
@@ -61,7 +62,7 @@ export function Lightbox({ images, index, onClose, onNavigate }: LightboxProps) 
   if (!current) return null;
 
   return (
-    <div ref={dialog} role="dialog" aria-modal="true" aria-label="Image" className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={onClose}>
+    <div ref={(node) => { dialog.current = node; layer(node); }} role="dialog" aria-modal="true" aria-label="Image" className="fixed inset-0 z-50 flex items-center justify-center bg-scrim" onClick={onClose}>
       <button ref={closeButton} type="button" aria-label="Close" onClick={onClose} className={cn(control, 'right-s4 top-s4')}>
         <X aria-hidden className="size-s5" />
       </button>
