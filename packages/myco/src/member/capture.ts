@@ -30,6 +30,7 @@ import type { EnvelopeContext, OutboundEvent } from './envelope.js';
 import { AGENT_SCRATCH_CAPTURE_NOTICE, assertMemberTranscriptDestination } from './transcript-routing.js';
 import { kickHelper, markWork, runHelper, shipsInline, type KickOutcome, type KickReason } from './helper.js';
 import { hookDelivered, type HookAppended } from './backlog.js';
+import { endGitHead } from './git-facts.js';
 import { inlineHelperPass } from './helper-pass.js';
 import { refreshableRoot } from './refresh.js';
 import { readRegistryEntry, REGISTRY_VERSION, type RegistryEntry } from './registry.js';
@@ -190,10 +191,10 @@ export function hookCwd(input: NormalizedHookInput): string {
   }
 }
 
-/** An explicit hook directory is the only place its Git observation can come from, even if it has disappeared. */
-export function gitObservationCwd({ cwd, input }: HookRun): string {
+/** Capture the boundary's HEAD in the reported directory and leave status with the event's delivery. */
+export function captureEndGit({ cwd, input, budget, now }: HookRun) {
   const named = input.raw.cwd;
-  return typeof named === 'string' && named.length > 0 ? named : cwd;
+  return endGitHead(typeof named === 'string' && named.length > 0 ? named : cwd, budget, now());
 }
 
 export async function runMemberHook(

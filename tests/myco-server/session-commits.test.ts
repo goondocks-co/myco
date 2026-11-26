@@ -31,11 +31,11 @@ async function rig() {
       (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`)
     .run(projectId, sessionId);
   /** One observation as `sessionCommit` writes it. */
-  const observe = (projectId: string, sessionId: string, point: 'session_start' | 'session_end', headSha: string,
+  const observe = (projectId: string, sessionId: string, point: 'session_start' | 'turn_end' | 'session_end', headSha: string,
     o: { at?: number; dirty?: boolean; unreadable?: boolean; branch?: string } = {}) => r.sqlite.query(`INSERT INTO knowledge_git_provenance
       (project_id, identity_key, session_id, capture_point, captured_at, branch, head_sha, is_dirty, error, status_hash, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1)
-      ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error, captured_at = excluded.captured_at`)
+      ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error, branch = excluded.branch, captured_at = excluded.captured_at`)
     .run(projectId, `session:${sessionId}:${point}`, sessionId, point, o.at ?? (point === 'session_start' ? 10 : 20), o.branch ?? 'main', headSha,
       o.dirty === true ? 1 : 0, o.unreadable === true ? GIT_STATUS_UNREADABLE : null);
   const check = (at: number, outbound: typeof fetch = fakeGithub(REPO)) => reconcileReleaseProvenance(withReads(r.serverEnv, github, outbound), at);
@@ -139,6 +139,28 @@ describe('a session\'s commit observations', () => {
     const same = (await r.commits(P, 's_same')).body;
     expect((same.observations as Array<{ point: string; headSha: string }>).map((o) => [o.point, o.headSha])).toEqual([['session_start', A], ['session_end', A]]);
     expect(same.release).toMatchObject({ state: 'released', covers: { point: 'session_end', current: true } });
+  });
+
+  it('uses the session end without another release check, then supersedes it with a newer unreadable turn', async () => {
+    const r = await rig();
+    await r.store.save(P, settings, 'mem_1', 1);
+    r.session(P, 's_resume');
+    r.observe(P, 's_resume', 'turn_end', A, { at: 20 });
+    await r.check(100 * MIN);
+    r.observe(P, 's_resume', 'session_end', A, { at: 30 });
+    await r.store.requestCheck(P, 150 * MIN);
+    await r.check(150 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ counts: { checked: 0 } });
+    expect((await r.commits(P, 's_resume')).body.release).toMatchObject({
+      state: 'released', checkedAt: 100 * MIN, covers: { point: 'session_end', current: true },
+    });
+    r.observe(P, 's_resume', 'turn_end', A, { at: 40, unreadable: true, branch: 'HEAD' });
+    await r.store.requestCheck(P, 200 * MIN);
+    await r.check(200 * MIN);
+    expect((await r.commits(P, 's_resume')).body).toMatchObject({
+      observations: [{ point: 'session_end' }, { point: 'turn_end', branch: null, changes: 'unreadable' }],
+      release: { state: 'unknown', covers: { point: 'turn_end', current: true } },
+    });
   });
 
   it('never reads another project\'s observations, and answers 404 for a session the project does not hold', async () => {

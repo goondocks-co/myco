@@ -67,6 +67,8 @@ export function outcomeRows({ observations, release }: SessionCommits, now: numb
   const rows: SessionEventRow[] = observations.map((observation) => {
     const detail = [
       observation.point === 'session_end' && same ? SAME_HEAD : null,
+      release !== null && CONTAINED.has(release.state) && covered === observation.point && observation.changes === 'none' && start?.headSha === observation.headSha
+        ? 'Placed by the starting commit' : null,
       release !== null && covered === observation.point ? containmentWords(release, now) : null,
     ].filter((part) => part !== null).join(' · ');
     return {

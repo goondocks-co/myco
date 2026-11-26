@@ -145,19 +145,22 @@ export function runGitAnswer(args: string[], cwd: string, run: (args: string[], 
 }
 
 /** The exit status of `git <args>` in `cwd`, without blocking and without reading output. Null when git could not be run, the budget was already spent, or the process ended on a signal. */
-export function gitExitStatusAsync(args: string[], cwd: string, budget: GitQueryBudget = {}): Promise<number | null> {
+export function gitExitStatusAsync(args: string[], cwd: string, budget: GitQueryBudget = {}, onStdout?: (bytes: Buffer) => void): Promise<number | null> {
   return new Promise((resolve) => {
     const timeout = gitTimeout(budget);
     if (timeout !== undefined && timeout <= 0) { resolve(null); return; }
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(resolveGitBinary(), args, { cwd, stdio: 'ignore' });
+      child = spawn(resolveGitBinary(), args, { cwd, stdio: onStdout === undefined ? 'ignore' : ['ignore', 'pipe', 'ignore'] });
+      if (onStdout !== undefined) child.stdout?.on('data', onStdout);
     } catch {
       resolve(null);
       return;
     }
     const timer = timeout === undefined ? undefined : setTimeout(() => {
       child.kill('SIGKILL');
+      child.stdout?.destroy();
+      child.unref();
       resolve(null);
     }, timeout);
     child.on('error', () => { if (timer !== undefined) clearTimeout(timer); resolve(null); });

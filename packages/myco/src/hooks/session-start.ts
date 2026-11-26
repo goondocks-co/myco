@@ -46,7 +46,7 @@ export async function main(opts: HookMainOptions = {}) {
     const lineage = sessionLineageFacts(agent, sessionId, transcriptPath, run.env);
     const events: OutboundEvent[] = [sessionStartEvent(ctx, {
       projectName: sessionRepositoryName(cwd, run.budget, run.now()),
-      branch: git.branch,
+      branch: git.branch === 'HEAD' ? undefined : git.branch,
       headSha: git.headSha,
       startedAt: run.now(),
       originPath: typeof input.raw.cwd === 'string' && input.raw.cwd.length > 0 ? input.raw.cwd : process.cwd(),

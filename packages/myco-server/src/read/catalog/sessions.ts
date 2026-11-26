@@ -146,7 +146,7 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number, quietB
     firstReceivedAt: row.first_received_at as number,
     lastReceivedAt: row.last_received_at as number,
     agent: sessions_text(row.agent),
-    branch: sessions_text(row.branch),
+    branch: row.branch === 'HEAD' ? null : sessions_text(row.branch),
     startedAt: sessions_num(row.started_at),
     endedAt: sessions_num(row.ended_at),
     endedBy: sessions_text(row.ended_by),

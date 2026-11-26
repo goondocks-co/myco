@@ -2,8 +2,7 @@ import { captureTranscriptPrompts, transcriptPromptBackfill } from '../member/tr
 import fs from 'node:fs';
 import { getMachineId } from '../machine-id.js';
 import { GIT_AT_TURN_END_FEATURE } from '@goondocks/myco-shared/member-protocol';
-import { sessionEndGitFacts } from '../member/git-facts.js';
-import { gitObservationCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
+import { captureEndGit, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
 import { responseEvent, type OutboundEvent } from '../member/envelope.js';
 import { planBackstop, planFilesWritten, planRootFor, planWritesInLines } from '../member/plan-files.js';
 import { readSessionState, type SessionState, type TranscriptPointer } from '../member/session-state.js';
@@ -154,20 +153,18 @@ function transcriptSize(file: string): number {
  * now; any other is told by the transcript segment that reaches the transcript's size now, which the helper ships
  * stamped with the mark's time.
  */
-async function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined, captureGit: boolean): Promise<{ events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] }> {
+function turnEnded(run: HookRun, transcript: TranscriptPhase | undefined, captureGit: boolean): { events: OutboundEvent[]; turnEnd?: TranscriptPhase['stoodAt'] } {
   const features = readDeploymentFeatures(run.credential, run.mycoHome);
   if (features.includes('turn')) {
     const promptId = readSessionState(run.spool.dir, run.sessionId).promptId;
     const at = run.now();
-    let git;
+    let git: ReturnType<typeof captureEndGit> = {};
     if (captureGit && features.includes(GIT_AT_TURN_END_FEATURE)) {
-      try {
-        git = await sessionEndGitFacts(gitObservationCwd(run), run.budget, at, 'turn');
-      } catch (error) {
-        process.stderr.write(`[myco] stop Git observation skipped: ${(error as Error).message}\n`);
-      }
+      try { git = captureEndGit(run); }
+      catch (error) { process.stderr.write(`[myco] stop Git observation skipped: ${(error as Error).message}\n`); }
     }
-    return { events: [turnEvent({ ...run.ctx, now: () => at }, { phase: 'end', promptId, ...git })] };
+    const { gitObservation, ...facts } = git;
+    return { events: [{ ...turnEvent({ ...run.ctx, now: () => at }, { phase: 'end', promptId, ...facts }), gitObservation }] };
   }
   return { events: [], turnEnd: transcript?.stoodAt };
 }

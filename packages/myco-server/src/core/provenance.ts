@@ -60,6 +60,13 @@ export const sourcePoint = (source: string): CapturePoint | null => {
   return point === 'session_start' || point === 'turn_end' || point === 'session_end' ? point : null;
 };
 
+/** Turn end and session end carry the same evidence when both commit and cleanliness agree. */
+export function sameReleaseEvidence(observation: ReleaseSource, source: string): boolean {
+  const point = sourcePoint(source);
+  if (point === null || (point === 'session_start') !== (observation.point === 'session_start')) return false;
+  return sourceOf({ ...observation, point }) === source;
+}
+
 interface ReleaseStateRow {
   id: string;
   namespace: string;

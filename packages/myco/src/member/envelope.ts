@@ -50,6 +50,7 @@ export interface BlobSource {
 
 /** One event ready for the spool: the wire envelope plus its blob source, when the payload references one. */
 export interface OutboundEvent {
+  gitObservation?: import('./git-facts.js').GitObservation;
   envelope: MemberEnvelope;
   blobSource?: BlobSource;
 }

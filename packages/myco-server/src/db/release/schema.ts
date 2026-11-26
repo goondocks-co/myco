@@ -27,11 +27,18 @@ export const latestSourceOf = (project: string, session: string): string => `g.p
     ORDER BY i.capture_point='session_start',i.captured_at DESC,i.capture_point='session_end' DESC,i.id LIMIT 1)`;
 
 /** Any change of the commit a session is classified from re-opens its work; a capture that changes nothing else leaves it. */
-const sourceUpsert = (latest: boolean, project: string, session: string) => `INSERT INTO release_work_due (project_id,session_id,point,head_sha,cleanliness,captured_at)
+const SOURCE_CHANGED = `head_sha IS NOT excluded.head_sha OR cleanliness IS NOT excluded.cleanliness
+  OR (point='session_start') IS NOT (excluded.point='session_start')`;
+
+const sourceUpsert = (latest: boolean, project: string, session: string, retainEquivalent = false) => `INSERT INTO release_work_due (project_id,session_id,point,head_sha,cleanliness,captured_at)
   SELECT g.project_id,g.session_id,g.capture_point,g.head_sha,${CLEANLINESS_SQL},g.captured_at FROM knowledge_git_provenance g WHERE ${(latest ? latestSourceOf : legacySourceOf)(project, session)}
   ON CONFLICT (project_id,session_id) DO UPDATE SET point=excluded.point,head_sha=excluded.head_sha,cleanliness=excluded.cleanliness,captured_at=excluded.captured_at,
-    source_revision=source_revision+1,settled_generation=0,final=0${latest ? ',capture_only=0,production_only=0,own_tags_generation=0' : ''}
-  WHERE point IS NOT excluded.point OR head_sha IS NOT excluded.head_sha OR cleanliness IS NOT excluded.cleanliness`;
+    ${retainEquivalent
+      ? `source_revision=source_revision+CASE WHEN ${SOURCE_CHANGED} THEN 1 ELSE 0 END,
+         ${['settled_generation', 'final', 'capture_only', 'production_only', 'own_tags_generation']
+          .map((column) => `${column}=CASE WHEN ${SOURCE_CHANGED} THEN 0 ELSE ${column} END`).join(',')}`
+      : `source_revision=source_revision+1,settled_generation=0,final=0${latest ? ',capture_only=0,production_only=0,own_tags_generation=0' : ''}`}
+  WHERE point IS NOT excluded.point OR head_sha IS NOT excluded.head_sha OR cleanliness IS NOT excluded.cleanliness${retainEquivalent ? ' OR captured_at IS NOT excluded.captured_at' : ''}`;
 
 const NOW_MS = 'CAST(unixepoch()*1000 AS INTEGER)';
 
@@ -59,8 +66,8 @@ const pathsReady = (body: string) => trigger('release_work_paths_ready', 'sessio
 /** Publication can make captured paths readable without adding another tool call. */
 export const releasePathsReady = pathsReady(legacyPaths).sql;
 
-function workTriggers(latest: boolean) {
-  const upsert = sourceUpsert(latest, 'NEW.project_id', 'NEW.session_id');
+function workTriggers(latest: boolean, retainEquivalent = false) {
+  const upsert = sourceUpsert(latest, 'NEW.project_id', 'NEW.session_id', retainEquivalent);
   const columns = ['head_sha', 'is_dirty', 'error', ...(latest ? ['captured_at'] : [])];
   const paths = latest ? latestPaths : legacyPaths;
   return [
@@ -73,6 +80,7 @@ function workTriggers(latest: boolean) {
 }
 
 export const latestObservationTriggers = [...workTriggers(true), pathsReady(latestPaths)];
+export const stableObservationTriggers = workTriggers(true, true).slice(0, 2);
 
 export function releaseSchemaStatements(): string[] {
   return [

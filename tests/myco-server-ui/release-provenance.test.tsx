@@ -37,7 +37,7 @@ describe('release tracking in project settings', () => {
     await waitFor(() => expect(screen.getByTestId('release-check')).toBeTruthy());
     expect(screen.getByTestId('release-repository').textContent).toBe('https://github.com/goondocks-co/myco');
     expect(container.textContent).toContain('packages/myco/ → myco/v*');
-    expect(screen.getByTestId('release-check').textContent).toContain('Checked 48 sessions; 3 release states changed, and Myco couldn’t tell for 2. Of those, 1 had only a starting commit captured and 1 had uncommitted changes to tracked files when last captured.');
+    expect(screen.getByTestId('release-check').textContent).toContain('Checked 48 sessions; 3 release states changed, and Myco couldn’t tell for 2. Of those, 1 had only a starting commit captured and 1 had uncommitted changes when last captured.');
     fireEvent.click(screen.getByRole('button', { name: 'Check now' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/projects/x/release-provenance/check' }]));
   });

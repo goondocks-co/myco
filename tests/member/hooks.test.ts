@@ -101,7 +101,7 @@ const memberKinds = () => (rig.env.sqlite.query(`SELECT kind FROM events WHERE p
 const captured = () => (rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n;
 const texts = async (kind:'prompt'|'reply') => (await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(row=>row.k===kind).map(row=>String(row.text)).sort();
 
-it('places a worker by its last observed turn after Git fails and its worktree is removed', async () => {
+it('places a worker by its last observed turn after its worktree is removed', async () => {
   const repo = process.cwd();
   const worktree = path.join(mycoHome, 'worker');
   const git = (...args: string[]) => execFileSync('git', ['-C', worktree, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -109,15 +109,13 @@ it('places a worker by its last observed turn after Git fails and its worktree i
   const raw = { cwd: worktree, transcript_path: transcript([{ type: 'user', message: { role: 'user', content: 'make a change' } }]) };
   await run('session-start', { ...raw, hook_event_name: 'SessionStart' });
   fs.writeFileSync(path.join(worktree, 'work.txt'), 'tracked work');
-  git('add', 'work.txt');
   await run('stop', { ...raw, hook_event_name: 'Stop' });
+  const turns = () => fetchSpy.requests.filter(request => request.path === '/events').map(request => JSON.parse(request.body!)).filter(event => event.kind === 'turn');
+  expect(turns().at(-1)?.payload).toMatchObject({ phase: 'end', dirty: true });
+  git('add', 'work.txt');
   git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'worker change');
   const head = git('rev-parse', 'HEAD');
   await run('stop', { ...raw, hook_event_name: 'Stop' });
-  fs.writeFileSync(git('rev-parse', '--path-format=absolute', '--git-path', 'index'), 'invalid index');
-  const beforeFailure = fetchSpy.requests.length;
-  await run('stop', { ...raw, hook_event_name: 'Stop' });
-  expect(fetchSpy.requests.slice(beforeFailure).some((request) => request.path === '/events' && JSON.parse(request.body ?? '{}').kind === 'turn')).toBe(true);
   execFileSync('git', ['-C', repo, 'worktree', 'remove', '--force', worktree], { stdio: 'ignore' });
   await run('stop', { ...raw, hook_event_name: 'Stop' });
 

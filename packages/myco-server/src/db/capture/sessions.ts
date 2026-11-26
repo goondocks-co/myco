@@ -36,7 +36,7 @@ type Commit = [project: string, identity: string, session: string, point: string
 const commit = (name: string, order: '<' | '>') => write<Commit, { applied: number }>({ name, sql:
   `INSERT INTO knowledge_git_provenance
       (project_id, identity_key, session_id, capture_point, captured_at, event_id, branch, head_sha, is_dirty, error, status_hash, created_at)
-    SELECT ?1, ?2, ?3, ?4, ?5, ?6, COALESCE(?12, (SELECT branch FROM sessions WHERE project_id = ?1 AND session_id = ?3)), ?7, ?8, ?9, '', ?10
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, NULLIF(COALESCE(?12, (SELECT branch FROM sessions WHERE project_id = ?1 AND session_id = ?3)), ''), ?7, ?8, ?9, '', ?10
       WHERE ${storedByThisRequest('?1', '?6', '?11')}
     ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error,
       captured_at = excluded.captured_at, event_id = excluded.event_id, branch = excluded.branch

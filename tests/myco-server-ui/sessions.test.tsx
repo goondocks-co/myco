@@ -1981,6 +1981,11 @@ describe('the session reading page', () => {
       'Sep 2915:40CommitEnded at a1b2c3d, uncommitted changesStart and end HEAD are the same · Release unknown: the session ended with uncommitted changes · checked 10 min agoCopy commit',
     ]);
     cleanup();
+    expect((await outcomes({
+      observations: [observed('session_start', START_SHA), observed('session_end', START_SHA, { branch: null })],
+      release: releaseCheck(),
+    }))[1]).toContain('Placed by the starting commit');
+    cleanup();
     expect(await outcomes({ observations: [observed('session_end', END_SHA, { changes: 'unreadable' })], release: null })).toEqual([
       'Sep 2915:40CommitEnded at e4f5a6b, couldn’t tell whether files changedCopy commit',
     ]);

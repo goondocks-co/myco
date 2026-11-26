@@ -49,7 +49,7 @@ const FIXTURES: Record<string, { payload: Record<string, unknown>; table: string
   'stop.failure': { payload: { message: 'x', data: { code: 1 } }, table: null },
   'task.completed': { payload: { message: 'done', data: { id: 't1' } }, table: null },
   notification: { payload: { message: 'hey', level: 'info' }, table: null },
-  turn: { payload: { phase: 'start', promptId: uuid(2) }, table: null },
+  turn: { payload: { phase: 'end', promptId: uuid(2), headSha: 'a'.repeat(40) }, table: 'knowledge_git_provenance' },
   'context.delivered': { payload: { receiptId: uuid(4), answerId: uuid(5), renderedIn: uuid(2) }, table: null },
   error: { payload: { message: 'bad', data: { stack: 's' } }, table: null },
 };

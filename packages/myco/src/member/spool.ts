@@ -25,6 +25,7 @@ import {
   MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSAL_RETRY_MAX_MS, REFUSAL_SUBJECT, refusalPermanent,
   REFUSED_LOG_MAX_BYTES, UNCLASSIFIED_REFUSAL_HOLD_HOURS, UNCLASSIFIED_REFUSAL_HOLD_MS, type MemberCode,
 } from './constants.js';
+import { observedGitChanges, type GitObservation } from './git-facts.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import {
@@ -67,6 +68,7 @@ export const JOURNAL_VERSION = 2;
 export type SessionEvents = readonly OutboundEvent[] | ((state: SessionState) => readonly OutboundEvent[]);
 
 export interface SpoolRecord extends MemberEnvelope {
+  _gitObservation?: GitObservation;
   _memberProtocol: number;
   _blobSource?: BlobSource;
   _journal?: number;
@@ -235,6 +237,7 @@ export interface DrainResult {
 }
 
 export interface DrainOptions {
+  inlineGit?: boolean;
   /** Dial even while the offline latch is set (Stop/SessionEnd probe; `myco member drain`). */
   force?: boolean;
   now?: () => number;
@@ -396,6 +399,34 @@ export class MemberSpool {
     });
   }
 
+  /** Freeze pending observations before their first send. Only the newest boundary can describe the worktree now. */
+  private async sealGitObservations(sessionId: string, records: Array<SpoolRecord | null>, highWater: number, budget: HookBudget, opts: DrainOptions): Promise<void> {
+    const pending = records.flatMap((record, index) => index >= highWater && record?._gitObservation !== undefined ? [{ index, record }] : []);
+    const newest = pending.at(-1);
+    if (newest === undefined) return;
+    const { record } = newest;
+    const at = typeof record.payload.endedAt === 'number' ? record.payload.endedAt : record.createdAt;
+    const head = record.payload.headSha;
+    let dirty: boolean | undefined;
+    try {
+      if (typeof head === 'string') dirty = await observedGitChanges(record._gitObservation!, head, at, budget, opts.inlineGit === true, (opts.now ?? Date.now)());
+    } catch (error) {
+      stderr(`Git status unavailable: ${(error as Error).message}`);
+    }
+    const file = this.spoolFile(sessionId);
+    withFileLockSync(bufferLockPath(this.dir, sessionId), () => {
+      const lines = fs.readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '');
+      for (const { index, record: one } of pending) {
+        const held = parseSpoolLines(lines[index] ?? '')[0];
+        if (held?.eventId !== one.eventId || held._gitObservation === undefined) throw new Error('Git observation moved before delivery');
+        delete one._gitObservation;
+        if (one === record && dirty !== undefined) one.payload = { ...one.payload, dirty };
+        lines[index] = JSON.stringify(one);
+      }
+      writePrivateFileAtomic(file, `${lines.join('\n')}\n`);
+    });
+  }
+
   /** Replay older recovered records before current capture; a concurrent drain retains its journal generation. */
   prependRecovered(sessionId: string, events: readonly OutboundEvent[], now: number = Date.now()): boolean {
     ensurePrivateFile(this.leasePath(sessionId));
@@ -410,7 +441,7 @@ export class MemberSpool {
           ids.add(event.envelope.eventId);
           return true;
         }).map((event) => JSON.stringify({ ...event.envelope, _memberProtocol: MEMBER_PROTOCOL, _journal: JOURNAL_VERSION,
-          ...(event.blobSource === undefined ? {} : { _blobSource: event.blobSource }) }));
+          ...(event.blobSource === undefined ? {} : { _blobSource: event.blobSource }), _gitObservation: event.gitObservation }));
         return [...recovered, ...live];
       }, now);
       return true;
@@ -436,6 +467,7 @@ export class MemberSpool {
       _memberProtocol: MEMBER_PROTOCOL,
       _journal: JOURNAL_VERSION,
       ...(event.blobSource ? { _blobSource: event.blobSource } : {}),
+      _gitObservation: event.gitObservation,
       timestamp: stamp,
     }));
     this.appendLines(sessionId, this.spoolFile(sessionId), typeof events === 'function' ? (state) => lines(events(state)) : lines(events),
@@ -876,6 +908,7 @@ export class MemberSpool {
       const records = this.readRecords(sessionId);
       const rawLines = records.includes(null) ? fs.readFileSync(this.spoolFile(sessionId), 'utf8').split('\n').filter((line) => line.trim() !== '') : [];
       let i = readSessionState(this.dir, sessionId).highWater;
+      await this.sealGitObservations(sessionId, records, i, budget, opts);
       const uploaded = new Set<string>();
       const retained: SpoolRecord[] = [];
       let contiguous = true;

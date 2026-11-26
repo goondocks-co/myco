@@ -423,7 +423,7 @@ async function classifyProject(
       classification = uncaptured(work, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
     } else if (work.cleanliness === '1') {
       unknownReason = 'dirty';
-      classification = uncaptured(work, 'dirty_worktree', `The ${boundary} ended with uncommitted changes to tracked files`);
+      classification = uncaptured(work, 'dirty_worktree', `The ${boundary} ended with uncommitted changes`);
     } else if (work.cleanliness === 'unknown') {
       unknownReason = 'statusUnreadable';
       classification = uncaptured(work, 'missing_git_evidence', `Whether the ${boundary} ended with uncommitted changes could not be read`);

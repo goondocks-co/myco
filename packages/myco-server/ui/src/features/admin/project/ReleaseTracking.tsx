@@ -21,8 +21,8 @@ const plural = (n: number, one: string, many: string) => `${n.toLocaleString()} 
 
 const UNKNOWN_REASON_WORDS: Record<ReleaseUnknownReason, string> = {
   startOnly: 'had only a starting commit captured',
-  dirty: 'had uncommitted changes to tracked files when last captured',
-  statusUnreadable: 'had no readable record of whether tracked files had changed',
+  dirty: 'had uncommitted changes when last captured',
+  statusUnreadable: 'had no readable record of whether there were uncommitted changes',
   commitMissing: 'had a captured commit GitHub couldn’t find',
   pathsUnreadable: 'had changed paths Myco couldn’t read to identify a package',
   tooManyPaths: 'touched too many paths for Myco to identify a package',
@@ -209,7 +209,7 @@ function ReleaseTrackingForm({ projectId, row, onClose }: { projectId: string; r
       <SwitchField
         id="release-unknown"
         label="Say when Myco can’t tell"
-        hint="Myco can’t place a session whose last captured Git state had uncommitted changes to tracked files, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one whose changed files it couldn’t read or that changed too many to check. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
+        hint="Myco can’t place a session whose last captured Git state had uncommitted changes, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one whose changed files it couldn’t read or that changed too many to check. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
         checked={includeUnknown}
         onCheckedChange={setIncludeUnknown}
       />

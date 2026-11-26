@@ -377,7 +377,7 @@ const PLANNERS: Record<KindSpec['projection'], (input: Inputs) => KindPlan> = {
   raw: rawOnly,
   turn: ({ ctx, e, p }) => ({
     ...rawOnly(),
-    projections: e.channel !== 'import' && p.phase === 'end' && typeof p.dirty === 'boolean'
+    projections: e.channel !== 'import' && p.phase === 'end'
       ? sessionCommit(ctx, e, p, 'turn_end', e.createdAt)
       : [],
   }),
