@@ -47,13 +47,22 @@ export async function claimReleaseCheck(db: RelationalStore, claim: ReleaseClaim
   return taken.results.length === 1 ? (started.results[0]?.generation ?? null) : null;
 }
 
-/** Moves the Project's work generation when the refs differ from those last checked, or when no fingerprint could be taken; each moved generation makes every open session due. */
-const openGeneration = write<[project: string, lease: string, revision: string, fingerprint: string | null], { generation: number }>({ name: 'releaseDue.openGeneration', sql:
-  `UPDATE project_release_provenance SET work_generation=work_generation+CASE WHEN ?4 IS NULL OR check_fingerprint IS NOT ?4 THEN 1 ELSE 0 END,check_fingerprint=?4
-   WHERE project_id=?1 AND revision=?3 AND ${LEASE_HELD} RETURNING work_generation AS generation` });
+export interface ReleaseGenerations { current: number; production: number }
 
-export async function openReleaseGeneration(db: RelationalStore, claim: ReleaseClaim, fingerprint: string | null): Promise<number | null> {
-  return (await rows(db, openGeneration.bind(claim.projectId, claim.leaseId, claim.revision, fingerprint)))[0]?.generation ?? null;
+/** Production changes reopen non-final answers. Integration changes only reopen work that tracks branch heads. */
+const openGeneration = write<[project: string, lease: string, revision: string, full: string, production: string], ReleaseGenerations>({
+  name: 'releaseDue.openGeneration', sql:
+  `UPDATE project_release_provenance SET
+     work_generation=work_generation+CASE WHEN check_fingerprint IS NOT ?4 THEN 1 ELSE 0 END,
+     production_generation=CASE WHEN production_fingerprint IS NOT ?5 THEN work_generation+1 ELSE production_generation END,
+     check_fingerprint=?4,production_fingerprint=?5
+   WHERE project_id=?1 AND revision=?3 AND ${LEASE_HELD}
+   RETURNING work_generation AS current,production_generation AS production`,
+});
+
+export async function openReleaseGeneration(db: RelationalStore, claim: ReleaseClaim,
+  refs: { full: string; production: string }): Promise<ReleaseGenerations | null> {
+  return (await rows(db, openGeneration.bind(claim.projectId, claim.leaseId, claim.revision, refs.full, refs.production)))[0] ?? null;
 }
 
 const recordOutcome = write<[project: string, lease: string, revision: string, finished: number, status: string, failure: string | null, counts: string, lookups: number], { recorded: number }>({ name: 'releaseDue.record', sql:

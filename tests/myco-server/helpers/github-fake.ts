@@ -19,6 +19,7 @@ export interface Repo {
   commits: string[];
   pulls: Record<string, Array<{ number: number; merged_at: string | null; merge_commit_sha: string; base: { ref: string } }>>;
   link?: string;
+  mainHead?: string;
 }
 
 export const REPO: Repo = {
@@ -47,7 +48,7 @@ export function fakeGithub(repo: Repo, calls: string[] = []): typeof fetch {
       return json(repo.tags.filter((t) => t.startsWith(prefix)).map((ref) => ({ ref, object: { sha: sha('0') } })), repo.link ? { link: repo.link } : {});
     }
     const head = /^\/git\/ref\/heads\/(.+)$/.exec(path);
-    if (head) return head[1] in repo.contains ? json({ object: { sha: sha('1') } }) : new Response('{}', { status: 404 });
+    if (head) return head[1] in repo.contains ? json({ object: { sha: repo.mainHead ?? sha('1') } }) : new Response('{}', { status: 404 });
     const compare = /^\/compare\/([0-9a-f]{40})\.\.\.(.+)$/.exec(path);
     if (compare) {
       const [, commit, ref] = compare;

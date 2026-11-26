@@ -2,13 +2,14 @@
  * The GitHub reads release reconciliation relies on, and nothing else.
  *
  * A Deployment holds no checkout, so containment is asked of GitHub rather
- * than of `git merge-base`. Four reads cover it: the repository itself, a
- * tag listing, a compare, and the pull requests that carried a commit.
+ * than of `git merge-base`. Repository and ref reads establish the inputs;
+ * commit, comparison and pull request reads establish the evidence.
  *
  * **Every read counts against one budget, spent or refused.** The budget is
  * the per-run lookup ceiling the Project configured; a read that would exceed
  * it is refused as `budget_exhausted` without leaving the process, so a run
- * never makes more requests than the owner allowed.
+ * never makes more requests than the owner allowed. Completed reads are
+ * shared by all sessions in the check and refreshed on the next check.
  *
  * **A failure is named, never collapsed into "no".** A rejected token, a rate
  * limit, a timeout and a truncated listing each come back as their own
@@ -74,7 +75,7 @@ export interface GithubReads {
   /** Whether the commit exists on GitHub. */
   commit(sha: string): Promise<GithubRead<true>>;
   /** The merged pull requests GitHub associates with the commit. */
-  mergedPullsForCommit(sha: string): Promise<GithubRead<MergedPull[]>>;
+  mergedPullsForCommit(sha: string): Promise<GithubRead<{ pulls: MergedPull[]; complete: boolean }>>;
   lookupsUsed(): number;
 }
 
@@ -121,7 +122,7 @@ export function githubReads(options: GithubReadOptions): GithubReads {
   };
   let used = 0;
 
-  async function read<T>(path: string, parse: (body: unknown, response: Response) => GithubRead<T>): Promise<GithubRead<T>> {
+  async function request<T>(path: string, parse: (body: unknown, response: Response) => GithubRead<T>): Promise<GithubRead<T>> {
     if (used >= options.maxLookups) return { ok: false, failure: 'budget_exhausted' };
     used += 1;
     const signal = AbortSignal.timeout(timeoutMs);
@@ -134,7 +135,18 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     }
   }
 
+  const cache = new Map<string, GithubRead<unknown>>();
+  async function read<T>(path: string, parse: (body: unknown, response: Response) => GithubRead<T>): Promise<GithubRead<T>> {
+    // Each path has one response parser and result type.
+    const held = cache.get(path) as GithubRead<T> | undefined;
+    if (held !== undefined) return held;
+    const result = await request(path, parse);
+    if (result.ok || result.failure === 'not_found' || result.failure === 'truncated') cache.set(path, result);
+    return result;
+  }
+
   const bad = { ok: false, failure: 'unexpected_response' } as const;
+  const hasNextPage = (response: Response) => /rel="next"/.test(response.headers.get('link') ?? '');
 
   return {
     repository: () => read('', (body) => {
@@ -143,7 +155,7 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     }),
     matchingRefs: (prefix) => read(`git/matching-refs/${encodeRef(prefix)}`, (body, response) => {
       if (!Array.isArray(body)) return bad;
-      if (/rel="next"/.test(response.headers.get('link') ?? '') || body.length > MAX_LISTED_REFS) return { ok: false, failure: 'truncated' };
+      if (hasNextPage(response) || body.length > MAX_LISTED_REFS) return { ok: false, failure: 'truncated' };
       const refs: ListedRef[] = [];
       for (const entry of body as Array<{ ref?: unknown; object?: { sha?: unknown } }>) {
         if (typeof entry.ref === 'string' && typeof entry.object?.sha === 'string') refs.push({ ref: entry.ref, sha: entry.object.sha });
@@ -161,16 +173,17 @@ export function githubReads(options: GithubReadOptions): GithubReads {
     commit: (sha) => read(`commits/${sha}?per_page=1`, (body) => (
       (body as { sha?: unknown } | null)?.sha === sha ? { ok: true, value: true } : bad
     )),
-    mergedPullsForCommit: (sha) => read(`commits/${sha}/pulls?per_page=10`, (body) => {
+    mergedPullsForCommit: (sha) => read(`commits/${sha}/pulls?per_page=100`, (body, response) => {
       if (!Array.isArray(body)) return bad;
       const pulls: MergedPull[] = [];
-      for (const entry of body as Array<Record<string, unknown>>) {
-        const base = (entry.base as { ref?: unknown } | undefined)?.ref;
-        if (typeof entry.number === 'number' && typeof entry.merged_at === 'string' && isCommitSha(entry.merge_commit_sha) && typeof base === 'string') {
-          pulls.push({ number: entry.number, mergeCommitSha: entry.merge_commit_sha, baseRef: base });
-        }
+      for (const entry of body as Array<{ number?: unknown; merged_at?: unknown; merge_commit_sha?: unknown; base?: { ref?: unknown } } | null>) {
+        if (entry?.merged_at === null) continue;
+        if (typeof entry?.merged_at !== 'string' || !entry.merged_at
+          || typeof entry.number !== 'number' || !Number.isSafeInteger(entry.number) || entry.number < 1
+          || !isCommitSha(entry.merge_commit_sha) || typeof entry.base?.ref !== 'string') return bad;
+        pulls.push({ number: entry.number, mergeCommitSha: entry.merge_commit_sha, baseRef: entry.base.ref });
       }
-      return { ok: true, value: pulls };
+      return { ok: true, value: { pulls, complete: !hasNextPage(response) } };
     }),
     lookupsUsed: () => used,
   };

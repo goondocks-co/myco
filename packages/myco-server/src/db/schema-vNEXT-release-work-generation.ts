@@ -1,0 +1,4 @@
+import { NEXT_RUNNER_MACHINE } from './schema-vNEXT-runner-machine.js';
+
+export const NEXT_RELEASE_WORK_GENERATION = NEXT_RUNNER_MACHINE + 1;
+export const LAST_RELEASE_WORK_GENERATION = NEXT_RELEASE_WORK_GENERATION + 1;

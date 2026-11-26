@@ -59,7 +59,7 @@ import { repositoryConnection } from '../db/storage/repository-connection.js';
 import { GitHubAccessRefused, githubAppProjects } from './github-app.js';
 import { GITHUB_READ_TIMEOUT_MS, githubReads } from './github-refs.js';
 import {
-  classifyCommit, memoizedCompare, resolveRunRefs, type Classification, type PackageTagMapping,
+  classifyCommit, resolveRunRefs, type Classification, type PackageTagMapping,
 } from './release-classify.js';
 import { emit } from '../telemetry.js';
 import { sourceOf } from './provenance.js';
@@ -84,7 +84,6 @@ class StoredValueUnreadable extends Error {
   constructor(readonly field: string) { super(`stored ${field} is unreadable`); }
 }
 const STORED_SETTINGS_UNREADABLE = 'stored_settings_unreadable';
-const CHANGED_PATHS_UNREADABLE = 'changed_paths_unreadable';
 export class ReleaseProvenanceConflictError extends Error {
   constructor() { super('The release provenance settings changed. Refresh before saving again.'); }
 }
@@ -389,12 +388,13 @@ async function classifyProject(
   const repository = await reads.repository();
   if (!repository.ok) return { failure: repository.failure === 'not_found' ? 'repository_not_found' : repository.failure };
   const run = await resolveRunRefs(reads, settings);
-  const fingerprint = run.fingerprint === null ? null : `repository=${repositoryId}\n${run.fingerprint}`;
-  const generation = await openReleaseGeneration(db, claim, fingerprint);
+  if (!run.ok) return { failure: run.failure };
+  const production = JSON.stringify([repositoryId, run.fingerprint.production]);
+  const fingerprint = JSON.stringify([production, run.fingerprint.integration]);
+  const generation = await openReleaseGeneration(db, claim, { full: fingerprint, production });
   if (generation === null) return null;
   const candidates = await openReleaseWork(db, projectId, generation, SESSIONS_PER_CHECK + 1);
   if (candidates.length > SESSIONS_PER_CHECK) counts.deferred += candidates.length - SESSIONS_PER_CHECK;
-  const compare = memoizedCompare(reads);
   const batch = candidates.slice(0, SESSIONS_PER_CHECK);
   let failure: string | null = null;
   for (let i = 0; i < batch.length; i += 1) {
@@ -412,18 +412,16 @@ async function classifyProject(
       const changed = settings.packageMap.length === 0 ? { paths: [], mark: null } : await changedPaths(db, projectId, work.sessionId);
       if (changed === 'unreadable') {
         classification = uncaptured(work, 'missing_git_evidence', 'The paths the session changed could not be read, so its package is not established');
-        failure ??= CHANGED_PATHS_UNREADABLE;
       } else if (changed === 'too_many') {
         classification = uncaptured(work, 'missing_git_evidence', `The session touched at least ${SESSION_PATHS_LIMIT} paths, so its package is not established`);
       } else {
         pathsMark = changed.mark;
-        const outcome = await classifyCommit(reads, compare, run, { headSha: work.headSha, changedPaths: changed.paths });
+        const outcome = await classifyCommit(reads, run, { headSha: work.headSha, changedPaths: changed.paths });
         if (outcome.kind === 'unavailable') {
           counts.unavailable += 1;
           failure = outcome.failure;
-          // Every failure but a truncated listing stops the whole check: every later read would meet the same answer.
-          if (outcome.failure !== 'truncated') { counts.deferred += batch.length - i - 1; break; }
-          continue;
+          counts.deferred += batch.length - i - 1;
+          break;
         }
         classification = outcome.classification;
       }
@@ -432,11 +430,13 @@ async function classifyProject(
     if (classification.state === 'unknown') {
       counts.unknown += 1;
       if (!settings.includeUnknown) {
-        if (!await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation, source })) return null;
+        const settled = await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation: generation.current, source });
+        if (settled === 'claim_lost') return null;
+        if (settled === 'source_moved') counts.deferred += 1;
         continue;
       }
     }
-    const written = await writeClassification(db, claim, work, classification, { fingerprint, generation, pathsMark, now });
+    const written = await writeClassification(db, claim, work, classification, { fingerprint, generation: generation.current, pathsMark, now });
     if (written === 'claim_lost') return null;
     if (written === 'source_moved') counts.deferred += 1;
     else if (written === 'changed') counts.changed += 1;

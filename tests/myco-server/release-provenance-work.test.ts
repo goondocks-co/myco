@@ -582,7 +582,7 @@ describe('what a due selection, a reconcile page and a list cost', () => {
         reads[project] = [];
         const measure = async (operation: () => Promise<unknown>) => { measured.reset(); await operation(); reads[project]!.push(measured.reads()); };
         await measure(() => dueReleaseChecks(measured.db, { countedBefore: 10, now: 10, limit: 1 }));
-        await measure(() => openReleaseWork(measured.db, project, 1, 50));
+        await measure(() => openReleaseWork(measured.db, project, { current: 1, production: 1 }, 50));
         await measure(() => readReleaseStatePage(measured.db, project, { before: null, limit: 50 }));
       }
       expect(reads.proj_large).toEqual(reads.proj_small!);

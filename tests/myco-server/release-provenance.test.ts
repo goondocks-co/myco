@@ -54,11 +54,11 @@ function touch(r: Rig, sessionId: string, file: string) {
   r.sqlite.query(`UPDATE session_documents SET tool_calls = tool_calls + 1 WHERE project_id = ? AND session_id = ?`).run(P, sessionId);
 }
 
-function seedSession(r: Rig, sessionId: string, headSha: string, files: string[] = []) {
+function seedSession(r: Rig, sessionId: string, headSha: string, files: string[] = [], capturedAt = 10) {
   r.sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
     VALUES (?, ?, 'machine_1', 'mt_1', 1, 1)`).run(P, sessionId);
   r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, status_hash, created_at)
-    VALUES (?, ?, ?, 'session_end', 10, ?, '', 10)`).run(P, `session:${sessionId}:session_end`, sessionId, headSha);
+    VALUES (?, ?, ?, 'session_end', ?, ?, '', 10)`).run(P, `session:${sessionId}:session_end`, sessionId, capturedAt, headSha);
   for (const file of files) touch(r, sessionId, file);
 }
 
@@ -203,6 +203,43 @@ describe('the scheduled release check', () => {
     expect(rows(r).find((x) => x.record_id === 's_released')).toEqual(releasedBefore!);
     const merged = rows(r).find((x) => x.record_id === 's_merged')!;
     expect(merged.created_at).toBe(100 * MIN);
+  });
+
+  it('drains 200 sessions from 40 deleted branches within the lookup limit', async () => {
+    const r = await rig();
+    const tag = 'refs/tags/myco/v2.0.0';
+    const repo: Repo = { tags: [tag], contains: { [tag]: [], main: [] }, commits: [], pulls: {} };
+    await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [] }), 'mem_1', 1);
+    for (let i = 0; i < 200; i += 1) {
+      const branch = Math.floor(i / 5);
+      const head = (2 * branch + (i % 5 < 3 ? 0 : 1)).toString(16).padStart(40, '0');
+      const merge = (1000 + branch).toString(16).padStart(40, '0');
+      if (i < 195) {
+        repo.pulls[head] = [{ number: branch + 1, merge_commit_sha: merge, merged_at: '2026-09-01', base: { ref: 'main' } }];
+        if (!repo.commits.includes(merge)) {
+          repo.commits.push(merge);
+          repo.contains[tag].push(merge);
+        }
+      }
+      seedSession(r, `s${String(i).padStart(3, '0')}`, head, [], 10 + i);
+    }
+    for (let pass = 0; pass < 5; pass += 1) {
+      const seen: string[] = [];
+      repo.mainHead = (2000 + pass).toString(16).padStart(40, '0');
+      await reconcileReleaseProvenance(env(r, repo, seen), (100 + 15 * pass) * MIN);
+      expect(seen.length).toBeLessThanOrEqual(50);
+      expect((await r.store.describe(P)).check!.counts!.checked).toBeGreaterThan(0);
+    }
+    expect(Object.values(byRecord(r)).filter(state => state === 'released')).toHaveLength(195);
+    expect(Object.values(byRecord(r)).filter(state => state === 'unknown')).toHaveLength(5);
+
+    repo.mainHead = B;
+    await reconcileReleaseProvenance(env(r, repo), 175 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 0 } });
+    repo.tags.push('refs/tags/myco/v2.0.1');
+    repo.contains['refs/tags/myco/v2.0.1'] = [...repo.contains[tag]];
+    await reconcileReleaseProvenance(env(r, repo), 190 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 5, unknown: 5 } });
   });
 
   it('keeps every state and records why when GitHub refuses the App token', async () => {
@@ -524,6 +561,6 @@ describe('stored data that cannot be read', () => {
     r.sqlite.query("UPDATE session_documents SET state = 'convert', generation = NULL WHERE session_id = 's_paths'").run();
     await reconcileReleaseProvenance(r.app(fakeGithub(REPO)), 100 * MIN);
     expect(byRecord(r).s_paths).toBe('unknown');
-    expect((await r.store.describe(P)).check).toMatchObject({ status: 'partial', failure: 'changed_paths_unreadable' });
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 1, unknown: 1 } });
   });
 });

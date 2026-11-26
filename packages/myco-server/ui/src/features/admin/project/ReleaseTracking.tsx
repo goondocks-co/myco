@@ -37,7 +37,7 @@ export function checkSummary(check: ReleaseCheck | null): string {
   const unfinished = `At least ${plural(missed, 'session', 'sessions')} ${missed === 1 ? 'wasn’t' : 'weren’t'} finished`;
   if (check.failure === 'budget_exhausted') {
     const used = check.lookups === null ? 'all its GitHub lookups' : `all ${check.lookups.toLocaleString()} of its GitHub lookups`;
-    parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending for later checks, which can run out the same way: to make progress, raise “GitHub lookups per check” under More, or list fewer tags and branches.`);
+    parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending for later checks.`);
   } else if (check.failure !== null) {
     parts.push(`${missed > 0 ? unfinished : 'It stopped'} because of this: ${checkFailureLabel(check.failure)}. Unfinished sessions stay pending and keep their earlier state.`);
   } else if (missed > 0) {
@@ -195,7 +195,7 @@ function ReleaseTrackingForm({ projectId, row, onClose }: { projectId: string; r
           <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then the tags of the package in it. For a session that changed files in listed folders, Myco checks only the lines above that those packages’ patterns match, comparing against each line as written, any of which can show it as released; when none match, or no folder is listed, it checks all of them. Where it finds no release, it looks for a merge into the branch above. For example, with myco/v* above: packages/myco/ = myco/v*">
             <Textarea id="release-packages" aria-describedby="release-packages-hint" className="t-mono" value={mapping} onChange={(e) => setMapping(e.target.value)} placeholder="packages/myco/ = myco/v*" />
           </FormField>
-          <FormField id="release-lookups" label="GitHub lookups per check" hint="Each check reads tags and compares commits on GitHub, at most this many times. More checks more sessions at once and uses more of GitHub’s hourly allowance.">
+          <FormField id="release-lookups" label="GitHub lookups per check" hint="Each check can make up to this many GitHub requests for refs, commits and pull requests.">
             <Input id="release-lookups" aria-describedby="release-lookups-hint" type="number" min={1} max={1000} value={maxLookups} onChange={(e) => setMaxLookups(e.target.value)} />
           </FormField>
         </div>

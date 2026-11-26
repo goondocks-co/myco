@@ -20,7 +20,7 @@ const update = write<[...ReleaseSettingsValues, requestedAt: number, project: st
   name: 'settings.updateReleaseSettings',
   sql: `UPDATE project_release_provenance SET revision = ?1, enabled = ?2, production_refs = ?3, integration_refs = ?4,
             package_map = ?5, include_unknown = ?6, max_lookups = ?7, updated_at = ?8, updated_by = ?9,
-            work_generation = work_generation + 1, check_requested_at = ?10
+            work_generation = work_generation + 1, production_generation = work_generation + 1, check_requested_at = ?10
             WHERE project_id = ?11 AND revision = ?12 RETURNING revision`,
 });
 export interface ReleaseSettingsSave {

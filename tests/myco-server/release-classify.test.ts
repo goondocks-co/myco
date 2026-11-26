@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { githubReads, MAX_LISTED_REFS } from '@myco-server-worker/core/github-refs.js';
 import {
-  classifyCommit, memoizedCompare, newestPerLine, resolveRunRefs, MAX_RELEASE_LINES, type ReleaseRefConfig,
+  classifyCommit, newestPerLine, resolveRunRefs, MAX_RELEASE_LINES, type ReleaseRefConfig,
 } from '@myco-server-worker/core/release-classify.js';
 
 import { A, B, C, D, M, MISSING, REPO, X, fakeGithub, sha, type Repo } from './helpers/github-fake.js';
@@ -21,7 +21,7 @@ async function classify(headSha: string | null, changedPaths: string[] = [], opt
   const calls: string[] = [];
   const reads = githubReads({ repositoryId: 1, token: 'fixture-token', maxLookups: opts.maxLookups ?? 50, fetcher: opts.fetcher ?? fakeGithub(opts.repo ?? REPO, calls) });
   const run = await resolveRunRefs(reads, opts.config ?? CONFIG);
-  const outcome = await classifyCommit(reads, memoizedCompare(reads), run, { headSha, changedPaths });
+  const outcome = await classifyCommit(reads, run, { headSha, changedPaths });
   return { outcome, calls, used: reads.lookupsUsed() };
 }
 
@@ -41,6 +41,10 @@ describe('release classification', () => {
   it('follows a squash-merged pull request to its merge commit', async () => {
     const { outcome } = await classify(C);
     expect(outcome).toMatchObject({ kind: 'classified', classification: { state: 'released', basisKind: 'github_pr_squash', basisSha: M, releasePrNumber: 7 } });
+    const pending = await classify(C, ['packages/a/y.ts'], { repo: {
+      ...REPO, contains: { ...REPO.contains, 'refs/tags/a/v1.2.0': [A] },
+    } });
+    expect(pending.outcome).toMatchObject({ kind: 'classified', classification: { state: 'merged_unreleased', basisRef: 'main', basisSha: M, releasePrNumber: 7 } });
   });
 
   it('checks a monorepo package only against its own tag family', async () => {
@@ -111,21 +115,11 @@ describe('release classification', () => {
     expect(await reads.compare(B, 'main')).toEqual({ ok: false, failure: 'unexpected_response', status: 301 });
   });
 
-  it('spends one compare per commit and ref across a run', async () => {
-    const calls: string[] = [];
-    const reads = githubReads({ repositoryId: 1, token: 'fixture-token', maxLookups: 50, fetcher: fakeGithub(REPO, calls) });
-    const run = await resolveRunRefs(reads, CONFIG);
-    const compare = memoizedCompare(reads);
-    await classifyCommit(reads, compare, run, { headSha: A, changedPaths: [] });
-    const before = reads.lookupsUsed();
-    await classifyCommit(reads, compare, run, { headSha: A, changedPaths: [] });
-    expect(reads.lookupsUsed()).toBe(before);
-  });
 });
 
 describe('newest tag per release line', () => {
   it('orders lines newest first and prefers a final release over its prerelease', () => {
-    const picked = newestPerLine('refs/tags/v*', ['refs/tags/v1.9.0', 'refs/tags/v1.10.0-rc.1', 'refs/tags/v1.10.0', 'refs/tags/v1.9.3', 'refs/tags/v2.0.0-rc.2']);
-    expect(picked).toEqual({ refs: ['refs/tags/v2.0.0-rc.2', 'refs/tags/v1.10.0', 'refs/tags/v1.9.3'], complete: true });
+    const picked = newestPerLine('refs/tags/v*', ['refs/tags/v1.9.0', 'refs/tags/v1.10.0-rc.1', 'refs/tags/v1.10.0', 'refs/tags/v1.9.3', 'refs/tags/v2.0.0-rc.2', 'refs/tags/v2.0.0-rc.10']);
+    expect(picked).toEqual({ refs: ['refs/tags/v2.0.0-rc.10', 'refs/tags/v1.10.0', 'refs/tags/v1.9.3'], complete: true });
   });
 });
