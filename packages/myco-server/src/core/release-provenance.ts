@@ -406,6 +406,8 @@ async function classifyProject(
     let recheck: ReleaseSettlement['recheck'] = 'capture';
     let ownTagsGeneration = work.ownTagsChecked === 1 ? generation.production : 0;
     let oversized = false;
+    // A session GitHub could not answer for this time keeps the state it has: only its place in the queue is settled.
+    let keepState = false;
     let pathsMark: number | null = null;
     if (work.point === 'session_start') {
       classification = uncaptured(work, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
@@ -434,27 +436,37 @@ async function classifyProject(
             failure = outcome.failure;
             counts.deferred += batch.length - i - 1;
             if (!oversized) break;
+          } else {
+            counts.unavailable += 1;
+            failure ??= outcome.failure;
           }
+          keepState = true;
           classification = uncaptured(work, 'ref_check_failed', oversized
             ? 'This session could not be checked with a full check’s available GitHub lookups'
             : outcome.reason);
           recheck = oversized ? 'production' : 'integration';
         } else {
           classification = outcome.classification;
-          recheck = classification.state === 'merged_unreleased' ? 'production' : 'integration';
+          recheck = classification.state === 'merged_unreleased' || outcome.commitMissing === true ? 'production' : 'integration';
           if (outcome.ownTagsChecked) ownTagsGeneration = generation.production;
         }
       }
     }
-    if (!oversized) counts.checked += 1;
     const settlement = { generation: generation.current, recheck, ownTagsGeneration };
+    if (keepState) {
+      const settled = await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, ...settlement, source });
+      if (settled === 'claim_lost') return null;
+      if (settled === 'source_moved') counts.deferred += 1;
+      if (oversized) break;
+      continue;
+    }
+    counts.checked += 1;
     if (classification.state === 'unknown') {
-      if (!oversized) counts.unknown += 1;
+      counts.unknown += 1;
       if (!settings.includeUnknown) {
         const settled = await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, ...settlement, source });
         if (settled === 'claim_lost') return null;
         if (settled === 'source_moved') counts.deferred += 1;
-        if (oversized) break;
         continue;
       }
     }
@@ -462,8 +474,7 @@ async function classifyProject(
     if (written === 'claim_lost') return null;
     if (written === 'source_moved') counts.deferred += 1;
     else if (written === 'changed') counts.changed += 1;
-    else if (!oversized) counts.unchanged += 1;
-    if (oversized) break;
+    else counts.unchanged += 1;
   }
   return { failure };
 }

@@ -59,7 +59,7 @@ export interface Classification {
 }
 
 type ClassifyOutcome =
-  | { kind: 'classified'; classification: Classification; ownTagsChecked: boolean }
+  | { kind: 'classified'; classification: Classification; ownTagsChecked: boolean; /** GitHub does not hold the captured commit. */ commitMissing?: true }
   | { kind: 'unavailable'; failure: GithubFailure; reason: string };
 
 // --- Ref patterns ---
@@ -288,6 +288,16 @@ export async function classifyCommit(
 
   const associated = await reads.mergedPullsForCommit(sha);
   if (!associated.ok && associated.failure !== 'not_found') return unavailable(associated.failure);
+  if (!associated.ok || associated.value.pulls.length === 0) {
+    // With no pull request to go on, a commit GitHub does not hold cannot be placed by anything there until it is pushed.
+    const exists = await reads.commit(sha);
+    if (!exists.ok && exists.failure !== 'not_found') return unavailable(exists.failure);
+    if (!exists.ok) {
+      const missing = classified('unknown', 'low', 'missing_git_evidence', null, sha,
+        'GitHub could not find the captured commit or establish its release through a pull request', evidence);
+      return missing.kind === 'classified' ? { ...missing, commitMissing: true } : missing;
+    }
+  }
   complete &&= associated.ok && associated.value.complete;
   let merged: { branch: string; number: number; sha: string } | null = null;
   let unplacedPull = false;

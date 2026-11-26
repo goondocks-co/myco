@@ -280,23 +280,39 @@ describe('the scheduled release check', () => {
     expect(lookups).toBeLessThanOrEqual(400);
   });
 
-  it('moves past a session that needs more than a full budget and a commit whose lookup fails', async () => {
+  it('settles a commit GitHub does not hold once, and spends nothing on it again while only main moves', async () => {
+    const r = await rig();
+    const repo = ownerReleaseRepo();
+    await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [] }), 'mem_1', 1);
+    seedSession(r, 's_unpushed', 'e'.repeat(40), [], 1);
+    await reconcileReleaseProvenance(env(r, repo), 100 * MIN);
+    expect(byRecord(r)).toEqual({ s_unpushed: 'unknown' });
+    const seen: string[] = [];
+    repo.mainHead = B;
+    await reconcileReleaseProvenance(env(r, repo, seen), 115 * MIN);
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 0 }, lookups: 3 });
+    expect(seen.filter(url => url.includes('e'.repeat(40)))).toEqual([]);
+  });
+
+  it('moves past a session that needs more than a full budget and a commit whose lookup fails, leaving their states and saying why', async () => {
     const r = await rig();
     const repo = ownerReleaseRepo();
     repo.commits.push(A, M);
     repo.contains[repo.tags[0]] = [A];
     repo.pulls[C] = REPO.pulls[C];
     repo.pullCommits = REPO.pullCommits;
-    await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [], maxLookups: 6 }), 'mem_1', 1);
+    await r.store.save(P, settings({ productionRefs: ['myco/v*'], packageMap: [], maxLookups: 7 }), 'mem_1', 1);
     seedSession(r, 's_expensive', C, [], 1);
     seedSession(r, 's_failing', D, [], 2);
     seedSession(r, 's_good', A, [], 3);
     await reconcileReleaseProvenance(env(r, repo), 100 * MIN);
-    expect(await getReleaseState(r.db, SCOPE, 'session', 's_expensive')).toMatchObject({ state: 'unknown', reason: expect.stringContaining('full check') });
+    // A session that could not be answered keeps the state it had, here none; only its place in the queue is settled.
+    expect(await getReleaseState(r.db, SCOPE, 'session', 's_expensive')).toBeNull();
     const github = fakeGithub(repo);
     await reconcileReleaseProvenance(r.app((input, init) => String(input).includes(D)
       ? Promise.resolve(new Response('{}', { status: 502 })) : github(input, init)), 115 * MIN);
-    expect(byRecord(r)).toEqual({ s_expensive: 'unknown', s_failing: 'unknown', s_good: 'released' });
+    expect(byRecord(r)).toEqual({ s_good: 'released' });
+    expect((await r.store.describe(P)).check).toMatchObject({ failure: 'unexpected_response' });
   });
 
   it('keeps every state and records why when GitHub refuses the App token', async () => {
