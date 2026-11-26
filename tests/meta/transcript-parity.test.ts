@@ -20,6 +20,7 @@ import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
  * Cross-package imports belong in `tests/meta/`.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +46,7 @@ const transcriptText = [
 
 let mycoHome: string;
 let rig: MemberRig;
+let repo: string;
 let spy: ReturnType<typeof recordingFetch>;
 const savedHome = process.env.MYCO_HOME;
 
@@ -52,7 +54,10 @@ beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
   rig = await memberRig();
-  registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+  repo = path.join(mycoHome, 'repo');
+  execFileSync('git', ['init', '-q', repo], { stdio: 'ignore' });
+  execFileSync('git', ['-C', repo, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture', '--allow-empty'], { stdio: 'ignore' });
+  registerTestMember({ root: repo, mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
   spy = recordingFetch(rig.fetch);
 });
 afterEach(() => {
@@ -69,7 +74,7 @@ function onDisk(text: string, sessionId = SESSION): string {
 
 /** The retained hooks over one session: start, the prompt hook for the typed prompt, the turn end, the session end. */
 async function replay(file: string, sessionId = SESSION, prompt = 'add the retention window'): Promise<void> {
-  const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
+  const common = { session_id: sessionId, transcript_path: file, cwd: repo };
   await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: spy.fetch });
   await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt }, { helpers: 'run', fetch: spy.fetch });
   await runHook('stop', { ...common, hook_event_name: 'Stop', last_assistant_message: 'Tests pass.' }, { helpers: 'run', fetch: spy.fetch });
@@ -123,8 +128,9 @@ describe('retained-hook replay reproduces the parity rows', () => {
     // A turn's start and end are the member's own records of when the turn ran, not rows of it.
     const member = (rig.env.sqlite.query(`SELECT kind FROM events WHERE producer_adapter <> ? AND kind <> 'turn' ORDER BY received_at, rowid`).all(TRANSCRIPT_PRODUCER.adapter) as { kind: string }[]).map((r) => r.kind);
     expect(member).toEqual(['session.start', 'transcript.segment', 'session.end', 'session.end']);
-    // Mandatory end capture and optional provenance share one projected observation.
-    expect((rig.env.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE kind <> 'turn'`).get() as { n: number }).n).toBe(4);
+    expect(await rows('knowledge_git_provenance', ['capture_point'], 'capture_point')).toEqual([
+      { capture_point: 'session_end' }, { capture_point: 'session_start' }, { capture_point: 'turn_end' },
+    ]);
     expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(record=>record.k==='prompt')).toHaveLength(2);
     expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(record=>record.k==='reply')).toHaveLength(2);
   });

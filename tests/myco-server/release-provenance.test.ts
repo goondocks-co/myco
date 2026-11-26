@@ -178,7 +178,7 @@ describe('the scheduled release check', () => {
     expect(byRecord(r)).toEqual({ s_merged: 'merged_unreleased', s_nowhere: 'not_on_release_line', s_released: 'released', s_squashed: 'released', s_unpushed: 'unknown' });
     expect(await getReleaseState(r.db, SCOPE, 'spore', 'sp_1')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
     const view = await r.store.describe(P);
-    expect(view.check).toMatchObject({ status: 'complete', failure: null, counts: { checked: 5, changed: 5, unknown: 1, unavailable: 0, deferred: 0 }, lastCompleteAt: 100 * MIN });
+    expect(view.check).toMatchObject({ status: 'complete', failure: null, counts: { checked: 5, changed: 5, unknown: 1, unknownReasons: { commitMissing: 1 }, unavailable: 0, deferred: 0 }, lastCompleteAt: 100 * MIN });
     const token = r.github.state.issued.at(-1)!;
     expect(token.body).toEqual({ permissions: { contents: 'read', pull_requests: 'read', metadata: 'read' }, repository_ids: [SOURCE.id] });
     expect(auth.every((a) => a === `Bearer ${token.token}`)).toBe(true);
@@ -495,7 +495,7 @@ describe('one check at a time, for the settings it read', () => {
 });
 
 describe('the source a session state is classified from', () => {
-  const addCommit = (r: Rig, sessionId: string, point: 'session_start' | 'session_end', headSha: string, dirty = 0, at = 20, error: string | null = null) =>
+  const addCommit = (r: Rig, sessionId: string, point: 'session_start' | 'turn_end' | 'session_end', headSha: string, dirty = 0, at = 20, error: string | null = null) =>
     r.sqlite.query(`INSERT INTO knowledge_git_provenance (project_id, identity_key, session_id, capture_point, captured_at, head_sha, is_dirty, error, status_hash, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?) ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error, captured_at = excluded.captured_at`)
       .run(P, `session:${sessionId}:${point}`, sessionId, point, at, headSha, dirty, error, at);
@@ -520,17 +520,18 @@ describe('the source a session state is classified from', () => {
     expect(JSON.parse(after.previous!)).toMatchObject({ state: 'unknown', source: `session_start:${A}:unknown`, checked_at: 100 * MIN });
   });
 
-  it('classifies a later end commit of a released session afresh and keeps the released state it replaced', async () => {
+  it('classifies a resumed session by its latest turn even when an older session end arrives later', async () => {
     const r = await rig();
     await r.store.save(P, settings(), 'mem_1', 1);
     newSession(r, 's_resumed');
     addCommit(r, 's_resumed', 'session_end', A, 0, 20);
     await check(r, 100 * MIN);
     expect(state(r, 's_resumed').state).toBe('released');
-    addCommit(r, 's_resumed', 'session_end', D, 0, 30);
+    addCommit(r, 's_resumed', 'turn_end', D, 0, 30);
+    addCommit(r, 's_resumed', 'session_end', B, 0, 25);
     await check(r, 110 * MIN);
     const after = state(r, 's_resumed');
-    expect(after).toMatchObject({ state: 'not_on_release_line', source: `session_end:${D}:0` });
+    expect(after).toMatchObject({ state: 'not_on_release_line', source: `turn_end:${D}:0` });
     expect(JSON.parse(after.previous!)).toMatchObject({ state: 'released', source: `session_end:${A}:0` });
   });
 
@@ -634,7 +635,7 @@ describe('stored data that cannot be read', () => {
     r.sqlite.query("UPDATE session_documents SET state = 'convert', generation = NULL WHERE session_id = 's_paths'").run();
     await reconcileReleaseProvenance(r.app(fakeGithub(REPO)), 100 * MIN);
     expect(byRecord(r).s_paths).toBe('unknown');
-    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 1, unknown: 1 } });
+    expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 1, unknown: 1, unknownReasons: { pathsUnreadable: 1 } } });
 
     const tag = 'refs/tags/b/v2.0.1';
     const tagged = { ...REPO, tags: [...REPO.tags, tag], contains: { ...REPO.contains, [tag]: [X] } };

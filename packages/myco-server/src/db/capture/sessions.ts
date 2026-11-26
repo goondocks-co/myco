@@ -1,4 +1,4 @@
-/** The session rows a `session.start` or `session.end` projects into, each written only when this request stored the event. */
+/** The rows a session or turn boundary projects into, each written only when this request stored the event. */
 import { write, type Bound } from '../index.js';
 import { storedByThisRequest } from './event-write.js';
 
@@ -27,26 +27,26 @@ const nameProject = write<[name: string, project: string, event: string, nonce: 
 /** A Project still named by its own id takes the name its first start carries; a renamed Project keeps its name. */
 export const nameProjectFromStart = (s: Stored, name: string): Bound<{ applied: number }> => nameProject.bind(name, s.project, s.event, s.nonce);
 
-/** Whether an incoming capture point replaces the held one: the earliest start or the latest end, ties to the smaller event id. */
+/** Whether an incoming capture point replaces the held one: the earliest start or the latest observation at an end boundary, ties to the smaller event id. */
 const wins = (order: '<' | '>') => `(excluded.captured_at ${order} knowledge_git_provenance.captured_at OR
     (excluded.captured_at = knowledge_git_provenance.captured_at AND
       (knowledge_git_provenance.event_id IS NULL OR excluded.event_id < knowledge_git_provenance.event_id)))`;
 type Commit = [project: string, identity: string, session: string, point: string, at: number, event: string, headSha: string, dirty: number,
-  error: string | null, now: number, nonce: string];
+  error: string | null, now: number, nonce: string, branch: string | null];
 const commit = (name: string, order: '<' | '>') => write<Commit, { applied: number }>({ name, sql:
   `INSERT INTO knowledge_git_provenance
       (project_id, identity_key, session_id, capture_point, captured_at, event_id, branch, head_sha, is_dirty, error, status_hash, created_at)
-    SELECT ?1, ?2, ?3, ?4, ?5, ?6, (SELECT branch FROM sessions WHERE project_id = ?1 AND session_id = ?3), ?7, ?8, ?9, '', ?10
+    SELECT ?1, ?2, ?3, ?4, ?5, ?6, NULLIF(COALESCE(?12, (SELECT branch FROM sessions WHERE project_id = ?1 AND session_id = ?3)), ''), ?7, ?8, ?9, '', ?10
       WHERE ${storedByThisRequest('?1', '?6', '?11')}
     ON CONFLICT(project_id, identity_key) DO UPDATE SET head_sha = excluded.head_sha, is_dirty = excluded.is_dirty, error = excluded.error,
       captured_at = excluded.captured_at, event_id = excluded.event_id, branch = excluded.branch
       WHERE ${wins(order)} RETURNING 1 AS applied` });
-const COMMITS = { session_start: commit('capture.sessionStartCommit', '<'), session_end: commit('capture.sessionEndCommit', '>') } as const;
+const COMMITS = { session_start: commit('capture.sessionStartCommit', '<'), turn_end: commit('capture.turnEndCommit', '>'), session_end: commit('capture.sessionEndCommit', '>') } as const;
 
 /** The commit a session stood on at one capture point, with whether tracked files differed from it, or the error that says it could not tell. */
-export interface CommitPoint { point: 'session_start' | 'session_end'; at: number; headSha: string; dirty: boolean; error: string | null; now: number }
+export interface CommitPoint { point: 'session_start' | 'turn_end' | 'session_end'; at: number; headSha: string; branch: string | null; dirty: boolean; error: string | null; now: number }
 export const sessionCommit = (s: Stored, c: CommitPoint): Bound<{ applied: number }> =>
-  COMMITS[c.point].bind(s.project, `session:${s.session}:${c.point}`, s.session, c.point, c.at, s.event, c.headSha, c.dirty ? 1 : 0, c.error, c.now, s.nonce);
+  COMMITS[c.point].bind(s.project, `session:${s.session}:${c.point}`, s.session, c.point, c.at, s.event, c.headSha, c.dirty ? 1 : 0, c.error, c.now, s.nonce, c.branch);
 
 const title = write<[title: string, summary: string | null, now: number, project: string, session: string, event: string, nonce: string], { applied: number }>({
   name: 'capture.importedTitle', sql: `UPDATE sessions SET title = ?1, summary = ?2, titled_at = ?3

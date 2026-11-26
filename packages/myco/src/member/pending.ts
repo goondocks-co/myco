@@ -793,7 +793,7 @@ function moveHeld(rootKey: string, into: MemberSpool, opts: { mycoHome: string; 
         damaged.push(index);
         continue;
       }
-      run.push({ envelope: toWire(line), ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
+      run.push({ envelope: toWire(line), gitObservation: line._gitObservation, ...(line._blobSource ? { blobSource: line._blobSource } : {}) });
     }
     let damagedKeys: string[] = [];
     if (damaged.length > 0) {

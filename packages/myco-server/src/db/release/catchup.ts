@@ -1,7 +1,7 @@
 import { jsonKeys } from '../ddl.js';
 import { assertion, refusalCode, write, type Bound } from '../index.js';
 import type { CatchupFamily } from '../projections/family.js';
-import { CLEANLINESS_SQL, latestSourceOf, RELEASE_CHECK_PHASE, RELEASE_PROJECTION, RELEASE_STATE_PHASE, RELEASE_WORK_PHASE } from './schema.js';
+import { SESSION_CAPTURE_POINTS, CLEANLINESS_SQL, latestSourceOf, RELEASE_CHECK_PHASE, RELEASE_PROJECTION, RELEASE_STATE_PHASE, RELEASE_WORK_PHASE } from './schema.js';
 
 /** A stored namespace's canonical form, the table name every writer, join and trigger uses; NULL for one no record carries. */
 const canon = (namespace: string) => `CASE ${namespace} WHEN 'session' THEN 'sessions' WHEN 'sessions' THEN 'sessions' WHEN 'spore' THEN 'spores' WHEN 'spores' THEN 'spores' WHEN 'plan' THEN 'plans' WHEN 'plans' THEN 'plans' END`;
@@ -76,14 +76,16 @@ const bindKeys = (statement: { bind(keys: string): Bound }) => ({ bind: (keys: s
 const bindKeysAt = (statement: { bind(keys: string, now: number): Bound }) => ({ bindAt: (keys: string, now: number) => statement.bind(keys, now) });
 
 const workKeys = `(${jsonKeys(['project_id', 'session_id'])})`;
-const SOURCE_TEXT = "g.capture_point||':'||g.head_sha||':'||" + CLEANLINESS_SQL;
+const SOURCE_FACTS = "g.head_sha||':'||" + CLEANLINESS_SQL;
+const SAME_SOURCE = `(st.source_key=g.capture_point||':'||${SOURCE_FACTS}
+  OR (g.capture_point<>'session_start' AND st.source_key IN ('turn_end:'||${SOURCE_FACTS},'session_end:'||${SOURCE_FACTS})))`;
 
 /** A session the last check already settled stays settled, so the catch-up costs no GitHub reads for work already done. */
 const seedWork = write<[keys: string]>({ name: 'releaseCatchup.seedWork', sql:
   `INSERT INTO release_work_due (project_id,session_id,point,head_sha,cleanliness,captured_at,settled_generation,final)
    SELECT k.project_id,k.session_id,g.capture_point,g.head_sha,${CLEANLINESS_SQL},g.captured_at,
-     COALESCE(CASE WHEN st.source_key=${SOURCE_TEXT} AND st.refs_fingerprint=c.check_fingerprint AND (c.package_map='[]' OR st.paths_mark IS COALESCE(d.tool_calls,0)) THEN c.work_generation END,0),
-     COALESCE(st.state='released' AND (st.source_key IS NULL OR st.source_key=${SOURCE_TEXT}),0)
+     COALESCE(CASE WHEN ${SAME_SOURCE} AND st.refs_fingerprint=c.check_fingerprint AND (c.package_map='[]' OR st.paths_mark IS COALESCE(d.tool_calls,0)) THEN c.work_generation END,0),
+     COALESCE(st.state='released' AND (st.source_key IS NULL OR ${SAME_SOURCE}),0)
    FROM ${workKeys} k CROSS JOIN knowledge_git_provenance g ON ${latestSourceOf('k.project_id', 'k.session_id')}
    LEFT JOIN knowledge_release_state st ON st.project_id=k.project_id AND st.identity_key=k.project_id||':sessions:'||k.session_id
    LEFT JOIN project_release_provenance c ON c.project_id=k.project_id
@@ -119,7 +121,7 @@ export const RELEASE_PROVENANCE_CATCHUP = {
       reconcile: [bindKeysAt(reportDuplicates), bindKeys(removeLosers), bindKeys(rewriteSingular), bindKeysAt(reportUnresolved), bindKeys(markCurrent), bindKeysAt(queuePropagation)],
     },
     [RELEASE_WORK_PHASE]: {
-      source: { table: 'knowledge_git_provenance', columns: ['project_id', 'session_id'], where: "session_id IS NOT NULL AND head_sha IS NOT NULL AND capture_point IN ('session_start','session_end')" },
+      source: { table: 'knowledge_git_provenance', columns: ['project_id', 'session_id'], where: `session_id IS NOT NULL AND head_sha IS NOT NULL AND capture_point IN ${SESSION_CAPTURE_POINTS}` },
       reconcile: [bindKeys(seedWork)],
       frontier: () => [statesCanonical.bind()],
     },

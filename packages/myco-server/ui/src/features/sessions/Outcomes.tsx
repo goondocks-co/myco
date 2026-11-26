@@ -19,7 +19,7 @@ const CHANGES_WORDS: Record<CommitChanges, string | null> = {
   unreadable: 'couldn’t tell whether files changed',
 };
 
-const POINT_WORD: Record<CapturePoint, string> = { session_start: 'start', session_end: 'end' };
+const POINT_WORD: Record<CapturePoint, string> = { session_start: 'start', turn_end: 'turn-end', session_end: 'end' };
 
 /** Why a release is unknown, by the basis the check recorded. */
 const UNKNOWN_WHY: Record<string, string> = {
@@ -35,7 +35,7 @@ function observationTitle(observation: CommitObservation): string {
   const at = shortSha(observation.headSha);
   const head = observation.point === 'session_start'
     ? `Started at ${at}${observation.branch === null ? '' : ` on ${observation.branch}`}`
-    : `Ended at ${at}`;
+    : observation.point === 'turn_end' ? `Turn ended at ${at}${observation.branch === null ? '' : ` on ${observation.branch}`}` : `Ended at ${at}`;
   const changes = CHANGES_WORDS[observation.changes];
   return changes === null ? head : `${head}, ${changes}`;
 }
@@ -43,9 +43,10 @@ function observationTitle(observation: CommitObservation): string {
 /** The release state in words: the state, where the commit is, the pull request that carried it, and when the check ran. */
 export function containmentWords(release: CommitReleaseCheck, now: number): string {
   const why = release.state === 'unknown' && release.basisKind !== null ? UNKNOWN_WHY[release.basisKind] : undefined;
+  const reason = release.basisKind === 'dirty_worktree' && release.covers?.point === 'turn_end' ? 'the last captured turn ended with uncommitted changes' : why;
   const state = release.state === 'unreconciled' && release.basisKind === 'configuration'
     ? `${releaseStateLabel(release.state)}: no release refs are set`
-    : why === undefined ? releaseStateLabel(release.state) : `${releaseStateLabel(release.state)}: ${why}`;
+    : why === undefined ? releaseStateLabel(release.state) : `${releaseStateLabel(release.state)}: ${reason}`;
   return [
     state,
     CONTAINED.has(release.state) && release.basisRef !== null ? shortRef(release.basisRef) : null,
@@ -66,6 +67,8 @@ export function outcomeRows({ observations, release }: SessionCommits, now: numb
   const rows: SessionEventRow[] = observations.map((observation) => {
     const detail = [
       observation.point === 'session_end' && same ? SAME_HEAD : null,
+      release !== null && CONTAINED.has(release.state) && covered === observation.point && observation.changes === 'none' && start?.headSha === observation.headSha
+        ? 'Placed by the starting commit' : null,
       release !== null && covered === observation.point ? containmentWords(release, now) : null,
     ].filter((part) => part !== null).join(' · ');
     return {

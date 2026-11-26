@@ -54,7 +54,7 @@ function buildHelperPass(
       : null;
     const [contextResult, backlogResult] = await Promise.allSettled([
       prefetch(),
-      drain(current, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' }),
+      drain(current, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, inlineGit: deps.migrateLegacy === false, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' }),
     ]);
     if (contextResult.status === 'rejected') process.stderr.write(`${promptContextLogPrefix(route.serverUrl, route.projectId)}context prefetch failed: ${terminalText(contextResult.reason instanceof Error ? contextResult.reason.message : String(contextResult.reason))}\n`);
     if (backlogResult.status === 'rejected') throw backlogResult.reason;

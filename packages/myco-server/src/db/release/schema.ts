@@ -15,17 +15,30 @@ export const RELEASE_WORK_PHASE = 'releaseWorkSeed';
 /** Whether tracked files differed from a git provenance row `g`: session starts and rows with an observation error are `unknown`. */
 export const CLEANLINESS_SQL = "CASE WHEN g.capture_point = 'session_start' OR g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
 
-/** Holds on `g` for the commit a session is classified from: its end, or its start while no end is captured. */
-export const latestSourceOf = (project: string, session: string): string => `g.project_id=${project} AND g.session_id=${session} AND g.head_sha IS NOT NULL
+const legacySourceOf = (project: string, session: string): string => `g.project_id=${project} AND g.session_id=${session} AND g.head_sha IS NOT NULL
   AND g.capture_point=(SELECT MIN(i.capture_point) FROM knowledge_git_provenance i WHERE i.project_id=${project} AND i.session_id=${session}
     AND i.head_sha IS NOT NULL AND i.capture_point IN ('session_start','session_end'))`;
 
+/** Release checks use the latest post-start observation, preferring session end when the timestamps tie. */
+export const SESSION_CAPTURE_POINTS = "('session_start','turn_end','session_end')";
+export const latestSourceOf = (project: string, session: string): string => `g.project_id=${project} AND g.session_id=${session} AND g.id=(
+  SELECT i.id FROM knowledge_git_provenance i WHERE i.project_id=${project} AND i.session_id=${session}
+    AND i.head_sha IS NOT NULL AND i.capture_point IN ${SESSION_CAPTURE_POINTS}
+    ORDER BY i.capture_point='session_start',i.captured_at DESC,i.capture_point='session_end' DESC,i.id LIMIT 1)`;
+
 /** Any change of the commit a session is classified from re-opens its work; a capture that changes nothing else leaves it. */
-const sourceUpsert = (project: string, session: string) => `INSERT INTO release_work_due (project_id,session_id,point,head_sha,cleanliness,captured_at)
-  SELECT g.project_id,g.session_id,g.capture_point,g.head_sha,${CLEANLINESS_SQL},g.captured_at FROM knowledge_git_provenance g WHERE ${latestSourceOf(project, session)}
+const SOURCE_CHANGED = `head_sha IS NOT excluded.head_sha OR cleanliness IS NOT excluded.cleanliness
+  OR (point='session_start') IS NOT (excluded.point='session_start')`;
+
+const sourceUpsert = (latest: boolean, project: string, session: string, retainEquivalent = false) => `INSERT INTO release_work_due (project_id,session_id,point,head_sha,cleanliness,captured_at)
+  SELECT g.project_id,g.session_id,g.capture_point,g.head_sha,${CLEANLINESS_SQL},g.captured_at FROM knowledge_git_provenance g WHERE ${(latest ? latestSourceOf : legacySourceOf)(project, session)}
   ON CONFLICT (project_id,session_id) DO UPDATE SET point=excluded.point,head_sha=excluded.head_sha,cleanliness=excluded.cleanliness,captured_at=excluded.captured_at,
-    source_revision=source_revision+1,settled_generation=0,final=0
-  WHERE point IS NOT excluded.point OR head_sha IS NOT excluded.head_sha OR cleanliness IS NOT excluded.cleanliness`;
+    ${retainEquivalent
+      ? `source_revision=source_revision+CASE WHEN ${SOURCE_CHANGED} THEN 1 ELSE 0 END,
+         ${['settled_generation', 'final', 'capture_only', 'production_only', 'own_tags_generation']
+          .map((column) => `${column}=CASE WHEN ${SOURCE_CHANGED} THEN 0 ELSE ${column} END`).join(',')}`
+      : `source_revision=source_revision+1,settled_generation=0,final=0${latest ? ',capture_only=0,production_only=0,own_tags_generation=0' : ''}`}
+  WHERE point IS NOT excluded.point OR head_sha IS NOT excluded.head_sha OR cleanliness IS NOT excluded.cleanliness${retainEquivalent ? ' OR captured_at IS NOT excluded.captured_at' : ''}`;
 
 const NOW_MS = 'CAST(unixepoch()*1000 AS INTEGER)';
 
@@ -38,15 +51,36 @@ const queueDerived = (row: 'NEW') => `INSERT INTO release_propagation_due(projec
  * A path change moves the source revision too, so a check that read the paths before it settles nothing and the session
  * stays due. Only a clean end commit is classified from its paths; a start, a dirty end or an unreadable one is not.
  */
-const REOPEN_FOR_PATHS = `UPDATE release_work_due SET settled_generation=0,source_revision=source_revision+1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND final=0
-  AND point='session_end' AND cleanliness='0'
+const reopenForPaths = (point: string) => `UPDATE release_work_due SET settled_generation=0,source_revision=source_revision+1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND final=0
+  AND ${point} AND cleanliness='0'
   AND EXISTS (SELECT 1 FROM project_release_provenance p WHERE p.project_id=NEW.project_id AND p.package_map<>'[]')`;
 
 export const RELEASE_WORK_OPEN = 'final=0 AND (capture_only=0 OR settled_generation=0)';
 
+const legacyPaths = reopenForPaths("point='session_end'");
+const latestPaths = reopenForPaths("point IN ('turn_end','session_end')");
+
+const pathsReady = (body: string) => trigger('release_work_paths_ready', 'session_documents', 'UPDATE OF state', body,
+  "NEW.state='live' AND OLD.state IS NOT 'live'");
+
 /** Publication can make captured paths readable without adding another tool call. */
-export const releasePathsReady = trigger('release_work_paths_ready', 'session_documents', 'UPDATE OF state', REOPEN_FOR_PATHS,
-  "NEW.state='live' AND OLD.state IS NOT 'live'").sql;
+export const releasePathsReady = pathsReady(legacyPaths).sql;
+
+function workTriggers(latest: boolean, retainEquivalent = false) {
+  const upsert = sourceUpsert(latest, 'NEW.project_id', 'NEW.session_id', retainEquivalent);
+  const columns = ['head_sha', 'is_dirty', 'error', ...(latest ? ['captured_at'] : [])];
+  const paths = latest ? latestPaths : legacyPaths;
+  return [
+    trigger('release_work_capture_insert', 'knowledge_git_provenance', 'INSERT', upsert, 'NEW.session_id IS NOT NULL AND NEW.head_sha IS NOT NULL'),
+    trigger('release_work_capture_update', 'knowledge_git_provenance', latest ? `UPDATE OF ${columns.join(',')}` : 'UPDATE OF head_sha,is_dirty,error', upsert,
+      `NEW.session_id IS NOT NULL AND NEW.head_sha IS NOT NULL AND (${changed(columns)})`),
+    trigger('release_work_paths_insert', 'session_documents', 'INSERT', paths, 'COALESCE(NEW.tool_calls,0)>0'),
+    trigger('release_work_paths_update', 'session_documents', 'UPDATE OF tool_calls', paths, changed(['tool_calls'])),
+  ];
+}
+
+export const latestObservationTriggers = [...workTriggers(true), pathsReady(latestPaths)];
+export const stableObservationTriggers = workTriggers(true, true).slice(0, 2);
 
 export function releaseSchemaStatements(): string[] {
   return [
@@ -97,11 +131,7 @@ export function releaseSchemaStatements(): string[] {
     'ALTER TABLE knowledge_release_state ADD COLUMN paths_mark INTEGER',
     'ALTER TABLE project_release_provenance ADD COLUMN work_generation INTEGER NOT NULL DEFAULT 1',
     ...[
-      trigger('release_work_capture_insert', 'knowledge_git_provenance', 'INSERT', sourceUpsert('NEW.project_id', 'NEW.session_id'), 'NEW.session_id IS NOT NULL AND NEW.head_sha IS NOT NULL'),
-      trigger('release_work_capture_update', 'knowledge_git_provenance', 'UPDATE OF head_sha,is_dirty,error', sourceUpsert('NEW.project_id', 'NEW.session_id'),
-        `NEW.session_id IS NOT NULL AND NEW.head_sha IS NOT NULL AND (${changed(['head_sha', 'is_dirty', 'error'])})`),
-      trigger('release_work_paths_insert', 'session_documents', 'INSERT', REOPEN_FOR_PATHS, 'COALESCE(NEW.tool_calls,0)>0'),
-      trigger('release_work_paths_update', 'session_documents', 'UPDATE OF tool_calls', REOPEN_FOR_PATHS, changed(['tool_calls'])),
+      ...workTriggers(false),
       trigger('release_propagation_spore_insert', 'spores', 'INSERT', queueDerived('NEW'), 'NEW.session_id IS NOT NULL'),
       trigger('release_propagation_spore_update', 'spores', 'UPDATE OF session_id', queueDerived('NEW'), `NEW.session_id IS NOT NULL AND ${changed(['session_id'])}`),
       trigger('release_propagation_plan_insert', 'plans', 'INSERT', queueDerived('NEW'), 'NEW.session_id IS NOT NULL'),

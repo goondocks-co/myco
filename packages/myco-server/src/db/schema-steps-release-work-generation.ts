@@ -1,6 +1,6 @@
-import { LAST_RELEASE_EVIDENCE, LAST_RELEASE_WORK_GENERATION, NEXT_RELEASE_EVIDENCE, NEXT_RELEASE_WORK_GENERATION } from './schema-vNEXT-release-work-generation.js';
+import { LAST_RELEASE_EVIDENCE, LAST_RELEASE_WORK_GENERATION, NEXT_RELEASE_OBSERVATION, NEXT_STABLE_RELEASE_OBSERVATION, NEXT_RELEASE_EVIDENCE, NEXT_RELEASE_WORK_GENERATION } from './schema-vNEXT-release-work-generation.js';
 import { changing, reaching, retiring, type SchemaStep } from './schema-step.js';
-import { RELEASE_WORK_OPEN, releasePathsReady } from './release/schema.js';
+import { RELEASE_WORK_OPEN, latestObservationTriggers, releasePathsReady, stableObservationTriggers } from './release/schema.js';
 
 export const RELEASE_WORK_GENERATION_STEPS: readonly SchemaStep[] = [
   {
@@ -38,5 +38,23 @@ export const RELEASE_WORK_GENERATION_STEPS: readonly SchemaStep[] = [
     ],
     reaches: reaching(['release_work_due'], 'The pending index excludes capture-only settlements while keeping each work scope in due order.'),
     retires: retiring('index', ['idx_release_work_open', 'idx_release_work_by_scope'], 'Release work selects both scopes from idx_release_work_pending.'),
+  },
+  {
+    version: NEXT_RELEASE_OBSERVATION,
+    statements: [
+      ...latestObservationTriggers.map(({ name }) => `DROP TRIGGER IF EXISTS ${name}`),
+      ...latestObservationTriggers.map(({ sql }) => sql),
+    ],
+    reaches: reaching(['knowledge_git_provenance', 'session_documents'], 'Release work follows the latest turn or session end when capture or published paths change.'),
+    retires: retiring('trigger', latestObservationTriggers.map(({ name }) => name), 'The rebuilt triggers select the last captured boundary and reopen work for it.'),
+  },
+  {
+    version: NEXT_STABLE_RELEASE_OBSERVATION,
+    statements: [
+      ...stableObservationTriggers.map(({ name }) => `DROP TRIGGER IF EXISTS ${name}`),
+      ...stableObservationTriggers.map(({ sql }) => sql),
+    ],
+    reaches: reaching(['knowledge_git_provenance'], 'Capture updates the standing boundary and retains settlement for equivalent release evidence.'),
+    retires: retiring('trigger', stableObservationTriggers.map(({ name }) => name), 'The rebuilt triggers preserve release work when only the observed boundary changes.'),
   },
 ];

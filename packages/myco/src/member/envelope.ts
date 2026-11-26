@@ -50,6 +50,7 @@ export interface BlobSource {
 
 /** One event ready for the spool: the wire envelope plus its blob source, when the payload references one. */
 export interface OutboundEvent {
+  gitObservation?: import('./git-facts.js').GitObservation;
   envelope: MemberEnvelope;
   blobSource?: BlobSource;
 }
@@ -253,9 +254,10 @@ export function sessionStartEvent(ctx: EnvelopeContext, facts: {
 }
 
 /** A session's end. `title` and `summary` are carried by an import alone: the Deployment stores them only from the import channel. */
-export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; headSha?: string; dirty?: boolean; title?: string; summary?: string } = {}): OutboundEvent {
+export function sessionEndEvent(ctx: EnvelopeContext, facts: { endedAt?: number; branch?: string; headSha?: string; dirty?: boolean; title?: string; summary?: string } = {}): OutboundEvent {
   return envelope(ctx, 'session.end', {
     endedAt: facts.endedAt ?? (ctx.now ?? Date.now)(),
+    branch: trunc(facts.branch, BOUNDS.branch),
     headSha: facts.headSha,
     dirty: facts.headSha === undefined ? undefined : facts.dirty,
     title: trunc(facts.title, BOUNDS.sessionTitle),
@@ -330,8 +332,10 @@ export function subagentStopEvent(ctx: EnvelopeContext, input: NormalizedHookInp
  * A turn's start or end, timed by the envelope's own `createdAt`. It is an advertised kind: build it only for a
  * Deployment that names the `turn` feature.
  */
-export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; promptId?: string }): OutboundEvent {
-  return envelope(ctx, TURN_KIND, { phase: opts.phase, promptId: opts.promptId });
+export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; promptId?: string; branch?: string; headSha?: string; dirty?: boolean }): OutboundEvent {
+  return envelope(ctx, TURN_KIND, {
+    phase: opts.phase, promptId: opts.promptId, branch: trunc(opts.branch, BOUNDS.branch), headSha: opts.headSha, dirty: opts.dirty,
+  });
 }
 
 /**

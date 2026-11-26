@@ -21,6 +21,8 @@ import path from 'node:path';
 import { writeRegistryEntry, REGISTRY_VERSION } from '../src/member/registry.ts';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '../src/member/credential.ts';
 import { LifecycleLock } from '../src/utils/lifecycle-lock.ts';
+import { GIT_AT_TURN_END_FEATURE } from '@goondocks/myco-shared/member-protocol';
+import { cacheDeploymentFeatures } from '../src/member/context-cache.ts';
 import { helperPaths } from '../src/member/helper.ts';
 import { reportTimingBreach, timingGateReports } from '../../../scripts/timing-gate.mjs';
 
@@ -43,7 +45,7 @@ const prefix = flag('--prefix', '').split(' ').filter(Boolean);
 /**
  * Each hook's median budget, in ms, where Linux runs natively: about half again the slowest median a CI runner has
  * shown (one runner instance is up to 40% slower than the next). No hook starts git for the repository's identity
- * (`utils/git-files.ts`); the session's end asks git whether tracked files changed, its two questions at once.
+ * (`utils/git-files.ts`); turn and session ends ask git whether tracked files changed, both queries at once.
  */
 const BUDGET_MS: Record<string, number> = {
   'session-start': 100,
@@ -95,6 +97,7 @@ function homeFor(source: 'registry' | 'env'): { home: string; env: NodeJS.Proces
   } else {
     Object.assign(env, { [ENV_SERVER_URL]: DEPLOYMENT, [ENV_MEMBER_TOKEN]: 'mt_hookwork', [ENV_PROJECT]: PROJECT });
   }
+  cacheDeploymentFeatures(DEPLOYMENT, ['turn', GIT_AT_TURN_END_FEATURE], home);
   return { home, env };
 }
 

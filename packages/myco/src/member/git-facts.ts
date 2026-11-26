@@ -14,6 +14,7 @@
  * comparing the index and the working tree: its two questions run at once.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import { gitExitStatusAsync, repositoryName, runGit, runGitAnswer, type GitQueryBudget } from '@myco/utils/git.js';
 import { subRequestBudget, type HookBudget } from './budget.js';
 import { readRepoHead, UNUSUAL } from '../utils/git-files.js';
@@ -25,7 +26,7 @@ export interface GitFacts {
   branch?: string;
   remote?: string;
   headSha?: string;
-  /** Tracked files differ from `headSha`; absent when git could not say. */
+  /** The working tree differs from `headSha`; absent when git could not say. */
   dirty?: boolean;
 }
 
@@ -65,19 +66,41 @@ export function gitRemote(cwd: string): string | undefined {
  */
 export async function trackedChanges(cwd: string, budget: GitQueryBudget = {}): Promise<boolean | undefined> {
   const [staged, unstaged] = await Promise.all([
-    gitExitStatusAsync(['diff', '--cached', '--quiet', '--'], cwd, budget),
-    gitExitStatusAsync(['diff', '--quiet', '--'], cwd, budget),
+    gitExitStatusAsync(['-c', 'diff.autoRefreshIndex=false', 'diff', '--cached', '--quiet', '--'], cwd, budget),
+    gitExitStatusAsync(['-c', 'diff.autoRefreshIndex=false', 'diff', '--quiet', '--'], cwd, budget),
   ]);
-  if (staged === 1 || unstaged === 1) return true;
-  return staged === 0 && unstaged === 0 ? false : undefined;
+  if ((staged !== 0 && staged !== 1) || (unstaged !== 0 && unstaged !== 1)) return undefined;
+  return staged === 1 || unstaged === 1;
 }
 
 /** Optional provenance receives at most this much hook time. */
 export const GIT_ENRICHMENT_CAP_MS = 500;
+const END_HEAD_CAP_MS = 8;
+const STATUS_PREFIX_BYTES = 4096;
+/** A status read must begin and finish near the boundary it describes. */
+const END_STATUS_WINDOW_MS = 2_000;
+/** A turn end delivered inside the hook waits this long for the status; a session end, the last word on a session, gets the enrichment allowance. */
+export const INLINE_GIT_STATUS_CAP_MS = 15;
+const STATUS_ARGS = ['--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain=v2', '--branch', '--no-ahead-behind', '--untracked-files=normal', '--ignore-submodules=none', '--no-renames'];
 
-function enrichmentBudget(budget: HookBudget, now: number): GitQueryBudget & { deadline: number } {
+export interface GitObservation {
+  cwd: string;
+  branch: string | undefined;
+  device: number;
+  inode: number;
+}
+
+const GIT_REDIRECTS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_NAMESPACE'];
+const gitRedirected = () => GIT_REDIRECTS.some((key) => Boolean(process.env[key]));
+
+function directoryAt(cwd: string) {
+  const stat = fs.statSync(cwd, { throwIfNoEntry: false });
+  return stat?.isDirectory() === true ? stat : undefined;
+}
+
+function enrichmentBudget(budget: HookBudget, now: number, cap = GIT_ENRICHMENT_CAP_MS): GitQueryBudget & { deadline: number } {
   const deliveryReserve = Math.max(budget.connectTimeoutMs, budget.requestTimeoutMs);
-  return { deadline: Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, GIT_ENRICHMENT_CAP_MS, now).requestTimeoutMs) };
+  return { deadline: Math.min(budget.deadline - deliveryReserve, now + subRequestBudget(budget, cap, now).requestTimeoutMs) };
 }
 
 const askWithin = (budget: GitQueryBudget) => (args: string[], cwd: string): string =>
@@ -94,15 +117,45 @@ export function sessionRepositoryName(cwd: string, budget: HookBudget, now: numb
   return repositoryName(cwd, { ...queryBudget, commonDir });
 }
 
-/** Discovery fallback and dirty queries share a deadline that reserves a full request's headroom for delivery. */
-export async function sessionEndGitFacts(cwd: string, budget: HookBudget, now: number = Date.now()): Promise<Pick<GitFacts, 'headSha' | 'dirty'>> {
-  const { deadline } = enrichmentBudget(budget, now);
-  if (deadline <= now) return { headSha: undefined, dirty: undefined };
+/** Read HEAD at the boundary. Only unusual repository discovery needs a Git process here. */
+export function endGitHead(cwd: string, budget: HookBudget, now: number) {
+  const stat = directoryAt(cwd);
+  if (stat === undefined) return {};
+  const { headSha, branch } = gitHead(cwd, { askGit: askWithin(enrichmentBudget(budget, now, END_HEAD_CAP_MS)) });
+  if (headSha === undefined) return {};
+  const gitObservation: GitObservation | undefined = gitRedirected() ? undefined : { cwd: path.resolve(cwd), branch, device: stat.dev, inode: stat.ino };
+  return { headSha, branch: branch === 'HEAD' ? '' : branch, gitObservation };
+}
+
+/** Read a lock-free worktree status for the HEAD captured by the hook. The porcelain headers also distinguish clean from absent output. */
+export async function observedGitChanges(
+  request: GitObservation, headSha: string, at: number, budget: HookBudget, inlineCapMs: number | null, now: number,
+): Promise<boolean | undefined> {
+  const deadline = Math.min(at + END_STATUS_WINDOW_MS, budget.deadline - budget.connectTimeoutMs, inlineCapMs === null ? Infinity : now + inlineCapMs);
+  if (deadline <= now || gitRedirected()) return undefined;
   const queryBudget = { deadline };
+  const { cwd, branch, device, inode } = request;
   const askGit = askWithin(queryBudget);
-  const head = gitHead(cwd, { askGit });
-  const dirty = head.headSha === undefined ? undefined : await trackedChanges(cwd, queryBudget);
-  return { headSha: head.headSha, dirty };
+  const matches = () => {
+    const stat = directoryAt(cwd);
+    if (stat?.dev !== device || stat?.ino !== inode) return false;
+    const head = gitHead(cwd, { askGit });
+    return head.headSha === headSha && head.branch === branch;
+  };
+  if (!matches()) return undefined;
+  let prefix = Buffer.alloc(0);
+  let truncated = false;
+  const status = await gitExitStatusAsync(STATUS_ARGS, cwd, queryBudget, (bytes) => {
+    const room = STATUS_PREFIX_BYTES - prefix.length;
+    if (bytes.length > room) truncated = true;
+    if (room > 0) prefix = Buffer.concat([prefix, bytes.subarray(0, room)]);
+  });
+  if (status !== 0 || Date.now() >= deadline || !matches()) return undefined;
+  const lines = prefix.toString('utf8').split('\n');
+  lines.pop();
+  if (!lines.includes(`# branch.oid ${headSha}`) || !lines.includes(`# branch.head ${branch === 'HEAD' ? '(detached)' : branch}`)) return undefined;
+  if (lines.some((line) => /^[12u?] /.test(line))) return true;
+  return truncated ? undefined : false;
 }
 
 /** Every fact at once. */

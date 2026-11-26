@@ -17,6 +17,7 @@
       "@goondocks/myco-shared/relevance": ["../myco-shared/src/relevance.ts"],
       "@goondocks/myco-shared/prompt-text": ["../myco-shared/src/prompt-text.ts"],
       "@goondocks/myco-shared/recall": ["../myco-shared/src/recall.ts"],
+      "@goondocks/myco-shared/release-check": ["../myco-shared/src/release-check.ts"],
       "@goondocks/myco-shared/github-api": ["../myco-shared/src/github-api.ts"],
       "@goondocks/myco-shared/github-app": ["../myco-shared/src/github-app.ts"],
       "@goondocks/myco-shared/github-app-setup": ["../myco-shared/src/github-app-setup.ts"],

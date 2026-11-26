@@ -1,7 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { CapturePoint, Cleanliness, ReleaseNamespace } from '../../core/provenance.js';
 import { first, read, readSet, rows } from '../index.js';
-import { CLEANLINESS_SQL } from './schema.js';
+import { SESSION_CAPTURE_POINTS, CLEANLINESS_SQL } from './schema.js';
 
 /** One record's release state as a reader gets it, with `propagating` set while the session state it follows is still being carried to it. */
 export interface StoredReleaseState {
@@ -59,7 +59,7 @@ export const readLatestCheck = (db: RelationalStore, project: string) => first(d
 interface Observation { point: CapturePoint; headSha: string; branch: string | null; capturedAt: number; cleanliness: Cleanliness }
 const observations = read<[project: string, session: string], Observation>({ name: 'releaseState.observations', sql:
   `SELECT g.capture_point AS point,g.head_sha AS headSha,g.branch,g.captured_at AS capturedAt,${CLEANLINESS_SQL} AS cleanliness
-   FROM knowledge_git_provenance g WHERE g.project_id=?1 AND g.session_id=?2 AND g.capture_point IN ('session_start','session_end') AND g.head_sha IS NOT NULL` });
+   FROM knowledge_git_provenance g WHERE g.project_id=?1 AND g.session_id=?2 AND g.capture_point IN ${SESSION_CAPTURE_POINTS} AND g.head_sha IS NOT NULL` });
 
 export const readSessionObservations = (db: RelationalStore, project: string, session: string) => rows(db, observations.bind(project, session));
 

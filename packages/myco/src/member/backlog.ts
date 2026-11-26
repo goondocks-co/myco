@@ -250,7 +250,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
     try {
       if (spooled.has(sessionId)) {
         const events = await spool.drainSession(sessionId, client, budget, {
-          force: opts.force, now, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor, honourRetry: opts.rescan !== true,
+          force: opts.force, now, inlineGit: opts.inlineGit, onUnauthorized: opts.onUnauthorized, clientFor: opts.clientFor, honourRetry: opts.rescan !== true,
         });
         session.events = events;
         if (events.skipped === undefined) {
@@ -302,6 +302,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
 }
 
 export type DrainEntryBacklogOptions = {
+  inlineGit?: boolean;
   mycoHome: string; fetch?: FetchLike; now?: () => number; machineId?: string; budget?: HookBudget;
   credentialSource?: 'registry' | 'env';
   /** Inline hooks leave retained-journal migration for a detached helper or an explicit drain. */
@@ -345,7 +346,7 @@ export async function drainEntryBacklogWith(
   for (const file of migration?.ignoredSidecars ?? []) process.stderr.write(`[myco] member: legacy temporary artifact for ${current.projectId} ignored: ${file}\n`);
   const spool = new MemberSpool(current, { mycoHome: opts.mycoHome });
   const report = await drainBacklog(spool, new ServerClient(current, fetchImpl, { credentialSource: opts.credentialSource }), budget, {
-    force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst,
+    force: opts.force ?? true, now, machineId: opts.machineId ?? getMachineId(), rescan: opts.rescan ?? true, newestFirst: opts.newestFirst, inlineGit: opts.inlineGit,
     // A 401 on a live send: another process may have rotated this root's token, so the registry is re-read and the
     // record retried once.
     onUnauthorized: registryCredential ? async () => rotatedCredential(current.root, current, opts.mycoHome) : undefined,

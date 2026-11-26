@@ -60,7 +60,7 @@ export interface KindSpec {
   /** Further groups of two or more fields, each of which must hold exactly one, or at least one, of its fields. */
   pairs?: readonly { fields: readonly [string, string, ...string[]]; rule: 'exactly-one' | 'at-least-one' }[];
   /** The projection target, or 'raw' when the kind is stored in the log only. */
-  projection: 'raw' | 'sessions' | 'prompt_batches' | 'tool_calls' | 'responses' | 'plans' | 'attachments' | 'transcript_segments';
+  projection: 'raw' | 'sessions' | 'turn' | 'prompt_batches' | 'tool_calls' | 'responses' | 'plans' | 'attachments' | 'transcript_segments';
 }
 
 /** A member-minted id under a declared role. A `prompt` role carries the reference marker the shared admission and the shared reads derive from: a named prompt must be absent or owned by the writing machine. */
@@ -117,6 +117,7 @@ export const KINDS: readonly KindSpec[] = [
     name: 'session.end',
     fields: {
       endedAt: time('ended_at'),
+      branch: str(256),
       headSha: str(40),
       dirty: { bound: { type: 'bool' } },
       title: str(SESSION_TITLE_MAX_CHARS, 'title'),
@@ -237,7 +238,7 @@ export const KINDS: readonly KindSpec[] = [
     projection: 'raw',
   },
   /** Advertised (`MEMBER_FEATURES`): a member ships it only to a Deployment that names `turn`. Its effect is on the session's working state (`ingest/turns.ts`). */
-  { name: TURN_KIND, fields: { phase: { bound: { type: 'enum', values: TURN_PHASES }, required: true }, promptId: promptRef() }, projection: 'raw' },
+  { name: TURN_KIND, fields: { phase: { bound: { type: 'enum', values: TURN_PHASES }, required: true }, promptId: promptRef(), branch: str(256), headSha: str(40), dirty: { bound: { type: 'bool' } } }, projection: 'turn' },
 ];
 
 const BY_NAME = new Map(KINDS.map((k) => [k.name, k]));

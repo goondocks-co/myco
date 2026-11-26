@@ -47,6 +47,7 @@
       "import": "./dist/run-holds.js",
       "types": "./dist/run-holds.d.ts"
     },
+    "./release-check": { "import": "./dist/release-check.js", "types": "./dist/release-check.d.ts" },
     "./github-api": { "import": "./dist/github-api.js", "types": "./dist/github-api.d.ts" },
     "./github-app": { "import": "./dist/github-app.js", "types": "./dist/github-app.d.ts" },
     "./github-app-setup": { "import": "./dist/github-app-setup.js", "types": "./dist/github-app-setup.d.ts" },
