@@ -3,9 +3,12 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
+import { claimEscape, useLayer } from '../lib/layers';
 import { Button } from './Button';
 
 const ReturnFocus = createContext<RefObject<HTMLElement | null> | null>(null);
+/** How the dialog around a content closes itself, for Escape. */
+const CloseDialog = createContext<(() => void) | null>(null);
 
 function openerTarget(): HTMLElement | null {
   const active = document.activeElement;
@@ -13,22 +16,6 @@ function openerTarget(): HTMLElement | null {
   const menu = active.closest('[role="menu"]');
   const trigger = document.getElementById(menu?.getAttribute('aria-labelledby') ?? '');
   return trigger ?? active;
-}
-
-const OPEN_LAYERS = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
-
-/**
- * Only the topmost dialog or panel answers an Escape. A layer that has another open layer above it in the document
- * leaves the key alone, from the moment that layer is on the page; the layer that closes stops the key there. So a
- * dialog opened inside a panel closes alone, however soon after it appears the key is pressed.
- */
-export function topmostOwnsEscape(event: KeyboardEvent, self: HTMLElement | null): void {
-  const top = Array.from(document.querySelectorAll<HTMLElement>(OPEN_LAYERS)).at(-1);
-  if (self !== null && top !== undefined && top !== self) {
-    event.preventDefault();
-    return;
-  }
-  event.stopImmediatePropagation();
 }
 
 /** The opener is captured before dialog children mount or receive autofocus. */
@@ -39,10 +26,13 @@ export function Dialog({ open, defaultOpen, onOpenChange, ...props }: ComponentP
   const opener = useRef<HTMLElement | null>(null);
   if (shown && !previous.current) opener.current = openerTarget();
   previous.current = shown;
-  return <ReturnFocus.Provider value={opener}><DialogPrimitive.Root {...props} open={shown} onOpenChange={next => {
+  const change = (next: boolean) => {
     setLocalOpen(next);
     onOpenChange?.(next);
-  }} /></ReturnFocus.Provider>;
+  };
+  return <ReturnFocus.Provider value={opener}><CloseDialog.Provider value={() => change(false)}>
+    <DialogPrimitive.Root {...props} open={shown} onOpenChange={change} />
+  </CloseDialog.Provider></ReturnFocus.Provider>;
 }
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogClose = DialogPrimitive.Close;
@@ -60,13 +50,13 @@ export interface DialogContentProps extends Omit<ComponentPropsWithoutRef<typeof
 export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
   ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, onEscapeKeyDown, ...props }, ref) => {
     const opener = useContext(ReturnFocus);
-    const self = useRef<HTMLDivElement | null>(null);
+    const layer = useLayer<HTMLDivElement>(useContext(CloseDialog));
     return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
       <DialogPrimitive.Content
         ref={(node) => {
-          self.current = node;
+          layer(node);
           if (typeof ref === 'function') ref(node);
           else if (ref !== null) ref.current = node;
         }}
@@ -82,7 +72,7 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
         }}
         onEscapeKeyDown={(event) => {
           onEscapeKeyDown?.(event);
-          if (!event.defaultPrevented) topmostOwnsEscape(event, self.current);
+          if (!event.defaultPrevented) claimEscape(event);
         }}
         onCloseAutoFocus={(event) => {
           onCloseAutoFocus?.(event);

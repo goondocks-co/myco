@@ -4,7 +4,7 @@ import { ApiError } from '../../lib/api';
 import {
   Avatar, Button, Card, CommandBlock, ConfirmDialog, CopyButton, DayGroup, Dialog, DialogContent, DialogFooter, DialogTrigger,
   ActionLink, Disclosure, EmptyState, ErrorState, ExternalLink, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, LaneTimeline, Link, ListRow,
-  LoadingState, MoreMenu, SearchableSelect, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
+  LoadingState, MoreMenu, SearchableSelect, SlideOver, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
   TabsList, TabsTrigger, Textarea, TypeChip, tapTarget,
 } from '../index';
 
@@ -93,6 +93,10 @@ export function Specimen() {
   const [learning, setLearning] = useState(true);
   const [titling, setTitling] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [panel, setPanel] = useState(false);
+  const [panelConfirm, setPanelConfirm] = useState(false);
+  const [outer, setOuter] = useState(false);
+  const [innerConfirm, setInnerConfirm] = useState(false);
 
   useEffect(() => { document.documentElement.dataset.ready = '1'; }, []);
 
@@ -405,6 +409,41 @@ export function Specimen() {
               onConfirm={() => setConfirming(false)}
             />
           </div>
+        </Section>
+
+        <Section id="layers" kicker="Primitives" title="Layers inside layers">
+          <p className="t-small text-muted">A confirmation opened inside a panel or a dialog closes alone on Escape, and focus goes back to the button that opened it.</p>
+          <div className="flex flex-wrap items-center gap-s3" data-specimen-layers="">
+            <Button onClick={() => setPanel(true)}>Open a panel</Button>
+            <Button onClick={() => setOuter(true)}>Open a dialog with a confirmation</Button>
+          </div>
+          <SlideOver open={panel} onOpenChange={setPanel} title="Learning run · Myco" data-testid="specimen-panel">
+            <Button onClick={() => setPanelConfirm(true)}>Cancel run</Button>
+            <ConfirmDialog
+              open={panelConfirm}
+              onOpenChange={setPanelConfirm}
+              title="Cancel this run?"
+              description="Myco saves nothing more from this run. What it already saved stays."
+              confirmLabel="Cancel run"
+              cancelLabel="Keep it running"
+              onConfirm={() => setPanelConfirm(false)}
+            />
+          </SlideOver>
+          <Dialog open={outer} onOpenChange={setOuter}>
+            <DialogContent title="Access key" description="One agent outside this server reads this project with it.">
+              <DialogFooter>
+                <Button variant="danger" onClick={() => setInnerConfirm(true)}>Revoke key</Button>
+              </DialogFooter>
+              <ConfirmDialog
+                open={innerConfirm}
+                onOpenChange={setInnerConfirm}
+                title="Revoke this key?"
+                description="The agent can no longer read this project. What it already recorded stays."
+                confirmLabel="Revoke key"
+                onConfirm={() => setInnerConfirm(false)}
+              />
+            </DialogContent>
+          </Dialog>
         </Section>
 
         <Section id="states" kicker="Patterns" title="Empty, failed and loading">

@@ -1,9 +1,9 @@
-import { useRef, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
-import { topmostOwnsEscape } from '../primitives/Dialog';
+import { claimEscape, useLayer } from '../lib/layers';
 
 export interface SlideOverProps {
   open: boolean;
@@ -21,15 +21,15 @@ export interface SlideOverProps {
  * what opened it; Escape and the close button both close it.
  */
 export function SlideOver({ open, onOpenChange, title, children, ...rest }: SlideOverProps) {
-  const self = useRef<HTMLDivElement | null>(null);
+  const layer = useLayer<HTMLDivElement>(() => onOpenChange(false));
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          ref={self}
-          onEscapeKeyDown={(event) => topmostOwnsEscape(event, self.current)}
+          ref={layer}
+          onEscapeKeyDown={claimEscape}
           data-slide-over=""
           data-testid={rest['data-testid']}
           className={cn(
