@@ -113,13 +113,13 @@ describe('a project\'s settings', () => {
       'PUT /api/settings/agent.spore_curation.daily_runs':async init=>{value=JSON.parse(String(init?.body)).value;return Response.json({applied:true});},
     }));
     mount(`/p/${P}/settings`);
-    const input=await screen.findByRole('spinbutton',{name:'Curation clusters per day'});
+    const input=await screen.findByRole('spinbutton',{name:'Groups curated per day'});
     expect((input as HTMLInputElement).value).toBe('5');
     expect(screen.getByRole('switch',{name:'Curate overlapping spores'}).getAttribute('aria-checked')).toBe('true');
     expect(screen.queryByText(/Off until you enable it|Include older spores/)).toBeNull();
-    fireEvent.change(input,{target:{value:'20'}}); fireEvent.click(screen.getByRole('button',{name:'Save limit'}));
+    fireEvent.change(input,{target:{value:'20'}}); fireEvent.click(screen.getByRole('button',{name:'Save daily limit'}));
     await waitFor(()=>expect(sent).toEqual([{method:'PUT',path:'/api/settings/agent.spore_curation.daily_runs',body:{project_id:P,value:20}}]));
-    await waitFor(()=>expect((screen.getByRole('button',{name:'Save limit'}) as HTMLButtonElement).disabled).toBe(true));
+    await waitFor(()=>expect((screen.getByRole('button',{name:'Save daily limit'}) as HTMLButtonElement).disabled).toBe(true));
   });
 
   it('lets an admin preview curation while it is off, reading each outcome and refusal and continuing from where the last answer left off', async () => {
@@ -138,22 +138,22 @@ describe('a project\'s settings', () => {
       'POST /api/harness/dispatch': () => answers.shift()!(),
     }));
     mount(`/p/${P}/settings`);
-    const row = (await screen.findByRole('button', { name: 'Preview a group' })).closest<HTMLElement>('[data-setting="curation.preview"]')!;
+    const row = (await screen.findByRole('button', { name: 'Preview one group' })).closest<HTMLElement>('[data-setting="curation.preview"]')!;
     expect(row.textContent).toContain('A preview changes nothing');
     const press = async (name: string, shows: string) => {
       fireEvent.click(within(row).getByRole('button', { name }));
       await waitFor(() => expect(row.textContent).toContain(shows));
     };
-    await press('Preview a group', 'Preview queued. It starts when a machine is free.');
+    await press('Preview one group', 'Preview queued. It starts when a machine is free.');
     expect(within(row).getByRole('link', { name: /Open the preview/ }).getAttribute('href')).toBe(`/p/${P}/work/runs/run_preview01`);
     const sitting = 'The next preview skips a group whose spores were all shown here already. A preview records nothing, so leaving this page starts again from the first group.';
     expect(row.textContent).toContain(sitting);
     await press('Preview the next group', 'The place to look further from is no longer valid. Preview again to start from the beginning.');
     expect(row.textContent).not.toContain(sitting);
-    await press('Preview a group', 'No group in this stretch of spores needs curation. Look further to check the next stretch.');
+    await press('Preview one group', 'No group in this stretch of spores needs curation. Look further to check the next stretch.');
     await press('Look further', 'The spores checked aren’t searchable for similarity yet, so no group could be found.');
-    await press('Preview a group', 'Your previews in this Project are used up (5 in 24 hours). You can preview again once an earlier preview is a day old.');
-    await press('Preview a group', 'Previews are paused while a restore runs.');
+    await press('Preview one group', 'Your previews in this Project are used up (5 in 24 hours). You can preview again once an earlier preview is a day old.');
+    await press('Preview one group', 'Previews are paused while a restore runs.');
     const body = { projectId: P, task: 'curate-spores', dryRun: true };
     expect(sent.map((request) => request.body)).toEqual([body, { ...body, continuation: first }, body, { ...body, continuation: further }, body, body]);
   });
@@ -232,10 +232,10 @@ describe('a project\'s settings', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Rename Myco' });
     expect((within(dialog).getByLabelText('Name') as HTMLInputElement).value).toBe('Myco');
     fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: '  My project  ' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename', exact: true }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename project', exact: true }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The server refused (409).');
     refuse = false;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename', exact: true }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename project', exact: true }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(sent).toEqual([
       { method: 'PATCH', path: api, body: { name: 'My project' } },
@@ -257,8 +257,8 @@ describe('a project\'s settings', () => {
     mount(`/p/${P}/settings`);
     await screen.findByRole('switch', { name: 'Learning' });
     expect(screen.queryByRole('switch', { name: 'Skills' })).toBeNull();
-    fireEvent.click(await screen.findByRole('button', { name: 'Older capabilities' }));
-    expect(document.querySelector('[data-retired-capability="skills"]')?.textContent).toBe('skills: On');
+    expect(screen.queryByRole('button', { name: 'Older capabilities' })).toBeNull();
+    expect(sectionOf('capabilities').textContent).not.toContain('skills');
     expect(sent).toEqual([]);
   });
 
@@ -285,7 +285,7 @@ describe('a project\'s settings', () => {
     mount(`/p/${P}/settings`);
     for (const [capability, requirement] of [
       ['canopy', 'Needs this project’s repository to read its code.'],
-      ['vault_evolution', 'Can run Learn from sessions now; connect the repository to also run Seed project memory.'],
+      ['vault_evolution', 'Learning runs now; connect the repository so learning from the code can run too.'],
     ]) {
       const row = await waitFor(() => {
         const found = document.querySelector(`[data-setting="capability.${capability}"]`) as HTMLElement | null;
@@ -316,7 +316,7 @@ describe('a project\'s settings', () => {
     }));
     mount(`/p/${P}/settings`);
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
-    await waitFor(() => expect(row.textContent).toContain('Can run Learn from sessions when enabled; connect the repository to also run Seed project memory.'));
+    await waitFor(() => expect(row.textContent).toContain('Learning runs once this is on; connect the repository so learning from the code can run too.'));
     expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();
     expect(row.textContent).toContain('Off');
   });
@@ -330,7 +330,7 @@ describe('a project\'s settings', () => {
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
     await waitFor(() => expect(row.textContent).toContain('Needs this project’s repository to read its code.'));
     expect(row.textContent).toContain('On · Code tasks cannot run until a repository is connected');
-    expect(row.textContent).not.toContain('Can run Learn from sessions now');
+    expect(row.textContent).not.toContain('Learning runs now');
   });
 
   it('names the available work and every repository-dependent task for another mixed subset', async () => {
@@ -340,7 +340,7 @@ describe('a project\'s settings', () => {
     }));
     mount(`/p/${P}/settings`);
     const row = (await screen.findByRole('switch', { name: 'Learning' })).closest('[data-setting="capability.vault_evolution"]') as HTMLElement;
-    await waitFor(() => expect(row.textContent).toContain('Can run Learn from sessions now; connect the repository to also run Keep the code map, Seed project memory.'));
+    await waitFor(() => expect(row.textContent).toContain('Learning runs now; connect the repository so the code map update and learning from the code can run too.'));
     expect(row.textContent).toContain('On · Some tasks need a repository');
     expect(row.textContent).not.toContain('Code tasks cannot run');
   });
@@ -348,7 +348,7 @@ describe('a project\'s settings', () => {
   it('names the connected repository and branch on every code capability, and which of its tasks reads it', async () => {
     server(base());
     mount(`/p/${P}/settings`);
-    for (const [capability, reads] of [['canopy', 'Reads goondocks-co/myco @ main'], ['vault_evolution', 'Seed project memory reads goondocks-co/myco @ main']] as const) {
+    for (const [capability, reads] of [['canopy', 'It reads the code in goondocks-co/myco, on its main branch.'], ['vault_evolution', 'When you start learning from the code, Myco reads the code in goondocks-co/myco, on its main branch.']] as const) {
       const row = await waitFor(() => {
         const found = document.querySelector(`[data-setting="capability.${capability}"]`) as HTMLElement | null;
         expect(found?.textContent).toContain(reads);
@@ -399,7 +399,7 @@ describe('a project\'s settings', () => {
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(asked.filter((line) => line.includes(`${api}/`))).toEqual([]);
-    expect(screen.queryByRole('button', { name: 'Preview a group' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview one group' })).toBeNull();
   });
 
   it('leads the project\'s old access address to its access keys', async () => {
@@ -471,9 +471,9 @@ describe('the repository', () => {
     fireEvent.click(within(await openMenu('More for the repository')).getByRole('menuitem', { name: 'Disconnect repository' }));
     const dialog = await screen.findByRole('dialog');
     expect(sent).toEqual([]);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect repository' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('This changed since the page read it. Refresh before saving again.');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect repository' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(sent).toEqual([
       { method: 'DELETE', path: `${api}/repository`, body: { revision: 'rev_7' } },
@@ -524,11 +524,11 @@ describe('access keys', () => {
   it('rotates from the key\'s menu behind a confirm, then shows the new key once', async () => {
     const { sent } = server(base({ [`POST ${api}/grants/eg_live1/rotate`]: () => Response.json({ key: `mycoext_${'y'.repeat(43)}`, id: 'eg_live2' }, { status: 201 }) }));
     mount(`/p/${P}/settings`);
-    fireEvent.click(within(await openMenu('More for review bot')).getByRole('menuitem', { name: 'Rotate key' }));
+    fireEvent.click(within(await openMenu('More for review bot')).getByRole('menuitem', { name: 'Replace with a new key' }));
     const confirm = await screen.findByRole('dialog');
-    expect(confirm.textContent).toContain('stops working the moment the new one exists');
+    expect(confirm.textContent).toContain('the current one stops working at once');
     expect(sent).toEqual([]);
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Rotate key' }));
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Make a new key' }));
     expect((await screen.findByTestId('key-once')).textContent).toBe(`mycoext_${'y'.repeat(43)}`);
     expect(screen.getByRole('dialog').textContent).toContain('New access key');
     expect(sent).toEqual([{ method: 'POST', path: `${api}/grants/eg_live1/rotate`, body: undefined }]);

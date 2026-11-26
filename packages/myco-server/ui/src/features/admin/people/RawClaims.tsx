@@ -8,10 +8,10 @@ import { projectPath } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
 import { live } from '../../../lib/live';
 
-const CLAIM_LABEL = 'Claim raw data with no recorded uploader';
+const CLAIM_LABEL = 'Take ownership of raw data with no known uploader';
 const CLAIM_KEY = ['raw-claims'] as const;
 const RAW_READS = ['sessions', 'session', 'turn', 'transcript', 'blobs'] as const;
-const KIND_NAMES = { blob: 'Raw blobs', event: 'Capture events', transcript: 'Transcripts' } as const;
+const KIND_NAMES = { blob: 'Stored files', event: 'Captured events', transcript: 'Transcripts' } as const;
 type PreviewRow = RawClaimPreview['projects'][number]['kinds'][number] & { projectId: string; projectName: string };
 const previewDate = (at: number | null) => at === null ? 'Unknown' : formatDateTime(at);
 const PREVIEW_COLUMNS: readonly DataTableColumn<PreviewRow>[] = [
@@ -26,18 +26,18 @@ const previewMetadata = (row: PreviewRow) => `${KIND_NAMES[row.kind]} · Count: 
 
 function claimError(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.code === 'revision_conflict') return 'The raw data changed. Review the refreshed preview before claiming it.';
-    if (error.code === 'backfill_pending') return 'Uploader checks are still running. Wait for them to finish, then review the preview again.';
-    if (error.code === 'not_owner') return 'Only the recorded owner of this server can claim this data.';
-    return `The server refused the claim (${error.status}).`;
+    if (error.code === 'revision_conflict') return 'Nothing changed: the raw data changed while this was open. Close this and review the refreshed list.';
+    if (error.code === 'backfill_pending') return 'Nothing changed: Myco is still working out who uploaded what. Wait for it to finish, then review the list again.';
+    if (error.code === 'not_owner') return 'Nothing changed: only this server’s recorded owner can take ownership of this data.';
+    return `Nothing changed: the server refused (${error.status}).`;
   }
-  return 'Could not reach the server. Refresh the preview before trying again.';
+  return 'Nothing changed: the server could not be reached. Close this and try again.';
 }
 
 function Preview({ preview, compact = false }: { preview: RawClaimPreview; compact?: boolean }) {
   const rows = previewRows(preview);
   if (compact) return (
-    <ul aria-label="Raw data claim preview" className="flex flex-col gap-s2">
+    <ul aria-label="Raw data to take ownership of" className="flex flex-col gap-s2">
       {rows.map((row) => <li key={`${row.projectId}:${row.kind}`}>
         <Card className="flex flex-col gap-s1">
           <p className="t-body font-medium text-ink">{row.projectName}</p>
@@ -47,8 +47,8 @@ function Preview({ preview, compact = false }: { preview: RawClaimPreview; compa
     </ul>
   );
   return (
-    <DataTable label="Raw data with no recorded uploader" columns={PREVIEW_COLUMNS}
-      groups={[{ key: 'preview', label: 'Raw data to claim', rows }]}
+    <DataTable label="Raw data with no known uploader" columns={PREVIEW_COLUMNS}
+      groups={[{ key: 'preview', label: 'Raw data to take ownership of', rows }]}
       rowKey={(row) => `${row.projectId}:${row.kind}`} rowHref={(row) => projectPath(row.projectId, '/sessions')}
       phoneMeta={previewMetadata} />
   );
@@ -66,34 +66,33 @@ export function RawClaims({ nested = false }: { nested?: boolean }) {
     onSuccess: async (outcome) => {
       setReview(null);
       setConfirmed(false);
-      setNotice(outcome.claimId === null ? 'There is no raw data to claim.' : 'The reviewed raw data is now private to you.');
+      setNotice(outcome.claimId === null ? 'There is no raw data to take ownership of.' : 'That raw data is now yours, and private to you.');
       client.setQueryData(CLAIM_KEY, outcome.preview);
       await Promise.all([CLAIM_KEY[0], ...RAW_READS].map((key) => client.invalidateQueries({ queryKey: [key] })));
     },
     onError: async () => {
-      setReview(null);
       setConfirmed(false);
       await client.invalidateQueries({ queryKey: CLAIM_KEY });
     },
   });
   const total = preview.data?.projects.reduce((sum, project) => sum + project.kinds.reduce((n, kind) => n + kind.count, 0), 0) ?? 0;
   return (
-    <AdminSection id="raw-claims" nested={nested} title="Raw data with no recorded uploader" description="As this server’s owner, you can claim raw data with no recorded uploader. Claimed data becomes private to you.">
+    <AdminSection id="raw-claims" nested={nested} title="Raw data with no known uploader" description="Raw data is what machines sent before Myco processed it: transcripts, stored files and captured events. Each piece is private to whoever uploaded it. Some has no known uploader; as this server’s owner, you can take ownership of it, and it becomes private to you.">
       {preview.isPending ? <LoadingState label="Checking raw data uploaders" />
         : preview.isError ? <ErrorState error={preview.error} onRetry={() => void preview.refetch()} />
         : <Card className="flex flex-col gap-s4">
-          {total > 0 ? <Preview preview={preview.data} /> : <EmptyState title="No raw data with no recorded uploader." />}
-          {!preview.data.complete && <p role="status" className="t-small text-muted">Uploader checks are still running. Claiming is available when they finish.</p>}
+          {total > 0 ? <Preview preview={preview.data} /> : <EmptyState title="All raw data has a known uploader." />}
+          {!preview.data.complete && <p role="status" className="t-small text-muted">Myco is still working out who uploaded what. You can take ownership once it finishes.</p>}
           <Button disabled={!preview.data.complete || total === 0 || claim.isPending} onClick={() => { claim.reset(); setNotice(null); setConfirmed(false); setReview(preview.data); }}>{CLAIM_LABEL}</Button>
         </Card>}
-      {claim.isError && <p role="alert" className="t-small text-bad">{claimError(claim.error)}</p>}
       {notice !== null && <p role="status" className="t-small text-ink">{notice}</p>}
-      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); } }} title={CLAIM_LABEL}
-        description="The raw data in this preview will become private to you. This records you as its owner."
-        confirmLabel={CLAIM_LABEL} tone="primary" pending={claim.isPending} confirmDisabled={!confirmed || review?.complete !== true}
+      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); claim.reset(); } }} title="Take ownership of this raw data?"
+        description="You are recorded as its uploader, and only you can read it from then on. The files and event contents stay as they are."
+        confirmLabel="Take ownership" tone="primary" pending={claim.isPending} confirmDisabled={!confirmed || review?.complete !== true || claim.isError}
+        error={claim.isError ? claimError(claim.error) : null}
         onConfirm={() => { if (confirmed && review?.complete === true && !claim.isPending) claim.mutate(review.revision); }}>
         {review !== null && <Preview preview={review} compact />}
-        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed these projects, kinds, counts and dates and want to claim this raw data.</label>
+        <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed these projects, kinds, counts and dates, and want to take ownership of this raw data.</label>
       </ConfirmDialog>
     </AdminSection>
   );

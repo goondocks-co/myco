@@ -5,7 +5,7 @@
  * critical, and is shot at every viewport in both modes. The tap-target check
  * is proved on a planted page.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { expectAxeClean, expectFits, expectQuiet, openPage, shoot, SHOT_MATRIX, smallTapTargets, TAP_MIN, VIEWPORTS } from './checks.ts';
 import { SCREENS_ENV } from './env.ts';
 
@@ -98,4 +98,117 @@ test.describe('the tap-target check', () => {
       await context.close();
     }
   });
+});
+
+/** How many times each layer case is opened and dismissed, each way, to catch a key that lands before a layer settles. */
+const LAYER_ROUNDS = 10;
+
+/**
+ * Presses Escape at the instant a new dialog is attached to the page, before it is visible or settled: once from inside
+ * the mutation that attaches it, once as a real key press right after it is attached.
+ */
+async function escapeOnAttach(page: Page, open: () => Promise<void>, way: 'mutation' | 'keyboard'): Promise<void> {
+  if (way === 'mutation') {
+    await page.evaluate(() => {
+      const before = document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length;
+      const observer = new MutationObserver(() => {
+        if (document.querySelectorAll('[role="dialog"], [role="alertdialog"]').length <= before) return;
+        observer.disconnect();
+        (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+    await open();
+    return;
+  }
+  const count = await page.locator('[role="dialog"], [role="alertdialog"]').count();
+  await open();
+  await page.locator('[role="dialog"], [role="alertdialog"]').nth(count).waitFor({ state: 'attached' });
+  await page.keyboard.press('Escape');
+}
+
+/** Opens `upper` from `opener` and dismisses it at once, each way, `LAYER_ROUNDS` times; `lower` (when any) stays open. */
+async function closesAlone(page: Page, opener: Locator, upper: string, lower: Locator | null): Promise<void> {
+  for (const way of ['mutation', 'keyboard'] as const) {
+    for (let round = 0; round < LAYER_ROUNDS; round += 1) {
+      await escapeOnAttach(page, () => opener.click(), way);
+      await expect(page.getByRole('dialog', { name: upper })).toHaveCount(0);
+      if (lower !== null) await expect(lower).toBeVisible();
+      await expect(opener).toBeFocused();
+    }
+  }
+}
+
+test.describe('layers inside layers', () => {
+  test.skip(process.env[SCREENS_ENV.fixture] !== '1', 'the specimen is served only by the screens launcher');
+
+  for (const viewport of ['desktop', 'phone'] as const) {
+    test(`each layer closes alone on Escape: confirmations in a panel and a dialog, a dialog alone, search over the image viewer, and a select's list in a dialog ${viewport}`, async ({ browser }) => {
+      const { context, page } = await openPage(browser, { path: `${SPECIMEN}?mode=dark`, viewport, mode: 'dark' });
+      try {
+        await page.locator('html[data-ready="1"]').waitFor();
+        const layers = page.locator('[data-specimen-layers]');
+
+        await layers.getByRole('button', { name: 'Open a panel' }).click();
+        const panel = page.getByTestId('specimen-panel');
+        await expect(panel).toBeVisible();
+        await closesAlone(page, panel.getByRole('button', { name: 'Cancel run' }), 'Cancel this run?', panel);
+        await page.keyboard.press('Escape');
+        await expect(panel).toHaveCount(0);
+
+        await layers.getByRole('button', { name: 'Open a dialog with a confirmation' }).click();
+        const outer = page.getByRole('dialog', { name: 'Access key' });
+        await expect(outer).toBeVisible();
+        await closesAlone(page, outer.getByRole('button', { name: 'Revoke key' }), 'Revoke this key?', outer);
+        await page.keyboard.press('Escape');
+        await expect(outer).toHaveCount(0);
+
+        await closesAlone(page, page.getByRole('button', { name: 'Open a dialog', exact: true }), 'Rename project', null);
+
+        for (let round = 0; round < LAYER_ROUNDS; round += 1) {
+          // Search opened over the image viewer closes alone, then the viewer closes and hands focus back.
+          const showImage = layers.getByRole('button', { name: 'Open an image' });
+          await showImage.click();
+          const viewer = page.getByRole('dialog', { name: 'Image' });
+          const viewerClose = viewer.getByRole('button', { name: 'Close' });
+          await expect(viewerClose).toBeFocused();
+          await page.keyboard.press('ControlOrMeta+k');
+          const search = page.getByRole('dialog', { name: 'Search' });
+          await expect(search).toBeVisible();
+          await page.keyboard.press('Escape');
+          await expect(search).toHaveCount(0);
+          await expect(viewer).toBeVisible();
+          await expect(viewerClose).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(viewer).toHaveCount(0);
+          await expect(showImage).toBeFocused();
+
+          // The viewer alone closes on Escape.
+          await showImage.click();
+          await expect(viewerClose).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(viewer).toHaveCount(0);
+          await expect(showImage).toBeFocused();
+
+          // Escape in a searchable select's search closes its list, not the dialog; the next Escape closes the dialog.
+          const showList = layers.getByRole('button', { name: 'Open a dialog with a list' });
+          await showList.click();
+          const holder = page.getByRole('dialog', { name: 'Move this session' });
+          const select = holder.getByRole('button', { name: /^Project/ });
+          await select.click();
+          const field = holder.getByRole('combobox', { name: 'Search project' });
+          await expect(field).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(holder.getByRole('listbox')).toHaveCount(0);
+          await expect(holder).toBeVisible();
+          await expect(select).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(holder).toHaveCount(0);
+          await expect(showList).toBeFocused();
+        }
+      } finally {
+        await context.close();
+      }
+    });
+  }
 });

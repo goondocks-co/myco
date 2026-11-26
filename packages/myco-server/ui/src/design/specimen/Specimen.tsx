@@ -1,10 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Play } from 'lucide-react';
 import { ApiError } from '../../lib/api';
 import {
   Avatar, Button, Card, CommandBlock, ConfirmDialog, CopyButton, DayGroup, Dialog, DialogContent, DialogFooter, DialogTrigger,
   ActionLink, Disclosure, EmptyState, ErrorState, ExternalLink, FactRow, FactsPanel, FilterBar, HealthDot, IconButton, Input, Kbd, LaneTimeline, Link, ListRow,
-  LoadingState, MoreMenu, SearchableSelect, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
+  LoadingState, Lightbox, MoreMenu, SearchableSelect, SearchCommand, SlideOver, useSearchShortcut, SearchInput, Select, ShowMore, Stat, StatusChip, Switch, Tabs, TabsContent,
   TabsList, TabsTrigger, Textarea, TypeChip, tapTarget,
 } from '../index';
 
@@ -65,6 +65,12 @@ const WINDOWS = [
   { value: 'today', label: 'Today' },
   { value: 'week', label: 'This week' },
 ];
+/** Two pictures for the image viewer, drawn inline so the specimen loads nothing from elsewhere. */
+const SPECIMEN_IMAGES = ['#6b8f71', '#b98b5e'].map((fill, at) => ({
+  src: `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320"><rect width="480" height="320" fill="${fill}"/></svg>`)}`,
+  alt: `A specimen picture, ${at + 1} of 2`,
+}));
+
 const PROJECTS = ['myco', 'canopy-sandbox', 'docs site', 'field notes', 'harness lab', 'home lab', 'photo tools', 'reading list', 'recipes', 'scratch', 'trip planner', 'web app']
   .map((name) => ({ value: name.replace(/\s+/g, '-'), label: name }));
 
@@ -93,6 +99,16 @@ export function Specimen() {
   const [learning, setLearning] = useState(true);
   const [titling, setTitling] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [panel, setPanel] = useState(false);
+  const [panelConfirm, setPanelConfirm] = useState(false);
+  const [outer, setOuter] = useState(false);
+  const [innerConfirm, setInnerConfirm] = useState(false);
+  const [viewing, setViewing] = useState<number | null>(null);
+  const [searching, setSearching] = useState(false);
+  const searchField = useRef<HTMLInputElement>(null);
+  const [listDialog, setListDialog] = useState(false);
+  const [listProject, setListProject] = useState('myco');
+  useSearchShortcut(() => setSearching((was) => !was));
 
   useEffect(() => { document.documentElement.dataset.ready = '1'; }, []);
 
@@ -405,6 +421,53 @@ export function Specimen() {
               onConfirm={() => setConfirming(false)}
             />
           </div>
+        </Section>
+
+        <Section id="layers" kicker="Primitives" title="Layers inside layers">
+          <p className="t-small text-muted">A confirmation opened inside a panel or a dialog closes alone on Escape, and focus goes back to the button that opened it.</p>
+          <div className="flex flex-wrap items-center gap-s3" data-specimen-layers="">
+            <Button onClick={() => setPanel(true)}>Open a panel</Button>
+            <Button onClick={() => setOuter(true)}>Open a dialog with a confirmation</Button>
+            <Button onClick={() => setViewing(0)}>Open an image</Button>
+            <Button onClick={() => setSearching(true)}>Open search</Button>
+            <Button onClick={() => setListDialog(true)}>Open a dialog with a list</Button>
+          </div>
+          {viewing !== null && <Lightbox images={SPECIMEN_IMAGES} index={viewing} onNavigate={setViewing} onClose={() => setViewing(null)} />}
+          <SearchCommand open={searching} onOpenChange={setSearching} title="Search" initialFocus={searchField}>
+            <SearchInput ref={searchField} label="Search the specimen" large value={query} onChange={(event) => setQuery(event.target.value)} />
+          </SearchCommand>
+          <Dialog open={listDialog} onOpenChange={setListDialog}>
+            <DialogContent title="Move this session" description="Choose the project it belongs to.">
+              <SearchableSelect label="Project" value={listProject} onValueChange={setListProject} options={PROJECTS} />
+            </DialogContent>
+          </Dialog>
+          <SlideOver open={panel} onOpenChange={setPanel} title="Learning run · Myco" data-testid="specimen-panel">
+            <Button onClick={() => setPanelConfirm(true)}>Cancel run</Button>
+            <ConfirmDialog
+              open={panelConfirm}
+              onOpenChange={setPanelConfirm}
+              title="Cancel this run?"
+              description="Myco saves nothing more from this run. What it already saved stays."
+              confirmLabel="Cancel run"
+              cancelLabel="Keep it running"
+              onConfirm={() => setPanelConfirm(false)}
+            />
+          </SlideOver>
+          <Dialog open={outer} onOpenChange={setOuter}>
+            <DialogContent title="Access key" description="One agent outside this server reads this project with it.">
+              <DialogFooter>
+                <Button variant="danger" onClick={() => setInnerConfirm(true)}>Revoke key</Button>
+              </DialogFooter>
+              <ConfirmDialog
+                open={innerConfirm}
+                onOpenChange={setInnerConfirm}
+                title="Revoke this key?"
+                description="The agent can no longer read this project. What it already recorded stays."
+                confirmLabel="Revoke key"
+                onConfirm={() => setInnerConfirm(false)}
+              />
+            </DialogContent>
+          </Dialog>
         </Section>
 
         <Section id="states" kicker="Patterns" title="Empty, failed and loading">

@@ -923,7 +923,7 @@ describe('reviewed run evidence', () => {
       const open = await openReviewed({ run: { task }, source: { branch: 'audit-source', commit: 'a'.repeat(40) } });
       const read = within(open).getByRole('region', { name: 'What it read' });
       expect(read.textContent).toContain('Which files it read isn’t recorded: Myco kept no step log for this run. This doesn’t mean it read none.');
-      expect(read.textContent).toContain('It worked from audit-source @ aaaaaaa.');
+      expect(read.textContent).toContain('It worked from the audit-source branch, at commit aaaaaaa.');
       expect(within(open).queryByRole('region', { name: 'Sessions it read' })).toBeNull();
     });
   }
@@ -1028,6 +1028,28 @@ it('uses the per-run server cancellation decision even when account scope and di
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel run' }));
   await waitFor(() => expect(accepted.sent).toEqual([{ path: `/api/projects/${P}/runs/run_a2c4e6f801/cancel`, body: undefined }]));
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
+});
+
+it('says a cancel it could not confirm, reads the run again, and opens clean the next time', async () => {
+  const live = runDetail(learning[2]!, { run: { status: 'queued', completedAt: null, canCancel: true, cancelReason: null } });
+  let reads = 0;
+  server({ ...routes({ detail: { [`/api/projects/${P}/runs/run_a2c4e6f801`]: () => { reads += 1; return Response.json(live); } } }), [`/api/projects/${P}/runs/run_a2c4e6f801/cancel`]: () => new Response(null, { status: 503 }) });
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter><RunPanel projectId={P} runId="run_a2c4e6f801" projectName="Myco" now={NOW} onClose={() => {}} /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  const open = await panel();
+  fireEvent.click(await within(open).findByRole('button', { name: 'Cancel run' }));
+  let dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
+  const before = reads;
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel run' }));
+  expect((await within(dialog).findByRole('alert')).textContent).toBe('Myco couldn’t confirm whether the run was cancelled. Close this: the page says where the run stands once Myco has read it again.');
+  await waitFor(() => expect(reads).toBeGreaterThan(before));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it running' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Cancel this run?' })).toBeNull());
+  // Once the run has been read again and is still running, cancelling is offered afresh.
+  await waitFor(() => expect((within(open).getByRole('button', { name: 'Cancel run' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(within(await panel()).getByRole('button', { name: 'Cancel run' }));
+  dialog = await screen.findByRole('dialog', { name: 'Cancel this run?' });
+  expect(within(dialog).queryByRole('alert')).toBeNull();
 });
 
 it('uses the registry description when confirming a task', async () => {

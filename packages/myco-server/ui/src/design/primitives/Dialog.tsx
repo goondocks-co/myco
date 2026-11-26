@@ -3,9 +3,12 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { focusRing } from '../lib/classes';
+import { claimEscape, useLayer } from '../lib/layers';
 import { Button } from './Button';
 
 const ReturnFocus = createContext<RefObject<HTMLElement | null> | null>(null);
+/** How the dialog around a content closes itself, for Escape. */
+const CloseDialog = createContext<(() => void) | null>(null);
 
 function openerTarget(): HTMLElement | null {
   const active = document.activeElement;
@@ -23,10 +26,13 @@ export function Dialog({ open, defaultOpen, onOpenChange, ...props }: ComponentP
   const opener = useRef<HTMLElement | null>(null);
   if (shown && !previous.current) opener.current = openerTarget();
   previous.current = shown;
-  return <ReturnFocus.Provider value={opener}><DialogPrimitive.Root {...props} open={shown} onOpenChange={next => {
+  const change = (next: boolean) => {
     setLocalOpen(next);
     onOpenChange?.(next);
-  }} /></ReturnFocus.Provider>;
+  };
+  return <ReturnFocus.Provider value={opener}><CloseDialog.Provider value={() => change(false)}>
+    <DialogPrimitive.Root {...props} open={shown} onOpenChange={change} />
+  </CloseDialog.Provider></ReturnFocus.Provider>;
 }
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogClose = DialogPrimitive.Close;
@@ -42,13 +48,18 @@ export interface DialogContentProps extends Omit<ComponentPropsWithoutRef<typeof
 
 /** A centred dialog traps focus and returns it to its connected opener or the page. */
 export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, ...props }, ref) => {
+  ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, onEscapeKeyDown, ...props }, ref) => {
     const opener = useContext(ReturnFocus);
+    const layer = useLayer<HTMLDivElement>(useContext(CloseDialog));
     return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
       <DialogPrimitive.Content
-        ref={ref}
+        ref={(node) => {
+          layer(node);
+          if (typeof ref === 'function') ref(node);
+          else if (ref !== null) ref.current = node;
+        }}
         {...(description == null ? { 'aria-describedby': undefined } : {})}
         className={cn(
           'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-var(--s-12))] w-[calc(100vw-var(--s-8))] max-w-[480px] -translate-x-1/2 -translate-y-1/2 flex-col gap-s4 overflow-y-auto',
@@ -58,6 +69,10 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
         {...props}
         onOpenAutoFocus={(event) => {
           onOpenAutoFocus?.(event);
+        }}
+        onEscapeKeyDown={(event) => {
+          onEscapeKeyDown?.(event);
+          if (!event.defaultPrevented) claimEscape(event);
         }}
         onCloseAutoFocus={(event) => {
           onCloseAutoFocus?.(event);
@@ -104,6 +119,8 @@ export interface ConfirmDialogProps {
   /** What the action will do and, for a paid action, what it will spend. */
   description: ReactNode;
   confirmLabel: string;
+  /** The way out without acting, where "Cancel" would read as the action itself, as in "Keep it running". */
+  cancelLabel?: string;
   /** `danger` for destructive actions, `primary` for paid or consequential ones. */
   tone?: 'danger' | 'primary';
   onConfirm: () => void;
@@ -117,7 +134,7 @@ export interface ConfirmDialogProps {
 
 /** The confirmation every destructive or paid action passes through. */
 export function ConfirmDialog({
-  open, onOpenChange, title, description, confirmLabel, tone = 'danger', onConfirm, pending = false, confirmDisabled = false, error = null, children,
+  open, onOpenChange, title, description, confirmLabel, cancelLabel = 'Cancel', tone = 'danger', onConfirm, pending = false, confirmDisabled = false, error = null, children,
 }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
@@ -125,7 +142,7 @@ export function ConfirmDialog({
         {children}
         {error != null && error !== '' && <p role="alert" className="t-small text-bad">{error}</p>}
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>Cancel</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>{cancelLabel}</Button>
           <Button variant={tone} onClick={onConfirm} pending={pending} disabled={confirmDisabled}>{confirmLabel}</Button>
         </DialogFooter>
       </DialogContent>

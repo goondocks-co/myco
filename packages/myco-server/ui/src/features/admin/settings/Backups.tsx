@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useStatus } from '../../../hooks/use-status';
 import { live } from '../../../lib/live';
-import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
+import { DASHBOARD_BACKUP_LIMITS, HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
 import { useBackups, useRestoreJob, type BackupRow, type RestoreJob, type RestorePreview } from '../../../hooks/use-backups';
@@ -72,7 +72,7 @@ export function BackupsSection() {
       nested
       id={BACKUP_COPIES_ANCHOR}
       title="Backups made here"
-      description="A backup made here holds up to 64 MiB of records for an additive restore. It reads records while the server runs, so it is not a consistent snapshot, and it leaves out attachment and transcript files, settings and secrets."
+      description={`A backup made here is a copy of this server’s records, for bringing back records that were deleted or lost. Its records are read together, at one moment. It can be made while this server holds up to ${DASHBOARD_BACKUP_LIMITS.rows.toLocaleString()} records and about ${DASHBOARD_BACKUP_LIMITS.bytes / 1_048_576} MiB of them by Myco’s cautious estimate. It leaves out attachment and transcript files, settings and stored keys. A complete recovery copy, below, holds the files and settings too and is what puts the whole server back; the keys that unlock its stored keys, and the GitHub App’s key, are kept separately from it.`}
       actions={<Button variant="primary" disabled={!backupPermission.allowed} pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
     >
       {!backupPermission.allowed && <p className="t-small text-muted">{backupPermission.reason ?? 'Only an admin can manage backups.'}</p>}
@@ -168,8 +168,8 @@ export function BackupsSection() {
         open={confirming !== null}
         onOpenChange={(open) => { if (!open) { setConfirming(null); backups.restore.reset(); } }}
         title={confirming === null ? 'Restore this backup?' : `Restore the backup from ${backupDate(confirming.preview.header.createdAt)}?`}
-        description="Records this server already holds stay exactly as they are; only missing records are added."
-        confirmLabel="Restore"
+        description="Myco adds the records from this backup that this server is missing and can take. Deletions and archived transcript parts the backup records still apply here, so a session the backup records as deleted loses its parent links here, and a transcript part it records as archived is read from the archive instead of this server’s copy. What Myco already knows it will skip is listed below; the result says how many records it added and which tables it skipped. A session this server has deleted stays deleted."
+        confirmLabel="Add the missing records"
         tone="primary"
         pending={backups.restore.isPending}
         confirmDisabled={confirming?.preview.restore?.allowed !== true}
@@ -313,7 +313,7 @@ function ForgetUnsettledExport({ forgettableAt, now }: { forgettableAt: number |
         onOpenChange={setConfirming}
         title="Forget the earlier export?"
         description="Only do this if that export is no longer running. The next attempt then starts an export of its own."
-        confirmLabel="Forget it"
+        confirmLabel="Forget the earlier export"
         pending={forget.isPending}
         error={forget.error === null ? null : `It was not forgotten: ${errorWords(forget.error).title.toLowerCase()}.`}
         onConfirm={() => forget.mutate(undefined, { onSuccess: () => setConfirming(false) })}

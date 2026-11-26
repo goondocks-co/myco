@@ -69,6 +69,7 @@ export function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ow
   const [roleReview, setRoleReview] = useState<MemberRow | null>(null);
   const [roleError, setRoleError] = useState<string | null>(null);
   const [roleConfirmed, setRoleConfirmed] = useState(false);
+  const [roleStale, setRoleStale] = useState(false);
   const [readmitting, setReadmitting] = useState<MemberRow | null>(null);
   const [readmitError, setReadmitError] = useState<string | null>(null);
   const self = removing !== null && removing.id === viewerId;
@@ -87,8 +88,8 @@ export function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ow
                 showMachineCount={isAdmin}
                 actions={[
                   ...(isAdmin && !member.linked ? [{ label: 'Connect GitHub', onSelect: () => setLinking(member) }] : []),
-                  ...(isAdmin ? [{ label: `${INVITE_CONTROLS.button} for them`, onSelect: () => onAddMachine(member.id) }] : []),
-                  ...(isOwner && member.id !== viewerId ? [{ label: member.role === 'admin' ? 'Make member' : 'Make admin', onSelect: () => { setRoleError(null); setRoleConfirmed(false); actions.changeRole.reset(); setRoleReview(member); } }] : []),
+                  ...(isAdmin && member.id !== viewerId ? [{ label: `${INVITE_CONTROLS.button} for them`, onSelect: () => onAddMachine(member.id) }] : []),
+                  ...(isOwner && member.id !== viewerId ? [{ label: member.role === 'admin' ? 'Make member' : 'Make admin', onSelect: () => { setRoleError(null); setRoleStale(false); setRoleConfirmed(false); actions.changeRole.reset(); setRoleReview(member); } }] : []),
                   ...(isAdmin && member.id !== ownerMemberId && !(isOwner && member.id === viewerId) && (member.role === 'member' || isOwner) ? [{ label: 'Remove', onSelect: () => { setRemoveError(null); actions.revokeMember.reset(); setRemoving(member); } }] : []),
                 ]}
               />
@@ -141,7 +142,7 @@ export function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ow
         description={self
           ? 'This is you. Your machines stop writing, your invitations are withdrawn, and you can no longer sign in. Your history stays.'
           : `Their machines stop writing at once, their open invitations are withdrawn, and they can no longer sign in. Their history stays. ${MEMBER_KEEPS_MACHINES}`}
-        confirmLabel="Remove"
+        confirmLabel={self ? 'Remove myself' : 'Remove from this server'}
         pending={actions.revokeMember.isPending}
         error={removeError}
         onConfirm={() => {
@@ -156,27 +157,31 @@ export function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ow
       <ConnectGithubDialog member={linking} name={linking === null ? '' : nameOfPerson(linking)} onClose={() => setLinking(null)} />
       <ConfirmDialog
         open={roleReview !== null}
-        onOpenChange={(open) => { if (!open) { setRoleReview(null); setRoleConfirmed(false); } }}
+        onOpenChange={(open) => { if (!open) { setRoleReview(null); setRoleConfirmed(false); setRoleError(null); setRoleStale(false); } }}
         title={roleReview?.role === 'admin' ? `Make ${roleReview === null ? '' : nameOfPerson(roleReview)} a member?` : `Make ${roleReview === null ? '' : nameOfPerson(roleReview)} an admin?`}
         description={roleReview?.role === 'admin'
           ? 'They will lose server administration powers. Their membership and data stay.'
           : 'They will gain server administration powers. Only the owner can change roles or transfer ownership.'}
         confirmLabel={roleReview?.role === 'admin' ? 'Make member' : 'Make admin'}
-        confirmDisabled={!roleConfirmed}
+        confirmDisabled={!roleConfirmed || roleStale}
         pending={actions.changeRole.isPending}
         error={roleError}
         onConfirm={() => {
           if (roleReview === null || !roleConfirmed) return;
+          setRoleError(null);
           actions.changeRole.mutate({ memberId: roleReview.id, role: roleReview.role === 'admin' ? 'member' : 'admin', expectedRevision: roleReview.roleRevision }, {
             onSuccess: () => { setRoleReview(null); setRoleConfirmed(false); },
-            onError: (failure) => { setRoleReview(null); setRoleConfirmed(false); setRoleError(failure instanceof ApiError && failure.code === 'revision_conflict'
-              ? 'That role changed. Review the refreshed person before trying again.' : refusalText(failure)); },
+            onError: (failure) => {
+              const stale = failure instanceof ApiError && failure.code === 'revision_conflict';
+              setRoleConfirmed(false);
+              setRoleStale(stale);
+              setRoleError(stale ? 'Nothing changed: their role changed while this was open. Close this and review the refreshed person before trying again.' : refusalText(failure));
+            },
           });
         }}
       >
         <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={roleConfirmed} onChange={(event) => setRoleConfirmed(event.target.checked)} />I reviewed this role change.</label>
       </ConfirmDialog>
-      {roleReview === null && roleError !== null && <p role="alert" className="t-small text-bad">{roleError}</p>}
       <ConfirmDialog
         open={readmitting !== null}
         onOpenChange={(open) => { if (!open) setReadmitting(null); }}
@@ -214,7 +219,8 @@ function PersonItem({ member, viewerId, showMachineCount, actions }: { member: M
           <span className="t-small text-muted">{personLine(member, showMachineCount)}</span>
         </div>
       </div>
-      {actions.length > 0 && <div className="shrink-0"><ActionMenu label="Manage" items={actions} /></div>}
+      {actions.length === 1 && <div className="shrink-0"><Button onClick={actions[0]!.onSelect}>{actions[0]!.label}</Button></div>}
+      {actions.length > 1 && <div className="shrink-0"><ActionMenu label="Manage" items={actions} /></div>}
     </li>
   );
 }
@@ -314,8 +320,8 @@ export function Invitations({ invitations, viewerId, nameOf, people }: Invitatio
         open={withdrawing !== null}
         onOpenChange={(open) => { if (!open) setWithdrawing(null); }}
         title="Withdraw this invitation?"
-        description="Its link stops working at once. Nothing else changes."
-        confirmLabel="Withdraw"
+        description="Its link stops working at once, so nobody can join with it. Nothing else changes; you can make a new one any time."
+        confirmLabel="Withdraw invitation"
         pending={withdraw.isPending}
         error={error}
         onConfirm={() => {
@@ -362,7 +368,7 @@ export function RunCredentials() {
         onOpenChange={(open) => { if (!open) setStopping(null); }}
         title="Stop this run’s sign-in?"
         description="The run can no longer write. What it already wrote stays."
-        confirmLabel="Stop"
+        confirmLabel="Stop its sign-in"
         pending={stop.isPending}
         error={error}
         onConfirm={() => {

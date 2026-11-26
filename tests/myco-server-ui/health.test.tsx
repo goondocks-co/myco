@@ -432,11 +432,11 @@ describe('Health', () => {
     expect(dialog.textContent).toContain('comes from another server');
     expect(dialog.textContent).toContain('People from the other server are listed here but cannot sign in until the owner re-admits them.');
     expect(dialog.textContent).not.toContain('their sign-ins, live here');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add the missing records' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('Turn on the switch');
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
     fireEvent.click(within(dialog).getByRole('switch'));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add the missing records' }));
     await waitFor(() => expect(posts.at(-1)).toEqual({ path: '/api/backups/bk_7f3a9c0e21/restore', body: { allowForeignLineage: true } }));
     expect((await screen.findByText(/^Restored: /)).textContent).toBe('Restored: 5 records added.');
     expect(screen.getByText('spores: newer rows are kept')).toBeTruthy();
@@ -487,7 +487,7 @@ describe('Health', () => {
     mount(BACKUPS);
     const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Add the missing records' }));
     expect((await screen.findByText(/^Restoring: /)).textContent).toBe('Restoring: 25% done, 10 records added so far.');
     expect(screen.getByText(/continues on the server/)).toBeTruthy();
     cleanup();
@@ -564,7 +564,7 @@ describe('Health', () => {
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByRole('switch')).toBeNull();
-    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((within(dialog).getByRole('button', { name: 'Add the missing records' }) as HTMLButtonElement).disabled).toBe(false);
     expect(dialog.querySelector('[data-restore-authority-excluded]')).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -584,7 +584,7 @@ describe('Health', () => {
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
     expect(dialog.textContent).toContain('It holds members 2 · sessions 4');
     expect(within(dialog).getByText('Only the owner can restore a backup that includes members or access authority.')).toBeTruthy();
-    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole('button', { name: 'Add the missing records' }) as HTMLButtonElement).disabled).toBe(true);
     expect(posts.map((p) => p.path)).toEqual(['/api/backups/bk_7f3a9c0e21/restore-preview']);
   });
 
@@ -596,7 +596,7 @@ describe('Health', () => {
     const list = await screen.findByRole('group', { name: 'Backups made here' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const dialog = await screen.findByRole('dialog', { name: /^Restore the backup from / });
-    expect((within(dialog).getByRole('button', { name: 'Restore' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole('button', { name: 'Add the missing records' }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(dialog).getByText('Restore permission is unavailable. Refresh the preview.')).toBeTruthy();
   });
 

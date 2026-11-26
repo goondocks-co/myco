@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { agoWords } from '@goondocks/myco-shared/time-words';
-import { Button, CommandBlock, ConfirmDialog, DialogFooter, Disclosure, ErrorState, Input, type Tone } from '../../../design';
+import { Button, CommandBlock, ConfirmDialog, DialogFooter, Disclosure, ErrorState, errorWords, Input, type Tone } from '../../../design';
 import { deleteJson, fetchJson, postJson } from '../../../lib/api';
 import { live } from '../../../lib/live';
 import { ConnectionRow } from './ConnectionRow';
@@ -89,12 +89,12 @@ export function TelemetryRows({ endpoint, keys }: { endpoint: string; keys: read
       <ConfirmDialog
         open={revoking !== null}
         title="Remove this telemetry key?"
-        description="The launcher stops being accepted at once, and what it reported is removed in the background."
+        description="Reports from that launcher are refused from now on, and what it already reported is removed in the background. Sessions and everything else Myco learned stay."
         confirmLabel="Remove key"
         onOpenChange={(open) => { if (!open) setRevoking(null); }}
         onConfirm={() => { if (revoking !== null) revoke.mutate(revoking.id, { onSuccess: () => setRevoking(null) }); }}
         pending={revoke.isPending}
-        error={revoke.error?.message}
+        error={revoke.error ? `Nothing changed: ${errorWords(revoke.error).title.toLowerCase()}.` : null}
       />
     </>
   );

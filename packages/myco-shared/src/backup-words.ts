@@ -1,5 +1,8 @@
 /** The availability cost of the hosted database export used by manual and scheduled backups. */
 export const HOSTED_BACKUP_PAUSE_NOTICE = 'Each hosted backup pauses database requests while it exports the database: the dashboard and tools cannot read or save data, capture waits on members’ machines for later delivery, and larger databases take longer.';
+/** The most a backup made from the dashboard may take: rows, and conservatively estimated bytes. */
+export const DASHBOARD_BACKUP_LIMITS = { rows: 10_000, bytes: 8 * 1024 * 1024 } as const;
+
 export const NATIVE_BACKUP_NOTICE = 'A native backup copies the database and stored objects while Myco keeps serving.';
 
 /** Retired backup tables and the names their data has for an owner. */

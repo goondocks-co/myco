@@ -14,7 +14,6 @@ export interface CapabilitiesAnswer {
   settings: Record<string, number>;
   revisions: Record<string, number>;
   capabilityRevisions: Record<string, number>;
-  retiredCapabilities?: Record<string, boolean>;
 }
 
 /** A stored key described, never shown. */

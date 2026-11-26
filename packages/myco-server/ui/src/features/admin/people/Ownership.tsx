@@ -32,11 +32,10 @@ export function Ownership({ isOwner, nameOfCandidate, nested = false }: { isOwne
       await client.invalidateQueries({ queryKey: OWNERSHIP_KEY });
     },
     onError: async (failure) => {
-      setReview(null);
       setConfirmed(false);
       setError(failure instanceof ApiError && failure.code === 'revision_conflict'
-        ? 'Ownership changed. Review the refreshed owner and choose again.'
-        : 'The server could not change the owner. Review the refreshed ownership before trying again.');
+        ? 'Nothing changed: ownership changed while this was open. Close this, review the refreshed owner and choose again.'
+        : 'Nothing changed: the server could not change the owner. Close this and review the refreshed ownership before trying again.');
       await client.invalidateQueries({ queryKey: OWNERSHIP_KEY });
     },
   });
@@ -69,12 +68,12 @@ export function Ownership({ isOwner, nameOfCandidate, nested = false }: { isOwne
             <Button disabled={candidate === undefined || change.isPending} onClick={choose}>{label}</Button>
           </>}
         </Card>}
-      {error !== null && <p role="alert" className="t-small text-bad">{error}</p>}
-      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); } }} title={review?.kind === 'transfer' ? 'Transfer server ownership' : 'Record server owner'}
+      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) { setReview(null); setConfirmed(false); setError(null); } }} title={review?.kind === 'transfer' ? `Make ${review.name} the owner?` : `Record ${review?.name ?? ''} as the owner?`}
         description={review?.kind === 'transfer'
-          ? `Transfer server ownership to ${review.name}. They will gain owner powers. You will remain an admin and lose owner powers.`
-          : `Record ${review?.name ?? ''} as this server’s owner.`}
-        confirmLabel={review?.kind === 'transfer' ? 'Transfer ownership' : 'Record server owner'} tone="primary" pending={change.isPending} confirmDisabled={!confirmed}
+          ? `${review.name} becomes this server’s owner: only they can then make people admins or members, and hand ownership on. You stay an admin, but can no longer do those things.`
+          : `${review?.name ?? ''} becomes this server’s owner: only they can make people admins or members, and hand ownership on.`}
+        confirmLabel={review?.kind === 'transfer' ? `Make ${review.name} the owner` : 'Record the owner'} tone="primary" pending={change.isPending} confirmDisabled={!confirmed || error !== null}
+        error={error}
         onConfirm={() => { if (review !== null && confirmed && !change.isPending) change.mutate(review); }}>
         <label className="flex items-start gap-s2 t-small"><Input type="checkbox" className="size-s4 shrink-0 px-0" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />I reviewed the selected person and want to {review?.kind === 'transfer' ? 'transfer ownership to them' : 'record them as the server owner'}.</label>
       </ConfirmDialog>

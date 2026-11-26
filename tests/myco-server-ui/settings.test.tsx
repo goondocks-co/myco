@@ -598,7 +598,7 @@ describe('Settings, in six sections', () => {
     expect((screen.getByLabelText('Embedding model') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(panel as HTMLElement).getByRole('button', { name: 'Cancel the switch' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toContain('Search keeps using bge-m3. The bge-base-en-v1.5 results built so far are removed.');
+    expect(dialog.textContent).toContain('Search keeps using bge-m3, so what you can find doesn’t change. What was built for bge-base-en-v1.5 so far is thrown away');
     expect(sent).toEqual([]);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel the switch' }));
     await waitFor(() => expect(sent).toHaveLength(1));
@@ -1152,7 +1152,7 @@ describe('Connections', () => {
     for (const el of document.querySelectorAll('input, textarea')) expect((el as HTMLInputElement).value).not.toBe(SECRET);
     fireEvent.click(within(connection('Anthropic key')).getByRole('button', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toContain('stops working until a new one is stored');
+    expect(dialog.textContent).toContain('Work that needs this key waits until one is stored. A runner set to “A stored key first, then the runner’s own sign-in” that is signed in itself carries on with its own sign-in, billed to the account it signed in with; one that isn’t signed in waits too.');
     expect(sent).toHaveLength(1);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
     await waitFor(() => expect(sent).toHaveLength(2));
@@ -1199,7 +1199,7 @@ describe('Connections', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     await waitFor(() => expect(document.body.textContent).not.toContain('example-key'));
     fireEvent.click(within(connection('routr on mbp')).getByRole('button', { name: 'Remove' }));
-    expect((await screen.findByRole('dialog')).textContent).toContain('what it reported is removed');
+    expect((await screen.findByRole('dialog')).textContent).toContain('what it already reported is removed');
     fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
     await waitFor(() => expect(revoked).toBe(true));
     expect(sent.map(({ method, path }) => `${method} ${path}`)).toEqual(['POST /api/telemetry/keys', 'POST /api/telemetry/keys/tk_build/revoke']);
@@ -1580,7 +1580,7 @@ describe('People and machines', () => {
     expect(within(machines).getByRole('button', { name: 'Former machines (1)' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Advanced › Owner actions' }).getAttribute('href')).toBe('/settings/advanced#owner-actions');
     fireEvent.click(screen.getByRole('button', { name: 'Invite a teammate' }));
-    expect(await screen.findByRole('button', { name: 'Create invitation' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Create invitation link' })).toBeTruthy();
     expect(rawIdsIn(document.body, ['[data-testid="location"]'])).toEqual([]);
   });
 

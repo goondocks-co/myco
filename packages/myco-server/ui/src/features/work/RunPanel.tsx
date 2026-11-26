@@ -3,6 +3,7 @@ import { interruptionWords, storedRunFailureWords } from '@goondocks/myco-shared
 import { diagnosticReaderCode, LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-diagnostic';
 import { ActionLink, Button, ConfirmDialog, CopyButton, Disclosure, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, SlideOver, TypeChip } from '../../design';
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useTaskNames } from '../../hooks/use-tasks';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useStarterNames } from './names';
@@ -43,7 +44,7 @@ export function RunPanel({ projectId, runId, projectName, now, onClose }: RunPan
   const title = `${kind === null ? 'Run' : capitalize(runNoun(kind))} · ${projectName}`;
   return (
     <SlideOver open onOpenChange={(open) => { if (!open) onClose(); }} title={title} data-testid="run-panel">
-      {detail.data !== undefined ? <RunBody key={`${projectId}/${runId}`} answer={detail.data} projectId={projectId} now={now} />
+      {detail.data !== undefined ? <RunBody key={`${projectId}/${runId}`} answer={detail.data} projectId={projectId} now={now} runRead={{ fetching: detail.isFetching, failed: detail.isError, at: detail.dataUpdatedAt }} />
         : detail.isPending ? <LoadingState shape="reading" label="Loading the run" />
         : detail.error instanceof ApiError && detail.error.status === 404
           ? <p role="status" className="t-body text-muted">This run isn’t in {projectName}. It may have been cleared out with older runs.</p>
@@ -75,11 +76,18 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectId: string; now: number }) {
+/** How the run's own read stands: reading again, failed, and when it last answered. */
+interface RunRead { fetching: boolean; failed: boolean; at: number }
+
+function RunBody({ answer, projectId, now, runRead }: { answer: RunDetailAnswer; projectId: string; now: number; runRead: RunRead }) {
   const { run, read, produced } = answer;
   const cancel = useCancelRun(projectId, run.id);
+  const client = useQueryClient();
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // After a cancel Myco could not confirm, another waits for a read of the run newer than that attempt.
+  const [unconfirmedAt, setUnconfirmedAt] = useState<number | null>(null);
+  const fresh = unconfirmedAt === null || (!runRead.fetching && !runRead.failed && runRead.at >= unconfirmedAt);
   const canCancel = run.canCancel === true;
   const kind = kindOf(run.task);
   const name = useStarterNames();
@@ -131,22 +139,33 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           ? 'The code map was already current. Nothing ran, and nothing was spent.'
           : <>Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</>}</p>}
         {live && (canCancel
-          ? <Button size="sm" onClick={() => { setCancelError(null); setConfirmCancel(true); }}>Cancel run</Button>
+          ? <Button size="sm" disabled={!fresh} onClick={() => { setCancelError(null); cancel.reset(); setConfirmCancel(true); }}>Cancel run</Button>
           : <p className="t-small text-muted">{run.cancelReason ?? 'Run cancellation permission is unavailable. Refresh this run.'}</p>)}
         {cancelError !== null && <p role="alert" className="t-small text-bad">{cancelError}</p>}
+        {!fresh && <p role="status" className="t-small text-muted" data-cancel-unconfirmed="">{runRead.fetching
+          ? 'Myco couldn’t confirm whether this run was cancelled. Reading the run again…'
+          : 'Myco couldn’t confirm whether this run was cancelled, and couldn’t read the run again. Reload this page to see where it stands.'}</p>}
       </header>
       <ConfirmDialog
         open={confirmCancel}
         onOpenChange={setConfirmCancel}
         title="Cancel this run?"
-        description="The run stops. What it already saved stays."
+        description="From now on Myco saves nothing more from this run, and it doesn’t finish its work. The runner may take a moment to stop the agent. What the run already saved stays."
         confirmLabel="Cancel run"
-        confirmDisabled={!canCancel}
+        cancelLabel="Keep it running"
+        confirmDisabled={!canCancel || !fresh}
         pending={cancel.isPending}
-        error={cancel.error instanceof ApiError ? cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.' : 'The server refused to cancel this run.' : cancel.error ? 'Could not reach the server.' : null}
-        onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, { onSuccess: () => setConfirmCancel(false), onError: (error) => {
-          if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
-        } }); }}
+        error={cancel.error === null ? null
+          : cancel.error instanceof ApiError && cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.'
+          : 'Myco couldn’t confirm whether the run was cancelled. Close this: the page says where the run stands once Myco has read it again.'}
+        onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, {
+          onSuccess: () => setConfirmCancel(false),
+          onError: (error) => {
+            if (!(error instanceof ApiError && error.status === 404)) setUnconfirmedAt(Date.now());
+            void client.invalidateQueries({ queryKey: ['run', projectId, run.id] });
+            if (error instanceof ApiError && error.status === 404) setCancelError('This run has already ended, or you no longer have permission to cancel it.');
+          },
+        }); }}
       />
 
       {cause !== null && (
@@ -232,7 +251,7 @@ function WhatItRead({ answer, projectId, now, latest }: { answer: RunDetailAnswe
       {files && <FilesReadPart evidence={latest} />}
       {repositoryTask && (
         <p className="t-small text-muted" data-run-source="">
-          {answer.source === null ? "The source it read wasn't recorded." : `It worked from ${answer.source.branch} @ ${answer.source.commit.slice(0, 7)}.`}
+          {answer.source === null ? "The source it read wasn't recorded." : `It worked from the ${answer.source.branch} branch, at commit ${answer.source.commit.slice(0, 7)}.`}
         </p>
       )}
     </section>
@@ -292,7 +311,7 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
   if (kind === 'map' && (run.result === 'produced' || run.result === 'failed_with_output')) {
     return (
       <div className="flex flex-col gap-s1 t-small text-ink-2">
-        <p>{answer.source === null ? 'A code map.' : 'A code map from the pinned source.'}</p>
+        <p>{answer.source === null ? 'A code map.' : 'A code map of the commit it worked from.'}</p>
         {answer.map?.replaced && <p className="text-muted">A newer map has replaced this run’s map.</p>}
         <OnwardLink to={projectPath(projectId, CODE_MAP_SUFFIX)}>Open the current code map</OnwardLink>
       </div>
@@ -341,14 +360,14 @@ function TechnicalDetails({ answer, startedBy, took }: {
             <FactRow term="Model"><ModelSummary run={run} variant="details" /></FactRow>
             <FactRow term={run.retryKeyReason === undefined ? 'Started by' : 'Queued again by'}>{run.retryKeyReason !== undefined ? 'Myco' : startedBy === null ? 'Not recorded' : startedBy === 'On its schedule' ? 'Myco’s schedule' : capitalize(startedBy.replace(/^By /, ''))}</FactRow>
             {run.queuedAt !== null && <FactRow term="Queued">{dateWords(run.queuedAt)}</FactRow>}
-            {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Queue wait">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
+            {run.queuedAt !== null && run.startedAt !== null && <FactRow term="Waited to start">{tookWords(run.startedAt - run.queuedAt)}</FactRow>}
             {run.completedAt !== null && <FactRow term="Finished">{dateWords(run.completedAt)}</FactRow>}
             {run.startedAt !== null && <FactRow term="Started">{new Date(run.startedAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</FactRow>}
-            {took !== null && <FactRow term="Execution">{took}</FactRow>}
+            {took !== null && <FactRow term="Ran for">{took}</FactRow>}
             <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}{run.costSource === 'partial' && ' (partial; some request usage is unknown)'}</FactRow>
             <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}{run.costSource === 'partial' && '. Includes only requests with reported usage; other request costs are unknown.'}</span></>}</FactRow>
           </FactsPanel>
-          {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}
+          {answer.source !== null ? <p className="break-words t-small text-ink-2">Code it worked from: the {answer.source.branch} branch, at commit {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Which commit it worked from wasn’t recorded for this run.</p>}
           {run.status === 'failed' && (run.error !== null || run.errorCode === 'repository_unprepared') && (
             <div className="flex flex-col gap-s1">
               <PartLabel>What the run recorded</PartLabel>

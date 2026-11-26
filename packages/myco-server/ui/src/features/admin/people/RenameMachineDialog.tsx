@@ -13,9 +13,9 @@ export interface RenameTarget {
 
 /**
  * Rename a machine: its name prefilled, checked as it is typed against the rule
- * the server holds it to, and the server's refusal said in words. Its member
- * sees the name beside their own work; admins see it on Settings › People and machines and
- * Health; everyone else sees the work as from its member.
+ * the server holds it to, and the server's refusal said in words. Its member sees
+ * the name on Today and their sessions; admins see it in the machine list and on
+ * the machine's page.
  */
 export function RenameMachineDialog({ machine, onClose }: { machine: RenameTarget | null; onClose: () => void }) {
   return (
@@ -41,7 +41,7 @@ function RenameBody({ machine, onClose }: { machine: RenameTarget; onClose: () =
   return (
     <DialogContent
       title={machine.named ? `Rename ${machine.name}` : 'Name this machine'}
-      description={`Its member sees this name beside their own work, and admins see it on ${INVITE_CONTROLS.page} and Health. Everyone else sees the work as from its member.`}
+      description={`Its member sees this name on Today and on their sessions. Admins see it in the machine list on ${INVITE_CONTROLS.page} and on the machine’s own page. Other members see what it captured as its member’s work.`}
     >
       <form className="flex flex-col gap-s3" onSubmit={(event) => { event.preventDefault(); save(); }}>
         <Input
@@ -55,7 +55,7 @@ function RenameBody({ machine, onClose }: { machine: RenameTarget; onClose: () =
         {rename.error != null && <p role="alert" className="t-small text-bad">{renameRefusalWords(rename.error)}</p>}
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={problem !== null || unchanged} pending={rename.isPending}>Rename</Button>
+          <Button type="submit" variant="primary" disabled={problem !== null || unchanged} pending={rename.isPending}>{machine.named ? 'Rename machine' : 'Name machine'}</Button>
         </DialogFooter>
       </form>
     </DialogContent>

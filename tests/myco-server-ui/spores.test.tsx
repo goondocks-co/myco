@@ -450,7 +450,7 @@ describe('a spore’s article', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Retire' }));
     const retiring = await screen.findByRole('dialog');
-    const confirm = within(retiring).getByRole('button', { name: 'Retire' });
+    const confirm = within(retiring).getByRole('button', { name: 'Retire spore' });
     const reason = within(retiring).getByLabelText('Why it no longer holds');
     for (const text of ['', '   ']) {
       fireEvent.change(reason, { target: { value: text } });
@@ -468,7 +468,7 @@ describe('a spore’s article', () => {
     expect(note.textContent).toContain('Why: The cache was removed');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore spore' }));
     await waitFor(() => expect(document.querySelector('[data-spore-status]')).toBeNull());
     expect(sent[1]).toEqual([`${path}/restore`, { revision: 1 }]);
     const facts = document.querySelector('[data-facts]') as HTMLElement;
@@ -507,7 +507,7 @@ describe('a spore’s article', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retire' }));
     const dialog = await screen.findByRole('dialog');
     fireEvent.change(within(dialog).getByLabelText('Why it no longer holds'), { target: { value: 'Out of date' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Retire' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retire spore' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('Reload the page and try again');
     expect(posts).toBe(1);
     expect(screen.getByRole('dialog')).toBe(dialog);
@@ -535,7 +535,7 @@ it('an admin sees the whole undo plan on a source page and confirms once, then s
   mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
   fireEvent.click(await screen.findByRole('button',{name:'Undo curation'}));
   const dialog=await screen.findByRole('dialog');
-  expect(dialog.textContent).toContain('All changes happen together.');
+  expect(dialog.textContent).toContain('It all happens at once, or not at all.');
   expect(within(dialog).getByRole('link',{name:'The original situation.'}).getAttribute('href')).toBe(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
   expect(within(dialog).getByRole('link',{name:'The combined situation.'})).toBeTruthy();
   fireEvent.click(within(dialog).getByRole('button',{name:'Undo curation'}));
@@ -555,9 +555,9 @@ it.each([{kind:'merge',status:'obsolete',word:'Retired'},{kind:'resolution',stat
   }));
   mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);fireEvent.click(await screen.findByRole('button',{name:'Undo curation'}));
   const dialog=await screen.findByRole('dialog');
-  expect(dialog.textContent).toContain('Retire only the notes listed for retirement. Other notes stay as they are.');
-  expect(within(dialog).queryByRole('heading',{name:'Notes to retire'})).toBeNull();
-  expect(within(dialog).getByRole('heading',{name:'Notes left as they are'})).toBeTruthy();
+  expect(dialog.textContent).toContain('Spores listed as left stay as they are.');
+  expect(within(dialog).queryByRole('heading',{name:'Spores it wrote, to retire'})).toBeNull();
+  expect(within(dialog).getByRole('heading',{name:'Spores left as they are'})).toBeTruthy();
   expect(within(dialog).getByRole('link',{name:label})).toBeTruthy();expect(dialog.textContent).toContain('— '+word);
 });
 

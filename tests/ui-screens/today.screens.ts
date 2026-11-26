@@ -262,7 +262,7 @@ test.describe('Today', () => {
         await expect(dialog).toContainText('Ada’s studio Mac starts capturing it at the next agent session there');
         // Past eight projects the choice is searchable; its trigger names the choice either way.
         await expect(dialog.getByRole('button', { name: /^Project: Let Myco choose, The project that holds github\.com\/acme\/gadget/ })).toHaveText('Let Myco choose');
-        await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
+        await expect(dialog.getByRole('button', { name: 'Connect repository', exact: true })).toBeVisible();
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
         await expectNoRawIds(page);
@@ -290,7 +290,7 @@ test.describe('Today', () => {
         await expect(dialog).toBeVisible();
         // Nothing is chosen for the viewer: connecting binds its remote to the project picked, for every clone.
         await expect(dialog.getByRole('button', { name: 'Project: Choose a project', exact: true })).toHaveText('Choose a project');
-        await expect(dialog.getByRole('button', { name: 'Connect', exact: true })).toBeDisabled();
+        await expect(dialog.getByRole('button', { name: 'Connect repository', exact: true })).toBeDisabled();
         await page.waitForLoadState('networkidle');
         await expectFits(page, viewport);
         await expectNoRawIds(page);

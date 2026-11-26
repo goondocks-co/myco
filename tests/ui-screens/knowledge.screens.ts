@@ -296,11 +296,11 @@ test.describe('Knowledge', () => {
         const undo=page.getByRole('button',{name:'Undo curation',exact:true});
         if(role==='member'){await expect(undo).toHaveCount(0);continue;}
         await undo.click();const dialog=page.getByRole('dialog');
-        await expect(dialog).toContainText('Retire only the notes listed for retirement. Other notes stay as they are.');
-        await expect(dialog).toContainText('All changes happen together.');
-        await expect(dialog.getByRole('heading',{name:'Original notes to restore'})).toBeVisible();
+        await expect(dialog).toContainText('Spores listed as left stay as they are.');
+        await expect(dialog).toContainText('It all happens at once, or not at all.');
+        await expect(dialog.getByRole('heading',{name:'Spores that come back'})).toBeVisible();
         await expect(dialog.getByRole('link',{name:'When curation combines distinct situations, keep their original guidance.'})).toBeVisible();
-        await expect(dialog.getByRole('heading',{name:'Notes to retire'})).toBeVisible();
+        await expect(dialog.getByRole('heading',{name:'Spores it wrote, to retire'})).toBeVisible();
         await expect(dialog.getByRole('button',{name:'Undo curation',exact:true})).toBeEnabled();
         await expectNoRawIds(page,'[role="dialog"]');await expectAxeClean(page,['[role="dialog"]']);await shoot(page,'curation-undo','desktop','dark');
         await dialog.getByRole('button',{name:'Cancel',exact:true}).click();

@@ -319,10 +319,10 @@ describe('Renaming a machine', () => {
     const dialog = await openRename('Lin’s build box');
     const field = within(dialog).getByRole('textbox', { name: 'Machine name' }) as HTMLInputElement;
     expect(field.value).toBe('Lin’s build box');
-    expect((within(dialog).getByRole('button', { name: 'Rename' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole('button', { name: 'Rename machine' }) as HTMLButtonElement).disabled).toBe(true);
     const before = asked.length;
     fireEvent.change(field, { target: { value: '  build-02  ' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename machine' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(sent).toEqual([{ method: 'PATCH', body: { label: 'build-02' } }]);
     expect(await screen.findByRole('heading', { level: 1, name: 'build-02' })).toBeTruthy();
@@ -333,7 +333,7 @@ describe('Renaming a machine', () => {
     const { sent } = renaming(me(ADA, 'Ada', 'admin'), () => Response.json({}));
     const dialog = await openRename('Lin’s build box');
     const field = within(dialog).getByRole('textbox', { name: 'Machine name' });
-    const save = within(dialog).getByRole('button', { name: 'Rename' }) as HTMLButtonElement;
+    const save = within(dialog).getByRole('button', { name: 'Rename machine' }) as HTMLButtonElement;
     for (const [value, words] of [
       ['   ', 'Give the machine a name.'],
       ['x'.repeat(MACHINE_NAME_MAX + 1), `A name is at most ${MACHINE_NAME_MAX} characters; this one is ${MACHINE_NAME_MAX + 1}.`],
@@ -362,7 +362,7 @@ describe('Renaming a machine', () => {
       renaming(me(ADA, 'Ada', 'admin'), () => answer.clone());
       const dialog = await openRename('Lin’s build box');
       fireEvent.change(within(dialog).getByRole('textbox', { name: 'Machine name' }), { target: { value: 'build-02' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Rename machine' }));
       expect((await within(dialog).findByRole('alert')).textContent).toBe(words);
       expect(screen.getByRole('dialog', { name: 'Rename Lin’s build box' })).toBeTruthy();
       cleanup();

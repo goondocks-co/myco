@@ -175,7 +175,7 @@ export function AdvancedSection({ answer, rows, unread }: { answer: SettingsAnsw
         {fold.id === 'owner-actions' && <>
           {me.data?.owner !== undefined && <Ownership nested isOwner={me.data.owner} nameOfCandidate={(candidate) => nameOfPerson({ id: candidate.memberId, label: candidate.label })} />}
           {owner && <RawClaims nested />}
-          {!owner && <p className="t-small text-muted">Only this server’s owner can claim raw data with no recorded uploader.</p>}
+          {!owner && <p className="t-small text-muted">Only this server’s owner can take ownership of raw data with no known uploader.</p>}
         </>}
       </Fold>
     );

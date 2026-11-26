@@ -55,7 +55,7 @@ export const ADVANCED_FOLDS = [
   { id: 'kept', label: 'How long things are kept', summary: 'How long raw transcripts and the record of each task stay before they move or go.' },
   { id: 'backups', label: 'Backups', summary: 'Make, download and restore backups, how often this server backs itself up, and what it keeps.' },
   { id: 'upkeep', label: 'Upkeep', summary: 'How search is keeping up, housekeeping and the routine checks on the database; housekeeping and each check can be run now.' },
-  { id: 'owner-actions', label: 'Owner actions', summary: 'Transfer ownership of this server. Claim raw data that has no recorded uploader.' },
+  { id: 'owner-actions', label: 'Owner actions', summary: 'Transfer ownership of this server. Take ownership of raw data that has no known uploader.' },
 ] as const;
 export type AdvancedFoldId = (typeof ADVANCED_FOLDS)[number]['id'];
 
@@ -88,7 +88,7 @@ const profileFields = (harness: string): LeafField[] => [
   ]),
   { leaf: `agent.harnesses.${harness}.credential`, label: 'Legacy workers sign in with', kind: 'select',
     options: Object.keys(SIGN_IN_OPTIONS), optionLabels: SIGN_IN_OPTIONS, resettable: true,
-    note: 'Applies only to legacy workers. Each registered runner’s sign-in is chosen on Settings › Models, or set apart on its machine page, and takes precedence.' },
+    note: 'Applies only to legacy workers. Each registered runner’s sign-in is chosen on Settings › Models, or chosen for that runner only on its machine page, and takes precedence.' },
 ];
 
 /**

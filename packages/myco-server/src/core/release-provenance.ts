@@ -183,38 +183,50 @@ function checkOf(row: Row): ReleaseCheck | null {
   };
 }
 
-function refList(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.length > MAX_REFS) throw new ReleaseProvenanceInputError(`${label} is a list of at most ${MAX_REFS} refs.`);
+/** Why one line is not a ref this setting takes, in the words of what it holds; null when it is one. */
+function refProblem(ref: string, label: string, names: 'tags' | 'branches'): string | null {
+  if (!ref) return `One line in ${label} is empty.`;
+  if (ref.length > MAX_REF_CHARS) return `One line in ${label} is longer than ${MAX_REF_CHARS} characters.`;
+  if (ref.includes('..')) return `One line in ${label} has "..", which no tag or branch name can hold.`;
+  if (!REF_GRAMMAR.test(ref)) {
+    return names === 'tags'
+      ? `One line in ${label} is not a tag name or pattern: use letters, digits, . _ / - and * or ? as wildcards.`
+      : `One line in ${label} is not a branch name: write each branch's exact name, with letters, digits, . _ / and -.`;
+  }
+  return null;
+}
+
+function refList(value: unknown, label: string, names: 'tags' | 'branches'): string[] {
+  if (!Array.isArray(value) || value.length > MAX_REFS) throw new ReleaseProvenanceInputError(`${label} takes at most ${MAX_REFS} lines.`);
   const refs = value.map((ref) => (typeof ref === 'string' ? ref.trim() : ''));
   for (const ref of refs) {
-    if (!ref || ref.length > MAX_REF_CHARS || !REF_GRAMMAR.test(ref) || ref.includes('..')) {
-      throw new ReleaseProvenanceInputError(`${label} holds a ref that is not a git ref or pattern.`);
-    }
+    const problem = refProblem(ref, label, names);
+    if (problem !== null) throw new ReleaseProvenanceInputError(problem);
   }
   return [...new Set(refs)];
 }
 
 /** The validated settings a write carries, or an input error naming the field. */
 function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSettings {
-  if (typeof input.enabled !== 'boolean' || typeof input.includeUnknown !== 'boolean') throw new ReleaseProvenanceInputError('Tracking and unknown reporting are on or off.');
-  const productionRefs = refList(input.productionRefs, 'Production refs');
-  const integrationRefs = refList(input.integrationRefs, 'Integration refs');
+  if (typeof input.enabled !== 'boolean' || typeof input.includeUnknown !== 'boolean') throw new ReleaseProvenanceInputError('Tracking and marking sessions as release unknown are each on or off.');
+  const productionRefs = refList(input.productionRefs, 'Release tags', 'tags');
+  const integrationRefs = refList(input.integrationRefs, 'Merged-into branches', 'branches');
   if (!Array.isArray(input.packageMap) || input.packageMap.length > MAX_PACKAGE_MAPPINGS) {
-    throw new ReleaseProvenanceInputError(`The package map holds at most ${MAX_PACKAGE_MAPPINGS} mappings.`);
+    throw new ReleaseProvenanceInputError(`Packages take at most ${MAX_PACKAGE_MAPPINGS} lines.`);
   }
   const packageMap = input.packageMap.map((entry) => {
     const { pathGlob, tagPattern } = (entry ?? {}) as Record<string, unknown>;
     if (typeof pathGlob !== 'string' || !pathGlob.trim() || pathGlob.length > 256 || pathGlob.includes('..')) {
-      throw new ReleaseProvenanceInputError('Each package mapping names a repository path.');
+      throw new ReleaseProvenanceInputError('Each package line starts with a folder in the repository, then = and its tags.');
     }
-    return { pathGlob: pathGlob.trim(), tagPattern: refList([tagPattern], 'A package mapping')[0] };
+    return { pathGlob: pathGlob.trim(), tagPattern: refList([tagPattern], 'A package line', 'tags')[0] };
   });
   const maxLookups = input.maxLookups;
   if (typeof maxLookups !== 'number' || !Number.isInteger(maxLookups) || maxLookups < 1 || maxLookups > MAX_LOOKUPS_CEILING) {
-    throw new ReleaseProvenanceInputError(`Lookups per check is a whole number from 1 to ${MAX_LOOKUPS_CEILING}.`);
+    throw new ReleaseProvenanceInputError(`GitHub lookups per check is a whole number from 1 to ${MAX_LOOKUPS_CEILING}.`);
   }
   if (input.enabled === true && productionRefs.length === 0 && integrationRefs.length === 0) {
-    throw new ReleaseProvenanceInputError('Tracking needs at least one production or integration ref.');
+    throw new ReleaseProvenanceInputError('Tracking needs at least one release tag or merged-into branch.');
   }
   return { enabled: input.enabled, productionRefs, integrationRefs, packageMap, includeUnknown: input.includeUnknown, maxLookups };
 }

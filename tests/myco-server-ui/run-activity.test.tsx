@@ -359,7 +359,7 @@ describe('a reclaimed run', () => {
     expect(items[0]!.querySelector('[data-attempt-replaced]')!.textContent).toContain('It stopped checking in, so Myco gave the run to a new attempt');
     expect(items[1]!.textContent).toContain('Attempt 2 of 2');
     expect(within(items[0]!).getByRole('button', { name: /Attempt 1 of 2/ }).textContent).toContain('runner homelab-mini');
-    expect(items[1]!.textContent).toContain('Legacy worker — uses member credential');
+    expect(items[1]!.textContent).toContain('Legacy worker, signed in as its member');
     expect(items[1]!.textContent).toContain('Read new/second.ts');
     expect(items[1]!.textContent).not.toContain('old/first.ts');
     fireEvent.click(within(items[0]!).getByRole('button', { name: /Attempt 1 of 2/ }));

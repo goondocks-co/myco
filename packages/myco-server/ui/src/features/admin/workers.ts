@@ -34,7 +34,7 @@ const TASK_WORDS: Readonly<Record<string, string>> = {
 /** A task in words: "learning", "titling", else "a task". */
 export const taskWords = (task: string | null): string => (task === null ? 'a task' : TASK_WORDS[task] ?? 'a task');
 
-export const LEGACY_WORKER_LABEL = 'Legacy worker — uses member credential';
+export const LEGACY_WORKER_LABEL = 'Legacy worker, signed in as its member';
 
 /** Why the last claim took nothing, when it took nothing: that poll's answer, never the queue's. */
 export function lastClaimWords(worker: WorkerRow): string | null {

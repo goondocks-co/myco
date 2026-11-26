@@ -1,3 +1,4 @@
+import { DASHBOARD_BACKUP_LIMITS } from '@goondocks/myco-shared/backup-words';
 import { isArchivedEventMetadata } from '../db/document-tables.js';
 import type { ContentStore, RelationalStore } from './adapters.js';
 import { bundleContentEnv, readBundleEntry } from './archive-bundle.js';
@@ -10,8 +11,8 @@ export class RelationalSnapshotTooLargeError extends RelationalSnapshotError {
   constructor(readonly bytes: number) { super(`the relational snapshot needs ${bytes} bytes`); }
 }
 
-const MAX_RELATIONAL_SNAPSHOT_ROWS = 10_000;
-const MAX_RELATIONAL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+const MAX_RELATIONAL_SNAPSHOT_ROWS = DASHBOARD_BACKUP_LIMITS.rows;
+const MAX_RELATIONAL_SNAPSHOT_BYTES = DASHBOARD_BACKUP_LIMITS.bytes;
 const OPERATOR_BACKUP = 'myco server backup --to <directory> --target <deployment-target>';
 
 export class RelationalSnapshotAdmissionError extends RelationalSnapshotError {
