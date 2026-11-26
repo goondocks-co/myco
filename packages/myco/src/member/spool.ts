@@ -25,7 +25,7 @@ import {
   MEMBER_FILE_MODE, MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, REFUSAL_RETRY_MAX_MS, REFUSAL_SUBJECT, refusalPermanent,
   REFUSED_LOG_MAX_BYTES, UNCLASSIFIED_REFUSAL_HOLD_HOURS, UNCLASSIFIED_REFUSAL_HOLD_MS, type MemberCode,
 } from './constants.js';
-import { observedGitChanges, type GitObservation } from './git-facts.js';
+import { GIT_ENRICHMENT_CAP_MS, INLINE_GIT_STATUS_CAP_MS, observedGitChanges, type GitObservation } from './git-facts.js';
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import {
@@ -409,7 +409,11 @@ export class MemberSpool {
     const head = record.payload.headSha;
     let dirty: boolean | undefined;
     try {
-      if (typeof head === 'string') dirty = await observedGitChanges(record._gitObservation!, head, at, budget, opts.inlineGit === true, (opts.now ?? Date.now)());
+      if (typeof head === 'string') {
+        const sessionEnd = typeof record.payload.endedAt === 'number';
+        const inlineCap = opts.inlineGit === true ? (sessionEnd ? GIT_ENRICHMENT_CAP_MS : INLINE_GIT_STATUS_CAP_MS) : null;
+        dirty = await observedGitChanges(record._gitObservation!, head, at, budget, inlineCap, (opts.now ?? Date.now)());
+      }
     } catch (error) {
       stderr(`Git status unavailable: ${(error as Error).message}`);
     }

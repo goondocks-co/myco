@@ -79,8 +79,9 @@ const END_HEAD_CAP_MS = 8;
 const STATUS_PREFIX_BYTES = 4096;
 /** A status read must begin and finish near the boundary it describes. */
 const END_STATUS_WINDOW_MS = 2_000;
+/** A turn end delivered inside the hook waits this long for the status; a session end, the last word on a session, gets the enrichment allowance. */
 export const INLINE_GIT_STATUS_CAP_MS = 15;
-const STATUS_ARGS = ['--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain=v2', '--branch', '--no-ahead-behind', '--untracked-files=normal', '--ignore-submodules=none'];
+const STATUS_ARGS = ['--no-optional-locks', '-c', 'core.fsmonitor=false', 'status', '--porcelain=v2', '--branch', '--no-ahead-behind', '--untracked-files=normal', '--ignore-submodules=none', '--no-renames'];
 
 export interface GitObservation {
   cwd: string;
@@ -128,9 +129,9 @@ export function endGitHead(cwd: string, budget: HookBudget, now: number) {
 
 /** Read a lock-free worktree status for the HEAD captured by the hook. The porcelain headers also distinguish clean from absent output. */
 export async function observedGitChanges(
-  request: GitObservation, headSha: string, at: number, budget: HookBudget, inline: boolean, now: number,
+  request: GitObservation, headSha: string, at: number, budget: HookBudget, inlineCapMs: number | null, now: number,
 ): Promise<boolean | undefined> {
-  const deadline = Math.min(at + END_STATUS_WINDOW_MS, budget.deadline - budget.connectTimeoutMs, inline ? now + INLINE_GIT_STATUS_CAP_MS : Infinity);
+  const deadline = Math.min(at + END_STATUS_WINDOW_MS, budget.deadline - budget.connectTimeoutMs, inlineCapMs === null ? Infinity : now + inlineCapMs);
   if (deadline <= now || gitRedirected()) return undefined;
   const queryBudget = { deadline };
   const { cwd, branch, device, inode } = request;
