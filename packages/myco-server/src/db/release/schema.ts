@@ -42,6 +42,12 @@ const REOPEN_FOR_PATHS = `UPDATE release_work_due SET settled_generation=0,sourc
   AND point='session_end' AND cleanliness='0'
   AND EXISTS (SELECT 1 FROM project_release_provenance p WHERE p.project_id=NEW.project_id AND p.package_map<>'[]')`;
 
+export const RELEASE_WORK_OPEN = 'final=0 AND (capture_only=0 OR settled_generation=0)';
+
+/** Publication can make captured paths readable without adding another tool call. */
+export const releasePathsReady = trigger('release_work_paths_ready', 'session_documents', 'UPDATE OF state', REOPEN_FOR_PATHS,
+  "NEW.state='live' AND OLD.state IS NOT 'live'").sql;
+
 export function releaseSchemaStatements(): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS release_check_due (

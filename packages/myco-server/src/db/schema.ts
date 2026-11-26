@@ -1,3 +1,4 @@
+import { RELEASE_WORK_GENERATION_STEPS } from './schema-steps-release-work-generation.js';
 import { RUNNER_PAYER_STEPS } from './schema-steps-runner-payer.js';
 import { RUNNER_MACHINE_STEPS } from './schema-steps-runner-machine.js';
 import { RUNNER_SECRET_HEALTH_STEPS } from './schema-steps-runner-secret-health.js';
@@ -2445,6 +2446,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...RUNNER_SECRET_HEALTH_STEPS.map(stamp),
   ...RUNNER_PAYER_STEPS.map(stamp),
   ...RUNNER_MACHINE_STEPS.map(stamp),
+  ...RELEASE_WORK_GENERATION_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

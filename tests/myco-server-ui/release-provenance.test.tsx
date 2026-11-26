@@ -60,10 +60,11 @@ describe('release tracking in project settings', () => {
   });
 
   it('says what a stopped check means for the sessions it did not reach, and what happens next', () => {
-    const stopped = (failure: string) => checkSummary(row({ check: { ...row().check!, status: 'partial', failure, lookups: 50,
-      counts: { checked: 4, changed: 0, unchanged: 3, unknown: 1, unavailable: 1, deferred: 196 } } }).check);
+    const stopped = (failure: string, checked = 4) => checkSummary(row({ check: { ...row().check!, status: 'partial', failure, lookups: 50,
+      counts: { checked, changed: 0, unchanged: checked === 0 ? 0 : 3, unknown: checked === 0 ? 0 : 1, unavailable: 1, deferred: 196 } } }).check);
     // Running out of lookups leaves the rest pending, with no promise the next check gets further.
-    expect(stopped('budget_exhausted')).toContain('Checked 4 sessions; no release state changed, and Myco couldn’t tell for 1. At least 197 sessions weren’t finished because this check used all 50 of its GitHub lookups. Unfinished sessions stay pending for later checks, which can run out the same way: to make progress, raise “GitHub lookups per check” under More, or list fewer tags and branches.');
+    expect(stopped('budget_exhausted')).toContain('Checked 4 sessions; no release state changed, and Myco couldn’t tell for 1. At least 197 sessions weren’t finished because this check used all 50 of its GitHub lookups. Unfinished sessions stay pending for later checks.');
+    expect(stopped('budget_exhausted', 0)).toContain('before it could finish a single session. See “GitHub lookups per check” under More.');
     expect(stopped('rate_limited')).toContain('At least 197 sessions weren’t finished because of this: GitHub rate limit reached; it resets within the hour. Unfinished sessions stay pending and keep their earlier state.');
     // The per-check session cap is not a lookup shortfall.
     expect(checkSummary(row({ check: { ...row().check!, status: 'partial', failure: null, counts: { checked: 200, changed: 0, unchanged: 200, unknown: 0, unavailable: 0, deferred: 1 } } }).check))
