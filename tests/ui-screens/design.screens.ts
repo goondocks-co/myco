@@ -143,7 +143,7 @@ test.describe('layers inside layers', () => {
   test.skip(process.env[SCREENS_ENV.fixture] !== '1', 'the specimen is served only by the screens launcher');
 
   for (const viewport of ['desktop', 'phone'] as const) {
-    test(`a confirmation in a panel, one in a dialog, and a dialog alone each close alone on an immediate Escape ${viewport}`, async ({ browser }) => {
+    test(`each layer closes alone on Escape: confirmations in a panel and a dialog, a dialog alone, search over the image viewer, and a select's list in a dialog ${viewport}`, async ({ browser }) => {
       const { context, page } = await openPage(browser, { path: `${SPECIMEN}?mode=dark`, viewport, mode: 'dark' });
       try {
         await page.locator('html[data-ready="1"]').waitFor();
@@ -164,6 +164,48 @@ test.describe('layers inside layers', () => {
         await expect(outer).toHaveCount(0);
 
         await closesAlone(page, page.getByRole('button', { name: 'Open a dialog', exact: true }), 'Rename project', null);
+
+        for (let round = 0; round < LAYER_ROUNDS; round += 1) {
+          // Search opened over the image viewer closes alone, then the viewer closes and hands focus back.
+          const showImage = layers.getByRole('button', { name: 'Open an image' });
+          await showImage.click();
+          const viewer = page.getByRole('dialog', { name: 'Image' });
+          const viewerClose = viewer.getByRole('button', { name: 'Close' });
+          await expect(viewerClose).toBeFocused();
+          await page.keyboard.press('ControlOrMeta+k');
+          const search = page.getByRole('dialog', { name: 'Search' });
+          await expect(search).toBeVisible();
+          await page.keyboard.press('Escape');
+          await expect(search).toHaveCount(0);
+          await expect(viewer).toBeVisible();
+          await expect(viewerClose).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(viewer).toHaveCount(0);
+          await expect(showImage).toBeFocused();
+
+          // The viewer alone closes on Escape.
+          await showImage.click();
+          await expect(viewerClose).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(viewer).toHaveCount(0);
+          await expect(showImage).toBeFocused();
+
+          // Escape in a searchable select's search closes its list, not the dialog; the next Escape closes the dialog.
+          const showList = layers.getByRole('button', { name: 'Open a dialog with a list' });
+          await showList.click();
+          const holder = page.getByRole('dialog', { name: 'Move this session' });
+          const select = holder.getByRole('button', { name: /^Project/ });
+          await select.click();
+          const field = holder.getByRole('combobox', { name: 'Search project' });
+          await expect(field).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(holder.getByRole('listbox')).toHaveCount(0);
+          await expect(holder).toBeVisible();
+          await expect(select).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(holder).toHaveCount(0);
+          await expect(showList).toBeFocused();
+        }
       } finally {
         await context.close();
       }
