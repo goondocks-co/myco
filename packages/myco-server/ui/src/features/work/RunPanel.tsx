@@ -144,11 +144,11 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         description="From now on Myco saves nothing more from this run, and it doesn’t finish its work. The runner may take a moment to stop the agent. What the run already saved stays."
         confirmLabel="Cancel run"
         cancelLabel="Keep it running"
-        confirmDisabled={!canCancel}
+        confirmDisabled={!canCancel || (cancel.error !== null && !(cancel.error instanceof ApiError && cancel.error.status === 404))}
         pending={cancel.isPending}
         error={cancel.error === null ? null
           : cancel.error instanceof ApiError && cancel.error.status === 404 ? 'This run has already ended, or you no longer have permission to cancel it.'
-          : 'Myco couldn’t confirm whether the run was cancelled. It has read the run again: check where it stands before trying again.'}
+          : 'Myco couldn’t confirm whether the run was cancelled. It is reading the run again: close this, and see where the run stands on this page before trying again.'}
         onConfirm={() => { if (!canCancel) return; cancel.mutate(undefined, {
           onSuccess: () => setConfirmCancel(false),
           onError: (error) => {

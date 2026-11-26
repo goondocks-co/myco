@@ -15,11 +15,19 @@ function openerTarget(): HTMLElement | null {
   return trigger ?? active;
 }
 
+const OPEN_LAYERS = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
+
 /**
- * Only the topmost dialog or panel answers an Escape: the layer that closes stops the key there, so a dialog opened
- * inside a panel closes alone, whichever layer heard the key first.
+ * Only the topmost dialog or panel answers an Escape. A layer that has another open layer above it in the document
+ * leaves the key alone, from the moment that layer is on the page; the layer that closes stops the key there. So a
+ * dialog opened inside a panel closes alone, however soon after it appears the key is pressed.
  */
-export function topmostOwnsEscape(event: KeyboardEvent): void {
+export function topmostOwnsEscape(event: KeyboardEvent, self: HTMLElement | null): void {
+  const top = Array.from(document.querySelectorAll<HTMLElement>(OPEN_LAYERS)).at(-1);
+  if (self !== null && top !== undefined && top !== self) {
+    event.preventDefault();
+    return;
+  }
   event.stopImmediatePropagation();
 }
 
@@ -52,11 +60,16 @@ export interface DialogContentProps extends Omit<ComponentPropsWithoutRef<typeof
 export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
   ({ className, title, description, hideClose = false, children, onOpenAutoFocus, onCloseAutoFocus, onEscapeKeyDown, ...props }, ref) => {
     const opener = useContext(ReturnFocus);
+    const self = useRef<HTMLDivElement | null>(null);
     return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
       <DialogPrimitive.Content
-        ref={ref}
+        ref={(node) => {
+          self.current = node;
+          if (typeof ref === 'function') ref(node);
+          else if (ref !== null) ref.current = node;
+        }}
         {...(description == null ? { 'aria-describedby': undefined } : {})}
         className={cn(
           'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-var(--s-12))] w-[calc(100vw-var(--s-8))] max-w-[480px] -translate-x-1/2 -translate-y-1/2 flex-col gap-s4 overflow-y-auto',
@@ -69,7 +82,7 @@ export const DialogContent = forwardRef<ElementRef<typeof DialogPrimitive.Conten
         }}
         onEscapeKeyDown={(event) => {
           onEscapeKeyDown?.(event);
-          topmostOwnsEscape(event);
+          if (!event.defaultPrevented) topmostOwnsEscape(event, self.current);
         }}
         onCloseAutoFocus={(event) => {
           onCloseAutoFocus?.(event);

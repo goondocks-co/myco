@@ -72,7 +72,7 @@ export function BackupsSection() {
       nested
       id={BACKUP_COPIES_ANCHOR}
       title="Backups made here"
-      description={`A backup made here is a copy of this server’s records, for bringing back records that were deleted or lost. Its records are read together, at one moment. It can be made only while it stays under ${DASHBOARD_BACKUP_LIMITS.rows.toLocaleString()} records and about ${DASHBOARD_BACKUP_LIMITS.bytes / 1_048_576} MiB by Myco’s cautious estimate. It leaves out attachment and transcript files, settings and secrets; a complete recovery copy, below, keeps those, and is what puts the whole server back as it was.`}
+      description={`A backup made here is a copy of this server’s records, for bringing back records that were deleted or lost. Its records are read together, at one moment. It can be made while this server holds up to ${DASHBOARD_BACKUP_LIMITS.rows.toLocaleString()} records and about ${DASHBOARD_BACKUP_LIMITS.bytes / 1_048_576} MiB of them by Myco’s cautious estimate. It leaves out attachment and transcript files, settings and stored keys. A complete recovery copy, below, holds the files and settings too and is what puts the whole server back; the keys that unlock its stored keys, and the GitHub App’s key, are kept separately from it.`}
       actions={<Button variant="primary" disabled={!backupPermission.allowed} pending={backups.create.isPending} onClick={() => backups.create.mutate()}>Create backup</Button>}
     >
       {!backupPermission.allowed && <p className="t-small text-muted">{backupPermission.reason ?? 'Only an admin can manage backups.'}</p>}
@@ -168,7 +168,7 @@ export function BackupsSection() {
         open={confirming !== null}
         onOpenChange={(open) => { if (!open) { setConfirming(null); backups.restore.reset(); } }}
         title={confirming === null ? 'Restore this backup?' : `Restore the backup from ${backupDate(confirming.preview.header.createdAt)}?`}
-        description="Myco adds the records from this backup that this server is missing and can take. Deletions and archived transcript parts the backup records still apply here, so a session the backup records as deleted loses its parent links here, and a transcript part it records as archived is read from the archive instead of this server’s copy. What it will skip is listed below, and the result says what was left out."
+        description="Myco adds the records from this backup that this server is missing and can take. Deletions and archived transcript parts the backup records still apply here, so a session the backup records as deleted loses its parent links here, and a transcript part it records as archived is read from the archive instead of this server’s copy. What Myco already knows it will skip is listed below; the result lists anything more it left out. A session this server has deleted stays deleted."
         confirmLabel="Add the missing records"
         tone="primary"
         pending={backups.restore.isPending}

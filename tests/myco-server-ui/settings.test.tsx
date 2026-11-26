@@ -1152,7 +1152,7 @@ describe('Connections', () => {
     for (const el of document.querySelectorAll('input, textarea')) expect((el as HTMLInputElement).value).not.toBe(SECRET);
     fireEvent.click(within(connection('Anthropic key')).getByRole('button', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toContain('Work that needs this key waits until one is stored. A runner set to “A stored key first, then the runner’s own sign-in” carries on instead');
+    expect(dialog.textContent).toContain('Work that needs this key waits until one is stored. A runner set to “A stored key first, then the runner’s own sign-in” that is signed in itself carries on with its own sign-in, billed to the account it signed in with; one that isn’t signed in waits too.');
     expect(sent).toHaveLength(1);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
     await waitFor(() => expect(sent).toHaveLength(2));

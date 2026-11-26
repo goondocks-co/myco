@@ -41,7 +41,7 @@ function RenameBody({ machine, onClose }: { machine: RenameTarget; onClose: () =
   return (
     <DialogContent
       title={machine.named ? `Rename ${machine.name}` : 'Name this machine'}
-      description={`Its member sees this name on Today and on their sessions. Admins see it in the machine list on ${INVITE_CONTROLS.page} and on the machine’s own page. Everywhere else, the machine’s work shows as its member’s.`}
+      description={`Its member sees this name on Today and on their sessions. Admins see it in the machine list on ${INVITE_CONTROLS.page} and on the machine’s own page. Other members see what it captured as its member’s work.`}
     >
       <form className="flex flex-col gap-s3" onSubmit={(event) => { event.preventDefault(); save(); }}>
         <Input

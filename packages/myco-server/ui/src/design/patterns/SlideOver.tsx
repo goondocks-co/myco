@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
@@ -21,13 +21,15 @@ export interface SlideOverProps {
  * what opened it; Escape and the close button both close it.
  */
 export function SlideOver({ open, onOpenChange, title, children, ...rest }: SlideOverProps) {
+  const self = useRef<HTMLDivElement | null>(null);
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-scrim" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          onEscapeKeyDown={topmostOwnsEscape}
+          ref={self}
+          onEscapeKeyDown={(event) => topmostOwnsEscape(event, self.current)}
           data-slide-over=""
           data-testid={rest['data-testid']}
           className={cn(

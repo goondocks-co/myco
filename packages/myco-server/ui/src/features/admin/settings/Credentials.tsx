@@ -111,7 +111,7 @@ export function KeyRows({ secrets, uses }: { secrets: readonly SecretRow[]; uses
         open={removing !== null}
         onOpenChange={(open) => { if (!open) closeRemove(); }}
         title={`Remove the ${removing === null ? '' : keyLabel(removing.name)}?`}
-        description={removing === null ? '' : `The key is deleted from this server and can’t be shown again; to use it later, enter it again. Work that needs this key waits until one is stored. A runner set to “${RUNNER_PAYER_LABELS['stored-first']}” carries on instead: ${runnerFallbackWords('no_key', removing.name as SecretSlotName)} That work is billed to the account the runner signed in with.`}
+        description={removing === null ? '' : `The key is deleted from this server and can’t be shown again; to use it later, enter it again. Work that needs this key waits until one is stored.${harnessesReading(removing.name as SecretSlotName).length === 0 ? '' : ` A runner set to “${RUNNER_PAYER_LABELS['stored-first']}” that is signed in itself carries on with its own sign-in, billed to the account it signed in with; one that isn’t signed in waits too.`}`}
         confirmLabel="Remove key"
         pending={actions.deleteSecret.isPending}
         error={actions.deleteSecret.error ? settingsRefusalText(actions.deleteSecret.error) : null}

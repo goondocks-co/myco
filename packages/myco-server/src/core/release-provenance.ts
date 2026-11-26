@@ -185,13 +185,13 @@ function checkOf(row: Row): ReleaseCheck | null {
 
 /** Why one line is not a ref this setting takes, in the words of what it holds; null when it is one. */
 function refProblem(ref: string, label: string, names: 'tags' | 'branches'): string | null {
-  if (!ref) return `${label} holds an empty line.`;
-  if (ref.length > MAX_REF_CHARS) return `${label} holds a line longer than ${MAX_REF_CHARS} characters.`;
-  if (ref.includes('..')) return `${label} holds a line with "..", which no tag or branch name can hold.`;
+  if (!ref) return `One line in ${label} is empty.`;
+  if (ref.length > MAX_REF_CHARS) return `One line in ${label} is longer than ${MAX_REF_CHARS} characters.`;
+  if (ref.includes('..')) return `One line in ${label} has "..", which no tag or branch name can hold.`;
   if (!REF_GRAMMAR.test(ref)) {
     return names === 'tags'
-      ? `${label} holds a line that is not a tag name or pattern: use letters, digits, . _ / - and * or ? as wildcards.`
-      : `${label} holds a line that is not a branch name: write each branch's exact name, with letters, digits, . _ / and -.`;
+      ? `One line in ${label} is not a tag name or pattern: use letters, digits, . _ / - and * or ? as wildcards.`
+      : `One line in ${label} is not a branch name: write each branch's exact name, with letters, digits, . _ / and -.`;
   }
   return null;
 }

@@ -37,11 +37,11 @@ export function checkSummary(check: ReleaseCheck | null): string {
   const unfinished = `At least ${plural(missed, 'session', 'sessions')} ${missed === 1 ? 'wasn’t' : 'weren’t'} finished`;
   if (check.failure === 'budget_exhausted') {
     const used = check.lookups === null ? 'all its GitHub lookups' : `all ${check.lookups.toLocaleString()} of its GitHub lookups`;
-    parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending and are tried again on the next check, which can run out the same way: to make progress, raise “GitHub lookups per check” under More, or list fewer tags and branches.`);
+    parts.push(`${missed > 0 ? unfinished : 'It stopped early'} because this check used ${used}. Unfinished sessions stay pending for later checks, which can run out the same way: to make progress, raise “GitHub lookups per check” under More, or list fewer tags and branches.`);
   } else if (check.failure !== null) {
     parts.push(`${missed > 0 ? unfinished : 'It stopped'} because of this: ${checkFailureLabel(check.failure)}. Unfinished sessions stay pending and keep their earlier state.`);
   } else if (missed > 0) {
-    parts.push(`${unfinished}: one check takes a limited number of sessions, and a session that changed while it ran waits. They stay pending for the next check.`);
+    parts.push(`${unfinished}: one check takes a limited number of sessions, and a session that changed while it ran waits. They stay pending for later checks.`);
   }
   const pending = check.requestedAt !== null && check.requestedAt > check.startedAt ? ' Another check is requested.' : '';
   return `${agoWords(check.finishedAt)}: ${parts.join(' ')}${pending}`;
@@ -186,13 +186,13 @@ function ReleaseTrackingForm({ projectId, row, onClose }: { projectId: string; r
       <SwitchField
         id="release-unknown"
         label="Say when Myco can’t tell"
-        hint="Myco can’t place a session that ended with uncommitted changes, whose last commit wasn’t captured or isn’t on GitHub, or whose files couldn’t be read. On, a check records it as “Release unknown”. Off, a check records nothing new for it, and a state it already shows stays."
+        hint="Myco can’t place a session that ended with uncommitted changes, whose last commit wasn’t captured or isn’t on GitHub, or, where packages are listed under More, one where Myco can’t tell which package was changed. On, a check that reaches that answer records “Release unknown”. Off, it records nothing new, and a state the session already shows stays."
         checked={includeUnknown}
         onCheckedChange={setIncludeUnknown}
       />
       <Disclosure summary="More" defaultOpen={row.packageMap.length > 0}>
         <div className="flex flex-col gap-s4 pt-s1">
-          <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then the tags of the package in it. For a session that changed files in a listed folder, Myco checks only the release tags above that match that package’s tags; when none match, or no folder is listed, it checks all of them. The merged-into branch is checked either way. For example, with myco/v* above: packages/myco/ = myco/v*">
+          <FormField id="release-packages" label="Does this repository release packages separately?" hint="One per line: a folder, then =, then the tags of the package in it. For a session that changed files in listed folders, Myco checks only the release tags above that match those packages’ tags, any of which can show it as released; when none match, or no folder is listed, it checks all of them. Where it finds no release, it looks for a merge into the branch above. For example, with myco/v* above: packages/myco/ = myco/v*">
             <Textarea id="release-packages" aria-describedby="release-packages-hint" className="t-mono" value={mapping} onChange={(e) => setMapping(e.target.value)} placeholder="packages/myco/ = myco/v*" />
           </FormField>
           <FormField id="release-lookups" label="GitHub lookups per check" hint="Each check reads tags and compares commits on GitHub, at most this many times. More checks more sessions at once and uses more of GitHub’s hourly allowance.">
