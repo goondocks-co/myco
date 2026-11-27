@@ -39,10 +39,11 @@ export const harnessDeploymentActivity: ParityScenario = {
       const body = await response.json() as { items: Array<{ kind: string; harness?: string }> };
       return body.items.filter(item => item.kind === 'harness_needs_repair' && item.harness === 'codex');
     };
+    // The agent ran after its hooks were written: the report says so by a later time, not by the clock at sending.
     const trust = async (marker: number) => {
       const response = await fetch(`${target.url}/members/harnesses/report`, {
         method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
-        body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'trust_required', activityScope: 'deployment', action: 'Approve capture.', hookRepairAt: marker, ranAt: Date.now() }] }),
+        body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'trust_required', activityScope: 'deployment', action: 'Approve capture.', hookRepairAt: marker, ranAt: marker + 1 }] }),
       });
       expect(response.status).toBe(200); await response.arrayBuffer();
     };
