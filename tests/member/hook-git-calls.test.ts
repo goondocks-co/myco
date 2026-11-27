@@ -71,7 +71,7 @@ function probeEvents(log: string): ProbeEvent[] {
 const VERDICT_QUERY = 'rev-parse --show-toplevel --git-dir --git-common-dir';
 /** What git is asked once for a verdict: the verdict, and where its system config lives (`--exec-path` before git 2.42). */
 const VERDICT_QUERIES = [VERDICT_QUERY, 'var GIT_CONFIG_SYSTEM', '--exec-path'];
-const HEAD_QUERIES = ['rev-parse --abbrev-ref HEAD', 'rev-parse HEAD'];
+const HEAD_QUERIES = ['rev-parse HEAD --abbrev-ref HEAD'];
 
 describe.skipIf(realGit === '')('the git a second hook in a repository starts', () => {
   const dir = removeWhenTestsEnd(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hook-verdict-'))));

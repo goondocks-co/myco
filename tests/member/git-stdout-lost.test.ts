@@ -158,7 +158,7 @@ describe('a git stdout lost in transit', () => {
     realGit(['remote', 'add', 'origin', 'https://example.com/team/repo.git'], checkout);
     const facts = await gitFacts(checkout);
     expect(facts).toEqual({ branch: expect.any(String), remote: 'https://example.com/team/repo.git', headSha: expect.stringMatching(/^[0-9a-f]{40}$/), dirty: false });
-    for (const query of ['rev-parse --abbrev-ref HEAD', 'rev-parse HEAD', 'remote get-url origin']) {
+    for (const query of ['rev-parse HEAD --abbrev-ref HEAD', 'remote get-url origin']) {
       git.loseNext(1, query);
       expect({ query, facts: await gitFacts(checkout) }).toEqual({ query, facts });
       expect(git.armsLeft()).toBe(0);

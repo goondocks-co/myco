@@ -3,7 +3,7 @@
  *
  * For each layout, from the top, a subdirectory and a path reached through a symlink: the project root
  * (`--git-common-dir`'s parent, as `project-root.ts` resolves it), the work tree's top (`--show-toplevel`), the
- * branch and commit `HEAD` stands on (`rev-parse --abbrev-ref HEAD`, `rev-parse HEAD`), and whether the directory is
+ * branch and commit `HEAD` stands on (`rev-parse HEAD --abbrev-ref HEAD`), and whether the directory is
  * a repository at all, each against git's own answer. The plain layouts are decided from the files alone; the rest
  * fall back to git, and answer the same.
  */

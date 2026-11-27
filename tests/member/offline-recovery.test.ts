@@ -67,8 +67,8 @@ const transcript = (sessionId: string, text: string): string => {
 async function session(fetchImpl: Parameters<typeof runHook>[2]['fetch'], sessionId: string, text: string) {
   const tx = transcript(sessionId, text);
   const start = await runHook('session-start', { session_id: sessionId, hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: fetchImpl });
-  const stop = await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: `re: ${text}` }, { helpers: 'run', fetch: fetchImpl });
-  const end = await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx }, { helpers: 'run', fetch: fetchImpl });
+  const stop = await runHook('stop', { session_id: sessionId, hook_event_name: 'Stop', transcript_path: tx, cwd: '/work/repo', last_assistant_message: `re: ${text}` }, { helpers: 'run', fetch: fetchImpl });
+  const end = await runHook('session-end', { session_id: sessionId, hook_event_name: 'SessionEnd', transcript_path: tx, cwd: '/work/repo' }, { helpers: 'run', fetch: fetchImpl });
   return { tx, start, stop, end };
 }
 
@@ -240,7 +240,7 @@ describe('a member that could not deliver', () => {
     expect(rig.rows('sessions')).toBe(0);
     expect(readRegistryEntry(root, mycoHome)!.refreshTerminal).toBe(true);
     const spool = new MemberSpool({ projectId: PROJECT, serverUrl: SERVER_URL }, { mycoHome });
-    expect(spool.depth('sess-refused')).toBe(3);
+    expect(spool.depth('sess-refused')).toBe(2);
     expect(spool.transcriptBacklogIds()).toEqual(['sess-refused']);
 
     // A re-login replaces the credential and every piece of the old token's rotation state.
@@ -258,7 +258,7 @@ describe('a member that could not deliver', () => {
     const order = (rig.env.sqlite.query(`SELECT session_id AS s, kind AS k FROM events WHERE producer_adapter <> 'transcript-parse' AND kind <> 'turn' ORDER BY received_at, rowid`).all() as Array<{ s: string; k: string }>)
       .map((r) => `${r.s} ${r.k}`);
     expect(order[0]).toBe('sess-next session.start');
-    expect(order.filter((o) => o.startsWith('sess-refused'))).toEqual(['sess-refused session.start', 'sess-refused session.end', 'sess-refused session.end', 'sess-refused transcript.segment']);
+    expect(order.filter((o) => o.startsWith('sess-refused'))).toEqual(['sess-refused session.start', 'sess-refused session.end', 'sess-refused transcript.segment']);
     expect(order).toContain('sess-next transcript.segment');
     expect(spy.requests.slice(seen).every((r) => r.path !== '/tokens/refresh')).toBe(true);
 

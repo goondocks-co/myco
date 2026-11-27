@@ -47,10 +47,10 @@ export function gitHead(cwd: string, deps: GitVerdictDeps = {}): Pick<GitFacts, 
     if (head === null) return {};
     if (head !== UNUSUAL) return head;
   }
-  const branch = read(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, deps.askGit);
-  if (branch === undefined) return {};
-  const head = read(['rev-parse', 'HEAD'], cwd, deps.askGit);
-  return { branch, ...(head !== undefined && COMMIT_SHA.test(head) ? { headSha: head } : {}) };
+  // One process answers both: the commit, then the branch name.
+  const answer = read(['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], cwd, deps.askGit)?.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  if (answer === undefined || answer.length !== 2 || !COMMIT_SHA.test(answer[0])) return {};
+  return { branch: answer[1], headSha: answer[0] };
 }
 
 /** The `origin` remote's URL, as git gives it (its `insteadOf` rewrites applied). */
