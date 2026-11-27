@@ -4,11 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 const WALL_DEADLINE_MS = 8000;
 const fixture = fileURLToPath(new URL('../fixtures/stored-text-cost.ts', import.meta.url));
-/** The route run measures how cost grows with size, not how long a runner takes: it only has to end. */
-const ROUTE_RUN_LIMIT_MS = 60_000;
-const cost = (mode: string, limit = WALL_DEADLINE_MS) => JSON.parse(execFileSync(process.execPath, [fixture, mode], {
-  timeout: limit, encoding: 'utf8', env: process.env,
-}).trim().split('\n').at(-1)!) as { mode: string; timings: number[] };
+const ROUTE_RUN_LIMIT_MS = 60_000; // The route run measures how cost grows with size, not runner speed: it only has to end.
+const cost = (mode: string, limit = WALL_DEADLINE_MS) => JSON.parse(execFileSync(process.execPath, [fixture, mode], { timeout: limit, encoding: 'utf8', env: process.env })
+  .trim().split('\n').at(-1)!) as { mode: string; timings: number[] };
 
 it('projects 1 MiB adversarial prose and redaction within an owned subprocess deadline', () => {
   const measured = cost('shared');
